@@ -144,6 +144,9 @@ patch:
 | `upstream_pr_url` | Optional link to the corresponding upstream pull request (also used for squash merge detection) |
 | `description` | Optional free-form description |
 | `deleted_at` | Timestamp when a merged patch was soft-deleted (null for active patches) |
+| `origin_sync_state` | Sync state relative to the fork (`in_sync`, `diverged` or `missing_on_origin`); absent when null, written only in origin mode |
+| `origin_sha` | The fork's tip SHA recorded at the last sync; absent when null, written only in origin mode |
+| `origin_synced_at` | Timestamp of the last sync that updated this patch's origin state; absent when null, written only in origin mode |
 
 ### Patch statuses
 
@@ -154,6 +157,21 @@ patch:
 | `conflict` | The most recent rebuild encountered unresolved conflicts on this patch. The patch remains in the list and will be retried on the next rebuild. |
 | `disabled` | Manually disabled by an operator. Skipped during rebuilds but not deleted. |
 | `deleted` | Soft-deleted after being merged upstream. Hidden from normal list views but can be restored within the retention period (7 days). |
+
+#### Origin sync states
+
+In `origin` mode, each registered patch carries an `origin_sync_state` that
+records how the hub's copy relates to the fork's copy:
+
+- **`in_sync`** — the hub's `refs/heads/<branch>` matches the fork's tip.
+- **`diverged`** — the hub's copy and the fork's copy have diverged (the
+  hub's tip is not an ancestor of the fork's tip). What happens next depends
+  on `PATCH_DIVERGENCE_POLICY`: `replace` overwrites the hub's copy (saving
+  the old tip under `refs/hub/replaced/<branch>`), while `report` leaves the
+  hub's copy unchanged and reports the divergence.
+- **`missing_on_origin`** — the branch does not exist on the fork. This
+  state leaves the patch status unchanged: the rebuild keeps applying the
+  hub's copy until an operator disables or removes the patch.
 
 ### Rebuild strategies
 
@@ -252,9 +270,18 @@ For public upstream repositories, no credential setup is needed.
 
 ### 3. Add patches
 
-Register your patch branches in the order they should be applied. Branches
-are validated against the workspace repository at add time (unless
-`--skip-branch-check` is used).
+Register your patch branches in the order they should be applied. At add
+time the hub resolves each branch in this order:
+
+1. `refs/heads/<name>` in the workspace trunk (local head).
+2. `refs/remotes/origin/<name>` (origin tracking ref).
+3. In `origin` mode only, a single-branch fork fetch for the branch.
+
+If none of these finds the branch, the request fails with
+`400 branch does not exist in repository or on origin`. A branch that
+exists only on the fork no longer needs `--skip-branch-check`;
+`--skip-branch-check` is for branches that exist nowhere yet (for example,
+a branch that will be pushed later).
 
 ```
 afc patch add api-gateway \
@@ -517,6 +544,17 @@ then submit a new rebuild.
 
 ### Adding a new patch
 
+The hub resolves the branch in this order when you add a patch:
+
+1. `refs/heads/<name>` in the workspace trunk (local head).
+2. `refs/remotes/origin/<name>` (origin tracking ref).
+3. In `origin` mode only, a single-branch fork fetch for the branch.
+
+If none of these finds the branch, the request fails with
+`400 branch does not exist in repository or on origin`. A branch that
+exists only on the fork no longer needs `--skip-branch-check`;
+`--skip-branch-check` is for branches that exist nowhere yet.
+
 Add a patch at the end of the list:
 
 ```
@@ -555,7 +593,9 @@ afc patch remove api-gateway a1b2c3d4-5678-90ab-cdef-1234567890ab
 ```
 
 Remaining patches are automatically recompacted to maintain a contiguous
-position sequence with no gaps.
+position sequence with no gaps. If a backup ref `refs/hub/replaced/<branch>`
+exists for the removed patch, it is deleted with the patch row. The branch
+itself is not deleted.
 
 ### Restoring a soft-deleted patch
 
@@ -568,8 +608,8 @@ afc patch restore api-gateway <patch-id>
 ```
 
 The patch is returned to `active` status and placed at the end of the patch
-list. After the 7-day retention period, soft-deleted patches are permanently
-purged and can no longer be restored.
+list. After the 7 days retention period, expired soft-deleted patches are
+permanently removed only when a purge runs and can no longer be restored.
 
 ### Reordering patches
 
@@ -607,8 +647,9 @@ When a sync detects that a patch's commits have been incorporated into
 upstream, the patch status transitions to `merged_upstream` automatically.
 On the next successful rebuild, `merged_upstream` patches are soft-deleted
 (status set to `deleted`, `deleted_at` timestamp recorded). They remain in
-the database for 7 days, during which they can be restored. After 7 days,
-they are permanently purged.
+the database for 7 days, during which they can be restored. Expired
+soft-deleted patches are permanently removed only when a purge runs (see
+[Soft-delete lifecycle](#soft-delete-lifecycle)).
 
 If you know a patch has been merged but sync has not detected it yet, you
 can manually mark it:
@@ -1152,9 +1193,10 @@ are soft-deleted rather than permanently removed:
 2. Soft-deleted patches are excluded from normal list views and from the
    patch-status dashboard.
 3. Soft-deleted patches can be restored to `active` status via the restore
-   endpoint within the retention period.
-4. After 7 days, a background purge process permanently removes expired
-   soft-deleted patches from the database.
+   endpoint within the 7 days retention period.
+4. Expired soft-deleted patches (older than 7 days) are permanently removed
+   only when a purge runs. No background scheduler triggers the purge
+   automatically; an operator or external job must call the purge routine.
 
 This provides a safety net: if a patch was incorrectly detected as merged
 upstream, it can be recovered without needing to re-create it from scratch.

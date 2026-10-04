@@ -794,3 +794,219 @@ func TestDocs_TS_24_11_ConfigurationPointer(t *testing.T) {
 		t.Error("guide has no ## Configuration section")
 	}
 }
+
+// ===========================================================================
+// TS-24-12 (unit): The patch field table lists the three sync-state fields
+// with absence and mode rules.
+// Verifies: 24-REQ-3.1
+// ===========================================================================
+
+func TestDocs_TS_24_12_PatchFieldTableSyncStateFields(t *testing.T) {
+	guide := readDoc(t, "carry_patch_workflow.md")
+
+	// Extract the Patch list section which contains the field table.
+	patchList := section(t, guide, "### Patch list", "### ")
+
+	for _, field := range []string{"origin_sync_state", "origin_sha", "origin_synced_at"} {
+		// Find the table row for this field.
+		var row string
+		for _, line := range strings.Split(patchList, "\n") {
+			if strings.HasPrefix(line, "|") && strings.Contains(line, field) {
+				row = line
+				break
+			}
+		}
+		if row == "" {
+			t.Errorf("patch field table has no row for %q", field)
+			continue
+		}
+		requireContains(t, field+" row", row, "absent when null", "origin mode")
+	}
+}
+
+// ===========================================================================
+// TS-24-13 (unit): The three sync states are explained and missing_on_origin
+// leaves patch status unchanged.
+// Verifies: 24-REQ-3.2
+// ===========================================================================
+
+func TestDocs_TS_24_13_SyncStatesExplained(t *testing.T) {
+	guide := readDoc(t, "carry_patch_workflow.md")
+
+	// The explanation should be in the Patch list or Patch statuses area.
+	// Look for the sync-state paragraph anywhere in the guide.
+	requireContains(t, "carry_patch_workflow.md", guide,
+		"in_sync",
+		"diverged",
+		"missing_on_origin",
+		"hub's copy",
+		"disables or removes",
+	)
+}
+
+// ===========================================================================
+// TS-24-14 (unit): Registration text gives the resolution order, the 400
+// message and the --skip-branch-check rule.
+// Verifies: 24-REQ-3.3
+// ===========================================================================
+
+func TestDocs_TS_24_14_RegistrationResolutionOrder(t *testing.T) {
+	guide := readDoc(t, "carry_patch_workflow.md")
+
+	// Check both "Add patches" (Getting Started) and "Adding a new patch"
+	// (Day-to-day) sections.
+	addPatches := section(t, guide, "### 3. Add patches", "### ")
+	addingNew := section(t, guide, "### Adding a new patch", "### ")
+
+	for _, s := range []struct {
+		name string
+		text string
+	}{
+		{"Add patches", addPatches},
+		{"Adding a new patch", addingNew},
+	} {
+		requireContains(t, s.name, s.text,
+			"refs/heads/<name>",
+			"refs/remotes/origin/<name>",
+			"branch does not exist in repository or on origin",
+			"--skip-branch-check",
+		)
+	}
+}
+
+// ===========================================================================
+// TS-24-15 (unit): "Removing a patch" says the backup ref is deleted and the
+// branch is not.
+// Verifies: 24-REQ-3.4
+// ===========================================================================
+
+func TestDocs_TS_24_15_RemovingPatchBackupRef(t *testing.T) {
+	guide := readDoc(t, "carry_patch_workflow.md")
+
+	removeSec := section(t, guide, "### Removing a patch", "### ")
+	requireContains(t, "Removing a patch", removeSec,
+		"refs/hub/replaced/<branch>",
+		"deleted",
+		"branch itself is not deleted",
+	)
+}
+
+// ===========================================================================
+// TS-24-16 (unit): Soft-delete and restore text state the 7-day retention
+// window.
+// Verifies: 24-REQ-3.5
+// ===========================================================================
+
+func TestDocs_TS_24_16_SoftDeleteRetentionWindow(t *testing.T) {
+	guide := readDoc(t, "carry_patch_workflow.md")
+
+	softDelete := section(t, guide, "### Soft-delete lifecycle", "### ")
+	restoring := section(t, guide, "### Restoring a soft-deleted patch", "### ")
+
+	requireContains(t, "Soft-delete lifecycle", softDelete, "7 days")
+	requireContains(t, "Restoring a soft-deleted patch", restoring, "7 days")
+}
+
+// ===========================================================================
+// TS-24-17 (unit): With no production caller of the purge routines the guide
+// promises no automatic removal.
+// Verifies: 24-REQ-3.6
+// ===========================================================================
+
+func TestDocs_TS_24_17_NoPurgeSchedulerClaim(t *testing.T) {
+	// First, verify that no production caller of the purge routines exists.
+	// We search non-test .go files under internal/ for calls to
+	// PurgeDeletedPatches or PurgeExpiredDeletedPatches.
+	purgeCallers := findPurgeCallers(t)
+	if len(purgeCallers) > 0 {
+		t.Skipf("production callers found: %v; TS-24-18 covers this case", purgeCallers)
+	}
+
+	guide := readDoc(t, "carry_patch_workflow.md")
+
+	// The soft-delete text should say expired rows are removed only when a
+	// purge runs.
+	softDelete := section(t, guide, "### Soft-delete lifecycle", "### ")
+	requireContains(t, "Soft-delete lifecycle", softDelete, "only when a purge runs")
+
+	// No sentence should claim a background purge or scheduler removes
+	// expired patches.
+	norm := strings.Join(strings.Fields(strings.ToLower(guide)), " ")
+	for _, bad := range []string{
+		"background purge process permanently removes",
+		"scheduler removes",
+		"scheduler purges",
+	} {
+		if strings.Contains(norm, bad) {
+			t.Errorf("guide contains forbidden purge claim: %q", bad)
+		}
+	}
+}
+
+// ===========================================================================
+// TS-24-18 (unit): If a production purge caller exists, the guide describes
+// its schedule as implemented.
+// Verifies: 24-REQ-3.7
+// ===========================================================================
+
+func TestDocs_TS_24_18_PurgeScheduleIfCallerExists(t *testing.T) {
+	purgeCallers := findPurgeCallers(t)
+	if len(purgeCallers) == 0 {
+		t.Skip("no production callers of purge routines found; TS-24-17 covers this case")
+	}
+	// If we reach here, a production caller exists and we would need to
+	// verify the guide describes the schedule. Since no caller exists today,
+	// this branch is not exercised.
+	guide := readDoc(t, "carry_patch_workflow.md")
+	softDelete := section(t, guide, "### Soft-delete lifecycle", "### ")
+	_ = softDelete
+	t.Error("production purge caller found but schedule verification not implemented")
+}
+
+// findPurgeCallers searches non-test .go files under internal/ for calls to
+// PurgeDeletedPatches or PurgeExpiredDeletedPatches. It returns the file
+// paths that contain such calls, excluding function definitions and test
+// files.
+func findPurgeCallers(t *testing.T) []string {
+	t.Helper()
+	var callers []string
+
+	// Walk internal/ looking for .go files that are not tests.
+	entries, err := os.ReadDir(filepath.Join("..", "..", "internal"))
+	if err != nil {
+		t.Fatalf("read internal/: %v", err)
+	}
+
+	for _, pkg := range entries {
+		if !pkg.IsDir() {
+			continue
+		}
+		pkgPath := filepath.Join("..", "..", "internal", pkg.Name())
+		files, err := os.ReadDir(pkgPath)
+		if err != nil {
+			continue
+		}
+		for _, f := range files {
+			name := f.Name()
+			if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+				continue
+			}
+			data, err := os.ReadFile(filepath.Join(pkgPath, name))
+			if err != nil {
+				continue
+			}
+			content := string(data)
+			// Skip the definition files themselves (interface and
+			// implementation).
+			if name == "wire.go" || name == "purge_refs.go" || name == "carrypatch.go" {
+				continue
+			}
+			if strings.Contains(content, "PurgeDeletedPatches(") ||
+				strings.Contains(content, "PurgeExpiredDeletedPatches(") ||
+				strings.Contains(content, "PurgeExpiredDeletedPatchesWithRefs(") {
+				callers = append(callers, filepath.Join("internal", pkg.Name(), name))
+			}
+		}
+	}
+	return callers
+}
