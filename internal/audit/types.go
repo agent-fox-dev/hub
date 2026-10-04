@@ -12,6 +12,11 @@ import "errors"
 // queried by their event_type string, so no further registration exists.
 const EventRebuildFollowup = "hub.rebuild.followup"
 
+// EventPatchMirrorFailed is the hub audit event emitted when a hub-mode
+// mirror of a registered patch branch to the fork fails. Metadata:
+// branch_name (string) and error (string, with URL userinfo removed).
+const EventPatchMirrorFailed = "hub.patch.mirror_failed"
+
 // EventPatchSync is the hub audit event emitted when a carry-patch sync
 // completes in origin mode. Metadata: origin_fetched (bool), created,
 // fast_forwarded, replaced, diverged, missing_on_origin (each []string of

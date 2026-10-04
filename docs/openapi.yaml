@@ -3480,7 +3480,22 @@ paths:
       description: |
         After a successful push the server updates `head_sha` in the database
         and resets the working tree to the new HEAD, then emits a
-        `hub.git.push` audit event.
+        `hub.git.push` audit event. Only accepted ref updates drive the audit
+        event and the post-push hook.
+
+        For carry-patch workspaces, a pre-receive hook enforces push control
+        on registered patch branches. The behaviour depends on
+        `PATCH_BRANCH_SOURCE` and `PUSH_PATCHES_TO_ORIGIN`:
+
+        - **Reject** (`PATCH_BRANCH_SOURCE=origin`, `PUSH_PATCHES_TO_ORIGIN`
+          not `"true"`): the update is rejected with a per-ref message naming
+          the fork.
+        - **Forward** (`PATCH_BRANCH_SOURCE=origin`,
+          `PUSH_PATCHES_TO_ORIGIN=true`): the update is pushed to the fork
+          before the hub writes its ref. A forward failure rejects the ref.
+        - **Mirror** (`PATCH_BRANCH_SOURCE=hub`,
+          `PUSH_PATCHES_TO_ORIGIN=true`): accepted pushes are force-pushed to
+          the fork after the push, best effort.
 
         If a pushed branch is a registered patch of a carry-patch workspace and
         `AUTO_REBUILD_AFTER_PUSH` is not `"false"`, a rebuild job is enqueued.
@@ -6239,6 +6254,16 @@ components:
           description: >-
             When not `"false"`, a push to a registered patch branch enqueues a
             rebuild.
+        PUSH_PATCHES_TO_ORIGIN:
+          type: string
+          enum: ["true"]
+          description: >-
+            Enables forwarding or mirroring of hub pushes to registered patch
+            branches. Only the exact string `"true"` enables it. In `origin`
+            mode, enables forwarding to the fork before the hub writes its ref;
+            when disabled, the push is rejected. In `hub` mode, enables
+            best-effort mirroring (force-push) to the fork after the push is
+            accepted.
         SQUASH_MERGE_DETECTION:
           type: string
           enum: [ancestry_only, content_based, both]

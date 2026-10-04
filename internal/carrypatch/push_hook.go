@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"log"
+	"log/slog"
 
 	"github.com/google/uuid"
 
@@ -15,14 +16,34 @@ import (
 // a registered patch in a carry_patch workspace and, if AUTO_REBUILD_AFTER_PUSH
 // is not "false", enqueues a rebuild job with duplicate suppression.
 //
+// When mirror dependencies are supplied (non-nil ResolveAuth, non-empty
+// WorkspaceRoot, non-nil Audit), the hook also mirrors registered patch
+// branches to the fork in hub mode after the rebuild enqueue (22-REQ-6).
+//
 // The hook is called asynchronously after a successful push; errors are logged
 // but do not affect the push response.
 func NewPostPushRebuildHook(
 	queue *jobqueue.Queue,
 	getVariable GetVariableFunc,
+	mirrorDeps PostPushMirrorDeps,
+) func(db *sql.DB, slug string, branches []string) {
+	return newPostPushRebuildHookWithLogger(queue, getVariable, mirrorDeps, slog.Default())
+}
+
+// newPostPushRebuildHookWithLogger is a test seam that allows injecting a
+// custom logger for verifying log output in tests.
+func newPostPushRebuildHookWithLogger(
+	queue *jobqueue.Queue,
+	getVariable GetVariableFunc,
+	mirrorDeps PostPushMirrorDeps,
+	logger *slog.Logger,
 ) func(db *sql.DB, slug string, branches []string) {
 	return func(db *sql.DB, slug string, branches []string) {
 		postPushRebuildHook(db, slug, branches, queue, getVariable)
+
+		// 22-REQ-6.2: After the rebuild enqueue (always executed first),
+		// run the mirror in the same goroutine.
+		mirrorBranches(db, slug, branches, mirrorDeps, getVariable, logger)
 	}
 }
 
