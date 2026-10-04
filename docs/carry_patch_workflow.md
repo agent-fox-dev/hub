@@ -590,15 +590,48 @@ If using `continue` mode, the rebuild completes with a mix of outcomes:
 In `continue` mode, the integration branch is updated with all patches that
 applied cleanly. Conflicting patches are skipped and marked `conflict`.
 
-To resolve:
+Start by reading the `conflict_files` from the patch-status dashboard:
 
-1. Check which patch has the conflict: `afc patch list api-gateway`
-2. Clone the workspace repo and resolve the conflict manually in the
-   workspace trunk (or via the hub's git server).
-3. After resolving, the resolution is recorded by rerere for future rebuilds.
-4. Set the patch status back to `active`:
-   `afc patch update api-gateway <patch-id> --status active`
-5. Resubmit the rebuild: `afc rebuild submit api-gateway`
+```
+afc workspace patch-status api-gateway
+```
+
+The `conflict_files` field on the conflicting patch lists the affected files.
+
+**Resolving in hub mode.** Resolve the conflict in the workspace trunk or by
+pushing a fixed branch to the hub's git server. Rerere records the resolution
+when it happens during a rebuild, so subsequent rebuilds with the same
+conflict pattern resolve automatically. You can also record a resolution
+manually by resolving the conflict in the trunk's working tree and running
+`git rerere` there. Then set the patch back to `active` and rebuild:
+
+```
+afc patch update api-gateway <patch-id> --status active
+afc rebuild submit api-gateway
+```
+
+**Resolving in origin mode.** Do not edit the trunk and do not push to the
+hub: a hub push is rejected, forwarded or replaced, and a trunk edit is
+overwritten at the next sync. Instead, fix the branch in a local clone of
+the fork (merge or rebase the latest upstream into the patch branch, resolve
+conflicts, commit), push it to the fork, and run sync:
+
+```
+afc workspace sync api-gateway
+```
+
+Sync brings the new tip into the hub and triggers a rebuild. If the patch
+status is still `conflict` after the rebuild, set it back to `active`:
+
+```
+afc patch update api-gateway <patch-id> --status active
+afc rebuild submit api-gateway
+```
+
+**Known limitation:** a resolution made on the fork is not recorded in the
+hub's rerere cache, so the same conflict is resolved by hand again unless
+the rebuild itself resolves it. This is a known limitation, not a planned
+feature.
 
 ### 11. Roll back a rebuild
 
@@ -781,28 +814,92 @@ afc patch update api-gateway <patch-id> --status merged_upstream
 
 ### Resolving conflicts after a failed rebuild
 
-1. Check which files have conflicts:
+Start by reading the `conflict_files` from the patch-status dashboard:
 
-   ```
-   afc workspace patch-status api-gateway
-   ```
+```
+afc workspace patch-status api-gateway
+```
 
-   The `conflict_files` field on the conflicting patch lists the affected
-   files.
+The `conflict_files` field on the conflicting patch lists the affected files.
+The resolution procedure depends on the authority model.
 
-2. Access the workspace repository via the hub's built-in git server or
-   directly on the host filesystem, resolve the conflict, and commit the
-   resolution.
+#### Resolving in hub mode
 
-3. The resolution is recorded by rerere. On subsequent rebuilds, if the
-   same conflict pattern appears, it is resolved automatically.
+Resolve the conflict in the workspace trunk or by pushing a fixed branch to
+the hub's git server. Rerere records the resolution when it happens during a
+rebuild, so subsequent rebuilds with the same conflict pattern resolve
+automatically. You can also record a resolution manually by resolving the
+conflict in the trunk's working tree and running `git rerere` there.
 
-4. Reset the patch status to `active` and rebuild:
+After resolving, set the patch status back to `active` and rebuild:
 
-   ```
-   afc patch update api-gateway <patch-id> --status active
-   afc rebuild submit api-gateway
-   ```
+```
+afc patch update api-gateway <patch-id> --status active
+afc rebuild submit api-gateway
+```
+
+#### Resolving in origin mode
+
+Do not edit the trunk and do not push to the hub: a hub push is rejected,
+forwarded or replaced, and a trunk edit is overwritten at the next sync.
+
+Instead, fix the branch in a local clone of the fork: merge or rebase the
+latest upstream into the patch branch, resolve conflicts, and commit. Then
+push the fixed branch to the fork and run sync:
+
+```
+afc workspace sync api-gateway
+```
+
+Sync brings the new tip into the hub and triggers a rebuild. If the patch
+status is still `conflict` after the rebuild, set it back to `active`:
+
+```
+afc patch update api-gateway <patch-id> --status active
+afc rebuild submit api-gateway
+```
+
+**Known limitation:** a resolution made on the fork is not recorded in the
+hub's rerere cache, so the same conflict is resolved by hand again unless
+the rebuild itself resolves it. This is a known limitation, not a planned
+feature.
+
+### Recovering a replaced or diverged patch branch
+
+In `origin` mode, sync may replace a hub-side patch branch tip or report it
+as diverged. Use the patch-status dashboard or the single-patch endpoint to
+read the `origin_sync_state` and `replaced_sha` fields:
+
+```
+afc workspace patch-status api-gateway
+```
+
+If `origin_sync_state` is `diverged` (when `PATCH_DIVERGENCE_POLICY` is
+`report`) or a replacement has occurred, the old tip is saved under
+`refs/hub/replaced/<branch>`. Fetch it to a local clone:
+
+```
+git fetch <hub_url> refs/hub/replaced/<branch>
+```
+
+Push the fetched tip to the fork to keep it (for example, under a different
+branch name) before it is overwritten. Only one backup per branch exists;
+later replacements overwrite the earlier backup.
+
+To move a `diverged` branch to the fork's current tip on demand, use:
+
+```
+afc patch reset-to-origin <slug> <patch-id>
+```
+
+The response includes `rebuild_triggered` indicating whether a rebuild was
+enqueued. Reset is available for patches in `active`, `conflict` or
+`disabled` status.
+
+If `origin_sync_state` is `missing_on_origin`, the branch does not exist on
+the fork. The hub keeps applying its own copy of the branch during rebuilds.
+To resolve, either push the branch to the fork so the next sync picks it up,
+or remove the patch if it is no longer needed.
 
 ### Recovering from an upstream force-push
 

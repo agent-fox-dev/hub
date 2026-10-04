@@ -1443,6 +1443,207 @@ func TestDocs_TS_24_33_RebuildAlgorithmSnapshotSentence(t *testing.T) {
 	)
 }
 
+// ===========================================================================
+// TS-24-34 (unit): The conflict section and the Getting Started failed-rebuild
+// step open with a common part and one subsection per mode.
+// Verifies: 24-REQ-6.1
+// ===========================================================================
+
+func TestDocs_TS_24_34_ConflictSectionAndGSFailedStepModeSubsections(t *testing.T) {
+	guide := readDoc(t, "carry_patch_workflow.md")
+
+	// Extract the "Resolving conflicts after a failed rebuild" section.
+	conflictSec := section(t, guide, "### Resolving conflicts after a failed rebuild", "### ")
+
+	// Extract the Getting Started failed-rebuild step.
+	gsFailedStep := section(t, guide, "### 10. Handle a failed rebuild", "### ")
+
+	for _, s := range []struct {
+		name string
+		text string
+	}{
+		{"conflict section", conflictSec},
+		{"GS failed-rebuild step", gsFailedStep},
+	} {
+		norm := strings.Join(strings.Fields(s.text), " ")
+		conflictIdx := strings.Index(norm, "conflict_files")
+		hubIdx := strings.Index(norm, "hub mode")
+		originIdx := strings.Index(norm, "origin mode")
+
+		if conflictIdx < 0 {
+			t.Errorf("%s does not mention conflict_files", s.name)
+			continue
+		}
+		if hubIdx < 0 {
+			t.Errorf("%s does not mention hub mode", s.name)
+			continue
+		}
+		if originIdx < 0 {
+			t.Errorf("%s does not mention origin mode", s.name)
+			continue
+		}
+		if conflictIdx >= hubIdx {
+			t.Errorf("%s: conflict_files should appear before hub mode", s.name)
+		}
+		if hubIdx >= originIdx {
+			t.Errorf("%s: hub mode should appear before origin mode", s.name)
+		}
+	}
+}
+
+// ===========================================================================
+// TS-24-35 (unit): The hub mode subsection keeps the existing instructions
+// and states rerere support.
+// Verifies: 24-REQ-6.2
+// ===========================================================================
+
+func TestDocs_TS_24_35_HubModeConflictSubsection(t *testing.T) {
+	guide := readDoc(t, "carry_patch_workflow.md")
+	conflictSec := section(t, guide, "### Resolving conflicts after a failed rebuild", "### ")
+
+	// Extract the hub mode subsection: from "hub mode" to "origin mode".
+	hubIdx := strings.Index(conflictSec, "hub mode")
+	originIdx := strings.Index(conflictSec, "origin mode")
+	if hubIdx < 0 || originIdx < 0 {
+		t.Fatal("conflict section missing hub mode or origin mode subsection")
+	}
+	hubSub := conflictSec[hubIdx:originIdx]
+
+	requireContains(t, "hub mode subsection", hubSub,
+		"trunk",
+		"hub's git server",
+		"active",
+		"rerere",
+		"during a rebuild",
+	)
+}
+
+// ===========================================================================
+// TS-24-36 (unit): The origin mode subsection gives the fork-side fix
+// procedure.
+// Verifies: 24-REQ-6.3
+// ===========================================================================
+
+func TestDocs_TS_24_36_OriginModeConflictSubsection(t *testing.T) {
+	guide := readDoc(t, "carry_patch_workflow.md")
+	conflictSec := section(t, guide, "### Resolving conflicts after a failed rebuild", "### ")
+
+	// Extract the origin mode subsection: from "origin mode" to end of section.
+	originIdx := strings.Index(conflictSec, "origin mode")
+	if originIdx < 0 {
+		t.Fatal("conflict section missing origin mode subsection")
+	}
+	originSub := conflictSec[originIdx:]
+
+	requireContains(t, "origin mode subsection", originSub,
+		"local clone",
+		"rebase",
+		"push",
+		"fork",
+		"afc workspace sync",
+		"active",
+	)
+}
+
+// ===========================================================================
+// TS-24-37 (unit): The origin mode subsection forbids editing the trunk or
+// pushing to the hub and gives the reason, with no other such instruction.
+// Verifies: 24-REQ-6.4
+// ===========================================================================
+
+func TestDocs_TS_24_37_OriginModeProhibitsTrunkEditAndHubPush(t *testing.T) {
+	guide := readDoc(t, "carry_patch_workflow.md")
+	conflictSec := section(t, guide, "### Resolving conflicts after a failed rebuild", "### ")
+
+	originIdx := strings.Index(conflictSec, "origin mode")
+	if originIdx < 0 {
+		t.Fatal("conflict section missing origin mode subsection")
+	}
+	originSub := conflictSec[originIdx:]
+
+	requireContains(t, "origin mode subsection", originSub,
+		"not edit the trunk",
+		"not push",
+		"overwritten",
+	)
+}
+
+// ===========================================================================
+// TS-24-38 (unit): The rerere limitation for fork-side resolutions is stated
+// as a known limitation.
+// Verifies: 24-REQ-6.5
+// ===========================================================================
+
+func TestDocs_TS_24_38_RerereLimitationForForkResolutions(t *testing.T) {
+	guide := readDoc(t, "carry_patch_workflow.md")
+	conflictSec := section(t, guide, "### Resolving conflicts after a failed rebuild", "### ")
+
+	originIdx := strings.Index(conflictSec, "origin mode")
+	if originIdx < 0 {
+		t.Fatal("conflict section missing origin mode subsection")
+	}
+	originSub := conflictSec[originIdx:]
+
+	requireContains(t, "origin mode subsection", originSub,
+		"rerere",
+		"not recorded",
+		"known limitation",
+	)
+
+	// Must not promise a planned feature. The text may say "not a planned
+	// feature" (which is a prohibition, not a promise), so we check that
+	// "planned feature" only appears after a negation.
+	norm := strings.Join(strings.Fields(strings.ToLower(originSub)), " ")
+	// Check that no sentence says this will be implemented.
+	if strings.Contains(norm, "will be implemented") || strings.Contains(norm, "will be added") {
+		t.Error("origin mode subsection promises a planned feature for rerere")
+	}
+	// If "planned feature" appears, it must be preceded by "not a".
+	if idx := strings.Index(norm, "planned feature"); idx >= 0 {
+		prefix := norm[:idx]
+		if !strings.HasSuffix(strings.TrimSpace(prefix), "not a") {
+			t.Error("origin mode subsection mentions 'planned feature' without negation")
+		}
+	}
+}
+
+// ===========================================================================
+// TS-24-39 (unit): The recovery section covers state fields, fetching a
+// replaced tip and pushing it to the fork.
+// Verifies: 24-REQ-6.6
+// ===========================================================================
+
+func TestDocs_TS_24_39_RecoverySectionStateFieldsAndFetch(t *testing.T) {
+	guide := readDoc(t, "carry_patch_workflow.md")
+	recoverySec := section(t, guide, "### Recovering a replaced or diverged patch branch", "### ")
+
+	requireContains(t, "recovery section", recoverySec,
+		"origin_sync_state",
+		"replaced_sha",
+		"git fetch <hub_url> refs/hub/replaced/<branch>",
+		"fork",
+	)
+}
+
+// ===========================================================================
+// TS-24-40 (unit): The recovery section covers reset-to-origin, the single
+// backup and missing_on_origin.
+// Verifies: 24-REQ-6.7
+// ===========================================================================
+
+func TestDocs_TS_24_40_RecoverySectionResetAndBackup(t *testing.T) {
+	guide := readDoc(t, "carry_patch_workflow.md")
+	recoverySec := section(t, guide, "### Recovering a replaced or diverged patch branch", "### ")
+
+	requireContains(t, "recovery section", recoverySec,
+		"afc patch reset-to-origin <slug> <patch-id>",
+		"rebuild_triggered",
+		"one backup",
+		"overwrite",
+		"missing_on_origin",
+	)
+}
+
 // findPurgeCallers searches non-test .go files under internal/ for calls to
 // PurgeDeletedPatches or PurgeExpiredDeletedPatches. It returns the file
 // paths that contain such calls, excluding function definitions and test
