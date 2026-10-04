@@ -39,8 +39,8 @@ they can access. The following scopes are available for workspace operations:
 | `workspaces:write` | Update, archive, and reactivate workspaces; implies read access | PATCH /api/v1/workspaces/:slug, POST /api/v1/workspaces/:slug/archive, POST /api/v1/workspaces/:slug/reactivate, DELETE /api/v1/workspaces/:slug/rerere/\*pathspec, GET /api/v1/workspaces, GET /api/v1/workspaces/:slug |
 | `workspaces:delete` | Delete archived workspaces owned by the PAT's user; does **not** imply read access | DELETE /api/v1/workspaces/:slug |
 | `workspaces:sync` | Trigger upstream sync and reclone operations on workspaces | POST /api/v1/workspaces/:slug/sync, POST /api/v1/workspaces/:slug/reclone |
-| `patches:read` | List and view patches for a workspace | GET /api/v1/workspaces/:slug/patches |
-| `patches:write` | Add, remove, update, restore, and reorder patches for a workspace; implies `patches:read` | POST /api/v1/workspaces/:slug/patches, PATCH /api/v1/workspaces/:slug/patches/:id, DELETE /api/v1/workspaces/:slug/patches/:id, POST /api/v1/workspaces/:slug/patches/:id/restore, POST /api/v1/workspaces/:slug/patches/reorder |
+| `patches:read` | List and view patches for a workspace | GET /api/v1/workspaces/:slug/patches, GET /api/v1/workspaces/:slug/patches/:id |
+| `patches:write` | Add, remove, update, restore, reorder, and reset patches for a workspace; implies `patches:read` | POST /api/v1/workspaces/:slug/patches, PATCH /api/v1/workspaces/:slug/patches/:id, DELETE /api/v1/workspaces/:slug/patches/:id, POST /api/v1/workspaces/:slug/patches/:id/restore, POST /api/v1/workspaces/:slug/patches/:id/reset-to-origin, POST /api/v1/workspaces/:slug/patches/reorder |
 | `rebuilds:read` | View rebuild job status, history, and preview | GET /api/v1/workspaces/:slug/rebuilds, GET /api/v1/workspaces/:slug/rebuilds/:id, GET /api/v1/workspaces/:slug/rebuild-preview |
 | `rebuilds:write` | Submit, cancel, requeue, and rollback rebuild jobs for carry-patch workspaces | POST /api/v1/workspaces/:slug/rebuild, DELETE /api/v1/workspaces/:slug/rebuilds/:id, POST /api/v1/workspaces/:slug/rebuilds/:id/requeue, POST /api/v1/workspaces/:slug/rebuilds/:id/rollback |
 | `merges:read` | List and view merge job status | GET /api/v1/workspaces/:slug/merges, GET /api/v1/workspaces/:slug/merges/:id |
@@ -188,8 +188,10 @@ The `error_type` field is omitted when not applicable. Known error types:
 | `workspace_mode_mismatch` | POST /api/v1/workspaces/:slug/rebuild | Workspace is not in `carry_patch` mode |
 | `no_active_patches` | POST /api/v1/workspaces/:slug/rebuild | No patches with status `active` or `conflict` |
 | `concurrent_rebuild` | POST /api/v1/workspaces/:slug/rebuild | A rebuild job is already queued or running for this workspace |
-| `origin_fetch_failed` | POST /api/v1/workspaces/:slug/sync | The origin fetch failed during a carry-patch sync with `PATCH_BRANCH_SOURCE=origin`. Distinguished from the upstream fetch failure by this error type |
-| `workspace_busy` | archive, sync, reclone, rollback, batch rebase, rerere forget | Another operation currently holds the workspace lock; retry later. A rebuild holds the lock only in its fetch phase and final phase, so sync, rollback, rerere forget and batch rebase are rejected only then; archive and reclone are rejected for the whole rebuild |
+| `origin_fetch_failed` | POST /api/v1/workspaces/:slug/sync, POST .../patches/:id/reset-to-origin | The origin fetch failed during a carry-patch sync with `PATCH_BRANCH_SOURCE=origin` or during a reset-to-origin. Distinguished from the upstream fetch failure by this error type |
+| `missing_on_origin` | POST /api/v1/workspaces/:slug/patches/:id/reset-to-origin | The patch branch does not exist on the fork |
+| `ref_changed` | POST /api/v1/workspaces/:slug/patches/:id/reset-to-origin | The patch branch was modified by another operation between the SHA resolution and the compare-and-swap write; retry |
+| `workspace_busy` | archive, sync, reclone, rollback, batch rebase, rerere forget, reset-to-origin | Another operation currently holds the workspace lock; retry later. A rebuild holds the lock only in its fetch phase and final phase, so sync, rollback, rerere forget and batch rebase are rejected only then; archive and reclone are rejected for the whole rebuild |
 
 ---
 
@@ -1335,6 +1337,48 @@ array `[]` rather than an error.
 
 ---
 
+### GET /api/v1/workspaces/:slug/patches/:id
+
+Get a single patch by ID.
+
+**Authentication:** API Key, or PAT with `patches:read` or `patches:write`
+scope.
+
+**Path Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `:slug` | The workspace slug |
+| `:id` | The patch UUID to retrieve |
+
+**Response:** HTTP 200 OK with the patch JSON object.
+
+The response is the standard patch object. When `refs/hub/replaced/<branch>`
+resolves to a commit in the workspace trunk, the response also carries
+`replaced_sha` -- the full 40-character SHA of the backup ref. The field is
+omitted when the ref does not exist, when the workspace's trunk is not on disk
+(for example an archived workspace), when no recovery hook is registered, and
+when the lookup fails. A lookup failure is logged at warn level and never fails
+the request.
+
+To recover a discarded tip:
+
+```
+git fetch <hub_url> refs/hub/replaced/<branch>
+```
+
+A soft-deleted patch is returned with its `deleted` status.
+
+**Error Codes:**
+
+| Status | Condition |
+|--------|----------|
+| 401 | Unauthenticated request |
+| 403 | PAT lacks `patches:read` scope |
+| 404 | Patch ID does not exist for the given workspace; workspace not found or not owned by the caller |
+
+---
+
 ### PATCH /api/v1/workspaces/:slug/patches/:id
 
 Update a patch's position, status, description, or upstream PR URL.
@@ -1413,6 +1457,11 @@ Remove a patch from the workspace's patch list.
   reassigned as a contiguous 1-based sequence.
 - The delete and position compaction are performed atomically within a single
   database transaction.
+- After the row is deleted, the backup ref `refs/hub/replaced/<branch>` is
+  removed on a best-effort basis. A missing ref counts as success. A missing
+  trunk (for example an archived workspace) is logged at info level. Any other
+  failure is logged at warn level and does not change the response. No
+  workspace lock is taken for the ref removal.
 
 **Error Codes:**
 
@@ -1456,6 +1505,78 @@ Restore a soft-deleted patch back to active status.
 | 403 | PAT lacks `patches:write` scope |
 | 404 | Patch ID does not exist for the given workspace |
 | 500 | Internal server error |
+
+---
+
+### POST /api/v1/workspaces/:slug/patches/:id/reset-to-origin
+
+Reset a patch branch to the fork's current tip, regardless of
+`PATCH_DIVERGENCE_POLICY`. The endpoint fetches the branch from the fork,
+compares the tips, and moves the local branch to the fork's tip. If the move
+discards commits (diverged or the fork tip is behind the local tip), the old
+tip is saved under `refs/hub/replaced/<branch>`, overwriting any earlier
+backup. A fast-forward does not touch an existing backup.
+
+**Authentication:** API Key, or PAT with `patches:write` scope.
+
+**Path Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `:slug` | The workspace slug |
+| `:id` | The patch UUID to reset |
+
+**Request Body:** None.
+
+**Response:** HTTP 200 OK with the patch JSON object as `GET` renders it
+(including `replaced_sha` when a backup exists after the reset), plus:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `replaced_sha` | string | Full 40-character SHA of the backup ref, when present |
+| `rebuild_triggered` | boolean | Whether a rebuild job was enqueued |
+| `rebuild_job_id` | string | ID of the enqueued rebuild job. Omitted when no rebuild was enqueued. |
+
+To recover a discarded tip:
+
+```
+git fetch <hub_url> refs/hub/replaced/<branch>
+```
+
+**Preconditions (checked in order):**
+
+1. Workspace must be active and in `carry_patch` mode.
+2. Workspace `clone_status` must be `ready`.
+3. Patch must exist.
+4. Patch branch must not be the integration branch.
+5. Patch status must be `active`, `conflict` or `disabled`.
+
+**Reset rules:**
+
+- *Local branch missing:* Create the branch at the fork tip. Action `created`.
+  No backup.
+- *Same commit:* Write nothing. Action `none`. Response is still `200`.
+- *Fast-forward:* Move the local branch. Action `fast_forwarded`. No backup.
+- *Anything else (diverged):* Save the local tip to
+  `refs/hub/replaced/<branch>`, then move the local branch. Action `replaced`.
+
+When `PATCH_BRANCH_SOURCE` is `origin`, a completed reset records the patch
+as `in_sync` with the fork tip SHA. In `hub` mode, no origin state is written.
+
+When the branch moved and the patch status is `active` or `conflict`, a
+rebuild job is enqueued (same deduplication as sync), unless
+`AUTO_REBUILD_AFTER_SYNC` is `"false"`. A `disabled` patch does not trigger
+a rebuild.
+
+**Error Codes:**
+
+| Status | Condition |
+|--------|----------|
+| 400 | Workspace is not active; workspace is not in `carry_patch` mode; patch branch is the integration branch |
+| 404 | Workspace not found or not owned by the caller; patch not found |
+| 409 | Workspace clone is not ready; patch status cannot be reset (`merged_upstream` or `deleted`); branch does not exist on origin (`error_type: missing_on_origin`); patch branch changed during reset (`error_type: ref_changed`); another operation holds the workspace lock (`error_type: workspace_busy`) |
+| 500 | Patch reset is not configured; failed to update patch branch |
+| 502 | Origin fetch failed (`error_type: origin_fetch_failed`); failed to resolve origin credentials |
 
 ---
 
@@ -2421,6 +2542,23 @@ Rejections and forward failures appear as per-ref `ng` lines in the
 report-status, which `git push` shows as `remote rejected` with the message.
 Other refs in the same push are processed independently.
 
+### Protected Namespace: `refs/hub/replaced/`
+
+The git server never accepts a client push that creates, updates or deletes a
+ref whose name starts with `refs/hub/replaced/`. The rule applies to every
+workspace and every credential with `git:write`, and it does not depend on a
+registered pre-receive hook or on the workspace mode. It is evaluated before
+the pre-receive hook is consulted.
+
+The client sees `unpack ok` and the per-ref status
+`ng <ref> refs/hub/replaced/ is maintained by the hub and cannot be pushed to`.
+Other refs in the same push are processed as usual. The rejected ref keeps its
+old value.
+
+Hub-internal writes (sync, reset, removal) do not pass through a client push
+and are unaffected. Fetching is unchanged: `git ls-remote` and
+`git fetch <hub_url> refs/hub/replaced/<branch>` work normally.
+
 ### Accepted Refs Only
 
 Only ref updates that the hub actually accepted (report-status entry is `ok`)
@@ -3311,11 +3449,17 @@ query endpoint (`GET /api/v1/audit`). Each event has an `event_type`, an actor
 | `hub.patch.sync` | `patch` | A carry-patch sync completes in `origin` mode | `origin_fetched` (bool), `created` (branch names), `fast_forwarded` (branch names), `replaced` (branch names), `diverged` (branch names), `missing_on_origin` (branch names) |
 | `hub.patch.replace` | `patch` | A patch branch is replaced during an `origin`-mode sync (one event per replaced branch) | `branch_name`, `replaced_sha`, `origin_sha` |
 | `hub.patch.mirror_failed` | `patch` | A hub-mode mirror of a registered patch branch to the fork failed (one event per failed branch) | `branch_name`, `error` (with any URL userinfo removed) |
+| `hub.patch.reset` | `patch` | A patch branch is reset to the fork's tip via `POST /workspaces/:slug/patches/:id/reset-to-origin` | `branch_name`, `action` (`none`, `created`, `fast_forwarded` or `replaced`), `local_sha` (omitted when no local branch), `origin_sha`, `replaced_sha` (present only for `replaced`) |
 
 A nil audit emitter skips emission. An emit error is logged without affecting
-the sync. In `hub` mode no `hub.patch.sync` or `hub.patch.replace` events are
-emitted. On the ref-write failure path, events are still emitted for the
+the response. In `hub` mode no `hub.patch.sync` or `hub.patch.replace` events
+are emitted. On the ref-write failure path, events are still emitted for the
 outcomes already produced.
+
+A reset with action `replaced` also emits `hub.patch.replace` with
+`branch_name`, `replaced_sha`, `origin_sha` and an added `trigger` key set to
+`reset_to_origin`. Events emitted by sync carry no `trigger` key; a consumer
+reads its absence as `sync`.
 
 ---
 

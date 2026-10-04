@@ -33,6 +33,13 @@ The pre-receive hook is registered via `gitserver.RegisterPreReceiveHook(fn)`,
 following the same pattern as `RegisterPostPushHook`. The git server imports
 no carry-patch code; the hook is wired in `cmd/af-hub/main.go`.
 
+A `RecoveryHook` is registered via `workspace.RegisterRecoveryHook(fn)`,
+following the same nil-default pattern. It carries three operations: reading
+the replaced SHA for a slug and branch, removing the backup ref for a slug
+and branch, and running a reset-to-origin for a patch. The workspace package
+defines the hook type; `carrypatch` implements it; `cmd/af-hub/main.go` wires
+them together. Neither package imports the other.
+
 ### Carry-Patch Push Control
 
 The carry-patch package registers a pre-receive hook that enforces a

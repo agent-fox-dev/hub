@@ -862,6 +862,40 @@ paths:
     parameters:
       - $ref: "#/components/parameters/WorkspaceSlug"
       - $ref: "#/components/parameters/PatchId"
+    get:
+      tags: [Patches]
+      operationId: getPatch
+      summary: Get a single patch
+      description: |
+        Returns the patch record. When `refs/hub/replaced/<branch>` resolves
+        to a commit, the response also carries `replaced_sha` (the full
+        40-character SHA). The field is omitted when the ref does not exist,
+        the trunk is not on disk, no recovery hook is registered, or the
+        lookup fails. A soft-deleted patch is returned with its `deleted`
+        status.
+      x-required-scopes: ["patches:read", "patches:write"]
+      responses:
+        "200":
+          description: The patch.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Patch"
+                  - type: object
+                    properties:
+                      replaced_sha:
+                        type: string
+                        description: >
+                          Full 40-character SHA of the backup ref
+                          `refs/hub/replaced/<branch>`. Omitted when the ref
+                          does not exist.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/MissingScope"
+        "404":
+          $ref: "#/components/responses/PatchNotFound"
     patch:
       tags: [Patches]
       operationId: updatePatch
@@ -959,6 +993,88 @@ paths:
           $ref: "#/components/responses/PatchNotFound"
         "500":
           $ref: "#/components/responses/InternalServerError"
+
+  /api/v1/workspaces/{slug}/patches/{id}/reset-to-origin:
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceSlug"
+      - $ref: "#/components/parameters/PatchId"
+    post:
+      tags: [Patches]
+      operationId: resetPatchToOrigin
+      summary: Reset a patch branch to the fork's current tip
+      description: |
+        Fetches the branch from the fork, compares the tips, and moves the
+        local branch to the fork's tip regardless of `PATCH_DIVERGENCE_POLICY`.
+        If the move discards commits, the old tip is saved under
+        `refs/hub/replaced/<branch>`. A fast-forward does not touch an existing
+        backup.
+      x-required-scopes: ["patches:write"]
+      responses:
+        "200":
+          description: |
+            The patch object as GET renders it, plus `rebuild_triggered` and
+            optionally `rebuild_job_id`.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Patch"
+                  - type: object
+                    properties:
+                      replaced_sha:
+                        type: string
+                        description: >
+                          Full 40-character SHA of the backup ref. Present
+                          only when a backup exists after the reset.
+                      rebuild_triggered:
+                        type: boolean
+                        description: Whether a rebuild job was enqueued.
+                      rebuild_job_id:
+                        type: string
+                        description: >
+                          ID of the enqueued rebuild job. Omitted when no
+                          rebuild was enqueued.
+        "400":
+          description: >-
+            Workspace is not active; workspace is not in `carry_patch` mode;
+            patch branch is the integration branch.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: >-
+            Workspace not found or not owned by the caller; patch not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: >-
+            Workspace clone is not ready; patch status cannot be reset;
+            branch does not exist on origin (`error_type: missing_on_origin`);
+            patch branch changed during reset (`error_type: ref_changed`);
+            another operation holds the workspace lock
+            (`error_type: workspace_busy`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: >-
+            Patch reset is not configured; failed to update patch branch.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "502":
+          description: >-
+            Origin fetch failed (`error_type: origin_fetch_failed`); failed
+            to resolve origin credentials.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   /api/v1/workspaces/{slug}/patches/reorder:
     parameters:
