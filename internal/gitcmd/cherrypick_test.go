@@ -107,6 +107,9 @@ func TestCherryPick_Conflict(t *testing.T) {
 	dir := t.TempDir()
 	runGit(t, "", "init", "-b", "main", dir)
 	configGitUser(t, dir)
+	// Disable automatic gc to prevent background processes from
+	// interfering with t.TempDir() cleanup (RemoveAll race).
+	runGit(t, dir, "config", "gc.auto", "0")
 	writeTestFile(t, filepath.Join(dir, "conflict.txt"), "base content")
 	runGit(t, dir, "add", ".")
 	runGit(t, dir, "commit", "-m", "base commit")

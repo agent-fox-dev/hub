@@ -60,7 +60,7 @@
         "docs/carry_patch_workflow.md",
         "internal/carrypatch/docs_test.go"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 2,
@@ -90,7 +90,7 @@
         "docs/carry_patch_workflow.md",
         "internal/carrypatch/docs_test.go"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 3,
@@ -122,7 +122,7 @@
         "docs/carry_patch_workflow.md",
         "internal/carrypatch/docs_test.go"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 4,
@@ -153,7 +153,7 @@
         "docs/carry_patch_workflow.md",
         "internal/carrypatch/docs_test.go"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 5,
@@ -183,7 +183,7 @@
         "docs/carry_patch_workflow.md",
         "internal/carrypatch/docs_test.go"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 6,
@@ -211,7 +211,7 @@
         "docs/carry_patch_workflow.md",
         "internal/carrypatch/docs_test.go"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 7,
@@ -241,7 +241,7 @@
         "docs/examples/AGENTS_carry_patch.md",
         "internal/carrypatch/docs_test.go"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 8,
@@ -279,7 +279,7 @@
         "docs/errata/23_patch_divergence_recovery_divergences.md",
         "internal/carrypatch/docs_test.go"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 9,
@@ -302,7 +302,7 @@
       "touches": [
         "internal/carrypatch/docs_test.go"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 10,
@@ -337,7 +337,7 @@
         "README.md",
         "internal/carrypatch/docs_test.go"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 11,
@@ -375,7 +375,7 @@
       "done_when": [
         "`make test` and `make lint` pass"
       ],
-      "state": "pending"
+      "state": "done"
     }
   ]
 }

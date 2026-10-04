@@ -61,8 +61,63 @@ repository:
 
 | Remote | Points to | Purpose |
 |--------|-----------|---------|
-| `origin` | Your fork (the `git_url` from workspace creation) | Where patch branches live; push target for local work |
+| `origin` | Your fork (the `git_url` from workspace creation) | Fork; push target for `REBUILD_PUSH_INTEGRATION_BRANCH` and, in `origin` mode, the authority for patch branches |
 | `upstream` | The upstream project (the `upstream_url` from workspace creation) | Source of truth for the base; fetched during sync and rebuild |
+
+In `hub` mode (the default), patch branches are written by pushes to the
+hub's own git server, not to `origin`. See
+[Where patch branches live](#where-patch-branches-live) below for details.
+
+### Where patch branches live
+
+A rebuild reads each patch branch only from `refs/heads/<branch>` in the
+workspace trunk (the hub's bare clone). The initial clone brings the fork's
+branches in only as `refs/remotes/origin/*`, so they are not visible to the
+rebuild until something copies them to `refs/heads/`.
+
+The workspace variable `PATCH_BRANCH_SOURCE` selects who writes those
+`refs/heads/` refs:
+
+- **`hub`** (default) — patch branches are written by pushes to the hub's
+  git server. Sync never fetches the fork.
+- **`origin`** — sync fetches the fork and brings every registered patch
+  branch to the fork's tip, according to `PATCH_DIVERGENCE_POLICY`.
+
+#### Comparison of authority models
+
+| Aspect | `hub` mode | `origin` mode |
+|--------|-----------|---------------|
+| Who writes the branch | A push to the hub's git server | Sync copies the fork's tip to `refs/heads/<branch>` |
+| What sync does with it | Nothing (fork is not fetched) | Fetches the fork, updates each registered branch to the fork's tip |
+| What registration does | Checks `refs/heads/<branch>` then `refs/remotes/origin/<branch>` | Same checks, then a single-branch fork fetch if needed |
+| What a push to the hub does | Accepted; optionally mirrored to the fork when `PUSH_PATCHES_TO_ORIGIN=true` | Rejected by default; forwarded to the fork when `PUSH_PATCHES_TO_ORIGIN=true` |
+| What happens on divergence | N/A (hub is the sole writer) | Controlled by `PATCH_DIVERGENCE_POLICY`: `replace` (default, old tip saved under `refs/hub/replaced/<branch>`) or `report` |
+| Where a person fixes a conflict | In the trunk or by pushing a fixed branch to the hub's git server | In a local clone of the fork; push to the fork, then `afc workspace sync` |
+| Which copy survives a lost hub data directory | Lost (re-push from a local clone) | The fork's copy; the next sync restores it |
+
+**Recommendation.** Teams that open upstream pull requests and review on the
+fork should use `origin` with `REBUILD_PUSH_INTEGRATION_BRANCH=true`, so
+people push only to GitHub and the hub is a rebuild engine. `hub` mode fits
+workspaces driven by agents that push to the hub and never open upstream
+pull requests.
+
+The integration branch is always built by the hub and only pushed to the
+fork (when `REBUILD_PUSH_INTEGRATION_BRANCH=true`). Sync never fetches the
+integration branch from `origin`; it is never fetched from `origin` by sync.
+
+**Switching modes.** The mode is read at the start of each operation (sync,
+registration, push), so changing `PATCH_BRANCH_SOURCE` takes effect on the
+next operation without a restart.
+
+- Switching to `origin` makes the next sync bring registered branches to the
+  fork's tips. If the hub's copy has diverged, the previous tip is kept
+  under `refs/hub/replaced/<branch>` (when the policy is `replace`).
+- Switching to `hub` stops fork fetches and clears persisted origin sync
+  state at the next sync.
+
+See the [Configuration](#configuration) section for full details on
+`PATCH_BRANCH_SOURCE`, `PATCH_DIVERGENCE_POLICY` and
+`PUSH_PATCHES_TO_ORIGIN`.
 
 ### Integration branch
 
@@ -89,6 +144,9 @@ patch:
 | `upstream_pr_url` | Optional link to the corresponding upstream pull request (also used for squash merge detection) |
 | `description` | Optional free-form description |
 | `deleted_at` | Timestamp when a merged patch was soft-deleted (null for active patches) |
+| `origin_sync_state` | Sync state relative to the fork (`in_sync`, `diverged` or `missing_on_origin`); absent when null, written only in origin mode |
+| `origin_sha` | The fork's tip SHA recorded at the last sync; absent when null, written only in origin mode |
+| `origin_synced_at` | Timestamp of the last sync that updated this patch's origin state; absent when null, written only in origin mode |
 
 ### Patch statuses
 
@@ -99,6 +157,21 @@ patch:
 | `conflict` | The most recent rebuild encountered unresolved conflicts on this patch. The patch remains in the list and will be retried on the next rebuild. |
 | `disabled` | Manually disabled by an operator. Skipped during rebuilds but not deleted. |
 | `deleted` | Soft-deleted after being merged upstream. Hidden from normal list views but can be restored within the retention period (7 days). |
+
+#### Origin sync states
+
+In `origin` mode, each registered patch carries an `origin_sync_state` that
+records how the hub's copy relates to the fork's copy:
+
+- **`in_sync`** — the hub's `refs/heads/<branch>` matches the fork's tip.
+- **`diverged`** — the hub's copy and the fork's copy have diverged (the
+  hub's tip is not an ancestor of the fork's tip). What happens next depends
+  on `PATCH_DIVERGENCE_POLICY`: `replace` overwrites the hub's copy (saving
+  the old tip under `refs/hub/replaced/<branch>`), while `report` leaves the
+  hub's copy unchanged and reports the divergence.
+- **`missing_on_origin`** — the branch does not exist on the fork. This
+  state leaves the patch status unchanged: the rebuild keeps applying the
+  hub's copy until an operator disables or removes the patch.
 
 ### Rebuild strategies
 
@@ -145,7 +218,11 @@ file changes on both sides across multiple rebuild cycles.
 
 This walkthrough uses a concrete example: maintaining a fork of
 `github.com/acme-oss/api-gateway` at `github.com/your-org/api-gateway-fork`
-with three patch branches.
+with three patch branches. The primary path uses the fork-authoritative
+model (`PATCH_BRANCH_SOURCE=origin`), recommended for teams that open
+upstream pull requests. An
+[alternative hub-authoritative walkthrough](#alternative-hub-authoritative-workspace)
+follows for agent-driven workspaces.
 
 ### 1. Create a carry-patch workspace
 
@@ -195,11 +272,68 @@ The hub resolves upstream credentials in this priority order:
 
 For public upstream repositories, no credential setup is needed.
 
-### 3. Add patches
+### 3. Choose the authority
 
-Register your patch branches in the order they should be applied. Branches
-are validated against the workspace repository at add time (unless
-`--skip-branch-check` is used).
+Tell the hub that the fork is the authority for patch branches:
+
+```
+afc vars create PATCH_BRANCH_SOURCE=origin --workspace api-gateway
+```
+
+Optionally, push the rebuilt integration branch back to the fork so CI and
+codespaces see it:
+
+```
+afc vars create REBUILD_PUSH_INTEGRATION_BRANCH=true --workspace api-gateway
+```
+
+A fork clone and a fork token with read access are needed on every sync,
+because the sync fetches `origin` with the workspace's `GIT_PAT` or
+`GIT_USERNAME`/`GIT_PASSWORD` credentials. Make sure these are set when
+creating the workspace (the `--git-pat` flag above) or via
+`afc secrets create`.
+
+See [Where patch branches live](#where-patch-branches-live) for a full
+comparison of the two authority models.
+
+### 4. Create and push a patch branch
+
+In a normal clone of the fork, create a branch, commit your changes, and
+push it to the fork (GitHub):
+
+```
+git clone https://github.com/your-org/api-gateway-fork.git
+cd api-gateway-fork
+git checkout -b feature/custom-auth-headers
+# ... make changes ...
+git commit -am "Add X-Org-Id header to all proxied requests"
+git push origin feature/custom-auth-headers
+```
+
+Open the upstream PR from the same branch so the patch is tracked against
+the upstream project:
+
+```
+gh pr create \
+  --repo acme-oss/api-gateway \
+  --head your-org:feature/custom-auth-headers \
+  --title "Add X-Org-Id header to all proxied requests"
+```
+
+### 5. Register your patches
+
+Register your patch branches in the order they should be applied. At add
+time the hub resolves each branch in this order:
+
+1. `refs/heads/<name>` in the workspace trunk (local head).
+2. `refs/remotes/origin/<name>` (origin tracking ref).
+3. In `origin` mode only, a single-branch fork fetch for the branch.
+
+If none of these finds the branch, the request fails with
+`400 branch does not exist in repository or on origin`. A branch that
+exists only on the fork no longer needs `--skip-branch-check`;
+`--skip-branch-check` is for branches that exist nowhere yet (for example,
+a branch that will be pushed later).
 
 ```
 afc patch add api-gateway \
@@ -249,16 +383,21 @@ Multiple patches can be added in a single API call by sending a JSON array
 body. The batch is inserted atomically -- if any patch fails validation, the
 entire batch is rolled back. See the API reference for the batch format.
 
-### 4. Sync from upstream
+### 6. Sync
 
-Fetch the latest upstream state and detect any patches that have been merged:
+Bring the fork's patch branches and the latest upstream state into the hub:
 
 ```
 afc workspace sync api-gateway
 ```
 
-For carry-patch workspaces, the sync response is the usual workspace JSON with
-four extra fields added on top of it:
+In `origin` mode, sync -- not `afc rebuild submit` -- is what brings new
+fork commits into the hub. A rebuild reads the hub's copy of each branch
+(`refs/heads/<branch>` in the trunk) and does not fetch the fork. Only sync
+fetches the fork and updates those refs to the fork's tips.
+
+For carry-patch workspaces, the sync response is the usual workspace JSON
+with extra fields:
 
 ```json
 {
@@ -268,7 +407,10 @@ four extra fields added on top of it:
   "upstream_head_sha": "abc123def456...",
   "last_sync_at": "2024-06-15T10:30:00Z",
 
+  "origin_fetched": true,
   "patches_merged": ["fix/connection-pool-leak"],
+  "patches_synced": ["feature/custom-auth-headers", "internal/custom-metrics"],
+  "patches_diverged": [],
   "rebuild_triggered": true,
   "force_push_detected": false
 }
@@ -276,17 +418,39 @@ four extra fields added on top of it:
 
 (Abbreviated -- every standard workspace field is present too.)
 
+`origin_fetched` is always present in the sync response (both modes).
+`patches_synced` and `patches_diverged` appear only in `origin` mode.
+
+The patch refresh produces one of three outcomes per branch:
+
+- **`created`** -- the branch did not exist on the hub and was created from
+  the fork's tip.
+- **`fast_forwarded`** -- the hub's copy was an ancestor of the fork's tip
+  and was advanced.
+- **`replaced`** -- the hub's copy diverged from the fork's tip and was
+  replaced (the old tip is saved under `refs/hub/replaced/<branch>`).
+
+A moved `active` or `conflict` patch triggers the same auto-rebuild as an
+upstream advance (unless `AUTO_REBUILD_AFTER_SYNC=false`).
+
 If any patches are detected as merged, their status transitions to
 `merged_upstream`. By default, a rebuild is automatically triggered after
 sync (see the `AUTO_REBUILD_AFTER_SYNC` variable).
 
 The `force_push_detected` field indicates whether the upstream repository
-has rewritten history since the last sync. This is determined by checking
-whether the previously stored upstream HEAD is an ancestor of the new
-upstream HEAD. A force-push detection is informational -- the sync still
-proceeds normally.
+has rewritten history since the last sync. This is informational -- the
+sync still proceeds normally.
 
-### 5. Preview a rebuild
+**Divergence handling.** When `PATCH_DIVERGENCE_POLICY` is `report` (instead
+of the default `replace`), diverged branches are left unchanged and listed
+in `patches_diverged`. Use `--fail-on-diverged` to make the CLI exit with
+exit code 3 when `patches_diverged` is non-empty:
+
+```
+afc workspace sync api-gateway --fail-on-diverged
+```
+
+### 7. Preview a rebuild
 
 Before running a rebuild, you can preview which patches would conflict
 without modifying any git state:
@@ -325,7 +489,7 @@ successful patches, so cascading conflicts are detected accurately.
 
 No refs, branches, or patch statuses are modified by the preview.
 
-### 6. Trigger a rebuild manually
+### 8. Trigger a rebuild manually
 
 If auto-rebuild is disabled or you want to rebuild after modifying the patch
 list:
@@ -385,7 +549,7 @@ in real time. The `patch_results` field is updated after each patch is
 processed, so you can observe which patches have been applied so far before
 the job completes.
 
-### 7. Check the status dashboard
+### 9. Check the status dashboard
 
 Get a comprehensive view of the workspace and patch stack:
 
@@ -395,9 +559,11 @@ afc workspace patch-status api-gateway
 
 This returns workspace metadata, the last rebuild summary, per-patch status
 with last rebuild results, and aggregate counts including total rerere
-resolutions.
+resolutions. In `origin` mode, each patch entry includes `origin_sync_state`
+(`in_sync`, `diverged` or `missing_on_origin`), and the summary includes
+`patches_diverged` and `patches_missing_on_origin` counts.
 
-### 8. Handle a failed rebuild
+### 10. Handle a failed rebuild
 
 If a rebuild fails due to conflicts (in `fail_fast` mode), the failing patch
 is marked `conflict` and the rebuild stops:
@@ -424,17 +590,50 @@ If using `continue` mode, the rebuild completes with a mix of outcomes:
 In `continue` mode, the integration branch is updated with all patches that
 applied cleanly. Conflicting patches are skipped and marked `conflict`.
 
-To resolve:
+Start by reading the `conflict_files` from the patch-status dashboard:
 
-1. Check which patch has the conflict: `afc patch list api-gateway`
-2. Clone the workspace repo and resolve the conflict manually in the
-   workspace trunk (or via the hub's git server).
-3. After resolving, the resolution is recorded by rerere for future rebuilds.
-4. Set the patch status back to `active`:
-   `afc patch update api-gateway <patch-id> --status active`
-5. Resubmit the rebuild: `afc rebuild submit api-gateway`
+```
+afc workspace patch-status api-gateway
+```
 
-### 9. Roll back a rebuild
+The `conflict_files` field on the conflicting patch lists the affected files.
+
+**Resolving in hub mode.** Resolve the conflict in the workspace trunk or by
+pushing a fixed branch to the hub's git server. Rerere records the resolution
+when it happens during a rebuild, so subsequent rebuilds with the same
+conflict pattern resolve automatically. You can also record a resolution
+manually by resolving the conflict in the trunk's working tree and running
+`git rerere` there. Then set the patch back to `active` and rebuild:
+
+```
+afc patch update api-gateway <patch-id> --status active
+afc rebuild submit api-gateway
+```
+
+**Resolving in origin mode.** Do not edit the trunk and do not push to the
+hub: a hub push is rejected, forwarded or replaced, and a trunk edit is
+overwritten at the next sync. Instead, fix the branch in a local clone of
+the fork (merge or rebase the latest upstream into the patch branch, resolve
+conflicts, commit), push it to the fork, and run sync:
+
+```
+afc workspace sync api-gateway
+```
+
+Sync brings the new tip into the hub and triggers a rebuild. If the patch
+status is still `conflict` after the rebuild, set it back to `active`:
+
+```
+afc patch update api-gateway <patch-id> --status active
+afc rebuild submit api-gateway
+```
+
+**Known limitation:** a resolution made on the fork is not recorded in the
+hub's rerere cache, so the same conflict is resolved by hand again unless
+the rebuild itself resolves it. This is a known limitation, not a planned
+feature.
+
+### 11. Roll back a rebuild
 
 If a rebuild produces unexpected results, you can roll back the integration
 branch to its previous state:
@@ -456,11 +655,59 @@ rebuild (there is no previous state).
 After rolling back, you can modify the patch list or resolve conflicts and
 then submit a new rebuild.
 
+### Alternative: hub-authoritative workspace
+
+If your workspace is driven by agents that push directly to the hub and
+never open upstream PRs, leave `PATCH_BRANCH_SOURCE` unset (it defaults to
+`hub`). In this flow:
+
+1. **Create the workspace** as in step 1 above.
+2. **Push the patch branch to the hub's git URL** (the workspace `hub_url`)
+   instead of to the fork:
+
+   ```
+   git push <hub-git-url> feature/custom-auth-headers
+   ```
+
+3. **Register the patch** with `afc patch add` as in step 5.
+4. **Let the push hook rebuild** -- pushing a registered patch branch
+   automatically enqueues a rebuild (unless `AUTO_REBUILD_AFTER_PUSH` is
+   `"false"`). Alternatively, trigger a rebuild manually:
+
+   ```
+   afc rebuild submit api-gateway
+   ```
+
+5. **Optionally mirror to the fork.** Set `PUSH_PATCHES_TO_ORIGIN=true` to
+   have the hub force-push (mirror) every accepted patch-branch update to
+   the fork, so the fork stays in sync without a separate push:
+
+   ```
+   afc vars create PUSH_PATCHES_TO_ORIGIN=true --workspace api-gateway
+   ```
+
+   A mirror failure is logged and emitted as `hub.patch.mirror_failed` but
+   does not fail the push or the rebuild.
+
+This flow suits agent-driven workspaces where the hub is the sole writer of
+patch branches and the fork is only a mirror.
+
 ---
 
 ## Day-to-day operations
 
 ### Adding a new patch
+
+The hub resolves the branch in this order when you add a patch:
+
+1. `refs/heads/<name>` in the workspace trunk (local head).
+2. `refs/remotes/origin/<name>` (origin tracking ref).
+3. In `origin` mode only, a single-branch fork fetch for the branch.
+
+If none of these finds the branch, the request fails with
+`400 branch does not exist in repository or on origin`. A branch that
+exists only on the fork no longer needs `--skip-branch-check`;
+`--skip-branch-check` is for branches that exist nowhere yet.
 
 Add a patch at the end of the list:
 
@@ -500,7 +747,9 @@ afc patch remove api-gateway a1b2c3d4-5678-90ab-cdef-1234567890ab
 ```
 
 Remaining patches are automatically recompacted to maintain a contiguous
-position sequence with no gaps.
+position sequence with no gaps. If a backup ref `refs/hub/replaced/<branch>`
+exists for the removed patch, it is deleted with the patch row. The branch
+itself is not deleted.
 
 ### Restoring a soft-deleted patch
 
@@ -513,8 +762,8 @@ afc patch restore api-gateway <patch-id>
 ```
 
 The patch is returned to `active` status and placed at the end of the patch
-list. After the 7-day retention period, soft-deleted patches are permanently
-purged and can no longer be restored.
+list. After the 7 days retention period, expired soft-deleted patches are
+permanently removed only when a purge runs and can no longer be restored.
 
 ### Reordering patches
 
@@ -552,8 +801,9 @@ When a sync detects that a patch's commits have been incorporated into
 upstream, the patch status transitions to `merged_upstream` automatically.
 On the next successful rebuild, `merged_upstream` patches are soft-deleted
 (status set to `deleted`, `deleted_at` timestamp recorded). They remain in
-the database for 7 days, during which they can be restored. After 7 days,
-they are permanently purged.
+the database for 7 days, during which they can be restored. Expired
+soft-deleted patches are permanently removed only when a purge runs (see
+[Soft-delete lifecycle](#soft-delete-lifecycle)).
 
 If you know a patch has been merged but sync has not detected it yet, you
 can manually mark it:
@@ -564,28 +814,92 @@ afc patch update api-gateway <patch-id> --status merged_upstream
 
 ### Resolving conflicts after a failed rebuild
 
-1. Check which files have conflicts:
+Start by reading the `conflict_files` from the patch-status dashboard:
 
-   ```
-   afc workspace patch-status api-gateway
-   ```
+```
+afc workspace patch-status api-gateway
+```
 
-   The `conflict_files` field on the conflicting patch lists the affected
-   files.
+The `conflict_files` field on the conflicting patch lists the affected files.
+The resolution procedure depends on the authority model.
 
-2. Access the workspace repository via the hub's built-in git server or
-   directly on the host filesystem, resolve the conflict, and commit the
-   resolution.
+#### Resolving in hub mode
 
-3. The resolution is recorded by rerere. On subsequent rebuilds, if the
-   same conflict pattern appears, it is resolved automatically.
+Resolve the conflict in the workspace trunk or by pushing a fixed branch to
+the hub's git server. Rerere records the resolution when it happens during a
+rebuild, so subsequent rebuilds with the same conflict pattern resolve
+automatically. You can also record a resolution manually by resolving the
+conflict in the trunk's working tree and running `git rerere` there.
 
-4. Reset the patch status to `active` and rebuild:
+After resolving, set the patch status back to `active` and rebuild:
 
-   ```
-   afc patch update api-gateway <patch-id> --status active
-   afc rebuild submit api-gateway
-   ```
+```
+afc patch update api-gateway <patch-id> --status active
+afc rebuild submit api-gateway
+```
+
+#### Resolving in origin mode
+
+Do not edit the trunk and do not push to the hub: a hub push is rejected,
+forwarded or replaced, and a trunk edit is overwritten at the next sync.
+
+Instead, fix the branch in a local clone of the fork: merge or rebase the
+latest upstream into the patch branch, resolve conflicts, and commit. Then
+push the fixed branch to the fork and run sync:
+
+```
+afc workspace sync api-gateway
+```
+
+Sync brings the new tip into the hub and triggers a rebuild. If the patch
+status is still `conflict` after the rebuild, set it back to `active`:
+
+```
+afc patch update api-gateway <patch-id> --status active
+afc rebuild submit api-gateway
+```
+
+**Known limitation:** a resolution made on the fork is not recorded in the
+hub's rerere cache, so the same conflict is resolved by hand again unless
+the rebuild itself resolves it. This is a known limitation, not a planned
+feature.
+
+### Recovering a replaced or diverged patch branch
+
+In `origin` mode, sync may replace a hub-side patch branch tip or report it
+as diverged. Use the patch-status dashboard or the single-patch endpoint to
+read the `origin_sync_state` and `replaced_sha` fields:
+
+```
+afc workspace patch-status api-gateway
+```
+
+If `origin_sync_state` is `diverged` (when `PATCH_DIVERGENCE_POLICY` is
+`report`) or a replacement has occurred, the old tip is saved under
+`refs/hub/replaced/<branch>`. Fetch it to a local clone:
+
+```
+git fetch <hub_url> refs/hub/replaced/<branch>
+```
+
+Push the fetched tip to the fork to keep it (for example, under a different
+branch name) before it is overwritten. Only one backup per branch exists;
+later replacements overwrite the earlier backup.
+
+To move a `diverged` branch to the fork's current tip on demand, use:
+
+```
+afc patch reset-to-origin <slug> <patch-id>
+```
+
+The response includes `rebuild_triggered` indicating whether a rebuild was
+enqueued. Reset is available for patches in `active`, `conflict` or
+`disabled` status.
+
+If `origin_sync_state` is `missing_on_origin`, the branch does not exist on
+the fork. The hub keeps applying its own copy of the branch during rebuilds.
+To resolve, either push the branch to the fork so the next sync picks it up,
+or remove the patch if it is no longer needed.
 
 ### Recovering from an upstream force-push
 
@@ -754,14 +1068,16 @@ afc vars create PATCH_BRANCH_SOURCE=origin --workspace api-gateway
 ### PATCH_DIVERGENCE_POLICY
 
 Controls what happens when the hub's copy and the fork's copy of a patch
-branch have diverged. Ignored when `PATCH_BRANCH_SOURCE` is `hub`.
+branch have diverged. This variable is ignored in `hub` mode (where the hub
+is the sole writer and divergence does not arise).
 
 | Value | Behavior |
 |-------|----------|
 | `replace` (default) | The hub's copy is replaced with the fork's tip. The old tip is saved under `refs/hub/replaced/<branch>`. |
 | `report` | The hub's copy is left unchanged and the divergence is reported in the sync response (`patches_diverged`). |
 
-An unset variable or any unrecognised value is treated as `replace`.
+The match is exact and case-sensitive. An unset variable or any unrecognised
+value is treated as `replace`. The variable is read on every sync.
 
 ```
 afc vars create PATCH_DIVERGENCE_POLICY=report --workspace api-gateway
@@ -810,8 +1126,10 @@ The push hook runs asynchronously and does not affect the push response.
 ### PUSH_PATCHES_TO_ORIGIN
 
 Enables forwarding or mirroring of hub pushes to registered patch branches.
-Only the exact string `"true"` enables it; any other value or an unset
-variable means disabled.
+Only exactly `true` enables it; any other value or an unset variable means
+disabled. In `origin` mode it means forwarding (the push is sent to the fork
+before the hub writes its ref); in `hub` mode it means mirroring (accepted
+pushes are force-pushed to the fork, best effort).
 
 | Value | Behavior |
 |-------|----------|
@@ -854,6 +1172,15 @@ PR-number scanning looks for GitHub's squash-merge commit message format
 `upstream_pr_url` set. This detects squash merges where the commit content
 differs from the original patch commits.
 
+### Recommended combinations
+
+| Style | Variables | Notes |
+|-------|-----------|-------|
+| fork-first | `PATCH_BRANCH_SOURCE=origin`, optional `REBUILD_PUSH_INTEGRATION_BRANCH=true` | Teams push to GitHub and open upstream PRs; the hub is a rebuild engine |
+| fork-first with hub forwarding | `PATCH_BRANCH_SOURCE=origin`, `PUSH_PATCHES_TO_ORIGIN=true`, optional `REBUILD_PUSH_INTEGRATION_BRANCH=true` | Same as above, but tooling that only knows the hub URL can push and the hub forwards to the fork |
+| hub-only | (defaults) | Agent-driven workspaces; patches live only on the hub |
+| hub with a durable mirror | `PUSH_PATCHES_TO_ORIGIN=true` | Agent-driven, but every accepted push is mirrored to the fork so the fork stays in sync |
+
 ---
 
 ## How it works
@@ -892,6 +1219,8 @@ When a rebuild job runs, the hub executes the following steps:
    worktree). Then each patch that will be attempted is resolved to a
    commit SHA at `refs/heads/<branch>`; only that SHA is used for the rest
    of the run and it is reported as `source_sha` in the patch result.
+   The patch tips it snapshots are whatever the last sync (origin mode)
+   or push (hub mode) left in the trunk.
 
 5. **Process each patch in position order, inside the worktree:**
    - **Skipped patches:** `merged_upstream`, `disabled`, and `deleted`
@@ -950,54 +1279,63 @@ When a rebuild job runs, the hub executes the following steps:
 
 ### Sync algorithm
 
-The carry-patch sync differs from the standard workspace sync. There are two
-models, controlled by the `PATCH_BRANCH_SOURCE` workspace variable:
+The carry-patch sync differs from the standard workspace sync. The
+`PATCH_BRANCH_SOURCE` workspace variable selects the model (see
+[Where patch branches live](#where-patch-branches-live)). The sync flow
+proceeds through these phases in order:
 
-- **Hub model** (`PATCH_BRANCH_SOURCE=hub`, the default): patch branches are
-  read from the hub's local clone. The fork (`origin`) is never fetched.
-- **Origin model** (`PATCH_BRANCH_SOURCE=origin`): the fork is fetched during
-  sync and every registered patch branch is brought to the fork's tip. The
-  `PATCH_DIVERGENCE_POLICY` variable controls what happens when the hub's
-  copy and the fork's copy have diverged.
+1. **Resolve credentials.** Read `PATCH_BRANCH_SOURCE` and
+   `PATCH_DIVERGENCE_POLICY` workspace variables. If `PATCH_BRANCH_SOURCE`
+   is `origin`, resolve origin credentials before any fetch (failure
+   answers `502 failed to resolve origin credentials` and aborts without
+   touching any state). Then resolve upstream credentials.
 
-> **Note (fork_push_control):** In `origin` mode, the hub's git server
-> enforces push control on registered patch branches. By default, a hub push
-> to a registered patch branch is rejected with a message naming the fork.
-> When `PUSH_PATCHES_TO_ORIGIN=true`, the push is forwarded to the fork
-> before the hub writes its ref; a forward failure rejects the update. In
-> `hub` mode with `PUSH_PATCHES_TO_ORIGIN=true`, accepted pushes are mirrored
-> (force-pushed) to the fork after the push, best effort. See the
-> `PUSH_PATCHES_TO_ORIGIN` variable in the Configuration section above.
+2. **Fetch upstream.** Fetch `refs/heads/*` and `HEAD` of the `upstream`
+   remote into `refs/remotes/upstream/*` with the resolved credentials
+   (same refspecs and credentials as the rebuild). A fetch failure answers
+   `502 upstream fetch failed` and aborts; no refs or patch state are
+   modified.
 
-The sync flow:
+3. **Fetch origin (origin mode only).** Fetch the `origin` remote with
+   pruning (stale tracking refs are removed). If the origin fetch fails,
+   the sync answers `502 origin fetch failed` (error type
+   `origin_fetch_failed`) and all refs and patch state remain unchanged —
+   the upstream fetch that already succeeded is not rolled back, but no
+   patch refresh, merge detection or timestamp write occurs.
 
-1. **Read configuration.** Read `PATCH_BRANCH_SOURCE` and
-   `PATCH_DIVERGENCE_POLICY` workspace variables.
-
-2. **Resolve credentials.** If `PATCH_BRANCH_SOURCE` is `origin`, resolve
-   origin credentials before any fetch. Then resolve upstream credentials
-   and fetch from the `upstream` remote (same refspecs and credentials as
-   the rebuild).
-
-3. **Fetch origin (origin model only).** Fetch the `origin` remote with
-   pruning (stale tracking refs are removed).
-
-4. **Refresh patch branches (origin model only).** For each candidate patch
+4. **Refresh patch branches (origin mode only).** For each candidate patch
    (status `active`, `conflict` or `disabled`, excluding the integration
-   branch), bring the local branch to the fork's tip using compare-and-swap
-   ref writes. Replaced branches are backed up under
-   `refs/hub/replaced/<branch>`.
+   branch), compare the hub's `refs/heads/<branch>` with the fork's
+   `refs/remotes/origin/<branch>` and bring the local branch to the fork's
+   tip using compare-and-swap ref writes. Each branch produces one of
+   three outcomes:
+   - **`created`** — the branch did not exist on the hub and was created
+     from the fork's tip.
+   - **`fast_forwarded`** — the hub's copy was an ancestor of the fork's
+     tip and was advanced.
+   - **`replaced`** — the hub's copy diverged from the fork's tip and was
+     replaced (the old tip is saved under `refs/hub/replaced/<branch>`).
 
-5. **Detect upstream changes.** Compare the new upstream base
+   Each branch also records a sync state: `in_sync`, `diverged` or
+   `missing_on_origin`. When `PATCH_DIVERGENCE_POLICY` is `report`,
+   diverged branches are left unchanged instead of being replaced.
+
+   A ref-write failure stops the refresh. Outcomes already produced are
+   persisted, and a rebuild is enqueued for branches already moved, but
+   `last_sync_at` is not written.
+
+5. **Resolve the base.** Determine the new upstream base
    (`refs/remotes/upstream/HEAD`, with the same fallbacks as the rebuild)
-   with the stored `upstream_head_sha`.
+   and compare it with the stored `upstream_head_sha`.
 
 6. **Detect force-push.** If the stored upstream HEAD is not an ancestor of
    the new upstream HEAD, set `force_push_detected` to true. This is
    informational and does not block the sync.
 
-7. **Detect merged patches.** For each `active` patch, apply the configured
-   detection strategy (see `SQUASH_MERGE_DETECTION`):
+7. **Detect merged patches.** Merge detection runs when upstream advanced
+   or when any patch branch was moved (also when only patch tips changed
+   and upstream did not advance). For each `active` patch, apply the
+   configured detection strategy (see `SQUASH_MERGE_DETECTION`):
    - **Ancestry check:** `git merge-base --is-ancestor` to test whether the
      patch branch HEAD is an ancestor of the new upstream HEAD.
    - **Content-based check:** `git cherry` to compare patch commits against
@@ -1007,15 +1345,17 @@ The sync flow:
      the PR number and scan recent upstream commit messages for the
      `(#NNN)` pattern used by GitHub's squash-merge.
    - If any signal detects the patch as merged, transition it to
-     `merged_upstream`.
+     `merged_upstream`. A newly merged patch triggers a rebuild.
 
 8. **Auto-rebuild.** If `AUTO_REBUILD_AFTER_SYNC` is not `"false"` and
-   upstream advanced, a patch branch was moved, or at least one patch was
-   newly marked `merged_upstream`, enqueue a rebuild job. If a rebuild job
-   is already queued or running, the duplicate is silently ignored.
+   upstream advanced, an `active` or `conflict` patch branch was moved, or
+   at least one patch was newly marked `merged_upstream`, enqueue a rebuild
+   job. A moved `disabled` patch does not count as advanced. If a rebuild
+   job is already queued or running, the duplicate is silently ignored.
 
 9. **Write timestamps.** `last_sync_at` and `updated_at` are written on
-   every completed sync, whether or not anything advanced.
+   every completed sync, whether or not anything advanced. They are not
+   written when the sync ends on a ref-write failure (phase 4).
 
 ### Merge detection
 
@@ -1081,6 +1421,26 @@ The push hook:
 The hook runs asynchronously after the push completes. Errors in the hook
 are logged but do not affect the push response.
 
+**How a push to a registered patch branch is treated in each mode:**
+
+- **`origin` mode, `PUSH_PATCHES_TO_ORIGIN` disabled (default):** the push
+  is rejected with a message naming the fork URL (e.g. `branch is synced
+  from origin; push to <git_url> instead`). Deletes of a registered patch
+  branch are also rejected.
+- **`origin` mode, `PUSH_PATCHES_TO_ORIGIN=true`:** the push is forwarded
+  to the fork before the hub writes its ref. If the forward fails, the hub
+  ref is not written. Deletes are rejected without contacting the fork.
+- **`hub` mode (default):** the push is accepted normally. When
+  `PUSH_PATCHES_TO_ORIGIN=true`, each accepted update to a registered
+  patch branch is force-pushed (mirrored) to the fork, best effort. A
+  mirror failure is logged and emitted as `hub.patch.mirror_failed` but
+  does not fail the push or the rebuild. The mirror runs even when
+  `AUTO_REBUILD_AFTER_PUSH=false`.
+
+Only accepted ref updates drive `head_sha`, the `hub.git.push` event and
+the post-push hook (including the rebuild enqueue). Rejected or forwarded
+refs that fail do not trigger these side effects.
+
 ### Rerere integration
 
 Rerere is configured during workspace clone and re-enabled at the start of
@@ -1106,9 +1466,10 @@ are soft-deleted rather than permanently removed:
 2. Soft-deleted patches are excluded from normal list views and from the
    patch-status dashboard.
 3. Soft-deleted patches can be restored to `active` status via the restore
-   endpoint within the retention period.
-4. After 7 days, a background purge process permanently removes expired
-   soft-deleted patches from the database.
+   endpoint within the 7 days retention period.
+4. Expired soft-deleted patches (older than 7 days) are permanently removed
+   only when a purge runs. No background scheduler triggers the purge
+   automatically; an operator or external job must call the purge routine.
 
 This provides a safety net: if a patch was incorrectly detected as merged
 upstream, it can be recovered without needing to re-create it from scratch.
@@ -1146,7 +1507,7 @@ upstream, it can be recovered without needing to re-create it from scratch.
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `POST` | `/workspaces/:slug/sync` | Sync from upstream with merge detection and auto-rebuild |
+| `POST` | `/workspaces/:slug/sync` | Sync from upstream (and origin in `origin` mode) with merge detection and auto-rebuild |
 | `GET` | `/workspaces/:slug/patch-status` | Patch-status dashboard with summary counts |
 | `GET` | `/workspaces/:slug/rerere` | List recorded rerere resolutions |
 | `DELETE` | `/workspaces/:slug/rerere/*pathspec` | Forget a recorded rerere resolution |
@@ -1157,8 +1518,8 @@ upstream, it can be recovered without needing to re-create it from scratch.
 |-------|---------|
 | `rebuilds:read` | List rebuilds, get rebuild status, rebuild preview |
 | `rebuilds:write` | Submit rebuild, cancel rebuild, requeue rebuild, rollback rebuild |
-| `patches:read` | List patches |
-| `patches:write` | Add, update, remove, restore, reorder patches |
+| `patches:read` | List patches, get single patch |
+| `patches:write` | Add, update, remove, restore, reorder, reset patches |
 | `workspaces:read` | Patch-status dashboard, rerere list |
 | `workspaces:write` | Rerere forget |
 | `workspaces:sync` | Sync from upstream |
@@ -1206,3 +1567,27 @@ delete the directory the worktree lives in, so they answer 409
 **First rebuild cannot be rolled back.** The rollback mechanism requires a
 previous integration branch HEAD SHA, which is only available after at least
 one prior rebuild has completed.
+
+**No fork webhooks and no built-in sync schedule.** The hub does not
+receive push events from the fork. Sync is triggered by `afc workspace sync`,
+an operator's scheduler, or any client of `POST /workspaces/:slug/sync`.
+There is no built-in cron or webhook listener.
+
+**Sync fetches every fork branch.** In `origin` mode, the origin fetch
+retrieves all branches from the fork, not only the registered patch branches.
+A fork with many branches incurs a larger fetch.
+
+**Manual resolutions are not fed into rerere in origin mode.** When a
+conflict is resolved on the fork and pushed, the hub's rerere cache does not
+learn the resolution. The same conflict must be resolved by hand again unless
+the rebuild itself resolves it via a previously recorded rerere entry.
+
+**`missing_on_origin` does not disable the patch.** When a registered patch
+branch is absent from the fork, the hub keeps applying its own copy during
+rebuilds. The patch is not automatically disabled or removed; an operator
+must act.
+
+**Origin mode needs working origin credentials on every sync.** The fork
+fetch uses the workspace's `GIT_PAT` or `GIT_USERNAME`/`GIT_PASSWORD`
+credentials. If they expire or are revoked, sync fails with
+`502 failed to resolve origin credentials` and no state is updated.

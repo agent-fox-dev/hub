@@ -1,9 +1,13 @@
 # ADR 01: Choose the authority for patch branches in carry-patch workspaces
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-09-29
+- **Accepted:** 2026-10-15
 
 ## Context
+
+> This section describes the code before the decision was implemented.
+> The behaviour it documents has since been changed by specs 20 to 23.
 
 A carry-patch workspace has two remotes in its trunk clone: `origin` (the
 fork, `git_url`) and `upstream` (the project being tracked, `upstream_url`).
@@ -123,6 +127,16 @@ that reviews on GitHub and upstreams patches wants fork authority.
 - The git server gains a pre-receive decision that depends on workspace
   configuration. That is new coupling between the git server and the
   carry-patch package, in the same style as the existing post-push hook.
+
+## Implementation notes
+
+The Decision section stands as written. The following errata record where
+the delivered implementation diverges from the original proposal:
+
+- [`docs/errata/20_fork_patch_sync_divergences.md`](../errata/20_fork_patch_sync_divergences.md)
+- [`docs/errata/21_fork_patch_registration_divergences.md`](../errata/21_fork_patch_registration_divergences.md)
+- [`docs/errata/22_fork_push_control_divergences.md`](../errata/22_fork_push_control_divergences.md)
+- [`docs/errata/23_patch_divergence_recovery_divergences.md`](../errata/23_patch_divergence_recovery_divergences.md)
 
 ## Alternatives considered
 
