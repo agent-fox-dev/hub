@@ -1068,14 +1068,16 @@ afc vars create PATCH_BRANCH_SOURCE=origin --workspace api-gateway
 ### PATCH_DIVERGENCE_POLICY
 
 Controls what happens when the hub's copy and the fork's copy of a patch
-branch have diverged. Ignored when `PATCH_BRANCH_SOURCE` is `hub`.
+branch have diverged. This variable is ignored in `hub` mode (where the hub
+is the sole writer and divergence does not arise).
 
 | Value | Behavior |
 |-------|----------|
 | `replace` (default) | The hub's copy is replaced with the fork's tip. The old tip is saved under `refs/hub/replaced/<branch>`. |
 | `report` | The hub's copy is left unchanged and the divergence is reported in the sync response (`patches_diverged`). |
 
-An unset variable or any unrecognised value is treated as `replace`.
+The match is exact and case-sensitive. An unset variable or any unrecognised
+value is treated as `replace`. The variable is read on every sync.
 
 ```
 afc vars create PATCH_DIVERGENCE_POLICY=report --workspace api-gateway
@@ -1124,8 +1126,10 @@ The push hook runs asynchronously and does not affect the push response.
 ### PUSH_PATCHES_TO_ORIGIN
 
 Enables forwarding or mirroring of hub pushes to registered patch branches.
-Only the exact string `"true"` enables it; any other value or an unset
-variable means disabled.
+Only exactly `true` enables it; any other value or an unset variable means
+disabled. In `origin` mode it means forwarding (the push is sent to the fork
+before the hub writes its ref); in `hub` mode it means mirroring (accepted
+pushes are force-pushed to the fork, best effort).
 
 | Value | Behavior |
 |-------|----------|
@@ -1167,6 +1171,15 @@ PR-number scanning looks for GitHub's squash-merge commit message format
 `Title (#NNN)` in recent upstream commits when the patch has an
 `upstream_pr_url` set. This detects squash merges where the commit content
 differs from the original patch commits.
+
+### Recommended combinations
+
+| Style | Variables | Notes |
+|-------|-----------|-------|
+| fork-first | `PATCH_BRANCH_SOURCE=origin`, optional `REBUILD_PUSH_INTEGRATION_BRANCH=true` | Teams push to GitHub and open upstream PRs; the hub is a rebuild engine |
+| fork-first with hub forwarding | `PATCH_BRANCH_SOURCE=origin`, `PUSH_PATCHES_TO_ORIGIN=true`, optional `REBUILD_PUSH_INTEGRATION_BRANCH=true` | Same as above, but tooling that only knows the hub URL can push and the hub forwards to the fork |
+| hub-only | (defaults) | Agent-driven workspaces; patches live only on the hub |
+| hub with a durable mirror | `PUSH_PATCHES_TO_ORIGIN=true` | Agent-driven, but every accepted push is mirrored to the fork so the fork stays in sync |
 
 ---
 
@@ -1494,7 +1507,7 @@ upstream, it can be recovered without needing to re-create it from scratch.
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `POST` | `/workspaces/:slug/sync` | Sync from upstream with merge detection and auto-rebuild |
+| `POST` | `/workspaces/:slug/sync` | Sync from upstream (and origin in `origin` mode) with merge detection and auto-rebuild |
 | `GET` | `/workspaces/:slug/patch-status` | Patch-status dashboard with summary counts |
 | `GET` | `/workspaces/:slug/rerere` | List recorded rerere resolutions |
 | `DELETE` | `/workspaces/:slug/rerere/*pathspec` | Forget a recorded rerere resolution |
@@ -1505,8 +1518,8 @@ upstream, it can be recovered without needing to re-create it from scratch.
 |-------|---------|
 | `rebuilds:read` | List rebuilds, get rebuild status, rebuild preview |
 | `rebuilds:write` | Submit rebuild, cancel rebuild, requeue rebuild, rollback rebuild |
-| `patches:read` | List patches |
-| `patches:write` | Add, update, remove, restore, reorder patches |
+| `patches:read` | List patches, get single patch |
+| `patches:write` | Add, update, remove, restore, reorder, reset patches |
 | `workspaces:read` | Patch-status dashboard, rerere list |
 | `workspaces:write` | Rerere forget |
 | `workspaces:sync` | Sync from upstream |
@@ -1554,3 +1567,27 @@ delete the directory the worktree lives in, so they answer 409
 **First rebuild cannot be rolled back.** The rollback mechanism requires a
 previous integration branch HEAD SHA, which is only available after at least
 one prior rebuild has completed.
+
+**No fork webhooks and no built-in sync schedule.** The hub does not
+receive push events from the fork. Sync is triggered by `afc workspace sync`,
+an operator's scheduler, or any client of `POST /workspaces/:slug/sync`.
+There is no built-in cron or webhook listener.
+
+**Sync fetches every fork branch.** In `origin` mode, the origin fetch
+retrieves all branches from the fork, not only the registered patch branches.
+A fork with many branches incurs a larger fetch.
+
+**Manual resolutions are not fed into rerere in origin mode.** When a
+conflict is resolved on the fork and pushed, the hub's rerere cache does not
+learn the resolution. The same conflict must be resolved by hand again unless
+the rebuild itself resolves it via a previously recorded rerere entry.
+
+**`missing_on_origin` does not disable the patch.** When a registered patch
+branch is absent from the fork, the hub keeps applying its own copy during
+rebuilds. The patch is not automatically disabled or removed; an operator
+must act.
+
+**Origin mode needs working origin credentials on every sync.** The fork
+fetch uses the workspace's `GIT_PAT` or `GIT_USERNAME`/`GIT_PASSWORD`
+credentials. If they expire or are revoked, sync fails with
+`502 failed to resolve origin credentials` and no state is updated.

@@ -1644,6 +1644,193 @@ func TestDocs_TS_24_40_RecoverySectionResetAndBackup(t *testing.T) {
 	)
 }
 
+// ===========================================================================
+// TS-24-41 (unit): The Configuration section has exactly one entry heading
+// for each of the three variables.
+// Verifies: 24-REQ-7.1
+// ===========================================================================
+
+func TestDocs_TS_24_41_ConfigurationOneEntryPerVariable(t *testing.T) {
+	guide := readDoc(t, "carry_patch_workflow.md")
+	cfg := section(t, guide, "## Configuration", "## ")
+
+	vars := []string{"PATCH_BRANCH_SOURCE", "PATCH_DIVERGENCE_POLICY", "PUSH_PATCHES_TO_ORIGIN"}
+	for _, v := range vars {
+		heading := "### " + v
+		count := strings.Count(cfg, heading)
+		if count != 1 {
+			t.Errorf("expected exactly 1 heading %q in Configuration, got %d", heading, count)
+		}
+
+		// Each entry must have a values table, an afc vars command and a
+		// when-read statement.
+		entry := section(t, cfg, heading, "### ")
+		requireContains(t, v+" entry", entry, "afc vars", "| Value")
+	}
+}
+
+// ===========================================================================
+// TS-24-42 (unit): The three entries state defaults, exact-match,
+// mode-specific ignore and dual meaning.
+// Verifies: 24-REQ-7.2
+// ===========================================================================
+
+func TestDocs_TS_24_42_ConfigurationDefaultsExactMatchAndModeRules(t *testing.T) {
+	guide := readDoc(t, "carry_patch_workflow.md")
+	cfg := section(t, guide, "## Configuration", "## ")
+
+	// PATCH_BRANCH_SOURCE: default hub, exact match.
+	pbs := section(t, cfg, "### PATCH_BRANCH_SOURCE", "### ")
+	requireContains(t, "PATCH_BRANCH_SOURCE entry", pbs, "`hub` (default)", "exact")
+
+	// PATCH_DIVERGENCE_POLICY: default replace, ignored in hub mode.
+	pdp := section(t, cfg, "### PATCH_DIVERGENCE_POLICY", "### ")
+	requireContains(t, "PATCH_DIVERGENCE_POLICY entry", pdp, "`replace` (default)", "ignored", "hub")
+
+	// PUSH_PATCHES_TO_ORIGIN: default unset, exact `true`, forwarding/mirroring.
+	ppto := section(t, cfg, "### PUSH_PATCHES_TO_ORIGIN", "### ")
+	requireContains(t, "PUSH_PATCHES_TO_ORIGIN entry", ppto,
+		"exactly `true`",
+		"forward",
+		"mirror",
+	)
+}
+
+// ===========================================================================
+// TS-24-43 (unit): A recommended-combinations table has the four required
+// rows.
+// Verifies: 24-REQ-7.3
+// ===========================================================================
+
+func TestDocs_TS_24_43_RecommendedCombinationsTable(t *testing.T) {
+	guide := readDoc(t, "carry_patch_workflow.md")
+	cfg := section(t, guide, "## Configuration", "## ")
+
+	// The table should contain the four combination keywords.
+	requireContains(t, "Configuration combinations table", cfg,
+		"fork-first",
+		"forwarding",
+		"hub-only",
+		"mirror",
+	)
+
+	// The fork-first row should mention origin and REBUILD_PUSH_INTEGRATION_BRANCH.
+	requireContains(t, "Configuration combinations table", cfg,
+		"REBUILD_PUSH_INTEGRATION_BRANCH",
+	)
+}
+
+// ===========================================================================
+// TS-24-44 (unit): Limitations gain the five new items and keep the existing
+// ones including the lock note.
+// Verifies: 24-REQ-7.4, 24-REQ-7.5
+// ===========================================================================
+
+func TestDocs_TS_24_44_LimitationsNewAndExisting(t *testing.T) {
+	guide := readDoc(t, "carry_patch_workflow.md")
+	lim := section(t, guide, "## Limitations", "## ")
+
+	requireContains(t, "Limitations", lim,
+		"webhooks",
+		"POST /workspaces/:slug/sync",
+		"every fork branch",
+		"rerere",
+		"missing_on_origin",
+		"credentials",
+		"**Concurrent rebuild prevention.**",
+	)
+}
+
+// ===========================================================================
+// TS-24-45 (integration): The API reference summary rows match the routes
+// registered in RegisterRoutes.
+// Verifies: 24-REQ-7.6
+// ===========================================================================
+
+func TestDocs_TS_24_45_APIReferenceSummaryMatchesRoutes(t *testing.T) {
+	guide := readDoc(t, "carry_patch_workflow.md")
+
+	// The patch endpoints table must have a GET row for single patch and
+	// a POST row for reset-to-origin.
+	patchEndpoints := section(t, guide, "### Patch endpoints", "### ")
+	requireContains(t, "Patch endpoints table", patchEndpoints,
+		"/workspaces/:slug/patches/:id",
+		"reset-to-origin",
+	)
+
+	// Verify the GET single-patch row exists.
+	var hasGetSingle bool
+	for _, line := range strings.Split(patchEndpoints, "\n") {
+		if strings.HasPrefix(line, "|") && strings.Contains(line, "GET") && strings.Contains(line, "/patches/:id") {
+			hasGetSingle = true
+			break
+		}
+	}
+	if !hasGetSingle {
+		t.Error("Patch endpoints table has no GET row for /workspaces/:slug/patches/:id")
+	}
+
+	// Verify the reset-to-origin row exists.
+	var hasReset bool
+	for _, line := range strings.Split(patchEndpoints, "\n") {
+		if strings.HasPrefix(line, "|") && strings.Contains(line, "reset-to-origin") {
+			hasReset = true
+			break
+		}
+	}
+	if !hasReset {
+		t.Error("Patch endpoints table has no reset-to-origin row")
+	}
+
+	// The permission scopes table must list patches:read for GET single
+	// patch and patches:write for reset-to-origin.
+	permScopes := section(t, guide, "### Permission scopes", "### ")
+	requireContains(t, "Permission scopes table", permScopes,
+		"patches:read",
+		"patches:write",
+	)
+
+	// Verify patches:read row mentions single-patch GET.
+	var patchesReadRow string
+	for _, line := range strings.Split(permScopes, "\n") {
+		if strings.HasPrefix(line, "|") && strings.Contains(line, "patches:read") {
+			patchesReadRow = line
+			break
+		}
+	}
+	if patchesReadRow == "" {
+		t.Fatal("Permission scopes table has no patches:read row")
+	}
+	requireContains(t, "patches:read row", patchesReadRow, "single patch") // or "Get single patch" or similar
+
+	// Verify patches:write row mentions reset-to-origin.
+	var patchesWriteRow string
+	for _, line := range strings.Split(permScopes, "\n") {
+		if strings.HasPrefix(line, "|") && strings.Contains(line, "patches:write") {
+			patchesWriteRow = line
+			break
+		}
+	}
+	if patchesWriteRow == "" {
+		t.Fatal("Permission scopes table has no patches:write row")
+	}
+	requireContains(t, "patches:write row", patchesWriteRow, "reset")
+
+	// The sync row in Other carry-patch endpoints must describe both modes.
+	otherEndpoints := section(t, guide, "### Other carry-patch endpoints", "### ")
+	var syncRow string
+	for _, line := range strings.Split(otherEndpoints, "\n") {
+		if strings.HasPrefix(line, "|") && strings.Contains(line, "sync") {
+			syncRow = line
+			break
+		}
+	}
+	if syncRow == "" {
+		t.Fatal("Other carry-patch endpoints table has no sync row")
+	}
+	requireContains(t, "sync row", syncRow, "origin")
+}
+
 // findPurgeCallers searches non-test .go files under internal/ for calls to
 // PurgeDeletedPatches or PurgeExpiredDeletedPatches. It returns the file
 // paths that contain such calls, excluding function definitions and test

@@ -211,7 +211,7 @@
         "docs/carry_patch_workflow.md",
         "internal/carrypatch/docs_test.go"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 7,
