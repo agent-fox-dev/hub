@@ -218,7 +218,11 @@ file changes on both sides across multiple rebuild cycles.
 
 This walkthrough uses a concrete example: maintaining a fork of
 `github.com/acme-oss/api-gateway` at `github.com/your-org/api-gateway-fork`
-with three patch branches.
+with three patch branches. The primary path uses the fork-authoritative
+model (`PATCH_BRANCH_SOURCE=origin`), recommended for teams that open
+upstream pull requests. An
+[alternative hub-authoritative walkthrough](#alternative-hub-authoritative-workspace)
+follows for agent-driven workspaces.
 
 ### 1. Create a carry-patch workspace
 
@@ -268,7 +272,55 @@ The hub resolves upstream credentials in this priority order:
 
 For public upstream repositories, no credential setup is needed.
 
-### 3. Add patches
+### 3. Choose the authority
+
+Tell the hub that the fork is the authority for patch branches:
+
+```
+afc vars create PATCH_BRANCH_SOURCE=origin --workspace api-gateway
+```
+
+Optionally, push the rebuilt integration branch back to the fork so CI and
+codespaces see it:
+
+```
+afc vars create REBUILD_PUSH_INTEGRATION_BRANCH=true --workspace api-gateway
+```
+
+A fork clone and a fork token with read access are needed on every sync,
+because the sync fetches `origin` with the workspace's `GIT_PAT` or
+`GIT_USERNAME`/`GIT_PASSWORD` credentials. Make sure these are set when
+creating the workspace (the `--git-pat` flag above) or via
+`afc secrets create`.
+
+See [Where patch branches live](#where-patch-branches-live) for a full
+comparison of the two authority models.
+
+### 4. Create and push a patch branch
+
+In a normal clone of the fork, create a branch, commit your changes, and
+push it to the fork (GitHub):
+
+```
+git clone https://github.com/your-org/api-gateway-fork.git
+cd api-gateway-fork
+git checkout -b feature/custom-auth-headers
+# ... make changes ...
+git commit -am "Add X-Org-Id header to all proxied requests"
+git push origin feature/custom-auth-headers
+```
+
+Open the upstream PR from the same branch so the patch is tracked against
+the upstream project:
+
+```
+gh pr create \
+  --repo acme-oss/api-gateway \
+  --head your-org:feature/custom-auth-headers \
+  --title "Add X-Org-Id header to all proxied requests"
+```
+
+### 5. Register your patches
 
 Register your patch branches in the order they should be applied. At add
 time the hub resolves each branch in this order:
@@ -331,16 +383,21 @@ Multiple patches can be added in a single API call by sending a JSON array
 body. The batch is inserted atomically -- if any patch fails validation, the
 entire batch is rolled back. See the API reference for the batch format.
 
-### 4. Sync from upstream
+### 6. Sync
 
-Fetch the latest upstream state and detect any patches that have been merged:
+Bring the fork's patch branches and the latest upstream state into the hub:
 
 ```
 afc workspace sync api-gateway
 ```
 
-For carry-patch workspaces, the sync response is the usual workspace JSON with
-four extra fields added on top of it:
+In `origin` mode, sync -- not `afc rebuild submit` -- is what brings new
+fork commits into the hub. A rebuild reads the hub's copy of each branch
+(`refs/heads/<branch>` in the trunk) and does not fetch the fork. Only sync
+fetches the fork and updates those refs to the fork's tips.
+
+For carry-patch workspaces, the sync response is the usual workspace JSON
+with extra fields:
 
 ```json
 {
@@ -350,7 +407,10 @@ four extra fields added on top of it:
   "upstream_head_sha": "abc123def456...",
   "last_sync_at": "2024-06-15T10:30:00Z",
 
+  "origin_fetched": true,
   "patches_merged": ["fix/connection-pool-leak"],
+  "patches_synced": ["feature/custom-auth-headers", "internal/custom-metrics"],
+  "patches_diverged": [],
   "rebuild_triggered": true,
   "force_push_detected": false
 }
@@ -358,17 +418,39 @@ four extra fields added on top of it:
 
 (Abbreviated -- every standard workspace field is present too.)
 
+`origin_fetched` is always present in the sync response (both modes).
+`patches_synced` and `patches_diverged` appear only in `origin` mode.
+
+The patch refresh produces one of three outcomes per branch:
+
+- **`created`** -- the branch did not exist on the hub and was created from
+  the fork's tip.
+- **`fast_forwarded`** -- the hub's copy was an ancestor of the fork's tip
+  and was advanced.
+- **`replaced`** -- the hub's copy diverged from the fork's tip and was
+  replaced (the old tip is saved under `refs/hub/replaced/<branch>`).
+
+A moved `active` or `conflict` patch triggers the same auto-rebuild as an
+upstream advance (unless `AUTO_REBUILD_AFTER_SYNC=false`).
+
 If any patches are detected as merged, their status transitions to
 `merged_upstream`. By default, a rebuild is automatically triggered after
 sync (see the `AUTO_REBUILD_AFTER_SYNC` variable).
 
 The `force_push_detected` field indicates whether the upstream repository
-has rewritten history since the last sync. This is determined by checking
-whether the previously stored upstream HEAD is an ancestor of the new
-upstream HEAD. A force-push detection is informational -- the sync still
-proceeds normally.
+has rewritten history since the last sync. This is informational -- the
+sync still proceeds normally.
 
-### 5. Preview a rebuild
+**Divergence handling.** When `PATCH_DIVERGENCE_POLICY` is `report` (instead
+of the default `replace`), diverged branches are left unchanged and listed
+in `patches_diverged`. Use `--fail-on-diverged` to make the CLI exit with
+exit code 3 when `patches_diverged` is non-empty:
+
+```
+afc workspace sync api-gateway --fail-on-diverged
+```
+
+### 7. Preview a rebuild
 
 Before running a rebuild, you can preview which patches would conflict
 without modifying any git state:
@@ -407,7 +489,7 @@ successful patches, so cascading conflicts are detected accurately.
 
 No refs, branches, or patch statuses are modified by the preview.
 
-### 6. Trigger a rebuild manually
+### 8. Trigger a rebuild manually
 
 If auto-rebuild is disabled or you want to rebuild after modifying the patch
 list:
@@ -467,7 +549,7 @@ in real time. The `patch_results` field is updated after each patch is
 processed, so you can observe which patches have been applied so far before
 the job completes.
 
-### 7. Check the status dashboard
+### 9. Check the status dashboard
 
 Get a comprehensive view of the workspace and patch stack:
 
@@ -477,9 +559,11 @@ afc workspace patch-status api-gateway
 
 This returns workspace metadata, the last rebuild summary, per-patch status
 with last rebuild results, and aggregate counts including total rerere
-resolutions.
+resolutions. In `origin` mode, each patch entry includes `origin_sync_state`
+(`in_sync`, `diverged` or `missing_on_origin`), and the summary includes
+`patches_diverged` and `patches_missing_on_origin` counts.
 
-### 8. Handle a failed rebuild
+### 10. Handle a failed rebuild
 
 If a rebuild fails due to conflicts (in `fail_fast` mode), the failing patch
 is marked `conflict` and the rebuild stops:
@@ -516,7 +600,7 @@ To resolve:
    `afc patch update api-gateway <patch-id> --status active`
 5. Resubmit the rebuild: `afc rebuild submit api-gateway`
 
-### 9. Roll back a rebuild
+### 11. Roll back a rebuild
 
 If a rebuild produces unexpected results, you can roll back the integration
 branch to its previous state:
@@ -537,6 +621,43 @@ rebuild (there is no previous state).
 
 After rolling back, you can modify the patch list or resolve conflicts and
 then submit a new rebuild.
+
+### Alternative: hub-authoritative workspace
+
+If your workspace is driven by agents that push directly to the hub and
+never open upstream PRs, leave `PATCH_BRANCH_SOURCE` unset (it defaults to
+`hub`). In this flow:
+
+1. **Create the workspace** as in step 1 above.
+2. **Push the patch branch to the hub's git URL** (the workspace `hub_url`)
+   instead of to the fork:
+
+   ```
+   git push <hub-git-url> feature/custom-auth-headers
+   ```
+
+3. **Register the patch** with `afc patch add` as in step 5.
+4. **Let the push hook rebuild** -- pushing a registered patch branch
+   automatically enqueues a rebuild (unless `AUTO_REBUILD_AFTER_PUSH` is
+   `"false"`). Alternatively, trigger a rebuild manually:
+
+   ```
+   afc rebuild submit api-gateway
+   ```
+
+5. **Optionally mirror to the fork.** Set `PUSH_PATCHES_TO_ORIGIN=true` to
+   have the hub force-push (mirror) every accepted patch-branch update to
+   the fork, so the fork stays in sync without a separate push:
+
+   ```
+   afc vars create PUSH_PATCHES_TO_ORIGIN=true --workspace api-gateway
+   ```
+
+   A mirror failure is logged and emitted as `hub.patch.mirror_failed` but
+   does not fail the push or the rebuild.
+
+This flow suits agent-driven workspaces where the hub is the sole writer of
+patch branches and the fork is only a mirror.
 
 ---
 

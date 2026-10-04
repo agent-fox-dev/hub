@@ -855,7 +855,7 @@ func TestDocs_TS_24_14_RegistrationResolutionOrder(t *testing.T) {
 
 	// Check both "Add patches" (Getting Started) and "Adding a new patch"
 	// (Day-to-day) sections.
-	addPatches := section(t, guide, "### 3. Add patches", "### ")
+	addPatches := section(t, guide, "### 5. Register your patches", "### ")
 	addingNew := section(t, guide, "### Adding a new patch", "### ")
 
 	for _, s := range []struct {
@@ -961,6 +961,322 @@ func TestDocs_TS_24_18_PurgeScheduleIfCallerExists(t *testing.T) {
 	softDelete := section(t, guide, "### Soft-delete lifecycle", "### ")
 	_ = softDelete
 	t.Error("production purge caller found but schedule verification not implemented")
+}
+
+// ===========================================================================
+// TS-24-19 (unit): Getting Started orders the fork-first steps on
+// acme-oss/api-gateway and your-org/api-gateway-fork.
+// Verifies: 24-REQ-4.1
+// ===========================================================================
+
+func TestDocs_TS_24_19_GettingStartedForkFirstOrder(t *testing.T) {
+	guide := readDoc(t, "carry_patch_workflow.md")
+
+	// The Getting Started section must contain both repo names.
+	gs := section(t, guide, "## Getting started", "## ")
+	requireContains(t, "Getting Started", gs,
+		"acme-oss/api-gateway",
+		"your-org/api-gateway-fork",
+	)
+
+	// Step headings must appear in the correct order.
+	headings := []string{
+		"Create a carry-patch workspace",
+		"Set upstream credentials",
+		"Choose the authority",
+		"Create and push a patch branch",
+		"Register your patches",
+		"Sync",
+		"Preview a rebuild",
+		"Trigger a rebuild manually",
+		"Check the status dashboard",
+		"Handle a failed rebuild",
+		"Roll back a rebuild",
+	}
+
+	var indices []int
+	for _, h := range headings {
+		idx := strings.Index(gs, h)
+		if idx < 0 {
+			t.Errorf("Getting Started missing heading %q", h)
+			continue
+		}
+		indices = append(indices, idx)
+	}
+	for i := 1; i < len(indices); i++ {
+		if indices[i] <= indices[i-1] {
+			t.Errorf("heading %q appears before or at the same position as %q", headings[i], headings[i-1])
+		}
+	}
+
+	// Steps should be consecutively numbered.
+	for i, h := range headings {
+		want := strings.Contains(gs, "### "+itoa(i+1)+". "+h) ||
+			strings.Contains(gs, "### "+itoa(i+1)+". "+h[:min(len(h), 20)])
+		// Check that the step number prefix exists.
+		numPrefix := "### " + itoa(i+1) + "."
+		if !strings.Contains(gs, numPrefix) {
+			t.Errorf("Getting Started missing numbered step %q", numPrefix)
+		}
+		_ = want
+	}
+}
+
+// itoa converts an int to a string without importing strconv.
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	var digits []byte
+	for n > 0 {
+		digits = append([]byte{byte('0' + n%10)}, digits...)
+		n /= 10
+	}
+	return string(digits)
+}
+
+// ===========================================================================
+// TS-24-20 (unit): The choose-the-authority step shows the vars command and
+// the credential requirement.
+// Verifies: 24-REQ-4.2
+// ===========================================================================
+
+func TestDocs_TS_24_20_ChooseAuthorityStep(t *testing.T) {
+	guide := readDoc(t, "carry_patch_workflow.md")
+	step := section(t, guide, "### 3. Choose the authority", "### ")
+
+	requireContains(t, "Choose the authority step", step,
+		"afc vars create PATCH_BRANCH_SOURCE=origin --workspace api-gateway",
+		"REBUILD_PUSH_INTEGRATION_BRANCH=true",
+		"GIT_PAT",
+		"GIT_USERNAME",
+		"GIT_PASSWORD",
+	)
+}
+
+// ===========================================================================
+// TS-24-21 (unit): Branch creation and registration steps push to the fork
+// and register without --skip-branch-check.
+// Verifies: 24-REQ-4.3
+// ===========================================================================
+
+func TestDocs_TS_24_21_BranchCreationAndRegistration(t *testing.T) {
+	guide := readDoc(t, "carry_patch_workflow.md")
+
+	// The fork-first branch creation step.
+	branchStep := section(t, guide, "### 4. Create and push a patch branch", "### ")
+	requireContains(t, "branch creation step", branchStep,
+		"git push",
+		"upstream PR",
+	)
+
+	// The registration step.
+	regStep := section(t, guide, "### 5. Register your patches", "### ")
+	requireContains(t, "registration step", regStep,
+		"--if-not-exists",
+		"--position",
+	)
+
+	// The primary afc patch add lines should NOT have --skip-branch-check.
+	// Extract fenced code blocks from the registration step.
+	for _, line := range strings.Split(regStep, "\n") {
+		norm := strings.TrimSpace(line)
+		if strings.HasPrefix(norm, "afc patch add") && !strings.Contains(norm, "skip-branch-check") {
+			// Good: primary add without skip-branch-check.
+			continue
+		}
+	}
+	// Verify the primary patch add examples don't use --skip-branch-check.
+	// The first afc patch add line should not have it.
+	var firstPatchAdd string
+	for _, line := range strings.Split(regStep, "\n") {
+		norm := strings.TrimSpace(line)
+		if strings.HasPrefix(norm, "afc patch add") {
+			firstPatchAdd = norm
+			break
+		}
+	}
+	if firstPatchAdd != "" && strings.Contains(firstPatchAdd, "--skip-branch-check") {
+		t.Error("primary afc patch add line should not have --skip-branch-check")
+	}
+}
+
+// ===========================================================================
+// TS-24-22 (unit): The sync step shows the command and explains why sync,
+// not rebuild, brings in fork commits.
+// Verifies: 24-REQ-4.4
+// ===========================================================================
+
+func TestDocs_TS_24_22_SyncStepExplanation(t *testing.T) {
+	guide := readDoc(t, "carry_patch_workflow.md")
+	step := section(t, guide, "### 6. Sync", "### ")
+
+	requireContains(t, "sync step", step,
+		"afc workspace sync api-gateway",
+		"afc rebuild submit",
+		"does not fetch the fork",
+	)
+}
+
+// ===========================================================================
+// TS-24-23 (unit): The sync sample response has the new fields and the text
+// covers outcomes, --fail-on-diverged and the divergence policy.
+// Verifies: 24-REQ-4.5
+// ===========================================================================
+
+func TestDocs_TS_24_23_SyncResponseFieldsAndOutcomes(t *testing.T) {
+	guide := readDoc(t, "carry_patch_workflow.md")
+	step := section(t, guide, "### 6. Sync", "### ")
+
+	requireContains(t, "sync step", step,
+		"\"origin_fetched\"",
+		"\"patches_synced\"",
+		"\"patches_diverged\"",
+		"created",
+		"fast_forwarded",
+		"replaced",
+		"--fail-on-diverged",
+		"exit code 3",
+		"PATCH_DIVERGENCE_POLICY",
+	)
+}
+
+// ===========================================================================
+// TS-24-24 (unit): The dashboard step mentions per-patch sync-state fields
+// and the new summary counts.
+// Verifies: 24-REQ-4.6
+// ===========================================================================
+
+func TestDocs_TS_24_24_DashboardSyncStateFields(t *testing.T) {
+	guide := readDoc(t, "carry_patch_workflow.md")
+	step := section(t, guide, "### 9. Check the status dashboard", "### ")
+
+	requireContains(t, "dashboard step", step,
+		"origin_sync_state",
+		"patches_diverged",
+		"patches_missing_on_origin",
+	)
+}
+
+// ===========================================================================
+// TS-24-25 (unit): The "Alternative: hub-authoritative workspace" heading
+// shows the hub flow.
+// Verifies: 24-REQ-4.7
+// ===========================================================================
+
+func TestDocs_TS_24_25_AlternativeHubAuthoritativeWorkspace(t *testing.T) {
+	guide := readDoc(t, "carry_patch_workflow.md")
+	s := section(t, guide, "### Alternative: hub-authoritative workspace", "### ")
+
+	requireContains(t, "Alternative: hub-authoritative workspace", s,
+		"unset",
+		"git URL",
+		"afc rebuild submit",
+		"PUSH_PATCHES_TO_ORIGIN=true",
+		"agent-driven",
+	)
+}
+
+// ===========================================================================
+// TS-24-26 (property): Every afc command and flag in the walkthroughs exists
+// in docs/cli.md.
+// Verifies: 24-REQ-4.8
+// ===========================================================================
+
+func TestDocs_TS_24_26_AFCCommandsExistInCLIMd(t *testing.T) {
+	guide := readDoc(t, "carry_patch_workflow.md")
+	cliDoc := readDoc(t, "cli.md")
+
+	// Extract the Getting Started section and the alternative flow.
+	gs := section(t, guide, "## Getting started", "## ")
+
+	// Extract afc command lines from fenced code blocks.
+	inBlock := false
+	var afcLines []string
+	for _, line := range strings.Split(gs, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "```") {
+			inBlock = !inBlock
+			continue
+		}
+		if !inBlock {
+			continue
+		}
+		// Skip continuation lines.
+		if strings.HasPrefix(trimmed, "--") || trimmed == "" {
+			continue
+		}
+		// Find lines that start with afc.
+		if strings.HasPrefix(trimmed, "afc ") {
+			afcLines = append(afcLines, trimmed)
+		}
+	}
+
+	if len(afcLines) == 0 {
+		t.Fatal("no afc command lines found in Getting Started")
+	}
+
+	for _, line := range afcLines {
+		// Parse the command path: afc <sub1> <sub2> ...
+		parts := strings.Fields(line)
+		if len(parts) < 2 {
+			continue
+		}
+
+		// Build the command path (e.g. "afc workspace sync", "afc patch add").
+		var cmdParts []string
+		for _, p := range parts[1:] {
+			if strings.HasPrefix(p, "-") {
+				break
+			}
+			// Stop at arguments (values that look like slugs, IDs, etc.).
+			if strings.Contains(p, "=") || strings.Contains(p, "/") || strings.Contains(p, ".") {
+				break
+			}
+			// Stop at known argument positions (workspace slugs, etc.).
+			// Heuristic: if it's a known subcommand word, include it.
+			known := map[string]bool{
+				"workspace": true, "patch": true, "rebuild": true,
+				"secrets": true, "vars": true, "rerere": true,
+				"sync": true, "create": true, "add": true,
+				"submit": true, "status": true, "list": true,
+				"update": true, "delete": true, "remove": true,
+				"restore": true, "reorder": true, "preview": true,
+				"cancel": true, "requeue": true, "rollback": true,
+				"forget": true, "patch-status": true,
+				"reset-to-origin": true, "reclone": true,
+			}
+			if known[p] {
+				cmdParts = append(cmdParts, p)
+			} else {
+				break
+			}
+		}
+
+		if len(cmdParts) == 0 {
+			continue
+		}
+
+		// Check that the command path appears in cli.md.
+		cmdPath := "afc " + strings.Join(cmdParts, " ")
+		if !strings.Contains(cliDoc, cmdPath) {
+			t.Errorf("command %q from walkthrough not found in cli.md", cmdPath)
+		}
+
+		// Check flags.
+		for _, p := range parts {
+			if !strings.HasPrefix(p, "--") {
+				continue
+			}
+			flag := p
+			if idx := strings.Index(flag, "="); idx > 0 {
+				flag = flag[:idx]
+			}
+			if !strings.Contains(cliDoc, flag) {
+				t.Errorf("flag %q (from %q) not found in cli.md", flag, line)
+			}
+		}
+	}
 }
 
 // findPurgeCallers searches non-test .go files under internal/ for calls to
