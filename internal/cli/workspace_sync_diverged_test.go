@@ -3,6 +3,7 @@ package cli
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -22,6 +23,25 @@ func assertCLIErrorCode(t *testing.T, err error, wantCode int) {
 	}
 	if ce.ErrorCode() != wantCode {
 		t.Errorf("CLIError code = %d; want %d", ce.ErrorCode(), wantCode)
+	}
+}
+
+// decodeJSONValues decodes every JSON value in s. It fails the test when s is
+// not a sequence of JSON documents.
+func decodeJSONValues(t *testing.T, s string) []any {
+	t.Helper()
+	dec := json.NewDecoder(strings.NewReader(s))
+	var values []any
+	for {
+		var v any
+		err := dec.Decode(&v)
+		if errors.Is(err, io.EOF) {
+			return values
+		}
+		if err != nil {
+			t.Fatalf("stdout is not a sequence of JSON documents: %v\nstdout: %s", err, s)
+		}
+		values = append(values, v)
 	}
 }
 
@@ -138,19 +158,35 @@ func TestCLI_WorkspaceSync_FailOnDiverged_NonEmpty_TS2039(t *testing.T) {
 	stdout, stderr, err := runWorkspaceCmd(t, server.URL, "test-api-key",
 		"sync", "my-workspace", "--fail-on-diverged")
 
-	// Exit code must be 3 (via CLIError code).
+	// Exit code must be 3: the CLIError code and the code the afc process
+	// exits with (ExitCode), which apikit would otherwise collapse to 2.
 	if err == nil {
 		t.Fatal("expected non-zero exit; got nil error")
 	}
 	assertCLIErrorCode(t, err, 3)
+	if got := ExitCode(err); got != 3 {
+		t.Errorf("ExitCode = %d; want 3", got)
+	}
+	if !IsDivergedError(err) {
+		t.Error("IsDivergedError = false; want true")
+	}
 
-	// The JSON response should be printed to stdout.
-	if !strings.Contains(stdout, "origin_fetched") {
+	// stdout holds exactly one JSON document, the sync response; the diverged
+	// failure must not add an {"error": ...} envelope after it.
+	docs := decodeJSONValues(t, stdout)
+	if len(docs) != 1 {
+		t.Fatalf("stdout holds %d JSON documents; want exactly 1\nstdout: %s", len(docs), stdout)
+	}
+	resp, _ := docs[0].(map[string]any)
+	if _, ok := resp["origin_fetched"]; !ok {
 		t.Errorf("stdout should contain the response JSON; got: %s", stdout)
+	}
+	if _, hasErr := resp["error"]; hasErr {
+		t.Errorf("stdout carries an error envelope; got: %s", stdout)
 	}
 
 	// stderr should contain a message naming the diverged branches.
-	if !strings.Contains(stderr, "a") || !strings.Contains(stderr, "b") {
+	if !strings.Contains(stderr, "diverged patch branches: a, b") {
 		t.Errorf("stderr should name diverged branches a and b; got: %s", stderr)
 	}
 }
@@ -228,6 +264,9 @@ func TestCLI_WorkspaceSync_WaitThenDiverged_WaitOK_TS2040(t *testing.T) {
 		t.Fatal("expected non-zero exit; got nil error")
 	}
 	assertCLIErrorCode(t, err, 3)
+	if got := ExitCode(err); got != 3 {
+		t.Errorf("ExitCode = %d; want 3", got)
+	}
 
 	// The wait polling must have happened.
 	if pollCount.Load() < 1 {
@@ -277,9 +316,12 @@ func TestCLI_WorkspaceSync_WaitThenDiverged_WaitFail_TS2040(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected non-zero exit; got nil error")
 	}
-	exitCode := apikit.CLIExitCode(err)
+	exitCode := ExitCode(err)
 	if exitCode != 1 {
-		t.Errorf("CLIExitCode = %d; want 1 (wait failure takes precedence)", exitCode)
+		t.Errorf("ExitCode = %d; want 1 (wait failure takes precedence)", exitCode)
+	}
+	if IsDivergedError(err) {
+		t.Error("IsDivergedError = true for a wait failure; want false")
 	}
 }
 
@@ -308,11 +350,14 @@ func TestCLI_WorkspaceSync_WaitThenDiverged_RequestError_TS2040(t *testing.T) {
 		t.Fatal("expected non-zero exit; got nil error")
 	}
 	// The error from the API call should not be a diverged error.
-	exitCode := apikit.CLIExitCode(err)
-	// Request errors should not produce exit code 3.
 	var ce *apikit.CLIError
 	if errors.As(err, &ce) && ce.ErrorCode() == 3 {
 		t.Error("error code should not be 3 for a request error")
 	}
-	_ = exitCode
+	if IsDivergedError(err) {
+		t.Error("IsDivergedError = true for a request error; want false")
+	}
+	if got := ExitCode(err); got != 1 {
+		t.Errorf("ExitCode = %d; want 1 for an API request error", got)
+	}
 }

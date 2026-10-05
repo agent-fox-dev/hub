@@ -298,9 +298,17 @@ func TestSyncAudit_MixedOriginSync_EmitsPatchSyncEvent_TS2047(t *testing.T) {
 		t.Errorf("actor_type: want %q, got %q", "api_key", ev.ActorType)
 	}
 
-	// Check resource_type and workspace.
+	// Check resource_type, resource_id, action and workspace. Like every
+	// other hub emitter, the event sets ResourceID and Action; the sync
+	// covers the whole workspace, so its resource is the slug.
 	if ev.ResourceType != "patch" {
 		t.Errorf("resource_type: want %q, got %q", "patch", ev.ResourceType)
+	}
+	if ev.ResourceID != "my-workspace" {
+		t.Errorf("resource_id: want %q, got %q", "my-workspace", ev.ResourceID)
+	}
+	if ev.Action != "sync" {
+		t.Errorf("action: want %q, got %q", "sync", ev.Action)
 	}
 	if ev.Workspace != "my-workspace" {
 		t.Errorf("workspace: want %q, got %q", "my-workspace", ev.Workspace)
@@ -513,6 +521,15 @@ func TestSyncAudit_ReplacedBranches_EmitPatchReplaceEvents_TS2048(t *testing.T) 
 
 		meta := ev.Metadata
 		branchName, _ := meta["branch_name"].(string)
+
+		// Same shape as the reset handler's hub.patch.replace event: the
+		// branch is the resource and the action is "replace".
+		if ev.ResourceID != branchName {
+			t.Errorf("replace event resource_id: want %q, got %q", branchName, ev.ResourceID)
+		}
+		if ev.Action != "replace" {
+			t.Errorf("replace event action: want %q, got %q", "replace", ev.Action)
+		}
 		replacedSHA, _ := meta["replaced_sha"].(string)
 		originSHA, _ := meta["origin_sha"].(string)
 
@@ -779,6 +796,14 @@ func (r *casFailRunner) Run(ctx context.Context, args ...string) (string, error)
 // ===========================================================================
 
 func TestSyncAudit_NilEmitter_SyncCompletes_TS2051(t *testing.T) {
+	// Capture log output: a nil emitter skips emission, not the info log of
+	// each replacement (20-REQ-8.2).
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	origLogger := slog.Default()
+	slog.SetDefault(logger)
+	defer slog.SetDefault(origLogger)
+
 	// Create env with nil audit emitter.
 	env := newAuditSyncTestEnv(t, nil)
 
@@ -806,6 +831,7 @@ func TestSyncAudit_NilEmitter_SyncCompletes_TS2051(t *testing.T) {
 	writeFileHelper(t, filepath.Join(trunkDir, "local.txt"), "local")
 	runGitCmd(t, trunkDir, "add", ".")
 	runGitCmd(t, trunkDir, "commit", "-m", "local")
+	localSHA := runGitCmd(t, trunkDir, "rev-parse", "HEAD")
 	runGitCmd(t, trunkDir, "checkout", "main")
 	runGitCmd(t, trunkDir, "checkout", "-b", "temp-origin")
 	writeFileHelper(t, filepath.Join(trunkDir, "origin.txt"), "origin")
@@ -868,6 +894,34 @@ func TestSyncAudit_NilEmitter_SyncCompletes_TS2051(t *testing.T) {
 	elem := patchesSynced[0].(map[string]any)
 	if elem["action"] != "replaced" {
 		t.Errorf("expected action=replaced, got %v", elem["action"])
+	}
+
+	// The replacement is still logged at info level with slug, branch and
+	// both SHAs although there is no emitter.
+	var found bool
+	dec := json.NewDecoder(&logBuf)
+	for dec.More() {
+		var rec map[string]any
+		if err := dec.Decode(&rec); err != nil {
+			t.Fatalf("decode log record: %v", err)
+		}
+		if rec["msg"] != "patch branch replaced by origin" {
+			continue
+		}
+		found = true
+		if rec["level"] != "INFO" {
+			t.Errorf("log level = %v; want INFO", rec["level"])
+		}
+		if rec["workspace"] != "my-workspace" || rec["branch"] != "patch-a" {
+			t.Errorf("log record workspace/branch = %v/%v; want my-workspace/patch-a", rec["workspace"], rec["branch"])
+		}
+		if rec["replaced_sha"] != localSHA || rec["origin_sha"] != originSHA {
+			t.Errorf("log record replaced_sha/origin_sha = %v/%v; want %s/%s",
+				rec["replaced_sha"], rec["origin_sha"], localSHA, originSHA)
+		}
+	}
+	if !found {
+		t.Errorf("expected an info log \"patch branch replaced by origin\" with a nil emitter; got: %s", logBuf.String())
 	}
 }
 

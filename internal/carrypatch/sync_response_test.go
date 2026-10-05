@@ -878,3 +878,207 @@ var (
 	_ transport.AuthMethod
 	_ = (*jobqueue.Queue)(nil)
 )
+
+// ===========================================================================
+// Findings 3 and 4 of issue #42: the ref-write failure path honours
+// AUTO_REBUILD_AFTER_SYNC, and a moved branch whose work-tree reset fails
+// keeps its outcome and is reported with a message that does not claim the
+// ref update failed.
+//
+// Verifies: 20-REQ-4.3, 20-REQ-5.4
+// ===========================================================================
+
+// newFastForwardPatchEnv returns an origin-mode env in which each named
+// branch exists locally one commit behind the fork (so the refresh
+// fast-forwards it) and is registered as an active patch in order.
+func newFastForwardPatchEnv(t *testing.T, branches ...string) *originIntegrationEnv {
+	t.Helper()
+	env := setupOriginIntegrationEnv(t)
+	for _, b := range branches {
+		env.addForkBranch(t, b, b+" content")
+	}
+	env.fetchOriginInTrunk(t)
+	for _, b := range branches {
+		runGitCmd(t, env.trunkDir, "branch", b, "refs/remotes/origin/"+b)
+	}
+	for _, b := range branches {
+		env.addForkCommit(t, b, "extra on "+b)
+	}
+	env.fetchOriginInTrunk(t)
+	for i, b := range branches {
+		seedPatch(t, env.db, fmt.Sprintf("p%d", i+1), "my-workspace", b, i+1, PatchStatusActive)
+	}
+	return env
+}
+
+func (env *originIntegrationEnv) rebuildJobCount(t *testing.T) int {
+	t.Helper()
+	var n int
+	if err := env.db.QueryRow(`SELECT COUNT(*) FROM jobs WHERE type='rebuild' AND key='my-workspace'`).Scan(&n); err != nil {
+		t.Fatalf("count rebuild jobs: %v", err)
+	}
+	return n
+}
+
+func (env *originIntegrationEnv) errorMessage(t *testing.T, rec *httptest.ResponseRecorder) string {
+	t.Helper()
+	var errResp errorEnvelope
+	if err := json.NewDecoder(rec.Body).Decode(&errResp); err != nil {
+		t.Fatalf("decode error response: %v", err)
+	}
+	return errResp.Error.Message
+}
+
+// failSecondUpdateRef returns a runner that lets the first update-ref through
+// and fails the second, as TS-20-26 does.
+func failSecondUpdateRef(real GitRunner) *recordingGitRunner {
+	count := 0
+	return &recordingGitRunner{
+		real: real,
+		runOverride: func(ctx context.Context, args ...string) (string, error) {
+			if len(args) >= 1 && args[0] == "update-ref" {
+				count++
+				if count == 2 {
+					return "", fmt.Errorf("simulated CAS failure")
+				}
+			}
+			return real.Run(ctx, args...)
+		},
+	}
+}
+
+func TestSyncResponse_RefWriteFailure_AutoRebuildAfterSync_TS2026(t *testing.T) {
+	cases := []struct {
+		name     string
+		variable string // value of AUTO_REBUILD_AFTER_SYNC; "" leaves it unset
+		wantJobs int
+	}{
+		{"unset_enqueues_for_moved_branch", "", 1},
+		{"true_enqueues_for_moved_branch", "true", 1},
+		{"false_enqueues_nothing", "false", 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := newFastForwardPatchEnv(t, "feat-a", "feat-b", "feat-c")
+			if tc.variable != "" {
+				env.variables["AUTO_REBUILD_AFTER_SYNC"] = tc.variable
+			}
+
+			var beforeSHA, beforeSyncAt sql.NullString
+			env.db.QueryRow(`SELECT upstream_head_sha, last_sync_at FROM workspaces WHERE slug = ?`, "my-workspace").Scan(&beforeSHA, &beforeSyncAt)
+
+			env.buildEcho(t, failSecondUpdateRef(newRealGitRunner(t, env.trunkDir)))
+			rec := env.doSync(t)
+
+			if rec.Code != http.StatusInternalServerError {
+				t.Fatalf("sync status = %d; want 500; body = %s", rec.Code, rec.Body.String())
+			}
+			if msg := env.errorMessage(t, rec); msg != "failed to update patch branch feat-b" {
+				t.Errorf("error message = %q; want %q", msg, "failed to update patch branch feat-b")
+			}
+
+			// The earlier outcome is persisted regardless of the rebuild setting.
+			state, sha, syncedAt := env.queryPatchOriginState(t, "p1")
+			wantSHA := refSHA(t, env.trunkDir, "refs/remotes/origin/feat-a")
+			if !state.Valid || state.String != StateInSync || !sha.Valid || sha.String != wantSHA || !syncedAt.Valid {
+				t.Errorf("p1 persisted state = %v / %v / %v; want in_sync / %s / set", state, sha, syncedAt, wantSHA)
+			}
+
+			if got := env.rebuildJobCount(t); got != tc.wantJobs {
+				t.Errorf("rebuild jobs = %d; want %d", got, tc.wantJobs)
+			}
+
+			var afterSHA, afterSyncAt sql.NullString
+			env.db.QueryRow(`SELECT upstream_head_sha, last_sync_at FROM workspaces WHERE slug = ?`, "my-workspace").Scan(&afterSHA, &afterSyncAt)
+			if afterSHA != beforeSHA || afterSyncAt != beforeSyncAt {
+				t.Errorf("workspace row changed on failure: sha %v→%v, last_sync_at %v→%v",
+					beforeSHA, afterSHA, beforeSyncAt, afterSyncAt)
+			}
+		})
+	}
+}
+
+func TestSyncResponse_HardResetFailure_KeepsMovedBranch(t *testing.T) {
+	cases := []struct {
+		name     string
+		variable string
+		wantJobs int
+	}{
+		{"auto_rebuild_default", "", 1},
+		{"auto_rebuild_false", "false", 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := newFastForwardPatchEnv(t, "feat-a", "feat-b")
+			if tc.variable != "" {
+				env.variables["AUTO_REBUILD_AFTER_SYNC"] = tc.variable
+			}
+			// HEAD on the branch the refresh is about to move makes the
+			// refresh reset the work tree, which the runner fails.
+			runGitCmd(t, env.trunkDir, "checkout", "feat-a")
+
+			var beforeSHA, beforeSyncAt sql.NullString
+			env.db.QueryRow(`SELECT upstream_head_sha, last_sync_at FROM workspaces WHERE slug = ?`, "my-workspace").Scan(&beforeSHA, &beforeSyncAt)
+
+			env.buildEcho(t, &failingResetRunner{GitRunner: newRealGitRunner(t, env.trunkDir)})
+			rec := env.doSync(t)
+
+			if rec.Code != http.StatusInternalServerError {
+				t.Fatalf("sync status = %d; want 500; body = %s", rec.Code, rec.Body.String())
+			}
+			// The ref update did not fail, so the message must not say it did.
+			msg := env.errorMessage(t, rec)
+			if msg != "failed to reset working tree for patch branch feat-a" {
+				t.Errorf("error message = %q; want %q", msg, "failed to reset working tree for patch branch feat-a")
+			}
+
+			// The ref moved.
+			forkTip := refSHA(t, env.trunkDir, "refs/remotes/origin/feat-a")
+			if got := refSHA(t, env.trunkDir, "refs/heads/feat-a"); got != forkTip {
+				t.Fatalf("refs/heads/feat-a = %s; want fork tip %s", got, forkTip)
+			}
+
+			// ... so the outcome is persisted ...
+			state, sha, syncedAt := env.queryPatchOriginState(t, "p1")
+			if !state.Valid || state.String != StateInSync || !sha.Valid || sha.String != forkTip || !syncedAt.Valid {
+				t.Errorf("p1 persisted state = %v / %v / %v; want in_sync / %s / set", state, sha, syncedAt, forkTip)
+			}
+			// ... the stopped refresh left feat-b untouched ...
+			if state, _, _ := env.queryPatchOriginState(t, "p2"); state.Valid {
+				t.Errorf("p2 persisted state = %v; want NULL (refresh stopped before it)", state)
+			}
+			// ... and the rebuild decision saw the moved branch.
+			if got := env.rebuildJobCount(t); got != tc.wantJobs {
+				t.Errorf("rebuild jobs = %d; want %d", got, tc.wantJobs)
+			}
+
+			var afterSHA, afterSyncAt sql.NullString
+			env.db.QueryRow(`SELECT upstream_head_sha, last_sync_at FROM workspaces WHERE slug = ?`, "my-workspace").Scan(&afterSHA, &afterSyncAt)
+			if afterSHA != beforeSHA || afterSyncAt != beforeSyncAt {
+				t.Errorf("workspace row changed on failure: sha %v→%v, last_sync_at %v→%v",
+					beforeSHA, afterSHA, beforeSyncAt, afterSyncAt)
+			}
+		})
+	}
+}
+
+func TestSyncResponse_AncestorCheckFailure_DistinctMessage(t *testing.T) {
+	env := newFastForwardPatchEnv(t, "feat-a")
+
+	env.buildEcho(t, &failingAncestorRunner{GitRunner: newRealGitRunner(t, env.trunkDir)})
+	rec := env.doSync(t)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("sync status = %d; want 500; body = %s", rec.Code, rec.Body.String())
+	}
+	if msg := env.errorMessage(t, rec); msg != "failed to compare patch branch feat-a with origin" {
+		t.Errorf("error message = %q; want %q", msg, "failed to compare patch branch feat-a with origin")
+	}
+	// Nothing moved: no outcome persisted, no rebuild.
+	if state, _, _ := env.queryPatchOriginState(t, "p1"); state.Valid {
+		t.Errorf("p1 persisted state = %v; want NULL", state)
+	}
+	if got := env.rebuildJobCount(t); got != 0 {
+		t.Errorf("rebuild jobs = %d; want 0", got)
+	}
+}

@@ -1030,6 +1030,109 @@ func TestSyncOriginIntegration_PersistOriginState_TS2042(t *testing.T) {
 	}
 }
 
+// ===========================================================================
+// Finding 5 of issue #42: a patch that merge detection marks merged_upstream
+// in the same sync keeps no origin columns
+//
+// Verifies: 20-REQ-7.2
+// ===========================================================================
+
+func TestSyncOriginIntegration_NewlyMergedPatchClearsOriginState_Finding5(t *testing.T) {
+	env := setupOriginIntegrationEnv(t)
+	env.variables["PATCH_DIVERGENCE_POLICY"] = "report"
+
+	// Both patches exist on the fork and locally with diverging content.
+	env.addForkBranch(t, "merged-feat", "fork merged-feat")
+	env.addForkBranch(t, "stay-feat", "fork stay-feat")
+	env.fetchOriginInTrunk(t)
+
+	for _, b := range []string{"merged-feat", "stay-feat"} {
+		runGitCmd(t, env.trunkDir, "checkout", "-b", b, "main")
+		writeFileHelper(t, filepath.Join(env.trunkDir, b+"-local.txt"), "local "+b)
+		runGitCmd(t, env.trunkDir, "add", ".")
+		runGitCmd(t, env.trunkDir, "commit", "-m", "local "+b)
+		runGitCmd(t, env.trunkDir, "checkout", "main")
+	}
+
+	// Upstream advances past merged-feat's local tip only, so merge detection
+	// finds merged-feat (ancestry) but not stay-feat.
+	runGitCmd(t, env.trunkDir, "checkout", "-b", "temp-upstream", "merged-feat")
+	writeFileHelper(t, filepath.Join(env.trunkDir, "upstream-extra.txt"), "upstream extra")
+	runGitCmd(t, env.trunkDir, "add", ".")
+	runGitCmd(t, env.trunkDir, "commit", "-m", "upstream extra")
+	newUpstream := runGitCmd(t, env.trunkDir, "rev-parse", "HEAD")
+	runGitCmd(t, env.trunkDir, "checkout", "main")
+	runGitCmd(t, env.trunkDir, "branch", "-D", "temp-upstream")
+	runGitCmd(t, env.trunkDir, "update-ref", "refs/remotes/upstream/HEAD", newUpstream)
+
+	seedPatch(t, env.db, "p-merged", "my-workspace", "merged-feat", 1, PatchStatusActive)
+	seedPatch(t, env.db, "p-stay", "my-workspace", "stay-feat", 2, PatchStatusActive)
+
+	env.buildEcho(t, newRealGitRunner(t, env.trunkDir))
+	rec := env.doSync(t)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("sync status = %d; want 200; body = %s", rec.Code, rec.Body.String())
+	}
+
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	merged, _ := resp["patches_merged"].([]any)
+	if len(merged) != 1 || merged[0] != "merged-feat" {
+		t.Fatalf("patches_merged = %v; want [merged-feat]", resp["patches_merged"])
+	}
+
+	// The merged patch ends with all three origin columns NULL.
+	var status string
+	if err := env.db.QueryRow(`SELECT status FROM patches WHERE id = 'p-merged'`).Scan(&status); err != nil {
+		t.Fatalf("query status: %v", err)
+	}
+	if status != PatchStatusMergedUpstream {
+		t.Fatalf("p-merged status = %q; want %q", status, PatchStatusMergedUpstream)
+	}
+	state, sha, syncedAt := env.queryPatchOriginState(t, "p-merged")
+	if state.Valid || sha.Valid || syncedAt.Valid {
+		t.Errorf("p-merged origin columns = %v / %v / %v; want all NULL", state, sha, syncedAt)
+	}
+
+	// A patch that stayed active keeps the state the refresh recorded.
+	state, sha, syncedAt = env.queryPatchOriginState(t, "p-stay")
+	wantSHA := refSHA(t, env.trunkDir, "refs/remotes/origin/stay-feat")
+	if !state.Valid || state.String != StateDiverged || !sha.Valid || sha.String != wantSHA || !syncedAt.Valid {
+		t.Errorf("p-stay origin columns = %v / %v / %v; want diverged / %s / set", state, sha, syncedAt, wantSHA)
+	}
+
+	// patch-status counts only the patch that is still diverged.
+	api := env.echo.Group("/api/v1")
+	api.Use(rebuildTestAuthMiddleware())
+	RegisterPatchStatusRoutes(api, PatchStatusAPIConfig{
+		DB:            env.db,
+		Queue:         env.queue,
+		WorkspaceRoot: env.wsRoot,
+		PatchStore:    NewSQLPatchStore(env.db),
+	})
+	authJSON, _ := json.Marshal(rebuildUserAuth("alice"))
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/workspaces/my-workspace/patch-status", nil)
+	req.Header.Set("X-Test-Auth", string(authJSON))
+	statusRec := httptest.NewRecorder()
+	env.echo.ServeHTTP(statusRec, req)
+	if statusRec.Code != http.StatusOK {
+		t.Fatalf("patch-status = %d; want 200; body = %s", statusRec.Code, statusRec.Body.String())
+	}
+	var dash map[string]any
+	if err := json.Unmarshal(statusRec.Body.Bytes(), &dash); err != nil {
+		t.Fatalf("decode patch-status: %v", err)
+	}
+	summary := dash["summary"].(map[string]any)
+	if summary["patches_diverged"] != float64(1) {
+		t.Errorf("summary.patches_diverged = %v; want 1 (only stay-feat)", summary["patches_diverged"])
+	}
+	if summary["merged_upstream"] != float64(1) {
+		t.Errorf("summary.merged_upstream = %v; want 1", summary["merged_upstream"])
+	}
+}
+
 // Suppress unused import warnings.
 var (
 	_ = os.Stat

@@ -450,6 +450,10 @@ exit code 3 when `patches_diverged` is non-empty:
 afc workspace sync api-gateway --fail-on-diverged
 ```
 
+The sync response is still printed to stdout as a single JSON document, and
+a message naming the diverged branches goes to stderr, so a CI job can both
+fail on the exit code and read `patches_diverged` from stdout.
+
 ### 7. Preview a rebuild
 
 Before running a rebuild, you can preview which patches would conflict
@@ -1321,8 +1325,12 @@ proceeds through these phases in order:
    diverged branches are left unchanged instead of being replaced.
 
    A ref-write failure stops the refresh. Outcomes already produced are
-   persisted, and a rebuild is enqueued for branches already moved, but
-   `last_sync_at` is not written.
+   persisted, and a rebuild is enqueued for branches already moved (unless
+   `AUTO_REBUILD_AFTER_SYNC` is `"false"`), but `last_sync_at` is not
+   written. A branch that moved but whose trunk work-tree reset then failed
+   counts as moved too: its outcome is kept and persisted, and the sync
+   answers `500` with a message that says the reset failed, not that the
+   ref update failed.
 
 5. **Resolve the base.** Determine the new upstream base
    (`refs/remotes/upstream/HEAD`, with the same fallbacks as the rebuild)

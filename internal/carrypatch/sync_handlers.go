@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -163,6 +164,9 @@ func runCarryPatchSync(cfg SyncAPIConfig, c echo.Context) (*CarryPatchSyncRespon
 	}
 
 	// 20-REQ-2.2: Origin credential resolution happens before either fetch.
+	// A nil ResolveOriginAuth means anonymous access to the origin remote,
+	// exactly as a nil ResolveAuth does for upstream below. A nil FetchOrigin
+	// is different: there is nothing to call, so it is an error above.
 	var originAuth transport.AuthMethod
 	if isOriginMode {
 		if cfg.ResolveOriginAuth != nil {
@@ -291,7 +295,9 @@ func runCarryPatchSync(cfg SyncAPIConfig, c echo.Context) (*CarryPatchSyncRespon
 			// already moved still runs below. upstream_head_sha and
 			// last_sync_at are NOT written.
 			// Enqueue rebuild for branches already moved, then return 500.
-			if patchAdvanced {
+			// The decision honours AUTO_REBUILD_AFTER_SYNC like the success
+			// path does (20-REQ-5.4).
+			if patchAdvanced && autoRebuildEnabled(cfg, slug) {
 				enqueueRebuildIfNeeded(cfg, slug, integrationBranch, auth.UserID, true)
 			}
 
@@ -300,7 +306,7 @@ func runCarryPatchSync(cfg SyncAPIConfig, c echo.Context) (*CarryPatchSyncRespon
 			emitSyncAuditEvents(ctx, cfg.Audit, auth, slug, outcomes)
 
 			return nil, apikit.WriteAPIError(c, http.StatusInternalServerError,
-				fmt.Sprintf("failed to update patch branch %s", refreshErr.(*RefWriteError).Branch))
+				refreshFailureMessage(refreshErr))
 		}
 	}
 
@@ -372,6 +378,13 @@ func runCarryPatchSync(cfg SyncAPIConfig, c echo.Context) (*CarryPatchSyncRespon
 		}
 	}
 
+	// 20-REQ-7.2: Patches marked merged_upstream by the loop above were
+	// still active when the refresh persisted their origin state. Clear the
+	// origin columns again so no merged_upstream row keeps them.
+	if isOriginMode && len(resp.PatchesMerged) > 0 {
+		clearMergedDeletedOriginState(ctx, cfg.PatchStore, slug)
+	}
+
 	// 20-REQ-5.6: When neither upstream nor any patch changed, return
 	// empty patches_merged and rebuild_triggered false.
 	newlyMerged := len(resp.PatchesMerged)
@@ -400,16 +413,7 @@ func runCarryPatchSync(cfg SyncAPIConfig, c echo.Context) (*CarryPatchSyncRespon
 	// ===========================================================
 
 	if shouldRebuild {
-		autoRebuild := true // default when unset (16-REQ-5.3)
-		if cfg.GetVariable != nil {
-			val, _ := cfg.GetVariable("workspace", slug, "AUTO_REBUILD_AFTER_SYNC")
-			if val == "false" {
-				// 16-REQ-5.4 / 20-REQ-5.4: explicitly disabled.
-				autoRebuild = false
-			}
-		}
-
-		if autoRebuild {
+		if autoRebuildEnabled(cfg, slug) {
 			jobID, triggered := enqueueRebuildIfNeeded(cfg, slug, integrationBranch, auth.UserID, false)
 			if triggered {
 				resp.RebuildTriggered = true
@@ -427,6 +431,38 @@ func runCarryPatchSync(cfg SyncAPIConfig, c echo.Context) (*CarryPatchSyncRespon
 	}
 
 	return &resp, nil
+}
+
+// autoRebuildEnabled reports whether the workspace allows a rebuild to be
+// enqueued after a sync. It is true unless AUTO_REBUILD_AFTER_SYNC is exactly
+// "false": an unset variable, a lookup error and any other value all leave it
+// enabled (16-REQ-5.3, 16-REQ-5.4, 20-REQ-5.4). The success path and the
+// ref-write failure path share it so both honour the variable.
+func autoRebuildEnabled(cfg SyncAPIConfig, slug string) bool {
+	if cfg.GetVariable == nil {
+		return true
+	}
+	val, _ := cfg.GetVariable("workspace", slug, "AUTO_REBUILD_AFTER_SYNC")
+	return val != "false"
+}
+
+// refreshFailureMessage returns the 500 message for a failed patch refresh.
+// A failed ref write keeps the message 20-REQ-4.3 specifies. An ancestry-check
+// failure and a work-tree reset failure after the ref moved are different
+// failures and say so, rather than claiming the ref update failed.
+func refreshFailureMessage(err error) string {
+	var refErr *RefWriteError
+	if !errors.As(err, &refErr) {
+		return "failed to refresh patch branches"
+	}
+	switch refErr.Stage {
+	case RefStageCompare:
+		return fmt.Sprintf("failed to compare patch branch %s with origin", refErr.Branch)
+	case RefStageReset:
+		return fmt.Sprintf("failed to reset working tree for patch branch %s", refErr.Branch)
+	default:
+		return fmt.Sprintf("failed to update patch branch %s", refErr.Branch)
+	}
 }
 
 // enqueueRebuildIfNeeded enqueues a rebuild job for the workspace. It returns
@@ -659,7 +695,9 @@ func outcomesToDiverged(outcomes []PatchRefreshOutcome) []string {
 // successful completion path and on the ref-write failure path (for outcomes
 // already produced).
 //
-// 20-REQ-8.6: A nil emitter skips emission.
+// 20-REQ-8.2: Every replacement is logged at info level, whether or not an
+// emitter is configured.
+// 20-REQ-8.6: A nil emitter skips emission only.
 // 20-REQ-8.7: An Emit error is logged and does not affect the sync.
 func emitSyncAuditEvents(
 	ctx context.Context,
@@ -668,6 +706,20 @@ func emitSyncAuditEvents(
 	slug string,
 	outcomes []PatchRefreshOutcome,
 ) {
+	// Log each replacement at info level. This does not depend on the
+	// emitter: a nil emitter skips emission, not the log line.
+	for _, o := range outcomes {
+		if o.Action != ActionReplaced {
+			continue
+		}
+		slog.Info("patch branch replaced by origin",
+			"workspace", slug,
+			"branch", o.BranchName,
+			"replaced_sha", o.ReplacedSHA,
+			"origin_sha", o.OriginSHA,
+		)
+	}
+
 	if emitter == nil {
 		return
 	}
@@ -708,23 +760,19 @@ func emitSyncAuditEvents(
 		missingOnOrigin = []string{}
 	}
 
-	// 20-REQ-8.2: Emit one hub.patch.replace per replaced branch, and log
-	// each replacement at info level.
+	// 20-REQ-8.2: Emit one hub.patch.replace per replaced branch. The event
+	// has the same shape as the one the reset handler emits: the branch is
+	// the resource and the action is "replace".
 	for _, o := range outcomes {
 		if o.Action != ActionReplaced {
 			continue
 		}
 
-		slog.Info("patch branch replaced by origin",
-			"workspace", slug,
-			"branch", o.BranchName,
-			"replaced_sha", o.ReplacedSHA,
-			"origin_sha", o.OriginSHA,
-		)
-
 		replaceEvent := audit.HubEvent{
 			EventType:    audit.EventPatchReplace,
 			ResourceType: "patch",
+			ResourceID:   o.BranchName,
+			Action:       "replace",
 			Workspace:    slug,
 			Metadata: map[string]any{
 				"branch_name":  o.BranchName,
@@ -745,10 +793,14 @@ func emitSyncAuditEvents(
 		}
 	}
 
-	// 20-REQ-8.1: Emit one hub.patch.sync per completed sync.
+	// 20-REQ-8.1: Emit one hub.patch.sync per completed sync. The event
+	// covers the whole workspace rather than one branch, so its resource is
+	// the workspace slug and its action is "sync".
 	syncEvent := audit.HubEvent{
 		EventType:    audit.EventPatchSync,
 		ResourceType: "patch",
+		ResourceID:   slug,
+		Action:       "sync",
 		Workspace:    slug,
 		Metadata: map[string]any{
 			"origin_fetched":    true,
