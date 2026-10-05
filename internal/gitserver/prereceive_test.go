@@ -2,6 +2,7 @@ package gitserver
 
 import (
 	"context"
+	"crypto/sha1"
 	"database/sql"
 	"errors"
 	"net/http"
@@ -10,7 +11,9 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
+	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/storer"
 	"github.com/txsvc/apikit"
 )
@@ -299,52 +302,158 @@ func TestPreReceive_TS22_5_StorerWrapperAndImports(t *testing.T) {
 	}
 }
 
+// emptyPack returns a valid packfile containing zero objects: the signature,
+// version 2, an object count of 0 and the SHA-1 trailer. A git client sends
+// this when every pushed commit already exists on the server.
+func emptyPack() []byte {
+	header := []byte{'P', 'A', 'C', 'K', 0, 0, 0, 2, 0, 0, 0, 0}
+	sum := sha1.Sum(header)
+	return append(header, sum[:]...)
+}
+
+// receivePackRequest builds a git-receive-pack request body: the first command
+// carries the capability list after a NUL, the rest are plain commands, a
+// flush packet ends the command list and the packfile follows.
+func receivePackRequest(commands []string, caps string, pack []byte) string {
+	var b strings.Builder
+	for i, c := range commands {
+		if i == 0 {
+			c += "\x00" + caps
+		}
+		b.Write(encodePktLine(c))
+	}
+	b.Write(encodePktFlush())
+	b.Write(pack)
+	return b.String()
+}
+
 // TS-22-6: A client that does not request report-status still has the
-// hook's rejection enforced but gets no per-ref message.
+// hook's rejection enforced but gets no per-ref message, and the refs the
+// hub did accept in the same push still drive their side effects.
 // Verifies: 22-REQ-8.3
 //
-// The pre-receive hook rejects at the storer level (SetReference returns
-// an error), which means the ref is never written regardless of whether
-// the client requested report-status. The go-git server only sends ng
-// lines when report-status is in the capabilities. We verify enforcement
-// by confirming the ref is unchanged after a push through the handler.
+// A real git client always requests report-status, so this test speaks the
+// protocol directly: one push creating a rejected ref (first, so the hook's
+// error is go-git's first error) and an accepted ref, without report-status.
+// go-git then returns (nil, firstErr); the handler must not turn that error
+// into an ERR line carrying the hook's text.
 func TestPreReceive_TS22_6_NoReportStatusEnforcement(t *testing.T) {
-	env, _, _ := newPreReceiveClientServer(t)
+	env, trunk, _ := newPreReceiveClientServer(t)
 
-	RegisterPreReceiveHook(func(_ context.Context, _ *sql.DB, _ string, _ *apikit.AuthInfo, _ RefUpdate) error {
-		return errors.New("denied here")
+	auditMock := newGitAuditEmitter()
+	origEmitter := defaultAuditEmitter
+	defaultAuditEmitter = auditMock
+	t.Cleanup(func() { defaultAuditEmitter = origEmitter })
+
+	postPush := make(chan []string, 4)
+	RegisterPostPushHook(func(_ *sql.DB, _ string, branches []string) {
+		postPush <- append([]string(nil), branches...)
 	})
 
-	// Use a real git push (which always requests report-status) and verify
-	// the ref is not written. The storer-level rejection is independent of
-	// the report-status capability.
-	clone := t.TempDir()
-	_, trunk, remote := newGitClientServer(t)
-	_ = env
-
-	// Re-register the hook (newGitClientServer creates a new env).
-	RegisterPreReceiveHook(func(_ context.Context, _ *sql.DB, _ string, _ *apikit.AuthInfo, _ RefUpdate) error {
-		return errors.New("denied here")
+	RegisterPreReceiveHook(func(_ context.Context, _ *sql.DB, _ string, _ *apikit.AuthInfo, upd RefUpdate) error {
+		if string(upd.Name) == "refs/heads/blocked" {
+			return errors.New("denied here")
+		}
+		return nil
 	})
 
-	runGitCmd(t, "", "clone", remote, clone)
-	addCommit(t, clone, "f.txt", "feature commit")
-	runGitCmd(t, clone, "checkout", "-b", "feature")
+	base := runGitCmd(t, trunk, "rev-parse", "HEAD")
+	zero := plumbing.ZeroHash.String()
+	body := receivePackRequest([]string{
+		zero + " " + base + " refs/heads/blocked",
+		zero + " " + base + " refs/heads/open",
+	}, "agent=hub-test", emptyPack())
 
-	out, err := gitCmdOutput(clone, "push", "origin", "feature")
-	if err == nil {
-		t.Fatal("expected push to fail")
+	rec := env.doRequest(t, http.MethodPost,
+		"/git/myorg/myws.git/git-receive-pack", body,
+		withBasicAuth("x-token-auth", "af_key_user1"))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d; want %d", rec.Code, http.StatusOK)
 	}
 
-	// The ref must not exist.
-	_, refErr := gitCmdOutput(trunk, "rev-parse", "--verify", "refs/heads/feature")
-	if refErr == nil {
-		t.Error("refs/heads/feature should not exist after rejected push")
+	// Enforcement: the rejected ref is absent, the accepted ref exists.
+	if refExists(t, trunk, "refs/heads/blocked") {
+		t.Error("refs/heads/blocked should not exist after a rejected push")
+	}
+	if got := refValue(t, trunk, "refs/heads/open"); got != base {
+		t.Errorf("refs/heads/open = %q; want %q", got, base)
 	}
 
-	// The output should contain the denial message (with report-status).
-	if !strings.Contains(out, "denied here") {
-		t.Errorf("expected 'denied here' in output; got:\n%s", out)
+	// No per-ref message: neither the hook's text nor an ERR line.
+	respBody := rec.Body.String()
+	if strings.Contains(respBody, "denied here") {
+		t.Errorf("response leaks the hook's message: %q", respBody)
+	}
+	if strings.Contains(respBody, "ERR") {
+		t.Errorf("response contains an ERR line: %q", respBody)
+	}
+
+	// The accepted ref still drives audit and the post-push hook; the
+	// rejected one does not.
+	events := auditMock.Events()
+	if len(events) != 1 {
+		t.Fatalf("expected 1 audit event for the accepted ref; got %d", len(events))
+	}
+	refsUpdated, ok := events[0].Metadata["refs_updated"].([]string)
+	if !ok {
+		t.Fatalf("refs_updated is %T; want []string", events[0].Metadata["refs_updated"])
+	}
+	if len(refsUpdated) != 1 || refsUpdated[0] != "refs/heads/open" {
+		t.Errorf("refs_updated = %v; want [refs/heads/open]", refsUpdated)
+	}
+
+	select {
+	case branches := <-postPush:
+		if len(branches) != 1 || branches[0] != "open" {
+			t.Errorf("post-push branches = %v; want [open]", branches)
+		}
+	case <-time.After(2 * time.Second):
+		t.Error("post-push hook was not called for the accepted ref")
+	}
+
+	// 22-REQ-5.4: head_sha is refreshed from the trunk HEAD.
+	var headSHA string
+	if err := env.db.QueryRow(
+		`SELECT COALESCE(head_sha, '') FROM workspaces WHERE slug = ?`, "myws",
+	).Scan(&headSHA); err != nil {
+		t.Fatalf("query head_sha: %v", err)
+	}
+	if want := runGitCmd(t, trunk, "rev-parse", "HEAD"); headSHA != want {
+		t.Errorf("head_sha = %q; want trunk HEAD %q", headSHA, want)
+	}
+}
+
+// TS-22-6 (guard): without report-status, a session failure that is not a
+// hook rejection (here an unreadable packfile) is still reported to the
+// client as an ERR line and writes no ref.
+// Verifies: 22-REQ-8.3
+func TestPreReceive_TS22_6_NoReportStatusUnpackFailureStillErrors(t *testing.T) {
+	env, trunk, _ := newPreReceiveClientServer(t)
+
+	var hookCalls int
+	RegisterPreReceiveHook(func(_ context.Context, _ *sql.DB, _ string, _ *apikit.AuthInfo, _ RefUpdate) error {
+		hookCalls++
+		return nil
+	})
+
+	base := runGitCmd(t, trunk, "rev-parse", "HEAD")
+	body := receivePackRequest([]string{
+		plumbing.ZeroHash.String() + " " + base + " refs/heads/open",
+	}, "agent=hub-test", []byte("this is not a packfile"))
+
+	rec := env.doRequest(t, http.MethodPost,
+		"/git/myorg/myws.git/git-receive-pack", body,
+		withBasicAuth("x-token-auth", "af_key_user1"))
+
+	if !strings.Contains(rec.Body.String(), "ERR") {
+		t.Errorf("expected an ERR line for an unreadable pack; got %q", rec.Body.String())
+	}
+	if refExists(t, trunk, "refs/heads/open") {
+		t.Error("refs/heads/open should not exist after a failed unpack")
+	}
+	if hookCalls != 0 {
+		t.Errorf("hook called %d times; want 0 when unpacking fails", hookCalls)
 	}
 }
 

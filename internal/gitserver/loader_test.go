@@ -1,7 +1,9 @@
 package gitserver
 
 import (
+	"context"
 	"errors"
+	"sync"
 	"testing"
 
 	"github.com/go-git/go-git/v5/plumbing/transport"
@@ -200,6 +202,106 @@ func TestLoader_PlainOpenFails_ReturnsWrappedError(t *testing.T) {
 	}
 	if s != nil {
 		t.Error("Load() returned non-nil storer for missing repo; want nil")
+	}
+}
+
+// TestLoader_LastStorerRecordedOnlyForRequestLoader verifies that the shared
+// base loader (used by the startup transport for info/refs and upload-pack)
+// never writes lastStorer, while a per-request loader records the storer it
+// created so the receive-pack handler can read the hook-rejected refs.
+//
+// The base loader is shared across concurrent requests, so writing the field
+// there is a data race. Only the per-request copy may record it.
+// Related: 22-REQ-5.1 (lastStorer feeds the accepted-refs classification)
+func TestLoader_LastStorerRecordedOnlyForRequestLoader(t *testing.T) {
+	env := newGitTestEnv(t)
+
+	env.seedOrg(t, "org-1", "My Org", "myorg")
+	env.seedOrgMember(t, "org-1", "user-1")
+	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "active")
+	env.initWorkspaceRepo(t, "myws")
+
+	ep := &transport.Endpoint{Path: "/git/myorg/myws.git"}
+
+	t.Run("base loader leaves lastStorer nil", func(t *testing.T) {
+		base := NewWorkspaceLoader(env.db, env.workspaceRoot)
+		s, err := base.Load(ep)
+		if err != nil {
+			t.Fatalf("Load() returned error: %v", err)
+		}
+		if s == nil {
+			t.Fatal("Load() returned nil storer")
+		}
+		if base.lastStorer != nil {
+			t.Error("base loader recorded lastStorer; it is shared across requests and must not")
+		}
+	})
+
+	t.Run("request loader records the storer it returned", func(t *testing.T) {
+		base := NewWorkspaceLoader(env.db, env.workspaceRoot)
+		req := base.forRequest(context.Background(), nil)
+		s, err := req.Load(ep)
+		if err != nil {
+			t.Fatalf("Load() returned error: %v", err)
+		}
+		if req.lastStorer == nil {
+			t.Fatal("request loader did not record lastStorer")
+		}
+		if storer, ok := s.(*thinPackSafeStorer); !ok || storer != req.lastStorer {
+			t.Errorf("lastStorer = %p; want the storer returned by Load (%p)", req.lastStorer, s)
+		}
+		if base.lastStorer != nil {
+			t.Error("forRequest Load wrote through to the base loader")
+		}
+	})
+
+	t.Run("request loader with a nil context still records", func(t *testing.T) {
+		base := NewWorkspaceLoader(env.db, env.workspaceRoot)
+		//nolint:staticcheck // a nil context must be tolerated, not treated as "base loader"
+		req := base.forRequest(nil, nil)
+		if _, err := req.Load(ep); err != nil {
+			t.Fatalf("Load() returned error: %v", err)
+		}
+		if req.lastStorer == nil {
+			t.Error("request loader with a nil ctx did not record lastStorer")
+		}
+	})
+}
+
+// TestLoader_ConcurrentBaseLoads exercises the shared base loader from many
+// goroutines, as concurrent info/refs?service=git-receive-pack requests do.
+// Run with -race: before the fix every Load wrote l.lastStorer unsynchronised.
+// Related: 22-REQ-5.1 (lastStorer feeds the accepted-refs classification)
+func TestLoader_ConcurrentBaseLoads(t *testing.T) {
+	env := newGitTestEnv(t)
+
+	env.seedOrg(t, "org-1", "My Org", "myorg")
+	env.seedOrgMember(t, "org-1", "user-1")
+	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "active")
+	env.initWorkspaceRepo(t, "myws")
+
+	base := NewWorkspaceLoader(env.db, env.workspaceRoot)
+	ep := &transport.Endpoint{Path: "/git/myorg/myws.git"}
+
+	const workers = 8
+	var wg sync.WaitGroup
+	errs := make(chan error, workers)
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := base.Load(ep); err != nil {
+				errs <- err
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Errorf("concurrent Load() returned error: %v", err)
+	}
+	if base.lastStorer != nil {
+		t.Error("base loader recorded lastStorer")
 	}
 }
 

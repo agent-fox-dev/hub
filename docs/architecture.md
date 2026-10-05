@@ -25,9 +25,12 @@ The receive-pack handler (`handleReceivePack`) processes `git push` requests:
 3. **Ref write.** The trunk storer wrapper (`thinPackSafeStorer`) intercepts
    `SetReference`, `CheckAndSetReference` and `RemoveReference` to invoke the
    pre-receive hook before delegating to the underlying storer.
-4. **Side effects.** Only accepted ref updates (report-status entry `ok`)
-   drive `head_sha` updates, the `hub.git.push` audit event and the
-   post-push hook. Rejected refs are excluded.
+4. **Side effects.** `head_sha` is refreshed from the trunk HEAD after every
+   push, including a push in which every ref was rejected. Only accepted ref
+   updates (report-status entry `ok`; for a client that did not request
+   report-status, the updates the hook did not reject) drive the
+   `hub.git.push` audit event and the post-push hook. Rejected refs are
+   excluded from both.
 
 The pre-receive hook is registered via `gitserver.RegisterPreReceiveHook(fn)`,
 following the same pattern as `RegisterPostPushHook`. The git server imports

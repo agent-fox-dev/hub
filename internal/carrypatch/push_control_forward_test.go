@@ -576,6 +576,103 @@ func TestForwardMode_TS22_26_UnreachableOriginRejectsAndLogs(t *testing.T) {
 }
 
 // ===========================================================================
+// Forward failure text is sanitised as free text: userinfo embedded in a
+// URL inside the error is removed, and plain messages are not re-encoded
+// Verifies: 22-REQ-4.5, 22-REQ-8.2
+// ===========================================================================
+
+func TestForwardMode_ForwardErrorTextSanitised(t *testing.T) {
+	cases := []struct {
+		name    string
+		pushErr error
+		wantErr string
+		// leaked lists substrings that must not appear in the hook error
+		// or in the log output.
+		leaked []string
+	}{
+		{
+			name:    "error embeds a URL with credentials",
+			pushErr: fmt.Errorf("authentication required: https://alice:pw@host/repo.git"),
+			wantErr: "origin rejected push: authentication required: https://host/repo.git",
+			leaked:  []string{"alice", "pw@", ":pw"},
+		},
+		{
+			name:    "http client error with a quoted URL",
+			pushErr: fmt.Errorf(`Get "https://alice:pw@host/repo.git/info/refs?service=git-receive-pack": dial tcp 127.0.0.1:1: connect: connection refused`),
+			wantErr: `origin rejected push: Get "https://host/repo.git/info/refs?service=git-receive-pack": dial tcp 127.0.0.1:1: connect: connection refused`,
+			leaked:  []string{"alice", "pw@", ":pw"},
+		},
+		{
+			name:    "plain message is not re-encoded",
+			pushErr: fmt.Errorf("context deadline exceeded"),
+			wantErr: "origin rejected push: context deadline exceeded",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			db := openTestDB(t)
+			createWorkspacesTable(t, db)
+			createPatchesTable(t, db)
+
+			wsRoot := t.TempDir()
+			trunkPath := filepath.Join(wsRoot, "myws", "trunk")
+			if err := os.MkdirAll(trunkPath, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			runGitCmdR(t, "", "init", "-b", "main", trunkPath)
+			runGitCmdR(t, trunkPath, "config", "user.name", "Test")
+			runGitCmdR(t, trunkPath, "config", "user.email", "test@test.com")
+			writeFileHelper(t, filepath.Join(trunkPath, "README.md"), "# test\n")
+			runGitCmdR(t, trunkPath, "add", ".")
+			runGitCmdR(t, trunkPath, "commit", "-m", "init")
+			newHash := plumbing.NewHash(fwdRefSHA(t, trunkPath, "HEAD"))
+
+			seedWorkspaceWithGitURL(t, db, "myws", "user-1", "active", "ready",
+				"carry_patch", "main-int", "https://example.com/fork.git")
+			seedPatch(t, db, "p1", "myws", "feature/a", 1, "active")
+
+			var logBuf bytes.Buffer
+			logger := slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+			failingPush := func(_ context.Context, _ *git.Repository, _ *git.PushOptions) error {
+				return tc.pushErr
+			}
+			hook := newPreReceiveHookForTest(PreReceiveHookDeps{
+				GetVariable:   forwardGetVar(),
+				ResolveAuth:   func(string) (transport.AuthMethod, error) { return nil, nil },
+				WorkspaceRoot: wsRoot,
+			}, logger, failingPush)
+
+			err := hook(context.Background(), db, "myws", &apikit.AuthInfo{UserID: "u-1"}, gitserver.RefUpdate{
+				Name: plumbing.ReferenceName("refs/heads/feature/a"),
+				Old:  plumbing.ZeroHash,
+				New:  newHash,
+			})
+			if err == nil {
+				t.Fatal("expected the forward failure to reject the update")
+			}
+			if err.Error() != tc.wantErr {
+				t.Errorf("hook error\n got: %q\nwant: %q", err.Error(), tc.wantErr)
+			}
+
+			logOutput := logBuf.String()
+			for _, s := range tc.leaked {
+				if strings.Contains(err.Error(), s) {
+					t.Errorf("hook error contains credential text %q: %s", s, err.Error())
+				}
+				if strings.Contains(logOutput, s) {
+					t.Errorf("log contains credential text %q: %s", s, logOutput)
+				}
+			}
+			if strings.Contains(logOutput, "%20") {
+				t.Errorf("log text was URL-encoded: %s", logOutput)
+			}
+		})
+	}
+}
+
+// ===========================================================================
 // TS-22-27 (integration): Forward mode rejects deleting a registered patch
 // branch without contacting origin
 // Verifies: 22-REQ-4.7
