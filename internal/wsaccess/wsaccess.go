@@ -1,7 +1,11 @@
-// Package wsaccess provides workspace authorization helpers that can be
-// imported by packages that must not depend on internal/workspace (such as
-// internal/carrypatch). It breaks the import cycle that would otherwise
-// arise when both packages need AuthorizeWorkspace.
+// Package wsaccess provides workspace authorization helpers and a per-request
+// scope that can be imported by packages that must not depend on
+// internal/workspace (such as internal/carrypatch). It breaks the import cycle
+// that would otherwise arise when both packages need AuthorizeWorkspace, and
+// it is the one leaf package both sides share, so a request handler in
+// internal/workspace can hand request-scoped state (see WithRequestScope and
+// RequestScoped) to a hook implemented in internal/carrypatch through the
+// context alone.
 package wsaccess
 
 import (

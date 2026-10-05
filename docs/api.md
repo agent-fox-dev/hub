@@ -1259,6 +1259,14 @@ All patches in the batch are validated and inserted within a single database
 transaction. If any patch fails validation, the entire batch is rejected and
 no patches are inserted.
 
+Every element is syntax-validated first, in array order (`branch_name`,
+integration branch, `position`). Branch resolution starts only after all
+elements pass, so a malformed later element is reported without fetching or
+creating refs for the earlier ones. For example, a batch whose first element
+names a branch that does not exist and whose second element has `position: 0`
+answers `patch[1]: position must be >= 1`, not a missing-branch error for
+element 0.
+
 **Response:** HTTP 201 Created with a JSON array of patch objects.
 
 **Behavior:**
@@ -1297,6 +1305,10 @@ that element. In a batch, `skip_branch_check` applies per element.
 A batch resolves every element before inserting any row. The first failure
 rejects the whole request. Local branches already created for earlier elements
 stay in place (they are harmless refs found as `local` on the next attempt).
+
+`PATCH_BRANCH_SOURCE` is read once per request. Every element of a batch is
+resolved in the mode read for the request, even if the variable changes while
+the request runs; the change takes effect on the next request.
 
 **Audit Metadata:**
 

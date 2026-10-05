@@ -13,6 +13,7 @@ import (
 	"github.com/txsvc/apikit"
 
 	"github.com/agent-fox-dev/hub/internal/audit"
+	"github.com/agent-fox-dev/hub/internal/wsaccess"
 )
 
 // validPatchStatuses defines the accepted patch status values (15-REQ-10.3).
@@ -147,6 +148,11 @@ func handleAddPatch(db *sql.DB) echo.HandlerFunc {
 		if err := json.NewDecoder(c.Request().Body).Decode(&rawBody); err != nil {
 			return respondError(c, http.StatusBadRequest, "invalid request body: "+err.Error())
 		}
+
+		// 21-REQ-1.5: Scope the request so a request-scoped value (the
+		// PATCH_BRANCH_SOURCE mode read by the branch-check hook) is read once
+		// for the whole request, not once per batch element.
+		c.SetRequest(c.Request().WithContext(wsaccess.WithRequestScope(c.Request().Context())))
 
 		// Detect array vs object.
 		trimmed := bytes.TrimSpace(rawBody)

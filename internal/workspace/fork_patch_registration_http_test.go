@@ -512,21 +512,74 @@ func TestTS21_14_RealForkMissingBranchGives400(t *testing.T) {
 		t.Error("expected 0 patches")
 	}
 
-	// Verify classification is by type, not error text: the carrypatch
-	// package's ErrBranchNotOnOrigin sentinel is used, and wrapping it
-	// with different text still classifies as not_found.
+	// Verify classification is by type, not error text. The resolver hook is
+	// driven with a stub fetch so the failure it classifies is under the
+	// test's control, and the classification is read back the way the handler
+	// reads it.
 	t.Run("classification_by_type", func(t *testing.T) {
-		// A wrapped ErrBranchNotOnOrigin should still be classified as not_found.
-		wrappedErr := fmt.Errorf("xyz: %w", carrypatch.ErrBranchNotOnOrigin)
-		if !errors.Is(wrappedErr, carrypatch.ErrBranchNotOnOrigin) {
-			t.Error("wrapped ErrBranchNotOnOrigin should be detectable via errors.Is")
+		newHook := func(fetchErr error) BranchResolverFunc {
+			return carrypatch.NewBranchResolverHook(
+				carrypatch.NewGitRunnerFactory(),
+				env.workspaceRoot,
+				env.getVar,
+				func(_ string) (transport.AuthMethod, error) { return nil, nil },
+				func(_ context.Context, _, _ string, _ transport.AuthMethod) error { return fetchErr },
+			)
 		}
 
-		// A plain error with text matching "couldn't find remote ref" should
-		// NOT be classified as not_found (we don't match on text).
-		plainErr := errors.New("couldn't find remote ref")
-		if errors.Is(plainErr, carrypatch.ErrBranchNotOnOrigin) {
-			t.Error("plain error should not match ErrBranchNotOnOrigin")
+		cases := []struct {
+			name       string
+			fetchErr   error
+			wantKind   string
+			wantStatus int
+			wantMsg    string
+		}{
+			{
+				// A wrapped ErrBranchNotOnOrigin is recognised by type, whatever
+				// text wraps it.
+				name:       "wrapped_sentinel",
+				fetchErr:   fmt.Errorf("xyz: %w", carrypatch.ErrBranchNotOnOrigin),
+				wantKind:   BranchResolveKindNotFound,
+				wantStatus: http.StatusBadRequest,
+				wantMsg:    "branch does not exist in repository or on origin",
+			},
+			{
+				// Error text that merely reads like "branch not found" is not
+				// matched: without the sentinel it is an origin fetch failure.
+				name:       "plain_text_lookalike",
+				fetchErr:   errors.New("couldn't find remote ref"),
+				wantKind:   BranchResolveKindOriginFetchFailed,
+				wantStatus: http.StatusBadGateway,
+				wantMsg:    "origin fetch failed",
+			},
+		}
+
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				hook := newHook(tc.fetchErr)
+
+				// The classification the hook attaches.
+				_, err := hook(context.Background(), slug, "classify-"+tc.name)
+				if err == nil {
+					t.Fatal("hook returned nil error for a failing fetch")
+				}
+				kind, classified := classifyBranchResolveError(err)
+				if !classified || kind != tc.wantKind {
+					t.Errorf("classification = (%q, %v); want (%q, true); err: %v",
+						kind, classified, tc.wantKind, err)
+				}
+
+				// The HTTP answer the handler derives from it.
+				RegisterBranchCheckHook(hook)
+				rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/"+slug+"/patches",
+					fmt.Sprintf(`{"branch_name": %q}`, "classify-"+tc.name), auth)
+				if rec.Code != tc.wantStatus {
+					t.Fatalf("status = %d; want %d; body: %s", rec.Code, tc.wantStatus, rec.Body.String())
+				}
+				if got := parseTypedError(t, rec).Error.Message; got != tc.wantMsg {
+					t.Errorf("message = %q; want %q", got, tc.wantMsg)
+				}
+			})
 		}
 	})
 }

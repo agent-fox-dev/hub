@@ -5,11 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"strings"
 
 	git "github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing/transport"
 
+	"github.com/agent-fox-dev/hub/internal/wsaccess"
 	"github.com/agent-fox-dev/hub/internal/wslock"
 )
 
@@ -85,6 +87,12 @@ func ParsePatchBranchSource(getVariable GetVariableFunc, slug string) string {
 // NewBranchResolverHook returns a BranchResolverFunc (matching the workspace
 // package's hook type) that resolves a branch name in a workspace trunk.
 //
+// PATCH_BRANCH_SOURCE is read once per request (21-REQ-1.5): when the context
+// carries a wsaccess request scope, the first resolution in that request reads
+// the variable and every later resolution in the same request (the remaining
+// elements of a batch) reuses that value. Without a request scope each call
+// reads the variable itself.
+//
 // Parameters:
 //   - newRunner: factory for creating a GitRunner for a repo path
 //   - workspaceRoot: the root directory containing workspace directories
@@ -115,14 +123,18 @@ func newBranchResolverHookWithLockFunc(
 	lockFunc func(slug string) (unlock func(), ok bool),
 ) func(ctx context.Context, slug, branch string) (string, error) {
 	return func(ctx context.Context, slug, branch string) (string, error) {
-		repoPath := fmt.Sprintf("%s/%s/trunk", workspaceRoot, slug)
+		repoPath := filepath.Join(workspaceRoot, slug, "trunk")
 		runner, err := newRunner(repoPath)
 		if err != nil {
 			return "", fmt.Errorf("branch resolver: open runner for %s: %w", slug, err)
 		}
 
-		// 21-REQ-1.5: Read PATCH_BRANCH_SOURCE once per hook call.
-		mode := ParsePatchBranchSource(getVariable, slug)
+		// 21-REQ-1.5: Read PATCH_BRANCH_SOURCE once per request. The memo
+		// lives in the request scope the handler installs on the context, so
+		// every element of a batch resolves in the same mode.
+		mode := wsaccess.RequestScoped(ctx, "PATCH_BRANCH_SOURCE/"+slug, func() string {
+			return ParsePatchBranchSource(getVariable, slug)
+		})
 
 		// Step 1: Check refs/heads/<name>^{commit}.
 		method, err := resolveStep1(ctx, runner, branch)
@@ -210,9 +222,10 @@ func createLocalBranch(ctx context.Context, runner GitRunner, slug, branch, sha,
 }
 
 // ErrBranchNotOnOrigin is a sentinel error returned by SingleBranchFetchFunc
-// when the fork does not have the requested branch. The fetch function must
-// return this (not a wrapped version) so the resolver can classify the failure
-// as "branch not found" rather than "origin fetch failed".
+// when the fork does not have the requested branch. The resolver matches it
+// with errors.Is, so the fetch function may return it directly or wrapped; it
+// is never recognised from error text. The match classifies the failure as
+// "branch not found" rather than "origin fetch failed".
 var ErrBranchNotOnOrigin = errors.New("branch not found on origin")
 
 // resolveOriginFetch fetches a single branch from the fork and, if the
@@ -265,14 +278,4 @@ func resolveOriginFetch(ctx context.Context, runner GitRunner, slug, branch, rep
 
 	// Create the local branch at the tracking tip.
 	return createLocalBranch(ctx, runner, slug, branch, trackingSHA, resolutionOriginFetch)
-}
-
-// isBranchResolveKind checks if an error is a branch resolve error with the
-// given kind. This is used by tests in this package.
-func isBranchResolveKind(err error, kind string) bool {
-	var bre *branchResolveError
-	if errors.As(err, &bre) {
-		return bre.kind == kind
-	}
-	return false
 }

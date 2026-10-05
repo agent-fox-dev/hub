@@ -2,6 +2,7 @@ package carrypatch
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/rand"
 	"os"
@@ -11,7 +12,19 @@ import (
 	"testing"
 
 	"github.com/go-git/go-git/v5/plumbing/transport"
+
+	"github.com/agent-fox-dev/hub/internal/wsaccess"
 )
+
+// isBranchResolveKind checks if an error is a branch resolve error with the
+// given kind.
+func isBranchResolveKind(err error, kind string) bool {
+	var bre *branchResolveError
+	if errors.As(err, &bre) {
+		return bre.kind == kind
+	}
+	return false
+}
 
 // ===========================================================================
 // Git helpers for branch resolver tests
@@ -496,6 +509,112 @@ func TestTS21_4_HubModeNeverFetchesOrResolvesCredentials(t *testing.T) {
 		}
 		if credStub.calls != 0 {
 			t.Errorf("credential calls = %d; want 0", credStub.calls)
+		}
+	})
+}
+
+// ===========================================================================
+// TS-21-5: PATCH_BRANCH_SOURCE is read once per request. Several hook calls
+// that share one request scope (the elements of a batch) read it once and
+// resolve in the mode of that first read; hook calls outside a request scope
+// read it on every call.
+// Verifies: 21-REQ-1.5
+// ===========================================================================
+
+func TestTS21_5_PatchBranchSourceReadOncePerRequestScope(t *testing.T) {
+	const calls = 4
+
+	// setup returns a hook whose PATCH_BRANCH_SOURCE getter alternates
+	// origin, hub, origin, ... on successive reads, so a repeated read is
+	// visible both in the read count and in the mode a call resolves in.
+	// The branch names used never exist, so each call ends in not_found; what
+	// differs is the path: origin mode resolves credentials and fetches, hub
+	// mode does neither. The credential stub therefore counts the calls that
+	// resolved in origin mode.
+	type fixture struct {
+		hook  func(context.Context, string, string) (string, error)
+		slug  string
+		reads *int
+		cred  *countingCredStub
+	}
+	setup := func(t *testing.T) fixture {
+		t.Helper()
+		workspaceRoot := t.TempDir()
+		slug := "ts21-5-scope"
+		setupForkAndTrunk(t, workspaceRoot, slug)
+
+		reads := 0
+		getVar := func(_, _, key string) (string, error) {
+			if key != "PATCH_BRANCH_SOURCE" {
+				return "", fmt.Errorf("not found")
+			}
+			reads++
+			if reads%2 == 1 {
+				return "origin", nil
+			}
+			return "hub", nil
+		}
+		cred := &countingCredStub{}
+		hook := NewBranchResolverHook(
+			NewGitRunnerFactory(),
+			workspaceRoot,
+			getVar,
+			cred.resolve,
+			(&countingFetchStub{}).fetch,
+		)
+		return fixture{hook: hook, slug: slug, reads: &reads, cred: cred}
+	}
+
+	t.Run("scoped_context_reads_once_and_keeps_first_mode", func(t *testing.T) {
+		f := setup(t)
+		ctx := wsaccess.WithRequestScope(context.Background())
+
+		for i := 0; i < calls; i++ {
+			_, err := f.hook(ctx, f.slug, fmt.Sprintf("missing-%d", i))
+			if !isBranchResolveKind(err, "not_found") {
+				t.Fatalf("call %d: err = %v; want not_found", i, err)
+			}
+		}
+		if *f.reads != 1 {
+			t.Errorf("PATCH_BRANCH_SOURCE reads = %d; want 1 for %d hook calls in one scope", *f.reads, calls)
+		}
+		if f.cred.calls != calls {
+			t.Errorf("origin-mode resolutions = %d; want %d (the first read said origin)", f.cred.calls, calls)
+		}
+	})
+
+	t.Run("unscoped_context_reads_every_call", func(t *testing.T) {
+		f := setup(t)
+
+		for i := 0; i < calls; i++ {
+			_, err := f.hook(context.Background(), f.slug, fmt.Sprintf("missing-%d", i))
+			if !isBranchResolveKind(err, "not_found") {
+				t.Fatalf("call %d: err = %v; want not_found", i, err)
+			}
+		}
+		if *f.reads != calls {
+			t.Errorf("PATCH_BRANCH_SOURCE reads = %d; want %d for %d unscoped hook calls", *f.reads, calls, calls)
+		}
+		// Reads alternate origin/hub, so half the calls resolved in origin mode.
+		if f.cred.calls != calls/2 {
+			t.Errorf("origin-mode resolutions = %d; want %d", f.cred.calls, calls/2)
+		}
+	})
+
+	t.Run("separate_scopes_read_separately", func(t *testing.T) {
+		f := setup(t)
+
+		for i := 0; i < 2; i++ {
+			ctx := wsaccess.WithRequestScope(context.Background())
+			_, _ = f.hook(ctx, f.slug, "missing-a")
+			_, _ = f.hook(ctx, f.slug, "missing-b")
+		}
+		if *f.reads != 2 {
+			t.Errorf("PATCH_BRANCH_SOURCE reads = %d; want 2 (one per request scope)", *f.reads)
+		}
+		// First scope read origin (2 resolutions), second read hub (0).
+		if f.cred.calls != 2 {
+			t.Errorf("origin-mode resolutions = %d; want 2", f.cred.calls)
 		}
 	})
 }

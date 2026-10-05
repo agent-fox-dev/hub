@@ -20,6 +20,7 @@ import (
 
 	"github.com/agent-fox-dev/hub/internal/audit"
 	"github.com/agent-fox-dev/hub/internal/carrypatch"
+	"github.com/agent-fox-dev/hub/internal/secrets"
 	"github.com/agent-fox-dev/hub/internal/wslock"
 )
 
@@ -78,9 +79,13 @@ func newSmokeEnv(t *testing.T, slug, mode string) *smokeEnv {
 		return "", fmt.Errorf("not found")
 	}
 
-	// Real credential resolver: no auth needed for local file:// protocol.
+	// Real credential resolver, built as main.go builds it: ResolveCloneAuth
+	// over the secrets store. The store holds no credentials for the test
+	// workspace, so it answers (nil, nil), which is what the local file://
+	// fork needs.
+	store := secrets.NewStore(db)
 	credResolver := func(s string) (transport.AuthMethod, error) {
-		return nil, nil
+		return ResolveCloneAuth(store, s)
 	}
 
 	// Real single-branch fetch.

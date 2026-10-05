@@ -194,6 +194,110 @@ func TestTS21_12_FetchCalledWithCorrectParams(t *testing.T) {
 }
 
 // ===========================================================================
+// TS-21-12 (integration): DefaultSingleBranchFetch fetches exactly one
+// branch into its tracking ref, with no tags and no pruning. The stub-based
+// test above cannot see how the real fetch is configured, so this one runs it
+// against a real fork and inspects the trunk afterwards.
+// Verifies: 21-REQ-3.1
+// ===========================================================================
+
+func TestTS21_12_DefaultSingleBranchFetchRefspecNoTagsNoPrune(t *testing.T) {
+	workspaceRoot := t.TempDir()
+	slug := "ts21-12-real"
+	forkDir, trunkDir, _ := setupForkAndTrunk(t, workspaceRoot, slug)
+
+	// "stale": fetched into the trunk once, then deleted on the fork. A
+	// fetch that pruned tracking refs would remove it; a single-branch fetch
+	// of another branch must leave it alone. (go-git only prunes refs that
+	// the refspec maps, so with one non-wildcard refspec the Prune flag by
+	// itself is not observable; this guards the observable consequence.)
+	staleSHA := createBranchOnBare(t, forkDir, "stale", "stale.txt", "stale", "add stale")
+	runGitCmd(t, trunkDir, "fetch", "origin", "+refs/heads/stale:refs/remotes/origin/stale")
+	runGitCmd(t, forkDir, "update-ref", "-d", "refs/heads/stale")
+
+	// "other": exists on the fork, not requested. A wildcard refspec would
+	// bring it in as a tracking ref.
+	createBranchOnBare(t, forkDir, "other", "other.txt", "other", "add other")
+
+	// "late": the branch we fetch, with a tag on its tip. Fetching tags (or
+	// following them) would bring the tag in.
+	lateSHA := createBranchOnBare(t, forkDir, "late", "late.txt", "late", "add late")
+	runGitCmd(t, forkDir, "tag", "v-late", lateSHA)
+
+	trackingBefore := listTrackingRefs(t, trunkDir)
+	if trackingBefore["refs/remotes/origin/stale"] != staleSHA {
+		t.Fatalf("setup: refs/remotes/origin/stale = %q; want %q", trackingBefore["refs/remotes/origin/stale"], staleSHA)
+	}
+	if len(listTags(t, trunkDir)) != 0 {
+		t.Fatalf("setup: trunk should have no tags, got %v", listTags(t, trunkDir))
+	}
+
+	if err := DefaultSingleBranchFetch()(context.Background(), trunkDir, "late", nil); err != nil {
+		t.Fatalf("DefaultSingleBranchFetch returned error: %v", err)
+	}
+
+	// Exactly one tracking ref was added: the requested branch, at the fork tip.
+	want := make(map[string]string, len(trackingBefore)+1)
+	for k, v := range trackingBefore {
+		want[k] = v
+	}
+	want["refs/remotes/origin/late"] = lateSHA
+	got := listTrackingRefs(t, trunkDir)
+	if len(got) != len(want) {
+		t.Errorf("tracking refs = %v; want %v", got, want)
+	}
+	for ref, sha := range want {
+		if got[ref] != sha {
+			t.Errorf("%s = %q; want %q", ref, got[ref], sha)
+		}
+	}
+
+	// No pruning: the stale tracking ref survives although the fork lost it.
+	// The refspec, tag and unrequested-branch checks around it are what pin
+	// the single-branch, no-tags configuration.
+	if got["refs/remotes/origin/stale"] != staleSHA {
+		t.Errorf("refs/remotes/origin/stale = %q; want it kept at %q (no prune)", got["refs/remotes/origin/stale"], staleSHA)
+	}
+	// One refspec: the unrequested branch was not fetched.
+	if _, ok := got["refs/remotes/origin/other"]; ok {
+		t.Error("refs/remotes/origin/other should not be fetched by a single-branch fetch")
+	}
+	// No tags: the tag on the fetched tip did not come along.
+	if tags := listTags(t, trunkDir); len(tags) != 0 {
+		t.Errorf("tags after fetch = %v; want none (NoTags)", tags)
+	}
+}
+
+// DefaultSingleBranchFetch classifies a fork that lacks the branch by type:
+// it returns ErrBranchNotOnOrigin, and any other failure is returned without
+// that sentinel.
+func TestTS21_14_DefaultSingleBranchFetchClassification(t *testing.T) {
+	t.Run("missing_branch_is_sentinel", func(t *testing.T) {
+		workspaceRoot := t.TempDir()
+		_, trunkDir, _ := setupForkAndTrunk(t, workspaceRoot, "ts21-14-fetch-missing")
+
+		err := DefaultSingleBranchFetch()(context.Background(), trunkDir, "ghost", nil)
+		if !errors.Is(err, ErrBranchNotOnOrigin) {
+			t.Errorf("err = %v; want ErrBranchNotOnOrigin", err)
+		}
+	})
+
+	t.Run("unreachable_origin_is_not_sentinel", func(t *testing.T) {
+		workspaceRoot := t.TempDir()
+		_, trunkDir, _ := setupForkAndTrunk(t, workspaceRoot, "ts21-14-fetch-unreachable")
+		runGitCmd(t, trunkDir, "remote", "set-url", "origin", filepath.Join(workspaceRoot, "does-not-exist.git"))
+
+		err := DefaultSingleBranchFetch()(context.Background(), trunkDir, "feat", nil)
+		if err == nil {
+			t.Fatal("expected an error for an unreachable origin, got nil")
+		}
+		if errors.Is(err, ErrBranchNotOnOrigin) {
+			t.Errorf("unreachable origin classified as ErrBranchNotOnOrigin: %v", err)
+		}
+	})
+}
+
+// ===========================================================================
 // TS-21-13 (integration): An already-up-to-date fetch is success and the
 // tracking-ref check continues.
 // Verifies: 21-REQ-3.2

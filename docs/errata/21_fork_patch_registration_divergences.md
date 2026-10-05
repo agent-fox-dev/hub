@@ -41,6 +41,19 @@ proposal (GitHub issue #35, "PRD17").
    behaviour, but the absence is a divergence from the implied "every
    registration emits an event" reading.
 
+6. **Batch syntax validation precedes resolution.** The batch handler
+   validates the syntax of every element (`branch_name`, integration
+   branch, `position`) in array order before it resolves any element, and
+   resolves in a second pass. Before spec 21 the branch check ran inside
+   the per-element validation loop, so a batch of `[missing-branch,
+   bad-position]` answered `patch[0]: branch does not exist in repository
+   or on origin`; it now answers `patch[1]: position must be >= 1`
+   because the position error is found before resolution begins. The
+   reason is that resolution has side effects (a fork fetch, a local ref)
+   and malformed input should be rejected before any of them. The
+   single-patch path is unchanged. See `internal/workspace/patch_handlers.go`
+   and the batch section of `docs/api.md`.
+
 ## Resolution
 
 Each divergence is an implementation detail that improves error reporting
