@@ -36,6 +36,11 @@ test:
 lint:
 	go vet ./...
 
+# Generate test coverage
+coverage:
+	go test ./... -coverprofile=coverage.txt -covermode=atomic
+	go tool cover -func=coverage.txt
+
 # Build all packages
 # afc has no cgo dependencies and stays a static binary; hub links go-duckdb
 # (internal/audit) and requires cgo.
@@ -73,6 +78,7 @@ build-agents-container: build-sandbox-container
 
 # Clean build artifacts
 clean:
+	-rm -f coverage.txt lint.txt
 	-rm -rf bin/af-hub bin/afc
 	-rm af-hub afc
 	-podman rmi $(HUB_IMAGE):$(HUB_IMAGE_TAG)

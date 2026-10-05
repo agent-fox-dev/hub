@@ -30,6 +30,11 @@ type stubRecoveryHookWithCalls struct {
 	resetResult ResetResult
 	resetErr    error
 
+	// onReset, when set, runs inside RunReset before it returns. A test uses
+	// it to change state the way a concurrent request would, for example to
+	// remove the patch row so the handler's re-read after the reset fails.
+	onReset func()
+
 	resetCalls int
 }
 
@@ -43,6 +48,9 @@ func (s *stubRecoveryHookWithCalls) RemoveBackup(_ context.Context, _, _ string)
 
 func (s *stubRecoveryHookWithCalls) RunReset(_ context.Context, _ string, _ ResetPatchInfo, _ *apikit.AuthInfo) (ResetResult, error) {
 	s.resetCalls++
+	if s.onReset != nil {
+		s.onReset()
+	}
 	return s.resetResult, s.resetErr
 }
 

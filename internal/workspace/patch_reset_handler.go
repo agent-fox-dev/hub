@@ -91,6 +91,52 @@ func handleResetPatchToOrigin(db *sql.DB) echo.HandlerFunc {
 			return mapResetError(c, resetErr, p.BranchName)
 		}
 
+		// 23-REQ-10.1: Emit hub.patch.reset audit event on success. The events
+		// are emitted as soon as the reset has succeeded, before the patch is
+		// re-read below: the branch has already moved, so a failure to read
+		// the row back (which still answers 500) must not drop the audit
+		// record. The branch name comes from the lookup made before the reset.
+		branchName := p.BranchName
+		resetMeta := map[string]any{
+			"branch_name": branchName,
+			"action":      string(result.Action),
+			"origin_sha":  result.OriginSHA,
+		}
+		// 23-REQ-10.2: Omit local_sha when there was no local branch.
+		if result.LocalSHA != "" {
+			resetMeta["local_sha"] = result.LocalSHA
+		}
+		// 23-REQ-10.2: Include replaced_sha only when action is replaced.
+		if result.Action == ResetActionReplaced {
+			resetMeta["replaced_sha"] = result.ReplacedSHA
+		}
+
+		emitHubAudit(c, audit.HubEvent{
+			EventType:    audit.EventPatchReset,
+			ResourceType: "patch",
+			ResourceID:   branchName,
+			Action:       "reset",
+			Workspace:    slug,
+			Metadata:     resetMeta,
+		})
+
+		// 23-REQ-10.3: For action replaced, also emit hub.patch.replace with trigger.
+		if result.Action == ResetActionReplaced {
+			emitHubAudit(c, audit.HubEvent{
+				EventType:    audit.EventPatchReplace,
+				ResourceType: "patch",
+				ResourceID:   branchName,
+				Action:       "replace",
+				Workspace:    slug,
+				Metadata: map[string]any{
+					"branch_name":  branchName,
+					"replaced_sha": result.ReplacedSHA,
+					"origin_sha":   result.OriginSHA,
+					"trigger":      "reset_to_origin",
+				},
+			})
+		}
+
 		// Re-read the patch to get the latest state after the reset.
 		p, err = getPatch(db, slug, patchID)
 		if err != nil || p == nil {
@@ -115,47 +161,6 @@ func handleResetPatchToOrigin(db *sql.DB) echo.HandlerFunc {
 		resp["rebuild_triggered"] = result.RebuildTriggered
 		if result.RebuildJobID != "" {
 			resp["rebuild_job_id"] = result.RebuildJobID
-		}
-
-		// 23-REQ-10.1: Emit hub.patch.reset audit event on success.
-		resetMeta := map[string]any{
-			"branch_name": p.BranchName,
-			"action":      string(result.Action),
-			"origin_sha":  result.OriginSHA,
-		}
-		// 23-REQ-10.2: Omit local_sha when there was no local branch.
-		if result.LocalSHA != "" {
-			resetMeta["local_sha"] = result.LocalSHA
-		}
-		// 23-REQ-10.2: Include replaced_sha only when action is replaced.
-		if result.Action == ResetActionReplaced {
-			resetMeta["replaced_sha"] = result.ReplacedSHA
-		}
-
-		emitHubAudit(c, audit.HubEvent{
-			EventType:    audit.EventPatchReset,
-			ResourceType: "patch",
-			ResourceID:   p.BranchName,
-			Action:       "reset",
-			Workspace:    slug,
-			Metadata:     resetMeta,
-		})
-
-		// 23-REQ-10.3: For action replaced, also emit hub.patch.replace with trigger.
-		if result.Action == ResetActionReplaced {
-			emitHubAudit(c, audit.HubEvent{
-				EventType:    audit.EventPatchReplace,
-				ResourceType: "patch",
-				ResourceID:   p.BranchName,
-				Action:       "replace",
-				Workspace:    slug,
-				Metadata: map[string]any{
-					"branch_name":  p.BranchName,
-					"replaced_sha": result.ReplacedSHA,
-					"origin_sha":   result.OriginSHA,
-					"trigger":      "reset_to_origin",
-				},
-			})
 		}
 
 		return c.JSON(http.StatusOK, resp)

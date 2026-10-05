@@ -401,7 +401,7 @@ at startup. They control access to the carry-patch patch list endpoints.
 | **Grants** | List and view patches for a workspace |
 | **Endpoints** | `GET /api/v1/workspaces/:slug/patches`, `GET /api/v1/workspaces/:slug/patches/:id` |
 | **Implied by** | `patches:write` |
-| **Ownership** | Not enforced. Any authenticated user with the required scope can list patches for any workspace slug. |
+| **Ownership** | Enforced. Patch handlers resolve the workspace through `lookupWorkspaceForAuth`: the caller must be the workspace owner or hold an admin token, otherwise the answer is `404` (anti-enumeration, see `docs/errata/ownership_enforcement.md`). |
 
 ### patches:write
 
@@ -411,7 +411,7 @@ at startup. They control access to the carry-patch patch list endpoints.
 | **Grants** | Add, remove, update, restore, reorder, and reset patches for a workspace |
 | **Endpoints** | `POST /api/v1/workspaces/:slug/patches`, `PATCH /api/v1/workspaces/:slug/patches/:id`, `DELETE /api/v1/workspaces/:slug/patches/:id`, `POST /api/v1/workspaces/:slug/patches/:id/restore`, `POST /api/v1/workspaces/:slug/patches/:id/reset-to-origin`, `POST /api/v1/workspaces/:slug/patches/reorder` |
 | **Implies** | `patches:read` |
-| **Ownership** | Not enforced. Patch handlers check workspace existence and status but do NOT verify ownership. Any authenticated user with the required scope can manage patches for any workspace slug. |
+| **Ownership** | Enforced. Patch handlers (add, update, remove, restore, reorder and reset-to-origin) resolve the workspace through `lookupWorkspaceForAuth`: the caller must be the workspace owner or hold an admin token, otherwise the answer is `404` (anti-enumeration, see `docs/errata/ownership_enforcement.md`). The check runs before any git operation. |
 
 ---
 

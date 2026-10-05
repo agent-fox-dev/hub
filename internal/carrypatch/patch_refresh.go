@@ -2,8 +2,11 @@ package carrypatch
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/agent-fox-dev/hub/internal/gitcmd"
 )
 
 // Action constants for patch refresh outcomes.
@@ -186,20 +189,31 @@ func refreshOnePatch(
 
 	outcome.OriginSHA = forkTip
 
+	// move brings the branch to the fork tip with the shared compare-and-swap
+	// move and records the outcome. A failed ref write leaves the outcome
+	// untouched and reports the branch as not moved; a failed work-tree reset
+	// keeps the outcome and reports the branch as moved (RefStageReset).
+	move := func(action, expectedOld string) (PatchRefreshOutcome, bool, *RefWriteError) {
+		moved, stage, err := casMoveRef(ctx, runner, trunkDir, branchRef, forkTip, expectedOld)
+		if !moved {
+			return outcome, false, fail(stage, err)
+		}
+		outcome.Action = action
+		outcome.State = StateInSync
+		outcome.LocalSHA = forkTip
+		if action == ActionReplaced {
+			outcome.ReplacedSHA = expectedOld
+		}
+		if err != nil {
+			return outcome, true, fail(stage, err)
+		}
+		return outcome, true, nil
+	}
+
 	// Rule 2: No local branch.
 	if localErr != nil {
 		// Create refs/heads/<branch> at the fork tip.
-		if _, err := runner.Run(ctx, "update-ref", branchRef, forkTip, zeroSHA); err != nil {
-			return outcome, false, fail(RefStageWrite, err)
-		}
-		outcome.Action = ActionCreated
-		outcome.State = StateInSync
-		outcome.LocalSHA = forkTip
-		if err := maybeHardReset(ctx, runner, trunkDir, branchRef); err != nil {
-			// The ref already moved: report it as moved.
-			return outcome, true, fail(RefStageReset, err)
-		}
-		return outcome, true, nil
+		return move(ActionCreated, zeroSHA)
 	}
 
 	outcome.LocalSHA = localTip
@@ -220,17 +234,7 @@ func refreshOnePatch(
 	}
 	if isAnc {
 		// Fast-forward.
-		if _, err := runner.Run(ctx, "update-ref", branchRef, forkTip, localTip); err != nil {
-			return outcome, false, fail(RefStageWrite, err)
-		}
-		outcome.Action = ActionFastForwarded
-		outcome.State = StateInSync
-		outcome.LocalSHA = forkTip
-		if err := maybeHardReset(ctx, runner, trunkDir, branchRef); err != nil {
-			// The ref already moved: report it as moved.
-			return outcome, true, fail(RefStageReset, err)
-		}
-		return outcome, true, nil
+		return move(ActionFastForwarded, localTip)
 	}
 
 	// Rule 5: Diverged (neither is an ancestor of the other, or fork tip is
@@ -252,36 +256,77 @@ func refreshOnePatch(
 	}
 
 	// Write backup ref.
-	if _, err := runner.Run(ctx, "update-ref", backupRef, localTip, expectedBackupOld); err != nil {
+	if err := casUpdateRef(ctx, runner, backupRef, localTip, expectedBackupOld); err != nil {
 		return outcome, false, fail(RefStageWrite, err)
 	}
 
 	// Move the branch to the fork tip.
-	if _, err := runner.Run(ctx, "update-ref", branchRef, forkTip, localTip); err != nil {
-		return outcome, false, fail(RefStageWrite, err)
-	}
-
-	outcome.Action = ActionReplaced
-	outcome.State = StateInSync
-	outcome.ReplacedSHA = localTip
-	outcome.LocalSHA = forkTip
-
-	if err := maybeHardReset(ctx, runner, trunkDir, branchRef); err != nil {
-		// The ref already moved: report it as moved.
-		return outcome, true, fail(RefStageReset, err)
-	}
-
-	return outcome, true, nil
+	return move(ActionReplaced, localTip)
 }
 
 // resolveRefSHA resolves a ref to its commit SHA. Returns ("", error) if the
-// ref does not exist.
+// ref does not exist, and also for every other failure: it cannot tell the
+// two apart. Use lookupRefSHA where a lookup failure must not be read as a
+// missing ref.
 func resolveRefSHA(ctx context.Context, runner GitRunner, ref string) (string, error) {
 	sha, err := runner.Run(ctx, "rev-parse", "--verify", ref+"^{commit}")
 	if err != nil {
 		return "", err
 	}
 	return strings.TrimSpace(sha), nil
+}
+
+// lookupRefSHA resolves a ref to its commit SHA and tells a missing ref from
+// a failed lookup. found is false with a nil error when the ref does not
+// exist: git rev-parse --verify --quiet exits 1 for that case and only that
+// case, so the exit code of the typed *gitcmd.GitError decides, never its
+// text. Every other failure (a runner that cannot start git, a corrupt
+// repository, a cancelled context) is returned.
+func lookupRefSHA(ctx context.Context, runner GitRunner, ref string) (sha string, found bool, err error) {
+	out, err := runner.Run(ctx, "rev-parse", "--verify", "--quiet", ref+"^{commit}")
+	if err != nil {
+		var gitErr *gitcmd.GitError
+		if errors.As(err, &gitErr) && gitErr.ExitCode == 1 {
+			return "", false, nil
+		}
+		return "", false, err
+	}
+	sha = strings.TrimSpace(out)
+	if sha == "" {
+		return "", false, nil
+	}
+	return sha, true, nil
+}
+
+// casUpdateRef writes ref with a compare-and-swap: git update-ref <ref>
+// <newSHA> <oldSHA> fails unless ref currently holds oldSHA. zeroSHA as oldSHA
+// means create: it fails if ref already exists. This is the only place that
+// runs the three-argument update-ref; the patch refresh (spec 20) and the
+// reset-to-origin (spec 23) both write refs through it.
+func casUpdateRef(ctx context.Context, runner GitRunner, ref, newSHA, oldSHA string) error {
+	_, err := runner.Run(ctx, "update-ref", ref, newSHA, oldSHA)
+	return err
+}
+
+// casMoveRef moves a branch ref from oldSHA to newSHA with casUpdateRef and
+// then brings the trunk work tree along with maybeHardReset.
+//
+// The two outcomes of a failure are told apart so callers do not claim a ref
+// write failed when it did not:
+//   - the write failed: moved is false, stage is RefStageWrite, and the
+//     branch is unchanged;
+//   - the write succeeded but the work-tree reset failed: moved is true,
+//     stage is RefStageReset, and the branch has moved.
+//
+// stage is meaningful only when err is non-nil.
+func casMoveRef(ctx context.Context, runner GitRunner, trunkDir, ref, newSHA, oldSHA string) (moved bool, stage RefStage, err error) {
+	if err := casUpdateRef(ctx, runner, ref, newSHA, oldSHA); err != nil {
+		return false, RefStageWrite, err
+	}
+	if err := maybeHardReset(ctx, runner, trunkDir, ref); err != nil {
+		return true, RefStageReset, err
+	}
+	return true, RefStageWrite, nil
 }
 
 // maybeHardReset checks if the trunk's HEAD points at the given branch ref.

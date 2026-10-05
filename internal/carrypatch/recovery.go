@@ -2,16 +2,13 @@ package carrypatch
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/go-git/go-git/v5/plumbing/transport"
-	"github.com/google/uuid"
 	"github.com/txsvc/apikit"
 
 	"github.com/agent-fox-dev/hub/internal/jobqueue"
@@ -77,6 +74,12 @@ type RebuildEnqueuer interface {
 // RecoveryService implements backup-ref reading, backup-ref removal and
 // reset-to-origin operations. It is constructed in main.go and adapted
 // to the workspace.RecoveryHook interface.
+//
+// RunReset needs LockFunc and Fetch: without them it fails with a
+// RecoveryErrOther configuration error before it writes anything. ResolveAuth
+// may be nil, which means anonymous access to origin (the same reading as spec
+// 20's ResolveOriginAuth). PatchStore and Queue are optional; without them the
+// reset records no origin sync state and enqueues no rebuild.
 type RecoveryService struct {
 	NewGitRunner  func(repoPath string) (GitRunner, error)
 	WorkspaceRoot string
@@ -94,57 +97,84 @@ func (s *RecoveryService) trunkPath(slug string) string {
 }
 
 // ReadReplacedSHA returns the SHA that refs/hub/replaced/<branch> resolves to.
-// found is false when the ref does not exist or the trunk is not on disk.
+// found is false, with a nil error, when the ref does not exist or the trunk
+// is not on disk. Any other failure (a runner that cannot be built, git that
+// cannot be run, a corrupt repository) is returned as an error: it must not
+// be rendered as "no backup". The caller logs it and still answers the request.
 func (s *RecoveryService) ReadReplacedSHA(ctx context.Context, slug, branch string) (string, bool, error) {
 	repoPath := s.trunkPath(slug)
 
 	// Check if the trunk directory exists.
-	if _, err := os.Stat(repoPath); os.IsNotExist(err) {
-		return "", false, nil
+	if _, err := os.Stat(repoPath); err != nil {
+		if os.IsNotExist(err) {
+			return "", false, nil
+		}
+		return "", false, fmt.Errorf("recovery: stat trunk for %s: %w", slug, err)
 	}
 
 	runner, err := s.NewGitRunner(repoPath)
 	if err != nil {
-		return "", false, nil
+		return "", false, fmt.Errorf("recovery: open runner for %s: %w", slug, err)
 	}
 
 	ref := "refs/hub/replaced/" + branch
-	sha, err := resolveRefSHA(ctx, runner, ref)
+	sha, found, err := lookupRefSHA(ctx, runner, ref)
 	if err != nil {
-		// Ref does not exist.
-		return "", false, nil
+		return "", false, fmt.Errorf("recovery: look up %s in %s: %w", ref, slug, err)
 	}
-
-	return sha, true, nil
+	return sha, found, nil
 }
 
 // RemoveBackup deletes refs/hub/replaced/<branch>. A missing ref or a
 // missing trunk is not an error.
 func (s *RecoveryService) RemoveBackup(ctx context.Context, slug, branch string) error {
-	repoPath := s.trunkPath(slug)
+	return removeBackupRef(ctx, s.WorkspaceRoot, slug, branch, s.NewGitRunner)
+}
+
+// removeBackupRef removes refs/hub/replaced/<branch> from the workspace's
+// trunk. It is the one implementation behind both RecoveryService.RemoveBackup
+// (patch removal) and the expired-row purge (PurgeExpiredDeletedPatchesWithRefs).
+//
+// A missing trunk and a missing ref both count as success. The ref is looked
+// up first because git update-ref -d exits 0 for a ref that does not exist,
+// so the delete alone could not tell "removed" from "nothing to remove": the
+// lookup keeps a missing ref from being logged as removed, and puts the removed
+// SHA in the log (23-REQ-10.7). Any other failure is returned.
+func removeBackupRef(
+	ctx context.Context,
+	workspaceRoot, slug, branch string,
+	newGitRunner func(repoPath string) (GitRunner, error),
+) error {
+	repoPath := filepath.Join(workspaceRoot, slug, "trunk")
 
 	// Check if the trunk directory exists.
-	if _, err := os.Stat(repoPath); os.IsNotExist(err) {
-		slog.Info("recovery: trunk not on disk, skipping backup removal",
-			"slug", slug,
-			"branch", branch,
-		)
-		return nil
+	if _, err := os.Stat(repoPath); err != nil {
+		if os.IsNotExist(err) {
+			slog.Info("recovery: trunk not on disk, skipping backup removal",
+				"slug", slug,
+				"branch", branch,
+			)
+			return nil
+		}
+		return fmt.Errorf("recovery: stat trunk for %s: %w", slug, err)
 	}
 
-	runner, err := s.NewGitRunner(repoPath)
+	runner, err := newGitRunner(repoPath)
 	if err != nil {
 		return fmt.Errorf("recovery: open runner for %s: %w", slug, err)
 	}
 
 	ref := "refs/hub/replaced/" + branch
-	_, err = runner.Run(ctx, "update-ref", "-d", ref)
+	removedSHA, found, err := lookupRefSHA(ctx, runner, ref)
 	if err != nil {
-		// Check if the ref simply doesn't exist (which is fine).
-		if _, resolveErr := resolveRefSHA(ctx, runner, ref); resolveErr != nil {
-			// Ref doesn't exist, that's success.
-			return nil
-		}
+		return fmt.Errorf("recovery: look up %s in %s: %w", ref, slug, err)
+	}
+	if !found {
+		// Nothing to remove.
+		return nil
+	}
+
+	if _, err := runner.Run(ctx, "update-ref", "-d", ref); err != nil {
 		return fmt.Errorf("recovery: delete ref %s in %s: %w", ref, slug, err)
 	}
 
@@ -152,6 +182,7 @@ func (s *RecoveryService) RemoveBackup(ctx context.Context, slug, branch string)
 		"slug", slug,
 		"branch", branch,
 		"ref", ref,
+		"removed_sha", removedSHA,
 	)
 
 	return nil
@@ -160,16 +191,44 @@ func (s *RecoveryService) RemoveBackup(ctx context.Context, slug, branch string)
 // RunReset moves a patch branch to the fork's current tip.
 // It takes the workspace lock, fetches the branch from the fork,
 // compares tips and applies the appropriate action.
+//
+// A hard-reset failure after the branch ref has moved is not fatal. The ref
+// move is the reset's effect: the persisted state, the rebuild and the audit
+// event all describe it, and a retry would find the tips equal and answer
+// action "none", so an error would not lead the operator to a repaired work
+// tree. The failure is logged at error level instead, with the slug and
+// branch, and the reset reports the move. The patch refresh in spec 20 keeps
+// the same outcome for the same failure and additionally reports the failed
+// reset to its caller; see docs/errata/23_patch_divergence_recovery_divergences.md.
 func (s *RecoveryService) RunReset(ctx context.Context, slug string, patch ResetPatchInfo, auth *apikit.AuthInfo) (ResetResult, error) {
 	var result ResetResult
 
-	// 23-REQ-3: Take the workspace lock.
+	// Required dependencies. Both are checked before anything is taken or
+	// written. A missing Fetch in particular must not degrade to "use the
+	// tracking ref as it is": a stale refs/remotes/origin/<branch> would look
+	// like a successful reset (Design Decision 4).
 	if s.LockFunc == nil {
+		slog.Error("recovery: reset is not configured: lock function missing",
+			"slug", slug,
+			"branch", patch.BranchName,
+		)
 		return result, &RecoveryError{
 			Kind:    RecoveryErrOther,
 			Message: "lock function not configured",
 		}
 	}
+	if s.Fetch == nil {
+		slog.Error("recovery: reset is not configured: origin fetch missing",
+			"slug", slug,
+			"branch", patch.BranchName,
+		)
+		return result, &RecoveryError{
+			Kind:    RecoveryErrOther,
+			Message: "origin fetch is not configured",
+		}
+	}
+
+	// 23-REQ-3: Take the workspace lock.
 	unlock, ok := s.LockFunc(slug)
 	if !ok {
 		return result, &RecoveryError{
@@ -181,7 +240,8 @@ func (s *RecoveryService) RunReset(ctx context.Context, slug string, patch Reset
 
 	repoPath := s.trunkPath(slug)
 
-	// 23-REQ-3.1: Resolve origin credentials.
+	// 23-REQ-3.1: Resolve origin credentials. A nil ResolveAuth means
+	// anonymous access to origin.
 	var originAuth transport.AuthMethod
 	if s.ResolveAuth != nil {
 		resolved, authErr := s.ResolveAuth(slug)
@@ -201,27 +261,24 @@ func (s *RecoveryService) RunReset(ctx context.Context, slug string, patch Reset
 	}
 
 	// 23-REQ-3.1: Fetch the single branch from the fork.
-	if s.Fetch != nil {
-		fetchErr := s.Fetch(ctx, repoPath, patch.BranchName, originAuth)
-		if fetchErr != nil {
-			// 23-REQ-3.3: Classify "branch not found on origin".
-			if errors.Is(fetchErr, ErrBranchNotOnOrigin) {
-				return result, &RecoveryError{
-					Kind:    RecoveryErrMissingOnOrigin,
-					Message: "branch does not exist on origin",
-				}
-			}
-			// 23-REQ-3.2: Log the underlying error but don't echo it.
-			slog.Error("recovery: origin fetch failed",
-				"slug", slug,
-				"branch", patch.BranchName,
-				"error", fetchErr.Error(),
-			)
+	if fetchErr := s.Fetch(ctx, repoPath, patch.BranchName, originAuth); fetchErr != nil {
+		// 23-REQ-3.3: Classify "branch not found on origin".
+		if errors.Is(fetchErr, ErrBranchNotOnOrigin) {
 			return result, &RecoveryError{
-				Kind:    RecoveryErrFetchFailed,
-				Message: "origin fetch failed",
-				Cause:   fetchErr,
+				Kind:    RecoveryErrMissingOnOrigin,
+				Message: "branch does not exist on origin",
 			}
+		}
+		// 23-REQ-3.2: Log the underlying error but don't echo it.
+		slog.Error("recovery: origin fetch failed",
+			"slug", slug,
+			"branch", patch.BranchName,
+			"error", fetchErr.Error(),
+		)
+		return result, &RecoveryError{
+			Kind:    RecoveryErrFetchFailed,
+			Message: "origin fetch failed",
+			Cause:   fetchErr,
 		}
 	}
 
@@ -258,30 +315,10 @@ func (s *RecoveryService) RunReset(ctx context.Context, slug string, patch Reset
 	// 23-REQ-3.4-3.6: Apply the first matching rule.
 	if localErr != nil {
 		// Rule: Local branch missing → create.
-		if _, err := runner.Run(ctx, "update-ref", branchRef, forkTip, zeroSHA); err != nil {
-			// CAS create failed — check if the ref appeared (race).
-			if _, checkErr := resolveRefSHA(ctx, runner, branchRef); checkErr == nil {
-				return result, &RecoveryError{
-					Kind:    RecoveryErrRefChanged,
-					Message: "patch branch changed during reset; retry",
-				}
-			}
-			return result, &RecoveryError{
-				Kind:    RecoveryErrOther,
-				Message: fmt.Sprintf("failed to update patch branch %s", patch.BranchName),
-				Cause:   err,
-			}
+		if recErr := moveBranchToFork(ctx, runner, repoPath, slug, patch, forkTip, zeroSHA); recErr != nil {
+			return result, recErr
 		}
 		result.Action = ActionCreated
-
-		// Hard reset working tree if this branch is checked out.
-		if err := maybeHardReset(ctx, runner, repoPath, branchRef); err != nil {
-			slog.Warn("recovery: hard reset failed after create",
-				"slug", slug,
-				"branch", patch.BranchName,
-				"error", err,
-			)
-		}
 
 		slog.Info("recovery: created patch branch from origin",
 			"slug", slug,
@@ -304,18 +341,10 @@ func (s *RecoveryService) RunReset(ctx context.Context, slug string, patch Reset
 
 		if isAnc {
 			// Fast-forward: move the branch, no backup.
-			if _, err := runner.Run(ctx, "update-ref", branchRef, forkTip, localTip); err != nil {
-				return result, classifyCASError(err, patch.BranchName, runner, ctx, branchRef, localTip)
+			if recErr := moveBranchToFork(ctx, runner, repoPath, slug, patch, forkTip, localTip); recErr != nil {
+				return result, recErr
 			}
 			result.Action = ActionFastForwarded
-
-			if err := maybeHardReset(ctx, runner, repoPath, branchRef); err != nil {
-				slog.Warn("recovery: hard reset failed after fast-forward",
-					"slug", slug,
-					"branch", patch.BranchName,
-					"error", err,
-				)
-			}
 
 			slog.Info("recovery: fast-forwarded patch branch",
 				"slug", slug,
@@ -337,21 +366,13 @@ func (s *RecoveryService) RunReset(ctx context.Context, slug string, patch Reset
 			}
 
 			// Move the branch to the fork tip using CAS.
-			if _, err := runner.Run(ctx, "update-ref", branchRef, forkTip, localTip); err != nil {
-				// 23-REQ-3.8: Keep the backup already written.
-				return result, classifyCASError(err, patch.BranchName, runner, ctx, branchRef, localTip)
+			// 23-REQ-3.8: A lost race keeps the backup already written.
+			if recErr := moveBranchToFork(ctx, runner, repoPath, slug, patch, forkTip, localTip); recErr != nil {
+				return result, recErr
 			}
 
 			result.Action = ActionReplaced
 			result.ReplacedSHA = localTip
-
-			if err := maybeHardReset(ctx, runner, repoPath, branchRef); err != nil {
-				slog.Warn("recovery: hard reset failed after replace",
-					"slug", slug,
-					"branch", patch.BranchName,
-					"error", err,
-				)
-			}
 
 			slog.Info("recovery: replaced patch branch",
 				"slug", slug,
@@ -381,87 +402,91 @@ func (s *RecoveryService) RunReset(ctx context.Context, slug string, patch Reset
 	}
 
 	// ===========================================================
-	// 23-REQ-4.3: Rebuild trigger
+	// 23-REQ-4.3: Rebuild trigger (the same enqueue as sync)
 	// ===========================================================
 	branchMoved := result.Action == ActionCreated || result.Action == ActionFastForwarded || result.Action == ActionReplaced
 	rebuildEligible := patch.Status == PatchStatusActive || patch.Status == PatchStatusConflict
 
-	if branchMoved && rebuildEligible && s.Queue != nil {
-		autoRebuild := true
-		if s.GetVariable != nil {
-			val, _ := s.GetVariable("workspace", slug, "AUTO_REBUILD_AFTER_SYNC")
-			if val == "false" {
-				autoRebuild = false
-			}
+	if branchMoved && rebuildEligible && s.Queue != nil && autoRebuildEnabledFor(s.GetVariable, slug) {
+		userID := ""
+		if auth != nil {
+			userID = auth.UserID
 		}
-
-		if autoRebuild {
-			userID := ""
-			if auth != nil {
-				userID = auth.UserID
-			}
-			jobID, triggered, enqErr := s.enqueueRebuild(slug, patch.IntegrationBranch, userID)
-			if enqErr != nil {
-				slog.Error("recovery: failed to enqueue rebuild",
-					"slug", slug,
-					"branch", patch.BranchName,
-					"error", enqErr,
-				)
-			} else if triggered {
-				result.RebuildTriggered = true
-				result.RebuildJobID = jobID
-			}
+		jobID, enqueued, enqErr := enqueueRebuildJob(s.Queue, s.GetVariable, slug, patch.IntegrationBranch, userID)
+		if enqErr != nil {
+			slog.Error("recovery: failed to enqueue rebuild",
+				"slug", slug,
+				"branch", patch.BranchName,
+				"error", enqErr,
+			)
+		} else if enqueued {
+			result.RebuildTriggered = true
+			result.RebuildJobID = jobID
 		}
 	}
 
 	return result, nil
 }
 
-// enqueueRebuild enqueues a rebuild job with the same parameters as sync.
-func (s *RecoveryService) enqueueRebuild(slug, integrationBranch, userID string) (string, bool, error) {
-	payload := BuildRebuildPayload(slug, integrationBranch, userID, s.GetVariable, "", "")
-	payloadJSON, err := json.Marshal(payload)
-	if err != nil {
-		return "", false, fmt.Errorf("marshal rebuild payload: %w", err)
-	}
-	groupKey := slug + ":" + integrationBranch
-	nonce := uuid.New().String()
+// moveBranchToFork moves refs/heads/<branch> from expectedOld to the fork tip
+// with the compare-and-swap move shared with the patch refresh (casMoveRef),
+// then lets the trunk work tree follow when the branch is checked out.
+//
+// A write that fails is classified (classifyCASError) and returned; the
+// branch did not move. A work-tree reset that fails after the ref moved is
+// logged at error level and not returned, so the caller still persists,
+// enqueues and reports the move (see RunReset).
+func moveBranchToFork(
+	ctx context.Context,
+	runner GitRunner,
+	repoPath, slug string,
+	patch ResetPatchInfo,
+	forkTip, expectedOld string,
+) *RecoveryError {
+	branchRef := "refs/heads/" + patch.BranchName
 
-	jobID, duplicate, enqErr := s.Queue.Enqueue(jobqueue.EnqueueParams{
-		Type:        "rebuild",
-		Key:         slug,
-		Nonce:       nonce,
-		Payload:     payloadJSON,
-		SubmittedBy: userID,
-		Group:       groupKey,
-	})
-	if enqErr != nil {
-		return "", false, enqErr
+	moved, _, err := casMoveRef(ctx, runner, repoPath, branchRef, forkTip, expectedOld)
+	if err == nil {
+		return nil
 	}
-	if duplicate {
-		return "", false, nil
+	if !moved {
+		return classifyCASError(ctx, runner, patch.BranchName, branchRef, expectedOld, err)
 	}
-	return jobID, true, nil
+
+	slog.Error("recovery: hard reset failed after the branch moved; the checked-out work tree may still show the old tip",
+		"slug", slug,
+		"branch", patch.BranchName,
+		"error", err,
+	)
+	return nil
 }
 
-// classifyCASError determines whether a CAS update-ref failure is a lost race
-// (the ref changed) or some other failure.
-func classifyCASError(err error, branchName string, runner GitRunner, ctx context.Context, branchRef, expectedOld string) *RecoveryError {
-	// Check if the ref still holds the expected old value.
-	currentSHA, resolveErr := resolveRefSHA(ctx, runner, branchRef)
-	if resolveErr == nil && currentSHA != expectedOld {
-		// The ref changed — lost race.
-		return &RecoveryError{
-			Kind:    RecoveryErrRefChanged,
-			Message: "patch branch changed during reset; retry",
-		}
-	}
-
-	// Check if the ref was deleted (also a race).
-	if resolveErr != nil && strings.Contains(err.Error(), "update_ref") {
-		return &RecoveryError{
-			Kind:    RecoveryErrRefChanged,
-			Message: "patch branch changed during reset; retry",
+// classifyCASError classifies a failed compare-and-swap write of a branch ref
+// from the state of the ref afterwards, never from the error text:
+//
+//   - the ref now holds a different commit than expectedOld, or exists when it
+//     was to be created, or is gone when it was to be moved: another writer got
+//     in first, RecoveryErrRefChanged;
+//   - the ref is as it was, or the ref cannot be read again: the write failed
+//     for another reason, RecoveryErrOther.
+//
+// expectedOld is zeroSHA for a create.
+func classifyCASError(ctx context.Context, runner GitRunner, branchName, branchRef, expectedOld string, err error) *RecoveryError {
+	current, found, lookupErr := lookupRefSHA(ctx, runner, branchRef)
+	if lookupErr != nil {
+		slog.Error("recovery: cannot re-read patch branch after a failed update",
+			"branch", branchName,
+			"ref", branchRef,
+			"error", lookupErr,
+		)
+	} else {
+		create := expectedOld == zeroSHA
+		changed := (found && (create || current != expectedOld)) || (!found && !create)
+		if changed {
+			return &RecoveryError{
+				Kind:    RecoveryErrRefChanged,
+				Message: "patch branch changed during reset; retry",
+			}
 		}
 	}
 

@@ -439,6 +439,10 @@ func TestProtectedRefs_TS23_41_PropertyNonProtectedRefsAccepted(t *testing.T) {
 	// Table of ref names that should NOT be rejected.
 	refNames := []string{
 		"refs/hub/forward/x",
+		// Prefix near-misses: the rule protects the refs/hub/replaced/ namespace,
+		// not every ref whose name starts with those characters.
+		"refs/hub/replaced",
+		"refs/hub/replacedx",
 		"refs/heads/hub/replaced/x",
 		"refs/heads/feature",
 		"refs/tags/v1.0",
