@@ -61,4 +61,3 @@ func TestPatchAdd_RejectsOptionLikeBranchName(t *testing.T) {
 		}
 	}
 }
-

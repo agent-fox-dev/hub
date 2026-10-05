@@ -28,7 +28,9 @@ func apikitValidateSlug(slug string) bool {
 
 // ---------------------------------------------------------------------------
 // TS-04-17: Verify that the slug sanitizer lowercases the entire username
-//           before further processing.
+//
+//	before further processing.
+//
 // Requirement: 04-REQ-5.1
 // ---------------------------------------------------------------------------
 func TestSanitizeSlug_Lowercase(t *testing.T) {
@@ -40,7 +42,9 @@ func TestSanitizeSlug_Lowercase(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // TS-04-18: Verify that characters not in [a-z0-9_-] are replaced with
-//           hyphens during slug sanitization.
+//
+//	hyphens during slug sanitization.
+//
 // Requirement: 04-REQ-5.2
 // ---------------------------------------------------------------------------
 func TestSanitizeSlug_InvalidCharsReplacedWithHyphen(t *testing.T) {
@@ -52,7 +56,9 @@ func TestSanitizeSlug_InvalidCharsReplacedWithHyphen(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // TS-04-19: Verify that consecutive hyphens are collapsed into a single
-//           hyphen during sanitization.
+//
+//	hyphen during sanitization.
+//
 // Requirement: 04-REQ-5.3
 // ---------------------------------------------------------------------------
 func TestSanitizeSlug_ConsecutiveHyphensCollapsed(t *testing.T) {
@@ -64,7 +70,9 @@ func TestSanitizeSlug_ConsecutiveHyphensCollapsed(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // TS-04-20: Verify that leading and trailing hyphens and underscores are
-//           trimmed from the sanitized slug.
+//
+//	trimmed from the sanitized slug.
+//
 // Requirement: 04-REQ-5.4
 // ---------------------------------------------------------------------------
 func TestSanitizeSlug_LeadingTrailingTrimmed(t *testing.T) {
@@ -76,7 +84,9 @@ func TestSanitizeSlug_LeadingTrailingTrimmed(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // TS-04-21: Verify that a sanitized slug starting with a digit gets the 'u-'
-//           prefix prepended.
+//
+//	prefix prepended.
+//
 // Requirement: 04-REQ-5.5
 // ---------------------------------------------------------------------------
 func TestSanitizeSlug_DigitLeadingGetsPrefixed(t *testing.T) {
@@ -88,7 +98,9 @@ func TestSanitizeSlug_DigitLeadingGetsPrefixed(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // TS-04-22: Verify that when the sanitized slug is shorter than 2 characters,
-//           the fallback u-<first 8 chars of userID> is used.
+//
+//	the fallback u-<first 8 chars of userID> is used.
+//
 // Requirement: 04-REQ-5.6
 // ---------------------------------------------------------------------------
 func TestSanitizeSlug_ShortFallback(t *testing.T) {
@@ -100,7 +112,9 @@ func TestSanitizeSlug_ShortFallback(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // TS-04-E6: Verify that a username consisting entirely of special characters
-//           results in the fallback slug u-<first 8 chars of userID>.
+//
+//	results in the fallback slug u-<first 8 chars of userID>.
+//
 // Requirement: 04-REQ-5.E1
 // ---------------------------------------------------------------------------
 func TestSanitizeSlug_AllSpecialCharsFallback(t *testing.T) {
@@ -112,7 +126,9 @@ func TestSanitizeSlug_AllSpecialCharsFallback(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // TS-04-E7: Verify that a username resulting in a single character after
-//           sanitization triggers the fallback slug.
+//
+//	sanitization triggers the fallback slug.
+//
 // Requirement: 04-REQ-5.E2
 // ---------------------------------------------------------------------------
 func TestSanitizeSlug_SingleCharAfterTrimFallback(t *testing.T) {
@@ -124,7 +140,9 @@ func TestSanitizeSlug_SingleCharAfterTrimFallback(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // TS-04-E8: Verify that a username that is a single digit triggers the
-//           fallback slug.
+//
+//	fallback slug.
+//
 // Requirement: 04-REQ-5.E3
 // ---------------------------------------------------------------------------
 func TestSanitizeSlug_SingleDigitFallback(t *testing.T) {
@@ -136,11 +154,15 @@ func TestSanitizeSlug_SingleDigitFallback(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // TS-04-P5: Property test — for any username string, the slug sanitizer
-//           always produces a result that matches the validateSlug regex
-//           ^[a-z0-9][a-z0-9_-]*[a-z0-9]$ (minimum 2 chars).
+//
+//	always produces a result that matches the validateSlug regex
+//	^[a-z0-9][a-z0-9_-]*[a-z0-9]$ (minimum 2 chars).
+//
 // Property: 04-PROP-5
 // Validates: 04-REQ-5.1, 04-REQ-5.2, 04-REQ-5.3, 04-REQ-5.4, 04-REQ-5.5,
-//            04-REQ-5.6
+//
+//	04-REQ-5.6
+//
 // ---------------------------------------------------------------------------
 func TestSanitizeSlug_PropertyAlwaysValid(t *testing.T) {
 	// A fixed userID used across all property test cases. The first 8 chars

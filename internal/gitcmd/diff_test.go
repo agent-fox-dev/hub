@@ -19,9 +19,9 @@ import (
 // reflecting the changes between the two commits.
 //
 // Preconditions:
-// - A real git repository is initialised in a temp directory with at least
-//   two commits
-// - GitRunner is constructed with workDir pointing to the temp repo
+//   - A real git repository is initialised in a temp directory with at least
+//     two commits
+//   - GitRunner is constructed with workDir pointing to the temp repo
 //
 // TS-14-16
 // Requirement: 14-REQ-8.1

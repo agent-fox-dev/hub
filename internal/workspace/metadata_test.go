@@ -16,7 +16,7 @@ import (
 // =============================================================================
 
 // TestSpec03_SchemaDisplayNameColumn verifies that the workspaces table DDL
-// includes a display_name column as TEXT NOT NULL DEFAULT ''.
+// includes a display_name column as TEXT NOT NULL DEFAULT ”.
 func TestSpec03_SchemaDisplayNameColumn(t *testing.T) {
 	db, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
@@ -86,7 +86,7 @@ func TestSpec03_SchemaDisplayNameColumn(t *testing.T) {
 }
 
 // TestSpec03_SchemaDescriptionColumn verifies that the workspaces table DDL
-// includes a description column as TEXT NOT NULL DEFAULT ''.
+// includes a description column as TEXT NOT NULL DEFAULT ”.
 func TestSpec03_SchemaDescriptionColumn(t *testing.T) {
 	db, err := sql.Open("sqlite", ":memory:")
 	if err != nil {

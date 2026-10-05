@@ -3,8 +3,8 @@ package carrypatch
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/hex"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"math/rand"

@@ -52,8 +52,8 @@ func newAuditTestEnv(t *testing.T) *auditTestEnv {
 	RegisterRoutes(api, store, &nopEmitter{}, nil)
 
 	return &auditTestEnv{
-		echo: e,
-		db:   duckDB,
+		echo:  e,
+		db:    duckDB,
 		store: store,
 	}
 }
@@ -796,16 +796,16 @@ func isValidUUID(s string) bool {
 
 // Test constants for handler tests.
 const (
-	testRunID    = "20260704_143022_a1b2c3"
-	testSlug     = "ws1"
-	eventsPath   = "/api/v1/workspaces/ws1/runs/20260704_143022_a1b2c3/events"
-	outcomesPath = "/api/v1/workspaces/ws1/runs/20260704_143022_a1b2c3/sessions/outcomes"
-	callsPath    = "/api/v1/workspaces/ws1/runs/20260704_143022_a1b2c3/tools/calls"
-	errorsPath   = "/api/v1/workspaces/ws1/runs/20260704_143022_a1b2c3/tools/errors"
-	tracesPath       = "/api/v1/workspaces/ws1/runs/20260704_143022_a1b2c3/traces"
-	tracesBatchPath  = "/api/v1/workspaces/ws1/runs/20260704_143022_a1b2c3/traces/batch"
-	eventsBatchPath  = "/api/v1/workspaces/ws1/runs/20260704_143022_a1b2c3/events/batch"
-	pmPath           = "/api/v1/workspaces/ws1/runs/20260704_143022_a1b2c3/postmortem"
+	testRunID       = "20260704_143022_a1b2c3"
+	testSlug        = "ws1"
+	eventsPath      = "/api/v1/workspaces/ws1/runs/20260704_143022_a1b2c3/events"
+	outcomesPath    = "/api/v1/workspaces/ws1/runs/20260704_143022_a1b2c3/sessions/outcomes"
+	callsPath       = "/api/v1/workspaces/ws1/runs/20260704_143022_a1b2c3/tools/calls"
+	errorsPath      = "/api/v1/workspaces/ws1/runs/20260704_143022_a1b2c3/tools/errors"
+	tracesPath      = "/api/v1/workspaces/ws1/runs/20260704_143022_a1b2c3/traces"
+	tracesBatchPath = "/api/v1/workspaces/ws1/runs/20260704_143022_a1b2c3/traces/batch"
+	eventsBatchPath = "/api/v1/workspaces/ws1/runs/20260704_143022_a1b2c3/events/batch"
+	pmPath          = "/api/v1/workspaces/ws1/runs/20260704_143022_a1b2c3/postmortem"
 )
 
 // countSessionRows returns the number of sessions for a workspace.

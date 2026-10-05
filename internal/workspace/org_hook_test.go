@@ -137,7 +137,9 @@ func (f *faultyTx) QueryRowContext(ctx context.Context, query string, args ...an
 
 // ---------------------------------------------------------------------------
 // TS-04-23: Verify that slug collision resolution appends -1, -2, etc. until
-//           a unique slug is found.
+//
+//	a unique slug is found.
+//
 // Requirement: 04-REQ-6.1
 // ---------------------------------------------------------------------------
 func TestSlugCollision_AppendsNumericSuffix(t *testing.T) {
@@ -174,7 +176,9 @@ func TestSlugCollision_AppendsNumericSuffix(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // TS-04-24: Verify that when all 10 slug suffix attempts collide, the hook
-//           returns an error causing transaction rollback and HTTP 500.
+//
+//	returns an error causing transaction rollback and HTTP 500.
+//
 // Requirement: 04-REQ-6.2
 // ---------------------------------------------------------------------------
 func TestSlugCollision_AllTenAttemptsExhausted(t *testing.T) {
@@ -213,7 +217,9 @@ func TestSlugCollision_AllTenAttemptsExhausted(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // TS-04-25: Verify that when the candidate slug does not collide, it is used
-//           immediately without any suffix.
+//
+//	immediately without any suffix.
+//
 // Requirement: 04-REQ-6.3
 // ---------------------------------------------------------------------------
 func TestSlugCollision_NoCollisionUsesImmediately(t *testing.T) {
@@ -248,7 +254,9 @@ func TestSlugCollision_NoCollisionUsesImmediately(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // TS-04-E9: Verify that a database error during slug uniqueness query causes
-//           the hook to return an error and roll back the transaction.
+//
+//	the hook to return an error and roll back the transaction.
+//
 // Requirement: 04-REQ-6.E1
 // ---------------------------------------------------------------------------
 func TestSlugCollision_DBErrorOnSlugCheck(t *testing.T) {
@@ -295,7 +303,9 @@ func TestSlugCollision_DBErrorOnSlugCheck(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // TS-04-E10: Verify that the slug collision retry loop is capped at exactly
-//            10 iterations regardless of table state.
+//
+//	10 iterations regardless of table state.
+//
 // Requirement: 04-REQ-6.E2
 // ---------------------------------------------------------------------------
 func TestSlugCollision_LoopCappedAtTenIterations(t *testing.T) {
@@ -336,7 +346,9 @@ func TestSlugCollision_LoopCappedAtTenIterations(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // TS-04-26: Verify that the hub hook inserts an orgs row with all required
-//           fields correctly populated.
+//
+//	fields correctly populated.
+//
 // Requirement: 04-REQ-7.1
 // ---------------------------------------------------------------------------
 func TestOrgInsert_AllRequiredFields(t *testing.T) {
@@ -409,7 +421,9 @@ func TestOrgInsert_AllRequiredFields(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // TS-04-27: Verify that the hub hook inserts an org_members row linking the
-//           new user to the new org.
+//
+//	new user to the new org.
+//
 // Requirement: 04-REQ-7.2
 // ---------------------------------------------------------------------------
 func TestOrgInsert_OrgMembersRowCreated(t *testing.T) {
@@ -459,7 +473,9 @@ func TestOrgInsert_OrgMembersRowCreated(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // TS-04-28: Verify that the hook performs all INSERT statements using the
-//           *sql.Tx passed to it, not a separate connection.
+//
+//	*sql.Tx passed to it, not a separate connection.
+//
 // Requirement: 04-REQ-7.3
 // ---------------------------------------------------------------------------
 func TestOrgInsert_AllInsertsUseTx(t *testing.T) {
@@ -494,7 +510,9 @@ func TestOrgInsert_AllInsertsUseTx(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // TS-04-E11: Verify that if the orgs INSERT fails, the hook returns an error
-//            and the transaction can be rolled back, undoing all inserts.
+//
+//	and the transaction can be rolled back, undoing all inserts.
+//
 // Requirement: 04-REQ-7.E1
 // ---------------------------------------------------------------------------
 func TestOrgInsert_OrgInsertFailureRollsBack(t *testing.T) {
@@ -530,8 +548,10 @@ func TestOrgInsert_OrgInsertFailureRollsBack(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // TS-04-E12: Verify that if org_members INSERT fails after orgs INSERT
-//            succeeds, the hook returns an error and the transaction can be
-//            rolled back, undoing all inserts.
+//
+//	succeeds, the hook returns an error and the transaction can be
+//	rolled back, undoing all inserts.
+//
 // Requirement: 04-REQ-7.E2
 // ---------------------------------------------------------------------------
 func TestOrgInsert_OrgMembersInsertFailureRollsBack(t *testing.T) {
@@ -574,7 +594,9 @@ func TestOrgInsert_OrgMembersInsertFailureRollsBack(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // TS-04-E13: Verify that if UUID generation for the new org id fails, the
-//            hook returns an error immediately without performing any INSERT.
+//
+//	hook returns an error immediately without performing any INSERT.
+//
 // Requirement: 04-REQ-7.E3
 // ---------------------------------------------------------------------------
 func TestOrgInsert_UUIDFailureNoInserts(t *testing.T) {

@@ -218,7 +218,7 @@ func (a *smokeRecoveryHookAdapter) RunReset(ctx context.Context, slug string, pa
 		var cpErr *RecoveryError
 		if errors.As(err, &cpErr) {
 			kindMap := map[RecoveryErrorKind]workspace.ResetErrorKind{
-				RecoveryErrBusy:            workspace.ResetErrBusy,
+				RecoveryErrBusy:             workspace.ResetErrBusy,
 				RecoveryErrMissingOnOrigin:  workspace.ResetErrMissingOnOrigin,
 				RecoveryErrFetchFailed:      workspace.ResetErrFetchFailed,
 				RecoveryErrCredentialFailed: workspace.ResetErrCredentialFailed,

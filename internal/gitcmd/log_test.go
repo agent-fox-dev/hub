@@ -19,9 +19,9 @@ import (
 // commit SHAs when using a format that emits them.
 //
 // Preconditions:
-// - A real git repository is initialised in a temp directory with at least
-//   two commits
-// - GitRunner is constructed with workDir pointing to the temp repo
+//   - A real git repository is initialised in a temp directory with at least
+//     two commits
+//   - GitRunner is constructed with workDir pointing to the temp repo
 //
 // TS-14-14
 // Requirement: 14-REQ-7.1

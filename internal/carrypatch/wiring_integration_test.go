@@ -157,8 +157,8 @@ func TestWiringIntegration_TS22_45_PreReceiveAndMirrorWired(t *testing.T) {
 
 		// Register the pre-receive hook as main.go would.
 		hook := NewPreReceiveHook(PreReceiveHookDeps{
-			GetVariable: getVar,
-			ResolveAuth: func(slug string) (transport.AuthMethod, error) { return nil, nil },
+			GetVariable:   getVar,
+			ResolveAuth:   func(slug string) (transport.AuthMethod, error) { return nil, nil },
 			WorkspaceRoot: env.workspaceRoot,
 		})
 		gitserver.RegisterPreReceiveHook(hook)

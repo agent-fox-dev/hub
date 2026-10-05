@@ -704,5 +704,3 @@ func TestNoPurgeSchedulerInMain_TS2358(t *testing.T) {
 		}
 	}
 }
-
-

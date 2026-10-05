@@ -99,9 +99,9 @@ func TestStateMachine_IntegrationWithDB(t *testing.T) {
 
 	// Walk through the full lifecycle: pending -> cloning -> ready -> archived.
 	transitions := []struct {
-		to        string
-		headSHA   *string
-		cloneErr  *string
+		to       string
+		headSHA  *string
+		cloneErr *string
 	}{
 		{to: "cloning", headSHA: nil, cloneErr: nil},
 		{to: "ready", headSHA: strPtr("a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"), cloneErr: nil},

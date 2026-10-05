@@ -31,18 +31,18 @@ type syncTestEnv struct {
 	events []string // ordered event log
 
 	// Counters
-	originFetchCount      int
+	originFetchCount       int
 	originAuthResolveCount int
-	upstreamFetchCount    int
+	upstreamFetchCount     int
 
 	// Variable store
 	variables map[string]string
 	varErrors map[string]error
 
 	// Controls
-	originFetchErr      error
+	originFetchErr       error
 	originAuthResolveErr error
-	fetchOriginNil      bool // if true, FetchOrigin is nil
+	fetchOriginNil       bool // if true, FetchOrigin is nil
 }
 
 func newSyncTestEnv(t *testing.T) *syncTestEnv {

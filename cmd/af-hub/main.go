@@ -468,11 +468,11 @@ func (a *recoveryHookAdapter) RunReset(ctx context.Context, slug string, patch w
 		if errors.As(err, &cpErr) {
 			kindMap := map[carrypatch.RecoveryErrorKind]workspace.ResetErrorKind{
 				carrypatch.RecoveryErrBusy:             workspace.ResetErrBusy,
-				carrypatch.RecoveryErrMissingOnOrigin:   workspace.ResetErrMissingOnOrigin,
-				carrypatch.RecoveryErrFetchFailed:       workspace.ResetErrFetchFailed,
-				carrypatch.RecoveryErrCredentialFailed:  workspace.ResetErrCredentialFailed,
-				carrypatch.RecoveryErrRefChanged:        workspace.ResetErrRefChanged,
-				carrypatch.RecoveryErrOther:             workspace.ResetErrOther,
+				carrypatch.RecoveryErrMissingOnOrigin:  workspace.ResetErrMissingOnOrigin,
+				carrypatch.RecoveryErrFetchFailed:      workspace.ResetErrFetchFailed,
+				carrypatch.RecoveryErrCredentialFailed: workspace.ResetErrCredentialFailed,
+				carrypatch.RecoveryErrRefChanged:       workspace.ResetErrRefChanged,
+				carrypatch.RecoveryErrOther:            workspace.ResetErrOther,
 			}
 			wsKind, ok := kindMap[cpErr.Kind]
 			if !ok {

@@ -531,11 +531,11 @@ func TestResetPatchToOrigin_ClassifiedErrors_TS2360(t *testing.T) {
 	auth := userAuth("user-1")
 
 	cases := []struct {
-		name      string
-		err       *ResetError
-		wantCode  int
-		wantType  string
-		wantMsg   string
+		name     string
+		err      *ResetError
+		wantCode int
+		wantType string
+		wantMsg  string
 	}{
 		{
 			name:     "busy",

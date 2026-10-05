@@ -63,15 +63,15 @@ func mergeMockServer(t *testing.T, failPaths map[string]int) (*httptest.Server, 
 				// POST /api/v1/workspaces/:slug/merges/:id/requeue — requeue merge job.
 				w.WriteHeader(http.StatusOK)
 				json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
-					"id":            "job-uuid-1",
+					"id":             "job-uuid-1",
 					"workspace_slug": "ws1",
-					"target_branch": "main",
-					"source_ref":    "feature/a",
-					"status":        "queued",
-					"submitted_by":  "test-user",
-					"retry_count":   0,
-					"created_at":    "2025-01-01T00:00:00Z",
-					"updated_at":    "2025-01-01T00:00:00Z",
+					"target_branch":  "main",
+					"source_ref":     "feature/a",
+					"status":         "queued",
+					"submitted_by":   "test-user",
+					"retry_count":    0,
+					"created_at":     "2025-01-01T00:00:00Z",
+					"updated_at":     "2025-01-01T00:00:00Z",
 				})
 			} else {
 				// POST /api/v1/workspaces/:slug/merges — submit merge job.
@@ -79,15 +79,15 @@ func mergeMockServer(t *testing.T, failPaths map[string]int) (*httptest.Server, 
 				var reqBody map[string]any
 				if err := json.Unmarshal(bodyBytes, &reqBody); err == nil {
 					resp := map[string]any{
-						"id":            "job-uuid-1",
+						"id":             "job-uuid-1",
 						"workspace_slug": "ws1",
-						"target_branch": reqBody["target_branch"],
-						"source_ref":    reqBody["source_ref"],
-						"status":        "queued",
-						"submitted_by":  "test-user",
-						"retry_count":   0,
-						"created_at":    "2025-01-01T00:00:00Z",
-						"updated_at":    "2025-01-01T00:00:00Z",
+						"target_branch":  reqBody["target_branch"],
+						"source_ref":     reqBody["source_ref"],
+						"status":         "queued",
+						"submitted_by":   "test-user",
+						"retry_count":    0,
+						"created_at":     "2025-01-01T00:00:00Z",
+						"updated_at":     "2025-01-01T00:00:00Z",
 					}
 					json.NewEncoder(w).Encode(resp) //nolint:errcheck
 				} else {
@@ -104,26 +104,26 @@ func mergeMockServer(t *testing.T, failPaths map[string]int) (*httptest.Server, 
 				// GET /api/v1/workspaces/:slug/merges — list merge jobs.
 				json.NewEncoder(w).Encode([]map[string]any{ //nolint:errcheck
 					{
-						"id":            "job-uuid-1",
+						"id":             "job-uuid-1",
 						"workspace_slug": "ws1",
-						"target_branch": "main",
-						"source_ref":    "feature/a",
-						"status":        "queued",
-						"submitted_by":  "test-user",
-						"retry_count":   0,
-						"created_at":    "2025-01-01T00:00:00Z",
-						"updated_at":    "2025-01-01T00:00:00Z",
+						"target_branch":  "main",
+						"source_ref":     "feature/a",
+						"status":         "queued",
+						"submitted_by":   "test-user",
+						"retry_count":    0,
+						"created_at":     "2025-01-01T00:00:00Z",
+						"updated_at":     "2025-01-01T00:00:00Z",
 					},
 					{
-						"id":            "job-uuid-2",
+						"id":             "job-uuid-2",
 						"workspace_slug": "ws1",
-						"target_branch": "main",
-						"source_ref":    "feature/b",
-						"status":        "completed",
-						"submitted_by":  "test-user",
-						"retry_count":   0,
-						"created_at":    "2025-01-01T00:00:00Z",
-						"updated_at":    "2025-01-02T00:00:00Z",
+						"target_branch":  "main",
+						"source_ref":     "feature/b",
+						"status":         "completed",
+						"submitted_by":   "test-user",
+						"retry_count":    0,
+						"created_at":     "2025-01-01T00:00:00Z",
+						"updated_at":     "2025-01-02T00:00:00Z",
 					},
 				})
 			} else {
@@ -132,15 +132,15 @@ func mergeMockServer(t *testing.T, failPaths map[string]int) (*httptest.Server, 
 				parts := strings.Split(r.URL.Path, "/")
 				mergeID := parts[len(parts)-1]
 				json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
-					"id":            mergeID,
+					"id":             mergeID,
 					"workspace_slug": "ws1",
-					"target_branch": "main",
-					"source_ref":    "feature/a",
-					"status":        "queued",
-					"submitted_by":  "test-user",
-					"retry_count":   0,
-					"created_at":    "2025-01-01T00:00:00Z",
-					"updated_at":    "2025-01-01T00:00:00Z",
+					"target_branch":  "main",
+					"source_ref":     "feature/a",
+					"status":         "queued",
+					"submitted_by":   "test-user",
+					"retry_count":    0,
+					"created_at":     "2025-01-01T00:00:00Z",
+					"updated_at":     "2025-01-01T00:00:00Z",
 				})
 			}
 

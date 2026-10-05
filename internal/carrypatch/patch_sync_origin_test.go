@@ -945,11 +945,11 @@ func TestSyncOriginIntegration_PersistOriginState_TS2042(t *testing.T) {
 	runGitCmd(t, env.trunkDir, "checkout", "main")
 
 	// Seed patches.
-	seedPatch(t, env.db, "p1", "my-workspace", "feat-a", 1, PatchStatusActive)       // will be created → in_sync
-	seedPatch(t, env.db, "p2", "my-workspace", "feat-b", 2, PatchStatusActive)       // diverged → report
-	seedPatch(t, env.db, "p3", "my-workspace", "feat-c", 3, PatchStatusActive)       // missing_on_origin
+	seedPatch(t, env.db, "p1", "my-workspace", "feat-a", 1, PatchStatusActive)              // will be created → in_sync
+	seedPatch(t, env.db, "p2", "my-workspace", "feat-b", 2, PatchStatusActive)              // diverged → report
+	seedPatch(t, env.db, "p3", "my-workspace", "feat-c", 3, PatchStatusActive)              // missing_on_origin
 	seedPatch(t, env.db, "p4", "my-workspace", "feat-merged", 4, PatchStatusMergedUpstream) // should be cleared
-	seedPatch(t, env.db, "p5", "my-workspace", "feat-deleted", 5, PatchStatusDeleted) // should be cleared
+	seedPatch(t, env.db, "p5", "my-workspace", "feat-deleted", 5, PatchStatusDeleted)       // should be cleared
 
 	// Set stale origin state on merged and deleted rows.
 	_, err := env.db.Exec(`UPDATE patches SET origin_sync_state = 'in_sync', origin_sha = 'stale', origin_synced_at = '2020-01-01T00:00:00Z' WHERE id IN ('p4', 'p5')`)

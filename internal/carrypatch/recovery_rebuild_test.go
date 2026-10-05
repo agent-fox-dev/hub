@@ -857,5 +857,3 @@ func countJobs(t *testing.T, db *sql.DB, slug string) int {
 	}
 	return count
 }
-
-
