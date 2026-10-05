@@ -1,6 +1,7 @@
 package carrypatch
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -8,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -16,6 +18,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/agent-fox-dev/hub/internal/audit"
+	"github.com/agent-fox-dev/hub/internal/cli"
 	"github.com/agent-fox-dev/hub/internal/jobqueue"
 )
 
@@ -501,16 +504,17 @@ func TestSmoke_FailOnDiverged_Report_TS2058(t *testing.T) {
 
 	env.buildEchoWithAudit(t)
 
-	// Start a real HTTP server for the CLI to talk to.
-	server := httptest.NewServer(env.echo)
+	// Start a real HTTP server for the CLI to talk to. The test auth
+	// middleware reads the caller from X-Test-Auth, which the CLI does not
+	// send, so the server adds it.
+	authJSON, _ := json.Marshal(rebuildUserAuth("alice"))
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.Header.Set("X-Test-Auth", string(authJSON))
+		env.echo.ServeHTTP(w, r)
+	}))
 	defer server.Close()
 
-	// Run the CLI with --fail-on-diverged.
-	// We use the internal CLI test helper from the cli package, but since
-	// we're in the carrypatch package, we'll call the sync endpoint directly
-	// and verify the response, then simulate the CLI behavior.
-
-	// First, do the sync via HTTP.
+	// First, do the sync via HTTP and verify the response and the dashboard.
 	rec := env.doSync(t)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("sync status = %d; want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
@@ -576,12 +580,60 @@ func TestSmoke_FailOnDiverged_Report_TS2058(t *testing.T) {
 		t.Errorf("summary.patches_diverged = %d; want 1", statusResp.Summary.PatchesDiverged)
 	}
 
-	// Now test the CLI --fail-on-diverged behavior by running the CLI
-	// against the real server. We need to use the cli package's test helper.
-	// Since we're in the carrypatch package, we'll verify the contract:
-	// the response has patches_diverged non-empty, which the CLI checks.
-	// The CLI tests in internal/cli already verify exit code 3.
-	// Here we verify the end-to-end data flow.
+	// Now run the real afc command tree against the hub with
+	// --fail-on-diverged. Under the report policy a second sync leaves the
+	// branch diverged, so the process must exit 3 (cli.ExitCode is what
+	// cmd/afc passes to os.Exit). internal/cli/afc_binary_test.go runs the
+	// built binary for the same contract.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, ".ak"), 0o700); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".ak", "config.toml"),
+		[]byte("endpoint_url = \"\"\nuser_id = \"\"\napi_key = \"\"\n"), 0o600); err != nil {
+		t.Fatalf("write config.toml: %v", err)
+	}
+
+	root := cli.BuildRootCommand()
+	var stdout, stderr bytes.Buffer
+	root.SetOut(&stdout)
+	root.SetErr(&stderr)
+	root.SetArgs([]string{
+		"--endpoint-url", server.URL, "--api-key", "test-api-key",
+		"workspace", "sync", "my-workspace", "--fail-on-diverged",
+	})
+	cliErr := root.Execute()
+
+	if cliErr == nil {
+		t.Fatalf("afc workspace sync --fail-on-diverged returned nil; want a diverged error\nstdout: %s", stdout.String())
+	}
+	if code := cli.ExitCode(cliErr); code != 3 {
+		t.Errorf("afc exit code = %d; want 3 (err: %v)", code, cliErr)
+	}
+	if !strings.Contains(stderr.String(), "feat") {
+		t.Errorf("afc stderr should name the diverged branch feat; got: %q", stderr.String())
+	}
+	// stdout holds exactly one JSON document, the sync response: the diverged
+	// failure adds no error envelope after it.
+	var cliDocs []map[string]any
+	dec := json.NewDecoder(strings.NewReader(stdout.String()))
+	for dec.More() {
+		var doc map[string]any
+		if err := dec.Decode(&doc); err != nil {
+			t.Fatalf("afc stdout is not a sequence of JSON documents: %v\nstdout: %s", err, stdout.String())
+		}
+		cliDocs = append(cliDocs, doc)
+	}
+	if len(cliDocs) != 1 {
+		t.Fatalf("afc stdout holds %d JSON documents; want 1\nstdout: %s", len(cliDocs), stdout.String())
+	}
+	if cliDocs[0]["patches_diverged"] == nil {
+		t.Errorf("afc stdout response lacks patches_diverged: %v", cliDocs[0])
+	}
+	if _, hasErr := cliDocs[0]["error"]; hasErr {
+		t.Errorf("afc stdout carries an error envelope: %s", stdout.String())
+	}
 }
 
 // ===========================================================================

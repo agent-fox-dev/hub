@@ -38,15 +38,41 @@ type PatchRefreshOutcome struct {
 	ReplacedSHA string // the old local tip that was replaced (only for ActionReplaced)
 }
 
-// RefWriteError is returned when a ref write fails during the patch refresh.
-// It carries the branch name so the caller can report it.
+// RefStage names the step of the patch refresh that failed for a branch.
+// The zero value is a failed ref write, the case 20-REQ-4.3 specifies.
+type RefStage int
+
+const (
+	// RefStageWrite: an update-ref (including a lost compare-and-swap) failed.
+	// The branch did not move.
+	RefStageWrite RefStage = iota
+	// RefStageCompare: the ancestry check between the local and fork tips
+	// failed. No ref was written for the branch.
+	RefStageCompare
+	// RefStageReset: the ref was written, but resetting the trunk work tree
+	// to the new tip failed. The branch has moved.
+	RefStageReset
+)
+
+// RefWriteError is returned when the patch refresh fails for a branch. It
+// carries the branch name so the caller can report it, and the Stage that
+// failed so the caller does not claim a ref write failed when it did not (a
+// failed hard reset happens after the ref moved).
 type RefWriteError struct {
 	Branch string
 	Err    error
+	Stage  RefStage
 }
 
 func (e *RefWriteError) Error() string {
-	return fmt.Sprintf("failed to update patch branch %s: %v", e.Branch, e.Err)
+	switch e.Stage {
+	case RefStageCompare:
+		return fmt.Sprintf("failed to compare patch branch %s with origin: %v", e.Branch, e.Err)
+	case RefStageReset:
+		return fmt.Sprintf("failed to reset working tree for patch branch %s: %v", e.Branch, e.Err)
+	default:
+		return fmt.Sprintf("failed to update patch branch %s: %v", e.Branch, e.Err)
+	}
 }
 
 func (e *RefWriteError) Unwrap() error {
@@ -56,8 +82,14 @@ func (e *RefWriteError) Unwrap() error {
 // refreshPatchBranches evaluates each candidate patch against the fork's tip
 // and brings local branches to the fork's tip using compare-and-swap ref
 // writes. It returns per-branch outcomes, whether any patch counted as
-// "advanced" (moved with status active or conflict), and an error if a ref
-// write failed (the outcomes produced so far are still returned).
+// "advanced" (moved with status active or conflict), and a *RefWriteError if
+// the refresh failed for a branch (the outcomes produced so far are still
+// returned).
+//
+// A branch whose ref moved but whose work-tree reset then failed (RefStageReset)
+// keeps its outcome and counts as advanced, because the ref did move and the
+// rebuild decision must see it. A branch whose ref did not move produces no
+// outcome when it fails.
 //
 // Candidates are patches with status active, conflict or disabled, excluding
 // any patch whose name equals the integration branch. They are processed in
@@ -90,15 +122,22 @@ func refreshPatchBranches(
 	patchAdvanced := false
 
 	for _, patch := range candidates {
-		outcome, moved, err := refreshOnePatch(ctx, runner, trunkDir, patch, policy)
-		if err != nil {
-			return outcomes, patchAdvanced, &RefWriteError{Branch: patch.BranchName, Err: err}
-		}
-		outcomes = append(outcomes, outcome)
+		outcome, moved, refErr := refreshOnePatch(ctx, runner, trunkDir, patch, policy)
 
-		// A moved branch counts as "patch advanced" only if status is active or conflict.
-		if moved && (patch.Status == PatchStatusActive || patch.Status == PatchStatusConflict) {
-			patchAdvanced = true
+		// A branch whose ref moved is recorded even when a later step for it
+		// failed: the move is real, so it must be persisted, audited and seen
+		// by the rebuild decision. A branch that did not move and failed
+		// produces no outcome.
+		if refErr == nil || moved {
+			outcomes = append(outcomes, outcome)
+
+			// A moved branch counts as "patch advanced" only if status is active or conflict.
+			if moved && (patch.Status == PatchStatusActive || patch.Status == PatchStatusConflict) {
+				patchAdvanced = true
+			}
+		}
+		if refErr != nil {
+			return outcomes, patchAdvanced, refErr
 		}
 	}
 
@@ -106,14 +145,20 @@ func refreshPatchBranches(
 }
 
 // refreshOnePatch processes a single candidate patch branch. It returns the
-// outcome, whether the branch was moved, and an error if a ref write failed.
+// outcome, whether the branch was moved, and a *RefWriteError if a step
+// failed. moved is true together with an error when the ref was written but
+// the work-tree reset that follows failed (RefStageReset).
 func refreshOnePatch(
 	ctx context.Context,
 	runner GitRunner,
 	trunkDir string,
 	patch Patch,
 	policy string,
-) (PatchRefreshOutcome, bool, error) {
+) (PatchRefreshOutcome, bool, *RefWriteError) {
+	fail := func(stage RefStage, err error) *RefWriteError {
+		return &RefWriteError{Branch: patch.BranchName, Err: err, Stage: stage}
+	}
+
 	branchRef := "refs/heads/" + patch.BranchName
 	originRef := "refs/remotes/origin/" + patch.BranchName
 
@@ -145,13 +190,14 @@ func refreshOnePatch(
 	if localErr != nil {
 		// Create refs/heads/<branch> at the fork tip.
 		if _, err := runner.Run(ctx, "update-ref", branchRef, forkTip, zeroSHA); err != nil {
-			return outcome, false, err
+			return outcome, false, fail(RefStageWrite, err)
 		}
 		outcome.Action = ActionCreated
 		outcome.State = StateInSync
 		outcome.LocalSHA = forkTip
 		if err := maybeHardReset(ctx, runner, trunkDir, branchRef); err != nil {
-			return outcome, false, err
+			// The ref already moved: report it as moved.
+			return outcome, true, fail(RefStageReset, err)
 		}
 		return outcome, true, nil
 	}
@@ -168,19 +214,21 @@ func refreshOnePatch(
 	// Rule 4: Local tip is a strict ancestor of the fork tip (fast-forward).
 	isAnc, ancErr := runner.IsAncestor(ctx, localTip, forkTip)
 	if ancErr != nil {
-		// Treat IsAncestor error as a ref-write-level failure.
-		return outcome, false, ancErr
+		// An ancestry-check failure stops the refresh like a ref-write
+		// failure, but nothing was written and it is reported as such.
+		return outcome, false, fail(RefStageCompare, ancErr)
 	}
 	if isAnc {
 		// Fast-forward.
 		if _, err := runner.Run(ctx, "update-ref", branchRef, forkTip, localTip); err != nil {
-			return outcome, false, err
+			return outcome, false, fail(RefStageWrite, err)
 		}
 		outcome.Action = ActionFastForwarded
 		outcome.State = StateInSync
 		outcome.LocalSHA = forkTip
 		if err := maybeHardReset(ctx, runner, trunkDir, branchRef); err != nil {
-			return outcome, false, err
+			// The ref already moved: report it as moved.
+			return outcome, true, fail(RefStageReset, err)
 		}
 		return outcome, true, nil
 	}
@@ -205,12 +253,12 @@ func refreshOnePatch(
 
 	// Write backup ref.
 	if _, err := runner.Run(ctx, "update-ref", backupRef, localTip, expectedBackupOld); err != nil {
-		return outcome, false, err
+		return outcome, false, fail(RefStageWrite, err)
 	}
 
 	// Move the branch to the fork tip.
 	if _, err := runner.Run(ctx, "update-ref", branchRef, forkTip, localTip); err != nil {
-		return outcome, false, err
+		return outcome, false, fail(RefStageWrite, err)
 	}
 
 	outcome.Action = ActionReplaced
@@ -219,7 +267,8 @@ func refreshOnePatch(
 	outcome.LocalSHA = forkTip
 
 	if err := maybeHardReset(ctx, runner, trunkDir, branchRef); err != nil {
-		return outcome, false, err
+		// The ref already moved: report it as moved.
+		return outcome, true, fail(RefStageReset, err)
 	}
 
 	return outcome, true, nil

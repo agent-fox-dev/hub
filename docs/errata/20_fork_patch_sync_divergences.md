@@ -57,6 +57,62 @@ implementation diverges from the original proposal (GitHub issue #35,
    The proposal did not specify which document carries the variable
    reference.
 
+9. **`--fail-on-diverged` exit code 3 is produced by the hub's CLI, not by
+   apikit.** apikit's `CLIExitCode` maps every `CLIError` code other than 1
+   and 400 or above to 2, so returning `apikit.NewCLIError(3, ...)` alone
+   exits 2. `cmd/afc/main.go` therefore exits with `cli.ExitCode(err)`
+   (`internal/cli/exit.go`), which returns 3 for the diverged error and
+   otherwise defers to apikit; exit codes 1 and 2 keep their meaning. The
+   same file's `IsDivergedError` makes `main` skip `apikit.CLIPrintError` for
+   that error. `checkDiverged` does not route the error through
+   `apikit.CLIHandleError` either. Both would print a second JSON document
+   (an `{"error": ...}` envelope) to stdout after the sync response. With the
+   flag, stdout holds exactly one document, the message naming the branches
+   is on stderr, and the process exits 3. The proposal said "exit 3" without
+   saying how apikit would carry it. See `checkDiverged` in
+   `internal/cli/workspace_cmd.go`.
+
+10. **A nil `ResolveOriginAuth` means anonymous origin access.** In `origin`
+    mode a `SyncAPIConfig` whose `ResolveOriginAuth` is nil fetches the origin
+    with no credentials, exactly as a nil `ResolveAuth` does for the
+    upstream fetch (a public fork needs none). A nil `FetchOrigin` is
+    different: there is nothing to call, so the sync answers
+    `500 origin fetch is not configured`. The proposal did not say what a
+    missing credential resolver means. The server binary wires both, so the
+    case only arises in tests and embedders.
+
+11. **Distinct 500 messages for refresh failures that are not a ref
+    write.** Only a failed ref write answers `500 failed to update patch
+    branch <branch>`. An ancestry-check failure (`IsAncestor`) answers
+    `500 failed to compare patch branch <branch> with origin`, and a failed
+    work-tree reset after the ref moved answers `500 failed to reset working
+    tree for patch branch <branch>`. The proposal treated every refresh
+    failure as a ref-write failure. A branch whose ref moved but whose reset
+    failed keeps its outcome: it is persisted, audited and counted as
+    advanced for the rebuild decision. See `RefWriteError.Stage` in
+    `patch_refresh.go` and `refreshFailureMessage` in `sync_handlers.go`.
+
+12. **The ref-write failure path honours `AUTO_REBUILD_AFTER_SYNC`.** When
+    the refresh fails after some branches moved, the rebuild for those
+    branches is enqueued unless `AUTO_REBUILD_AFTER_SYNC` is `"false"`,
+    matching the success path. See `autoRebuildEnabled` in
+    `sync_handlers.go`.
+
+13. **Origin columns of a patch merged in the same sync are cleared.** The
+    refresh persists origin state while a patch is still `active`; when
+    merge detection then marks it `merged_upstream`, the three columns are
+    cleared again before the sync ends. The response's `patches_synced` and
+    `patches_diverged` still describe the refresh, so a patch that was
+    diverged and is detected as merged in the same sync appears in
+    `patches_diverged` once, and not in `patch-status` afterwards.
+
+14. **Shape of the sync audit events.** `hub.patch.replace` carries
+    `resource_id` = the branch name and `action` = `replace`, like the event
+    the reset endpoint emits. `hub.patch.sync` carries `resource_id` = the
+    workspace slug and `action` = `sync`. The proposal named neither field.
+    Replacements are logged at info level even when no audit emitter is
+    configured.
+
 ## Resolution
 
 Each divergence is an implementation detail that improves robustness or

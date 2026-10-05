@@ -595,6 +595,7 @@ or unexpected failures.
 | 403 | PAT lacks `workspaces:sync` scope |
 | 404 | Workspace not found or not owned by the caller |
 | 409 | Sync already in progress (concurrent sync rejected); another operation holds the workspace lock (`error_type: workspace_busy`; a rebuild holds it only during its fetch phase and final phase, not while it applies patches); upstream history has diverged (force-push detected) |
+| 500 | Carry-patch `origin` mode: the patch refresh failed for a branch. The message is `failed to update patch branch <branch>` (ref write failed), `failed to compare patch branch <branch> with origin` (ancestry check failed) or `failed to reset working tree for patch branch <branch>` (ref moved, work-tree reset failed). See the Carry-Patch Sync Flow below |
 | 502 | Upstream fetch failed (network, authentication, or repository error); credential resolution failed; origin fetch failed (`error_type: origin_fetch_failed`); failed to resolve origin credentials |
 | 504 | Request context cancelled mid-sync (timeout or client disconnect) |
 
@@ -692,19 +693,41 @@ reflect it:
    with the message `origin fetch failed` and `error_type`
    `origin_fetch_failed`. The upstream tracking refs already updated are not
    rolled back.
-5. If `PATCH_BRANCH_SOURCE` is `"origin"`, refresh each candidate patch
+5. Compare the new upstream HEAD against the stored `upstream_head_sha`.
+6. If the stored SHA is non-empty and upstream advanced, check ancestry between
+   the stored SHA and the new upstream HEAD. If the stored SHA is not an
+   ancestor of the new HEAD, set `force_push_detected=true` (informational;
+   sync continues). This comparison runs before the patch refresh.
+7. If `PATCH_BRANCH_SOURCE` is `"origin"`, refresh each candidate patch
    branch (status `active`, `conflict` or `disabled`, excluding the
    integration branch) against the fork's tip, applying the first matching
    rule: fork missing, local missing (create), same commit, fast-forward, or
    diverged (replace or report, per `PATCH_DIVERGENCE_POLICY`). Ref writes
    use compare-and-swap (`git update-ref <ref> <new> <expected-old>`).
-   Replaced branches are backed up under `refs/hub/replaced/<branch>`.
-6. Compare the new upstream HEAD against the stored `upstream_head_sha`.
-7. If the stored SHA is non-empty, check ancestry between the stored SHA and
-   the new upstream HEAD. If the stored SHA is not an ancestor of the new HEAD,
-   set `force_push_detected=true` (informational; sync continues).
-8. For each active patch, detect upstream merge using a multi-strategy approach
-   controlled by the `SQUASH_MERGE_DETECTION` workspace variable:
+   Replaced branches are backed up under `refs/hub/replaced/<branch>`. Then
+   persist each candidate patch's `origin_sync_state`, `origin_sha` and
+   `origin_synced_at`, and clear those columns for `merged_upstream` and
+   `deleted` rows. In `hub` mode, clear the three columns for every patch of
+   the workspace instead. The refresh runs before the decision whether to
+   look for merged patches, so a change that only moved patch branches (and
+   did not advance upstream) still reaches step 8 and the rebuild decision in
+   step 11.
+
+   A refresh failure stops the refresh and ends the sync with `500` after
+   step 7: outcomes already produced are persisted, a rebuild is enqueued for
+   branches already moved (unless `AUTO_REBUILD_AFTER_SYNC` is `"false"`),
+   audit events are emitted for the outcomes produced, and neither
+   `upstream_head_sha` nor `last_sync_at` is written. The message tells the
+   failures apart: `failed to update patch branch <branch>` (a ref write,
+   including a lost compare-and-swap, failed), `failed to compare patch branch
+   <branch> with origin` (the ancestry check failed; nothing was written) and
+   `failed to reset working tree for patch branch <branch>` (the ref moved,
+   so the branch counts as moved, but resetting the trunk work tree to the
+   new tip failed).
+8. Merge detection runs when upstream advanced or an `active` or `conflict`
+   patch branch was moved by step 7. For each active patch, detect upstream
+   merge using a multi-strategy approach controlled by the
+   `SQUASH_MERGE_DETECTION` workspace variable:
    - **Ancestry check** (`git merge-base --is-ancestor`): detects standard merges
    - **Content-based detection** (`git cherry`): detects squash merges by comparing
      commit content (no pending commits = merged)
@@ -714,20 +737,21 @@ reflect it:
    - The `SQUASH_MERGE_DETECTION` variable accepts: `"ancestry_only"`,
      `"content_based"`, or `"both"` (default). Either ancestry or content-based
      signal is sufficient to mark a patch as `merged_upstream`.
-9. Transition matched patches to `merged_upstream` status.
-10. If `AUTO_REBUILD_AFTER_SYNC` is not `"false"` (default is true) and the
+9. Transition matched patches to `merged_upstream` status. In `origin` mode
+   the origin columns of the patches newly marked merged are cleared again,
+   because step 7 persisted them while the patch was still `active`. The
+   response's `patches_synced` and `patches_diverged` keep describing the
+   refresh in step 7.
+10. Write `last_sync_at` and `updated_at` on every completed sync, whether
+    or not anything advanced. `upstream_head_sha` is written only when
+    upstream advanced.
+11. If `AUTO_REBUILD_AFTER_SYNC` is not `"false"` (default is true) and the
     upstream ref advanced, a patch branch was moved (created, fast-forwarded
     or replaced for an `active` or `conflict` patch), or at least one patch
     was newly marked `merged_upstream`, enqueue a rebuild job. If a rebuild
     job is already queued or running, silently ignore the duplicate
     (`rebuild_triggered=false`).
-11. Write `last_sync_at` and `updated_at` on every completed sync, whether
-    or not anything advanced. `upstream_head_sha` is written only when
-    upstream advanced.
-12. In `origin` mode, persist each candidate patch's `origin_sync_state`,
-    `origin_sha` and `origin_synced_at`. In `hub` mode, clear those columns
-    for every patch of the workspace.
-13. Emit audit events (see [Hub Audit Events](#hub-audit-events) below).
+12. Emit audit events (see [Hub Audit Events](#hub-audit-events) below).
 
 **Standard Workspace Behavior:** When the workspace is in `standard` mode, the
 carry-patch extension does not run at all -- the request takes the standard
@@ -3446,8 +3470,8 @@ query endpoint (`GET /api/v1/audit`). Each event has an `event_type`, an actor
 |------------|---------------|--------------|----------|
 | `hub.patch.create` | `patch` | A single patch is registered via `POST /workspaces/:slug/patches` (not emitted for batch or `if_not_exists` hits) | `branch_name`, `position`, `branch_resolution` (`local`, `origin_tracking`, `origin_fetch` or `skipped`) |
 | `hub.rebuild.followup` | `rebuild` | A follow-up rebuild is enqueued because a patch tip or upstream base moved during a rebuild run | `submitted_by`, workspace slug |
-| `hub.patch.sync` | `patch` | A carry-patch sync completes in `origin` mode | `origin_fetched` (bool), `created` (branch names), `fast_forwarded` (branch names), `replaced` (branch names), `diverged` (branch names), `missing_on_origin` (branch names) |
-| `hub.patch.replace` | `patch` | A patch branch is replaced during an `origin`-mode sync (one event per replaced branch) | `branch_name`, `replaced_sha`, `origin_sha` |
+| `hub.patch.sync` | `patch` | A carry-patch sync completes in `origin` mode (`resource_id` is the workspace slug, `action` is `sync`) | `origin_fetched` (bool), `created` (branch names), `fast_forwarded` (branch names), `replaced` (branch names), `diverged` (branch names), `missing_on_origin` (branch names) |
+| `hub.patch.replace` | `patch` | A patch branch is replaced during an `origin`-mode sync (one event per replaced branch; `resource_id` is the branch name, `action` is `replace`, as for the reset-triggered event) | `branch_name`, `replaced_sha`, `origin_sha` |
 | `hub.patch.mirror_failed` | `patch` | A hub-mode mirror of a registered patch branch to the fork failed (one event per failed branch) | `branch_name`, `error` (with any URL userinfo removed) |
 | `hub.patch.reset` | `patch` | A patch branch is reset to the fork's tip via `POST /workspaces/:slug/patches/:id/reset-to-origin` | `branch_name`, `action` (`none`, `created`, `fast_forwarded` or `replaced`), `local_sha` (omitted when no local branch), `origin_sha`, `replaced_sha` (present only for `replaced`) |
 

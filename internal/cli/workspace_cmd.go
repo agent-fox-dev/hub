@@ -498,8 +498,10 @@ func newDeleteCmd() *cobra.Command {
 // With --wait, if a rebuild is triggered, it polls the rebuild status until
 // a terminal state is reached.
 // With --fail-on-diverged, the command exits 3 when patches_diverged is
-// non-empty. When combined with --wait, the diverged check runs after the
-// rebuild wait finishes, and a wait failure (exit 1) takes precedence.
+// non-empty (see ExitCode). The sync response stays the only JSON document on
+// stdout; the message naming the branches goes to stderr. When combined with
+// --wait, the diverged check runs after the rebuild wait finishes, and a wait
+// failure (exit 1) takes precedence.
 // Requirements: 13-REQ-2.3, 13-REQ-8, 20-REQ-6.4, 20-REQ-6.5, 20-REQ-6.6
 func newSyncCmd() *cobra.Command {
 	var (
@@ -587,8 +589,14 @@ func extractPatchesDiverged(result any) []string {
 }
 
 // checkDiverged checks whether patches_diverged is non-empty and, if the
-// --fail-on-diverged flag is set, prints a message naming the branches and
-// returns an exit-3 error. Without the flag it always returns nil.
+// --fail-on-diverged flag is set, prints a message naming the branches to
+// stderr and returns an ExitCodeDiverged error. Without the flag it always
+// returns nil.
+//
+// The error is deliberately not routed through apikit.CLIHandleError: the
+// sync response has already been printed, and CLIHandleError would append a
+// second JSON document (an error envelope) to stdout. main skips
+// apikit.CLIPrintError for this error for the same reason (IsDivergedError).
 func checkDiverged(cmd *cobra.Command, result any, failOnDiverged bool) error {
 	if !failOnDiverged {
 		return nil
@@ -599,7 +607,7 @@ func checkDiverged(cmd *cobra.Command, result any, failOnDiverged bool) error {
 	}
 	msg := fmt.Sprintf("diverged patch branches: %s", strings.Join(branches, ", "))
 	fmt.Fprintln(cmd.ErrOrStderr(), msg)
-	return apikit.CLIHandleError(cmd, apikit.NewCLIError(3, msg))
+	return apikit.NewCLIError(ExitCodeDiverged, msg)
 }
 
 // newRecloneCmd returns the 'workspace reclone' subcommand.

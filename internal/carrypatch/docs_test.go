@@ -384,12 +384,31 @@ func navigateMap(m map[string]any, keys ...string) (map[string]any, bool) {
 // ===========================================================================
 
 func TestDocs_TS_20_55_CLIAndWorkflowDocs(t *testing.T) {
-	cli := readDoc(t, "cli.md")
-	requireContains(t, "cli.md", cli, "--fail-on-diverged")
-	// Exit code 3
-	if !strings.Contains(cli, "3") {
-		t.Error("cli.md does not mention exit code 3")
+	cliDoc := readDoc(t, "cli.md")
+	requireContains(t, "cli.md", cliDoc, "--fail-on-diverged")
+
+	// Exit code 3 is named by the --fail-on-diverged flag row and by the
+	// sync exit-code table, and the doc says the message goes to stderr while
+	// stdout keeps a single document.
+	var flagRow, exitRow string
+	for _, line := range strings.Split(cliDoc, "\n") {
+		if strings.HasPrefix(line, "| `--fail-on-diverged`") {
+			flagRow = line
+		}
+		if strings.HasPrefix(line, "| 3 |") && strings.Contains(line, "--fail-on-diverged") {
+			exitRow = line
+		}
 	}
+	if flagRow == "" {
+		t.Fatal("cli.md has no --fail-on-diverged flag row")
+	}
+	requireContains(t, "cli.md --fail-on-diverged flag row", flagRow,
+		"Exit with code 3", "patches_diverged")
+	if exitRow == "" {
+		t.Fatal("cli.md exit-code table has no row for exit code 3 and --fail-on-diverged")
+	}
+	requireContains(t, "cli.md sync behavior", cliDoc,
+		"stderr", "exactly one JSON document")
 
 	wf := readDoc(t, "carry_patch_workflow.md")
 	requireContains(t, "carry_patch_workflow.md", wf,

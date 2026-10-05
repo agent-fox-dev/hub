@@ -384,8 +384,12 @@ afc workspace sync <slug> [--reset-to-upstream] [--wait] [--timeout <duration>] 
   response.
 - With `--fail-on-diverged`: after printing the response (and after the
   rebuild wait if `--wait` is also set), if `patches_diverged` is non-empty,
-  prints a message naming the diverged branches to stderr and exits with
-  code 3. A wait failure (exit 1) takes precedence over exit 3.
+  prints a message naming the diverged branches to stderr
+  (`diverged patch branches: a, b`) and exits with code 3. stdout keeps
+  exactly one JSON document, the sync response: no `{"error": ...}` envelope
+  follows it, so a script can parse stdout as a single document and read the
+  branch names from `patches_diverged`. A wait failure (exit 1) takes
+  precedence over exit 3.
 - Requires `workspaces:sync` permission scope for PATs.
 
 **Exit Codes:**
@@ -394,7 +398,7 @@ afc workspace sync <slug> [--reset-to-upstream] [--wait] [--timeout <duration>] 
 |------|-----------|
 | 0 | Sync completed successfully (and rebuild completed when using `--wait`) |
 | 1 | Workspace not found, sync disabled, clone not ready, sync already in progress, API error, network error, or timeout (with `--wait`) |
-| 3 | `--fail-on-diverged` is set and `patches_diverged` is non-empty |
+| 3 | `--fail-on-diverged` is set and `patches_diverged` is non-empty. The sync itself succeeded and its response is on stdout; the branch names are on stderr |
 
 ---
 

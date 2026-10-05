@@ -16,8 +16,13 @@ func main() {
 
 	// Execute the command tree using apikit's centralized execution.
 	err := apikit.CLIExecute()
-	if err != nil {
+	// The --fail-on-diverged error has already been reported (response on
+	// stdout, branch names on stderr); printing it would add a second JSON
+	// document to stdout.
+	if err != nil && !cli.IsDivergedError(err) {
 		apikit.CLIPrintError(err)
 	}
-	os.Exit(apikit.CLIExitCode(err))
+	// cli.ExitCode is apikit.CLIExitCode plus exit 3 for --fail-on-diverged,
+	// which apikit would otherwise map to 2.
+	os.Exit(cli.ExitCode(err))
 }

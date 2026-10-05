@@ -2,6 +2,7 @@ package carrypatch
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -824,6 +825,9 @@ func TestRefreshPatchBranches_RefWriteFailure_TS2024(t *testing.T) {
 	if refErr.Branch != "bad-branch" {
 		t.Errorf("RefWriteError.Branch = %q; want %q", refErr.Branch, "bad-branch")
 	}
+	if refErr.Stage != RefStageWrite {
+		t.Errorf("RefWriteError.Stage = %v; want RefStageWrite", refErr.Stage)
+	}
 
 	// Should have 1 outcome (the good branch).
 	if len(outcomes) != 1 {
@@ -913,4 +917,212 @@ func isRefWriteError(err error, target **RefWriteError) bool {
 		return true
 	}
 	return false
+}
+
+// ===========================================================================
+// Finding 4 of issue #42: a branch that moved but whose working-tree reset
+// failed keeps its outcome; an ancestry-check failure is classified apart
+// from a ref-write failure.
+//
+// Verifies: 20-REQ-4.3
+// ===========================================================================
+
+// failingResetRunner wraps a GitRunner and fails every HardReset, simulating
+// a working-tree reset that fails after the branch ref has already moved.
+type failingResetRunner struct {
+	GitRunner
+}
+
+func (r *failingResetRunner) HardReset(_ context.Context, _ string) error {
+	return fmt.Errorf("simulated hard reset failure")
+}
+
+// failingAncestorRunner wraps a GitRunner and fails every IsAncestor call.
+type failingAncestorRunner struct {
+	GitRunner
+}
+
+func (r *failingAncestorRunner) IsAncestor(_ context.Context, _, _ string) (bool, error) {
+	return false, fmt.Errorf("simulated merge-base failure")
+}
+
+// refTrunk is a trunk repository for refresh tests. Origin tracking refs are
+// written directly with update-ref, so no remote is needed.
+type refTrunk struct {
+	dir  string
+	base string // SHA of the initial commit
+}
+
+func newRefTrunk(t *testing.T) *refTrunk {
+	t.Helper()
+	dir := t.TempDir()
+	runGitCmd(t, "", "init", "-b", "main", dir)
+	configGitUserCmd(t, dir)
+	writeFileHelper(t, filepath.Join(dir, "file.txt"), "hello")
+	runGitCmd(t, dir, "add", ".")
+	runGitCmd(t, dir, "commit", "-m", "initial")
+	return &refTrunk{dir: dir, base: runGitCmd(t, dir, "rev-parse", "HEAD")}
+}
+
+// commit creates a commit on top of parent without touching the work tree
+// and returns its SHA. Distinct messages give distinct SHAs.
+func (r *refTrunk) commit(t *testing.T, parent, msg string) string {
+	t.Helper()
+	tree := runGitCmd(t, r.dir, "rev-parse", parent+"^{tree}")
+	return runGitCmd(t, r.dir, "commit-tree", tree, "-p", parent, "-m", msg)
+}
+
+// pointHeadAt points HEAD at refs/heads/<branch> without requiring the
+// branch to exist, so the refresh sees HEAD on the branch it is about to move.
+func (r *refTrunk) pointHeadAt(t *testing.T, branch string) {
+	t.Helper()
+	runGitCmd(t, r.dir, "symbolic-ref", "HEAD", "refs/heads/"+branch)
+}
+
+func TestRefreshPatchBranches_HardResetFailure_KeepsMovedOutcome(t *testing.T) {
+	cases := []struct {
+		name       string
+		setup      func(t *testing.T, tr *refTrunk) (forkTip string)
+		wantAction string
+	}{
+		{
+			name: "create",
+			setup: func(t *testing.T, tr *refTrunk) string {
+				fork := tr.commit(t, tr.base, "fork tip")
+				runGitCmd(t, tr.dir, "update-ref", "refs/remotes/origin/feat", fork)
+				// HEAD names the branch that is about to be created.
+				tr.pointHeadAt(t, "feat")
+				return fork
+			},
+			wantAction: ActionCreated,
+		},
+		{
+			name: "fast_forward",
+			setup: func(t *testing.T, tr *refTrunk) string {
+				runGitCmd(t, tr.dir, "branch", "feat", tr.base)
+				fork := tr.commit(t, tr.base, "fork tip")
+				runGitCmd(t, tr.dir, "update-ref", "refs/remotes/origin/feat", fork)
+				tr.pointHeadAt(t, "feat")
+				return fork
+			},
+			wantAction: ActionFastForwarded,
+		},
+		{
+			name: "replace",
+			setup: func(t *testing.T, tr *refTrunk) string {
+				local := tr.commit(t, tr.base, "local tip")
+				runGitCmd(t, tr.dir, "branch", "feat", local)
+				fork := tr.commit(t, tr.base, "fork tip")
+				runGitCmd(t, tr.dir, "update-ref", "refs/remotes/origin/feat", fork)
+				tr.pointHeadAt(t, "feat")
+				return fork
+			},
+			wantAction: ActionReplaced,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tr := newRefTrunk(t)
+			forkTip := tc.setup(t, tr)
+			runner := &failingResetRunner{GitRunner: newRealGitRunner(t, tr.dir)}
+
+			patches := []Patch{
+				{ID: "p1", BranchName: "feat", Position: 1, Status: PatchStatusActive},
+				{ID: "p2", BranchName: "later", Position: 2, Status: PatchStatusActive},
+			}
+			outcomes, patchAdvanced, err := refreshPatchBranches(
+				context.Background(), runner, tr.dir, patches, "integration", "replace")
+
+			if err == nil {
+				t.Fatal("expected an error from the failed hard reset")
+			}
+			var refErr *RefWriteError
+			if !errors.As(err, &refErr) {
+				t.Fatalf("expected *RefWriteError, got %T: %v", err, err)
+			}
+			if refErr.Branch != "feat" {
+				t.Errorf("RefWriteError.Branch = %q; want %q", refErr.Branch, "feat")
+			}
+			if refErr.Stage != RefStageReset {
+				t.Errorf("RefWriteError.Stage = %v; want RefStageReset (the ref write itself succeeded)", refErr.Stage)
+			}
+
+			// The ref moved, so the outcome is kept and counts as advanced.
+			if got := refSHA(t, tr.dir, "refs/heads/feat"); got != forkTip {
+				t.Fatalf("refs/heads/feat = %s; want fork tip %s (ref write should have succeeded)", got, forkTip)
+			}
+			if len(outcomes) != 1 {
+				t.Fatalf("expected the moved branch's outcome to be kept, got %d outcomes: %+v", len(outcomes), outcomes)
+			}
+			o := outcomes[0]
+			if o.BranchName != "feat" || o.Action != tc.wantAction || o.State != StateInSync {
+				t.Errorf("outcome = %+v; want feat / %s / %s", o, tc.wantAction, StateInSync)
+			}
+			if o.LocalSHA != forkTip || o.OriginSHA != forkTip {
+				t.Errorf("outcome SHAs local=%s origin=%s; want both %s", o.LocalSHA, o.OriginSHA, forkTip)
+			}
+			if !patchAdvanced {
+				t.Error("patchAdvanced = false; a moved active branch must count as advanced")
+			}
+		})
+	}
+}
+
+func TestRefreshPatchBranches_HardResetFailure_DisabledPatchNotAdvanced(t *testing.T) {
+	tr := newRefTrunk(t)
+	runGitCmd(t, tr.dir, "branch", "feat", tr.base)
+	fork := tr.commit(t, tr.base, "fork tip")
+	runGitCmd(t, tr.dir, "update-ref", "refs/remotes/origin/feat", fork)
+	tr.pointHeadAt(t, "feat")
+	runner := &failingResetRunner{GitRunner: newRealGitRunner(t, tr.dir)}
+
+	patches := []Patch{{ID: "p1", BranchName: "feat", Position: 1, Status: PatchStatusDisabled}}
+	outcomes, patchAdvanced, err := refreshPatchBranches(
+		context.Background(), runner, tr.dir, patches, "integration", "replace")
+
+	var refErr *RefWriteError
+	if !errors.As(err, &refErr) || refErr.Stage != RefStageReset {
+		t.Fatalf("expected a RefStageReset error, got %T: %v", err, err)
+	}
+	if len(outcomes) != 1 {
+		t.Fatalf("expected the moved branch's outcome to be kept, got %d", len(outcomes))
+	}
+	// A disabled patch never counts as advanced (20-REQ-5.2).
+	if patchAdvanced {
+		t.Error("patchAdvanced = true for a moved disabled patch; want false")
+	}
+}
+
+func TestRefreshPatchBranches_AncestorCheckFailure_ClassifiedSeparately(t *testing.T) {
+	tr := newRefTrunk(t)
+	runGitCmd(t, tr.dir, "branch", "feat", tr.base)
+	fork := tr.commit(t, tr.base, "fork tip")
+	runGitCmd(t, tr.dir, "update-ref", "refs/remotes/origin/feat", fork)
+	runner := &failingAncestorRunner{GitRunner: newRealGitRunner(t, tr.dir)}
+
+	patches := []Patch{{ID: "p1", BranchName: "feat", Position: 1, Status: PatchStatusActive}}
+	outcomes, patchAdvanced, err := refreshPatchBranches(
+		context.Background(), runner, tr.dir, patches, "integration", "replace")
+
+	var refErr *RefWriteError
+	if !errors.As(err, &refErr) {
+		t.Fatalf("expected *RefWriteError, got %T: %v", err, err)
+	}
+	if refErr.Stage != RefStageCompare {
+		t.Errorf("RefWriteError.Stage = %v; want RefStageCompare", refErr.Stage)
+	}
+	if refErr.Branch != "feat" {
+		t.Errorf("RefWriteError.Branch = %q; want %q", refErr.Branch, "feat")
+	}
+	// Nothing moved: the branch is untouched and no outcome is produced.
+	if got := refSHA(t, tr.dir, "refs/heads/feat"); got != tr.base {
+		t.Errorf("refs/heads/feat moved to %s; want unchanged %s", got, tr.base)
+	}
+	if len(outcomes) != 0 {
+		t.Errorf("expected no outcome for an unmoved branch, got %+v", outcomes)
+	}
+	if patchAdvanced {
+		t.Error("patchAdvanced = true although nothing moved")
+	}
 }
