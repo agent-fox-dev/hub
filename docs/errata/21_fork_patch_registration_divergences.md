@@ -35,7 +35,7 @@ proposal (GitHub issue #35, "PRD17").
    values. See `docs/api.md` audit events table and
    `internal/workspace/smoke_spec21_test.go`.
 
-5. **No batch audit event.** Batch registration (`POST .../patches/batch`)
+5. **No batch audit event.** Batch registration (a JSON array body to `POST .../patches`)
    does not emit a `hub.patch.create` audit event. Only single-patch
    registration emits the event. The proposal did not specify batch audit
    behaviour, but the absence is a divergence from the implied "every

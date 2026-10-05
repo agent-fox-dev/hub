@@ -1300,7 +1300,7 @@ func TestDocs_TS_24_26_AFCCommandsExistInCLIMd(t *testing.T) {
 }
 
 // ===========================================================================
-// TS-24-27 (unit): The Sync algorithm section lists the eight phases in order.
+// TS-24-27 (unit): The Sync algorithm section lists the phases in code order.
 // Verifies: 24-REQ-5.1
 // ===========================================================================
 
@@ -1308,13 +1308,16 @@ func TestDocs_TS_24_27_SyncAlgorithmPhasesInOrder(t *testing.T) {
 	guide := readDoc(t, "carry_patch_workflow.md")
 	syncSec := section(t, guide, "### Sync algorithm", "### ")
 
-	// The eight phase keywords must appear in order.
+	// The phase keywords must appear in the order the code runs them
+	// (sync_handlers.go): base resolution and force-push detection precede
+	// the patch refresh.
 	keys := []string{
 		"Resolve credentials",
 		"Fetch upstream",
 		"Fetch origin (origin mode only)",
-		"Refresh patch branches",
+		"Resolve the base",
 		"Detect force-push",
+		"Refresh patch branches",
 		"Detect merged patches",
 		"Auto-rebuild",
 		"Write timestamps",

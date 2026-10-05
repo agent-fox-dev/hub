@@ -68,8 +68,22 @@ git clone <hub-url>/git/<org-slug>/<workspace-slug>.git
 cd <workspace-slug>
 ```
 
-The clone comes from the hub, not from upstream. The hub manages both remotes
-internally (`origin` = fork, `upstream` = canonical repo).
+**`hub` mode:** The clone comes from the hub, not from upstream. The hub
+manages both of its own remotes internally (`origin` = fork, `upstream` =
+canonical repo).
+
+**`origin` mode:** Work in a clone of the fork instead, and add the upstream
+remote so you can merge or rebase upstream changes into a patch branch:
+
+```
+git clone <fork-repo-url>
+cd <fork-repo-name>
+git remote add upstream <upstream-repo-url>
+```
+
+In a clone of the hub, `origin` is the hub; in a clone of the fork, `origin`
+is the fork. Every `origin` in the commands below means the `origin` of the
+clone you work in for your mode.
 
 ## Understand Before You Code (MANDATORY)
 
@@ -283,6 +297,11 @@ git checkout <integration-branch>
 git pull origin <integration-branch>
 ```
 
+**`origin` mode:** The hub pushes the integration branch to the fork only
+when `REBUILD_PUSH_INTEGRATION_BRANCH=true`. Without it, the integration
+branch exists only on the hub: fetch it from a clone of the hub's git server
+instead of from the fork.
+
 Run the project's test suite against the integration branch. The integration
 branch is the artifact that gets deployed -- it must always be in a working
 state.
@@ -345,20 +364,25 @@ afc workspace patch-status <workspace-slug>
   the auto-rebuild will fail and the conflicting patch will be marked
   `conflict`. See Conflict Resolution below.
 - **`origin` mode:** Check `origin_sync_state` for each patch. A `diverged`
-  patch means the hub replaced the branch tip with the fork's tip. A
+  patch means the hub left its copy unchanged because the branch differs
+  from the fork's tip and `PATCH_DIVERGENCE_POLICY` is `report`; a
+  replacement is recorded as `in_sync` with the action `replaced`. A
   `missing_on_origin` patch means the branch was not found on the fork; the
   hub keeps applying its own copy until an operator disables or removes the
   patch.
 
 ### Recovery After Upstream Force-Push
 
-If upstream force-pushed (rewrote history), use the reset flag:
+If upstream force-pushed (rewrote history), run a normal sync:
 
 ```
-afc workspace sync <workspace-slug> --reset-to-upstream
+afc workspace sync <workspace-slug>
 ```
 
-This force-resets the local tracking of upstream HEAD. Follow with a rebuild.
+The sync detects the rewrite and reports `force_push_detected` in its
+response. It proceeds normally and a rebuild reapplies the patches on top of
+the new upstream HEAD. Do not use `--reset-to-upstream`: it applies to
+standard workspaces only and is ignored for carry-patch workspaces.
 
 ## Conflict Resolution
 
@@ -415,6 +439,7 @@ hub push is rejected or forwarded in `origin` mode, and a trunk edit would be
 overwritten at the next sync.
 
 ```
+git fetch upstream        # the remote added in "Clone the Repository"
 git checkout patch/<conflicting-patch>
 git merge upstream/main   # or rebase
 # resolve conflicts
@@ -652,7 +677,6 @@ with `afc rebuild submit --fail-mode <fail_fast|continue>`.
 | Roll back a rebuild | `afc rebuild rollback <workspace-slug> <rebuild-id>` |
 | Sync with upstream (and origin in `origin` mode) | `afc workspace sync <workspace-slug> [--wait]` |
 | Sync and fail on diverged patches | `afc workspace sync --fail-on-diverged <workspace-slug>` |
-| Reset to upstream (recovery) | `afc workspace sync <workspace-slug> --reset-to-upstream` |
 | Reset a diverged patch to origin's tip | `afc patch reset-to-origin <workspace-slug> <patch-id>` |
 | List rerere resolutions | `afc rerere list <workspace-slug>` |
 | Forget a rerere resolution | `afc rerere forget <workspace-slug> <pathspec>` |

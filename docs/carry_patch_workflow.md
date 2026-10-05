@@ -102,8 +102,8 @@ workspaces driven by agents that push to the hub and never open upstream
 pull requests.
 
 The integration branch is always built by the hub and only pushed to the
-fork (when `REBUILD_PUSH_INTEGRATION_BRANCH=true`). Sync never fetches the
-integration branch from `origin`; it is never fetched from `origin` by sync.
+fork (when `REBUILD_PUSH_INTEGRATION_BRANCH=true`). It is never fetched from
+`origin` by sync.
 
 **Switching modes.** The mode is read at the start of each operation (sync,
 registration, push), so changing `PATCH_BRANCH_SOURCE` takes effect on the
@@ -409,7 +409,15 @@ with extra fields:
 
   "origin_fetched": true,
   "patches_merged": ["fix/connection-pool-leak"],
-  "patches_synced": ["feature/custom-auth-headers", "internal/custom-metrics"],
+  "patches_synced": [
+    {
+      "branch_name": "feature/custom-auth-headers",
+      "action": "fast_forwarded",
+      "state": "in_sync",
+      "local_sha": "9f1c2ab...",
+      "origin_sha": "9f1c2ab..."
+    }
+  ],
   "patches_diverged": [],
   "rebuild_triggered": true,
   "force_push_detected": false
@@ -605,9 +613,10 @@ The `conflict_files` field on the conflicting patch lists the affected files.
 **Resolving in hub mode.** Resolve the conflict in the workspace trunk or by
 pushing a fixed branch to the hub's git server. Rerere records the resolution
 when it happens during a rebuild, so subsequent rebuilds with the same
-conflict pattern resolve automatically. You can also record a resolution
-manually by resolving the conflict in the trunk's working tree and running
-`git rerere` there. Then set the patch back to `active` and rebuild:
+conflict pattern resolve automatically. The hub does not expose a way to
+record a resolution outside a rebuild; it only lists and forgets recorded
+resolutions (see [Managing rerere resolutions](#managing-rerere-resolutions)).
+Then set the patch back to `active` and rebuild:
 
 ```
 afc patch update api-gateway <patch-id> --status active
@@ -832,8 +841,9 @@ The resolution procedure depends on the authority model.
 Resolve the conflict in the workspace trunk or by pushing a fixed branch to
 the hub's git server. Rerere records the resolution when it happens during a
 rebuild, so subsequent rebuilds with the same conflict pattern resolve
-automatically. You can also record a resolution manually by resolving the
-conflict in the trunk's working tree and running `git rerere` there.
+automatically. The hub does not expose a way to record a resolution outside
+a rebuild; it only lists and forgets recorded resolutions (see
+[Managing rerere resolutions](#managing-rerere-resolutions)).
 
 After resolving, set the patch status back to `active` and rebuild:
 
@@ -878,9 +888,11 @@ read the `origin_sync_state` and `replaced_sha` fields:
 afc workspace patch-status api-gateway
 ```
 
-If `origin_sync_state` is `diverged` (when `PATCH_DIVERGENCE_POLICY` is
-`report`) or a replacement has occurred, the old tip is saved under
-`refs/hub/replaced/<branch>`. Fetch it to a local clone:
+A backup exists only after a replacement (sync action `replaced`) or a reset
+that discarded commits. If `origin_sync_state` is `diverged`, the hub has
+not replaced the branch: under the `report` policy the branch is left
+unchanged and no backup is written. After a replacement, the old tip is
+saved under `refs/hub/replaced/<branch>`. Fetch it to a local clone:
 
 ```
 git fetch <hub_url> refs/hub/replaced/<branch>
@@ -1307,7 +1319,15 @@ proceeds through these phases in order:
    the upstream fetch that already succeeded is not rolled back, but no
    patch refresh, merge detection or timestamp write occurs.
 
-4. **Refresh patch branches (origin mode only).** For each candidate patch
+4. **Resolve the base.** Determine the new upstream base
+   (`refs/remotes/upstream/HEAD`, with the same fallbacks as the rebuild)
+   and compare it with the stored `upstream_head_sha`.
+
+5. **Detect force-push.** If the stored upstream HEAD is not an ancestor of
+   the new upstream HEAD, set `force_push_detected` to true. This is
+   informational and does not block the sync.
+
+6. **Refresh patch branches (origin mode only).** For each candidate patch
    (status `active`, `conflict` or `disabled`, excluding the integration
    branch), compare the hub's `refs/heads/<branch>` with the fork's
    `refs/remotes/origin/<branch>` and bring the local branch to the fork's
@@ -1332,14 +1352,6 @@ proceeds through these phases in order:
    answers `500` with a message that says the reset failed, not that the
    ref update failed.
 
-5. **Resolve the base.** Determine the new upstream base
-   (`refs/remotes/upstream/HEAD`, with the same fallbacks as the rebuild)
-   and compare it with the stored `upstream_head_sha`.
-
-6. **Detect force-push.** If the stored upstream HEAD is not an ancestor of
-   the new upstream HEAD, set `force_push_detected` to true. This is
-   informational and does not block the sync.
-
 7. **Detect merged patches.** Merge detection runs when upstream advanced
    or when any patch branch was moved (also when only patch tips changed
    and upstream did not advance). For each `active` patch, apply the
@@ -1363,7 +1375,7 @@ proceeds through these phases in order:
 
 9. **Write timestamps.** `last_sync_at` and `updated_at` are written on
    every completed sync, whether or not anything advanced. They are not
-   written when the sync ends on a ref-write failure (phase 4).
+   written when the sync ends on a ref-write failure (phase 6).
 
 ### Merge detection
 
@@ -1478,7 +1490,8 @@ are soft-deleted rather than permanently removed:
    endpoint within the 7 days retention period.
 4. Expired soft-deleted patches (older than 7 days) are permanently removed
    only when a purge runs. No background scheduler triggers the purge
-   automatically; an operator or external job must call the purge routine.
+   automatically, and no CLI command or API route runs the purge; only Go
+   code can call `PurgeExpiredDeletedPatchesWithRefs`.
 
 This provides a safety net: if a patch was incorrectly detected as merged
 upstream, it can be recovered without needing to re-create it from scratch.
@@ -1598,5 +1611,7 @@ must act.
 
 **Origin mode needs working origin credentials on every sync.** The fork
 fetch uses the workspace's `GIT_PAT` or `GIT_USERNAME`/`GIT_PASSWORD`
-credentials. If they expire or are revoked, sync fails with
-`502 failed to resolve origin credentials` and no state is updated.
+credentials. If they expire or are revoked, the origin fetch fails and sync
+answers `502 origin fetch failed`; no patch state is updated. Only a failure
+to read the credentials from the secret store answers
+`502 failed to resolve origin credentials`.

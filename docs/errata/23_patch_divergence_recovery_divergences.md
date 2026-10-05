@@ -18,8 +18,8 @@ implementation diverges from the original proposal (GitHub issue #35,
 2. **Reset semantics and status limits.** The reset fetches the branch
    from the fork first, writes a backup ref only when it discards commits
    (action `replaced`), enqueues a rebuild when the branch moved and the
-   patch status is `active`, `conflict` or `disabled`, and is limited to
-   patches with status `active`, `conflict` or `disabled`. The proposal
+   patch status is `active` or `conflict`, and is limited to patches with
+   status `active`, `conflict` or `disabled`. The proposal
    did not specify the status restriction or the conditional backup. See
    `internal/carrypatch/recovery.go`, `RunReset`.
 
