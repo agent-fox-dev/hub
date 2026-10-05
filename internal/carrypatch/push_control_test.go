@@ -88,8 +88,8 @@ func TestPushControl_TS22_10_PushPatchesEnabledParsing(t *testing.T) {
 			expected: false,
 		},
 		{
-			name: "nil getVariable",
-			getVar: nil,
+			name:     "nil getVariable",
+			getVar:   nil,
 			expected: false,
 		},
 	}

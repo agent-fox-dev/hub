@@ -64,8 +64,8 @@ func TestIsAncestor_True(t *testing.T) {
 // commitA is NOT an ancestor of commitB (diverged branches).
 //
 // Preconditions:
-// - A real git repository with two diverged branches; commitA is on branch-a,
-//   commitB is on branch-b, neither is an ancestor of the other
+//   - A real git repository with two diverged branches; commitA is on branch-a,
+//     commitB is on branch-b, neither is an ancestor of the other
 //
 // TS-14-26
 // Requirement: 14-REQ-12.2

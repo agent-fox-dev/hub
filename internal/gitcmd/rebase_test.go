@@ -236,9 +236,9 @@ func TestRebaseAbort_NoRebaseState(t *testing.T) {
 // is no longer in progress afterwards.
 //
 // Preconditions:
-// - A real git repository with a rebase paused at a conflict that has been
-//   manually resolved (all conflicts staged with `git add`)
-// - git user.email and user.name are configured in the repo
+//   - A real git repository with a rebase paused at a conflict that has been
+//     manually resolved (all conflicts staged with `git add`)
+//   - git user.email and user.name are configured in the repo
 //
 // TS-14-23
 // Requirement: 14-REQ-11.1

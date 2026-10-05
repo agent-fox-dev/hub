@@ -110,7 +110,7 @@ func TestWorkspaceStore_AllFields(t *testing.T) {
 
 	var (
 		slug, gitURL, ownerID, status, createdAt, updatedAt string
-		branchVal, orgID                                     *string
+		branchVal, orgID                                    *string
 	)
 	row := db.QueryRow(
 		"SELECT slug, git_url, branch, owner_id, org_id, status, created_at, updated_at FROM workspaces WHERE slug = ?",

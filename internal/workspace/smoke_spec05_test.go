@@ -630,4 +630,3 @@ func assertJSONHasFields(t *testing.T, rec *httptest.ResponseRecorder, fields []
 		}
 	}
 }
-

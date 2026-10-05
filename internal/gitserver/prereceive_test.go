@@ -534,4 +534,3 @@ func findModuleRoot() string {
 		dir = parent
 	}
 }
-

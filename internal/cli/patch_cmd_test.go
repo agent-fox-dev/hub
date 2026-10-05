@@ -17,15 +17,15 @@ import (
 
 // patchResp is the JSON patch object returned by the mock API.
 type patchResp struct {
-	ID             string  `json:"id"`
-	WorkspaceSlug  string  `json:"workspace_slug"`
-	BranchName     string  `json:"branch_name"`
-	Position       int     `json:"position"`
-	Status         string  `json:"status"`
-	Description    *string `json:"description,omitempty"`
-	UpstreamPRURL  *string `json:"upstream_pr_url,omitempty"`
-	AddedAt        string  `json:"added_at"`
-	UpdatedAt      string  `json:"updated_at"`
+	ID            string  `json:"id"`
+	WorkspaceSlug string  `json:"workspace_slug"`
+	BranchName    string  `json:"branch_name"`
+	Position      int     `json:"position"`
+	Status        string  `json:"status"`
+	Description   *string `json:"description,omitempty"`
+	UpstreamPRURL *string `json:"upstream_pr_url,omitempty"`
+	AddedAt       string  `json:"added_at"`
+	UpdatedAt     string  `json:"updated_at"`
 }
 
 // mockPatchAPIServer creates an httptest.Server that simulates the patch API.

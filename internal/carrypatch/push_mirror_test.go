@@ -419,13 +419,13 @@ exit 0
 
 func TestMirror_TS22_37_NoMirrorCases(t *testing.T) {
 	cases := []struct {
-		name       string
-		mode       string
-		branch     string
-		getVar     GetVariableFunc
-		seedPatch  bool
-		patchName  string
-		intBranch  string
+		name      string
+		mode      string
+		branch    string
+		getVar    GetVariableFunc
+		seedPatch bool
+		patchName string
+		intBranch string
 	}{
 		{
 			name:   "variable unset",

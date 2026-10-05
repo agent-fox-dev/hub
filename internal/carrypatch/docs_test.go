@@ -2251,12 +2251,12 @@ func TestDocs_TS_24_60_ErrataEntriesMatchCode(t *testing.T) {
 // authorityDocsAssertion describes one content assertion for the aggregate
 // authority-docs test. The mutation test (TS-24-62) iterates this table.
 type authorityDocsAssertion struct {
-	name     string // human-readable label
-	file     string // relative path under docs/
-	needle   string // string that must be present
-	absent   bool   // when true, needle must NOT be present
-	section  string // optional: restrict search to this section start marker
-	secStop  string // optional: section stop marker
+	name    string // human-readable label
+	file    string // relative path under docs/
+	needle  string // string that must be present
+	absent  bool   // when true, needle must NOT be present
+	section string // optional: restrict search to this section start marker
+	secStop string // optional: section stop marker
 }
 
 // authorityDocsAssertions returns the full table of assertions for the

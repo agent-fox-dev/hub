@@ -65,11 +65,15 @@ func openFullTestDB(t *testing.T) *sql.DB {
 
 // ---------------------------------------------------------------------------
 // TS-04-P1: Property test — for any user creation attempt, after the
-//           operation completes, either both the user row and a personal org
-//           row exist (with matching owner_id) or neither exists.
+//
+//	operation completes, either both the user row and a personal org
+//	row exist (with matching owner_id) or neither exists.
+//
 // Property: 04-PROP-1
 // Validates: 04-REQ-2.1, 04-REQ-2.2, 04-REQ-3.1, 04-REQ-3.3, 04-REQ-7.1,
-//            04-REQ-7.E1, 04-REQ-7.E2
+//
+//	04-REQ-7.E1, 04-REQ-7.E2
+//
 // ---------------------------------------------------------------------------
 func TestOrgHook_PropertyAtomicity(t *testing.T) {
 	const iterations = 50
@@ -159,8 +163,10 @@ func TestOrgHook_PropertyAtomicity(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // TS-04-P2: Property test — for any call to the hub personal org hook, the
-//           slug written to the orgs table does not duplicate any pre-existing
-//           slug.
+//
+//	slug written to the orgs table does not duplicate any pre-existing
+//	slug.
+//
 // Property: 04-PROP-2
 // Validates: 04-REQ-6.1, 04-REQ-6.2, 04-REQ-6.3
 // ---------------------------------------------------------------------------
@@ -252,8 +258,10 @@ func TestOrgHook_PropertySlugUniqueness(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // TS-04-P6: Property test — the slug collision retry loop always terminates
-//           after at most 10 iterations, regardless of how many slugs exist
-//           in the orgs table.
+//
+//	after at most 10 iterations, regardless of how many slugs exist
+//	in the orgs table.
+//
 // Property: 04-PROP-6
 // Validates: 04-REQ-6.1, 04-REQ-6.2, 04-REQ-6.E2
 // ---------------------------------------------------------------------------

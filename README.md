@@ -132,7 +132,7 @@ curl http://localhost:8080/readyz
 ```sh
 make check            # lint + tests
 make test             # tests only
-make lint             # go vet
+make lint             # go vet + gofmt check
 make build-container  # build container image via podman
 make hub-reset        # reset data and first-boot
 make hub-run          # run the server locally

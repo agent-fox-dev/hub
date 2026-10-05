@@ -35,6 +35,10 @@ test:
 # Run linter
 lint:
 	go vet ./...
+	@unformatted="$$(gofmt -l cmd internal)"; \
+	if [ -n "$$unformatted" ]; then \
+		echo "gofmt needed on:"; echo "$$unformatted"; exit 1; \
+	fi
 
 # Generate test coverage
 coverage:

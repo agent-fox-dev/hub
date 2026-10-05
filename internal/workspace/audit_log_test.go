@@ -56,7 +56,7 @@ func TestAuditLog_CredentialValues_NotInLogs(t *testing.T) {
 	// Verify credential values do NOT appear in any log entry.
 	logOutput := logBuf.String()
 	if strings.Contains(logOutput, "super-secret-pat-value") {
-		t.Error("credential value 'super-secret-pat-value' found in log output; "+
+		t.Error("credential value 'super-secret-pat-value' found in log output; " +
 			"handler must scrub credentials before any logging occurs")
 	}
 
@@ -159,7 +159,7 @@ func TestAuditLog_RawError_InLog_NotInResponse(t *testing.T) {
 	// Raw error string SHOULD appear in server-side logs.
 	logOutput := logBuf.String()
 	if !strings.Contains(logOutput, "Invalid username or password") {
-		t.Error("raw go-git error 'Invalid username or password' not found in server-side logs; "+
+		t.Error("raw go-git error 'Invalid username or password' not found in server-side logs; " +
 			"handler should log raw error at ERROR level")
 	}
 }
@@ -236,7 +236,7 @@ func TestAuditLog_CriticalLog_NoCredentials(t *testing.T) {
 	// Log entries must NOT contain the credential value.
 	logOutput := logBuf.String()
 	if strings.Contains(logOutput, uniquePAT) {
-		t.Error("credential value found in CRITICAL/ERROR log entries; "+
+		t.Error("credential value found in CRITICAL/ERROR log entries; " +
 			"log entries must contain only the slug and error context, never credentials")
 	}
 }

@@ -30,12 +30,12 @@ type ResetResult struct {
 type ResetErrorKind string
 
 const (
-	ResetErrBusy              ResetErrorKind = "workspace_busy"
-	ResetErrMissingOnOrigin   ResetErrorKind = "missing_on_origin"
-	ResetErrFetchFailed       ResetErrorKind = "origin_fetch_failed"
-	ResetErrCredentialFailed  ResetErrorKind = "credential_failed"
-	ResetErrRefChanged        ResetErrorKind = "ref_changed"
-	ResetErrOther             ResetErrorKind = "other"
+	ResetErrBusy             ResetErrorKind = "workspace_busy"
+	ResetErrMissingOnOrigin  ResetErrorKind = "missing_on_origin"
+	ResetErrFetchFailed      ResetErrorKind = "origin_fetch_failed"
+	ResetErrCredentialFailed ResetErrorKind = "credential_failed"
+	ResetErrRefChanged       ResetErrorKind = "ref_changed"
+	ResetErrOther            ResetErrorKind = "other"
 )
 
 // ResetError is a classified error returned by RunReset.

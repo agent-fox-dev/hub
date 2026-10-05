@@ -23,10 +23,10 @@ var shaHexRegexp = regexp.MustCompile(`^[0-9a-f]{40}$`)
 // and returns the new HEAD SHA and nil error.
 //
 // Preconditions:
-// - A real git repository with two branches: 'main' (base) and 'feature'
-//   (one commit ahead of main)
-// - Current HEAD is on 'main'
-// - GitRunner is constructed with workDir pointing to the temp repo
+//   - A real git repository with two branches: 'main' (base) and 'feature'
+//     (one commit ahead of main)
+//   - Current HEAD is on 'main'
+//   - GitRunner is constructed with workDir pointing to the temp repo
 //
 // TS-14-7
 // Requirement: 14-REQ-4.1

@@ -16,7 +16,7 @@ type credRequestRecord struct {
 	Slug        string  `json:"slug"`
 	GitURL      string  `json:"git_url"`
 	GitPAT      *string `json:"git_pat"`
-	GitUsername  *string `json:"git_username"`
+	GitUsername *string `json:"git_username"`
 	GitPassword *string `json:"git_password"`
 }
 

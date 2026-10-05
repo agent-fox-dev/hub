@@ -385,8 +385,8 @@ func TestTS21_2_TrackingOnlyBranchCreatesLocalRef(t *testing.T) {
 
 func TestTS21_4_HubModeNeverFetchesOrResolvesCredentials(t *testing.T) {
 	type varCase struct {
-		name    string
-		getVar  GetVariableFunc
+		name   string
+		getVar GetVariableFunc
 	}
 
 	cases := []varCase{

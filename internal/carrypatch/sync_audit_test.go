@@ -471,8 +471,8 @@ func TestSyncAudit_ReplacedBranches_EmitPatchReplaceEvents_TS2048(t *testing.T) 
 		NewGitRunner: func(_ string) (GitRunner, error) {
 			return runner, nil
 		},
-		Fetch:             func(_ context.Context, _ string, _ transport.AuthMethod) error { return nil },
-		ResolveAuth:       func(_ string) (transport.AuthMethod, error) { return nil, nil },
+		Fetch:       func(_ context.Context, _ string, _ transport.AuthMethod) error { return nil },
+		ResolveAuth: func(_ string) (transport.AuthMethod, error) { return nil, nil },
 		GetVariable: func(scope, slug, key string) (string, error) {
 			if key == "PATCH_BRANCH_SOURCE" {
 				return "origin", nil
@@ -680,10 +680,10 @@ func TestSyncAudit_RefWriteFailure_EmitsPartialEvents_TS2050(t *testing.T) {
 	realRunner := newRealGitRunner(t, trunkDir)
 	callCount := 0
 	wrapper := &casFailRunner{
-		GitRunner:   realRunner,
-		failBranch:  "branch-b",
+		GitRunner:    realRunner,
+		failBranch:   "branch-b",
 		failOnNthCAS: 1,
-		casCount:    &callCount,
+		casCount:     &callCount,
 	}
 
 	// Database setup.
@@ -726,8 +726,8 @@ func TestSyncAudit_RefWriteFailure_EmitsPartialEvents_TS2050(t *testing.T) {
 		NewGitRunner: func(_ string) (GitRunner, error) {
 			return wrapper, nil
 		},
-		Fetch:             func(_ context.Context, _ string, _ transport.AuthMethod) error { return nil },
-		ResolveAuth:       func(_ string) (transport.AuthMethod, error) { return nil, nil },
+		Fetch:       func(_ context.Context, _ string, _ transport.AuthMethod) error { return nil },
+		ResolveAuth: func(_ string) (transport.AuthMethod, error) { return nil, nil },
 		GetVariable: func(scope, slug, key string) (string, error) {
 			if key == "PATCH_BRANCH_SOURCE" {
 				return "origin", nil
@@ -1040,8 +1040,8 @@ func runSyncWithEmitter(t *testing.T, emitter audit.Emitter) []byte {
 		NewGitRunner: func(_ string) (GitRunner, error) {
 			return runner, nil
 		},
-		Fetch:             func(_ context.Context, _ string, _ transport.AuthMethod) error { return nil },
-		ResolveAuth:       func(_ string) (transport.AuthMethod, error) { return nil, nil },
+		Fetch:       func(_ context.Context, _ string, _ transport.AuthMethod) error { return nil },
+		ResolveAuth: func(_ string) (transport.AuthMethod, error) { return nil, nil },
 		GetVariable: func(scope, slug, key string) (string, error) {
 			if key == "PATCH_BRANCH_SOURCE" {
 				return "origin", nil

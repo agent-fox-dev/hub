@@ -857,10 +857,10 @@ func newRealGitRunner(t *testing.T, repoPath string) GitRunner {
 
 // recordingGitRunner wraps a real GitRunner and records all Run calls.
 type recordingGitRunner struct {
-	real            GitRunner
-	runCalls        [][]string
-	hardResetCalls  []string
-	runOverride     func(ctx context.Context, args ...string) (string, error)
+	real           GitRunner
+	runCalls       [][]string
+	hardResetCalls []string
+	runOverride    func(ctx context.Context, args ...string) (string, error)
 }
 
 func (r *recordingGitRunner) Run(ctx context.Context, args ...string) (string, error) {

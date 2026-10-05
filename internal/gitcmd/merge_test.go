@@ -116,9 +116,9 @@ func splitByWhitespace(s string) []string {
 // progress).
 //
 // Preconditions:
-// - A real git repository with 'main' and 'feature' branches that have
-//   conflicting changes to the same file
-// - Current HEAD is on 'main'
+//   - A real git repository with 'main' and 'feature' branches that have
+//     conflicting changes to the same file
+//   - Current HEAD is on 'main'
 //
 // TS-14-19
 // Requirements: 14-REQ-9.2, 14-REQ-13.2

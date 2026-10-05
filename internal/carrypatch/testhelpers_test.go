@@ -259,11 +259,11 @@ type mockGitRunner struct {
 	// tests assert ordering across several mocks.
 	Recorder func(event string)
 
-	MergeTreeCalls      []mergeTreeCall
-	MergeTreeFunc       func(ctx context.Context, base, head string) (string, error)
-	IsAncestorFunc      func(ctx context.Context, ancestor, descendant string) (bool, error)
-	CherryFunc          func(ctx context.Context, upstream, head string) ([]string, []string, error)
-	HardResetFunc       func(ctx context.Context, ref string) error
+	MergeTreeCalls []mergeTreeCall
+	MergeTreeFunc  func(ctx context.Context, base, head string) (string, error)
+	IsAncestorFunc func(ctx context.Context, ancestor, descendant string) (bool, error)
+	CherryFunc     func(ctx context.Context, upstream, head string) ([]string, []string, error)
+	HardResetFunc  func(ctx context.Context, ref string) error
 }
 
 func newMockGitRunner() *mockGitRunner {
