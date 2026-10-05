@@ -286,10 +286,26 @@ func handleReceivePack(db *sql.DB, baseLoader *WorkspaceLoader, wsRoot string) e
 
 		// Execute the receive-pack session.
 		rs, err := sess.ReceivePack(c.Request().Context(), req)
-		if err != nil && rs == nil {
-			// A nil report status with an error means the session failed
-			// before producing any per-ref results (e.g. unpack error
-			// without report-status capability).
+
+		// Refs the pre-receive hook rejected during this session. Read them
+		// now: they decide whether a nil report status is a session failure.
+		var hookRejected map[plumbing.ReferenceName]bool
+		if reqLoader.lastStorer != nil {
+			hookRejected = reqLoader.lastStorer.RejectedRefs()
+		}
+
+		// A nil report status with an error means the session failed
+		// before producing any per-ref results (e.g. unpack error
+		// without report-status capability).
+		//
+		// 22-REQ-8.3: The exception is a hook rejection. A client that did
+		// not request report-status gets (nil, firstErr) from go-git, and
+		// firstErr may be the hook's rejection text. A hook rejection
+		// happens at ref-write time, after a successful unpack, so it is not
+		// a session failure: write no body (the update is still rejected,
+		// but the client gets no per-ref message) and fall through so the
+		// refs accepted in the same push still get their side effects.
+		if err != nil && rs == nil && len(hookRejected) == 0 {
 			writeSessionError(c.Response(), err)
 			return nil
 		}
@@ -315,10 +331,6 @@ func handleReceivePack(db *sql.DB, baseLoader *WorkspaceLoader, wsRoot string) e
 		// An update is accepted when its report-status entry is "ok",
 		// or, when no report status is available, unless the pre-receive
 		// hook rejected it.
-		var hookRejected map[plumbing.ReferenceName]bool
-		if reqLoader.lastStorer != nil {
-			hookRejected = reqLoader.lastStorer.RejectedRefs()
-		}
 		accepted := acceptedCommands(req.Commands, rs, hookRejected)
 
 		// 22-REQ-5.2, 22-REQ-5.3: Only accepted commands drive audit

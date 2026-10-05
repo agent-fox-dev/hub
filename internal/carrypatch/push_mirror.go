@@ -40,6 +40,15 @@ const mirrorTimeout = 120 * time.Second
 // mirrorBranches force-pushes each applicable branch to the fork's origin
 // remote. It is called after the rebuild enqueue in the post-push hook
 // goroutine. A failure of one branch does not stop the others.
+//
+// Applicability is decided in this order, cheapest and most specific first,
+// so that nothing is read or resolved for a push that cannot be mirrored:
+//  1. all mirror dependencies are supplied;
+//  2. the workspace is a carry_patch workspace (22-REQ-1.5: no variable is
+//     read for a standard workspace);
+//  3. PUSH_PATCHES_TO_ORIGIN is "true" and PATCH_BRANCH_SOURCE is "hub";
+//  4. at least one pushed branch is a registered, non-integration patch;
+//  5. only then are the origin credentials resolved.
 func mirrorBranches(
 	db *sql.DB,
 	slug string,
@@ -55,18 +64,9 @@ func mirrorBranches(
 		return
 	}
 
-	// 22-REQ-6.4: Only mirror when PUSH_PATCHES_TO_ORIGIN is exactly "true".
-	if !pushPatchesEnabled(getVariable, slug) {
-		return
-	}
-
-	// 22-REQ-6.4: Only mirror when PATCH_BRANCH_SOURCE resolves to "hub".
-	source := ParsePatchBranchSource(getVariable, slug)
-	if source != "hub" {
-		return
-	}
-
-	// Load workspace info for applicability checks.
+	// Load workspace info for applicability checks. This comes before any
+	// variable read: 22-REQ-1.5 says neither variable is read for a
+	// standard workspace.
 	wsInfo, err := loadWorkspaceInfo(db, slug)
 	if err != nil {
 		if err != sql.ErrNoRows {
@@ -83,16 +83,19 @@ func mirrorBranches(
 		return
 	}
 
-	// Resolve origin credentials once for all branches.
-	auth, authErr := deps.ResolveAuth(slug)
-	if authErr != nil {
-		logger.Warn("mirror: failed to resolve origin credentials",
-			"slug", slug,
-			"error", authErr.Error(),
-		)
+	// 22-REQ-6.4: Only mirror when PUSH_PATCHES_TO_ORIGIN is exactly "true".
+	if !pushPatchesEnabled(getVariable, slug) {
 		return
 	}
 
+	// 22-REQ-6.4: Only mirror when PATCH_BRANCH_SOURCE resolves to "hub".
+	source := ParsePatchBranchSource(getVariable, slug)
+	if source != "hub" {
+		return
+	}
+
+	// Select the branches that are applicable before touching credentials.
+	var applicable []string
 	for _, branch := range branches {
 		// 22-REQ-6.4: Skip the integration branch.
 		if branch == wsInfo.integrationBranch {
@@ -113,10 +116,36 @@ func mirrorBranches(
 			continue
 		}
 
+		applicable = append(applicable, branch)
+	}
+	if len(applicable) == 0 {
+		return
+	}
+
+	// Resolve origin credentials once for all applicable branches.
+	auth, authErr := deps.ResolveAuth(slug)
+	if authErr != nil {
+		// 22-REQ-7.1, 22-REQ-7.3: Every branch that could not be mirrored
+		// is a failed mirror: log once, and emit one event per branch.
+		safeErr := "failed to resolve origin credentials: " + sanitizeErrorText(authErr.Error())
+		logger.Warn("mirror: failed to resolve origin credentials",
+			"slug", slug,
+			"branches", applicable,
+			"error", safeErr,
+		)
+		for _, branch := range applicable {
+			emitMirrorFailedEvent(deps.Audit, slug, branch, safeErr, logger)
+		}
+		return
+	}
+
+	for _, branch := range applicable {
 		// 22-REQ-6.1: Force-push the branch to origin.
 		mirrorErr := mirrorBranchToOrigin(deps.WorkspaceRoot, slug, branch, auth, logger)
 		if mirrorErr != nil {
-			safeErr := stripUserinfo(mirrorErr.Error())
+			// The error is free text that may embed the remote URL, so
+			// remove userinfo with the text sanitiser.
+			safeErr := sanitizeErrorText(mirrorErr.Error())
 			logger.Warn("mirror: failed to push branch to origin",
 				"slug", slug,
 				"branch", branch,

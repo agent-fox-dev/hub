@@ -308,6 +308,19 @@ func TestPushControl_TS22_44_FailOpenOnQueryErrors(t *testing.T) {
 		if err != nil {
 			t.Errorf("expected nil error (fail open); got %v", err)
 		}
+
+		// 22-REQ-8.1: the fail-open for an unknown workspace is logged
+		// as a warning naming the slug and branch.
+		logOutput := logBuf.String()
+		if !strings.Contains(logOutput, "level=WARN") {
+			t.Errorf("expected a WARN line for an unknown workspace; got:\n%s", logOutput)
+		}
+		if !strings.Contains(logOutput, "nonexistent") {
+			t.Errorf("expected slug 'nonexistent' in the warning; got:\n%s", logOutput)
+		}
+		if !strings.Contains(logOutput, "feature/x") {
+			t.Errorf("expected branch 'feature/x' in the warning; got:\n%s", logOutput)
+		}
 	})
 
 	// Test 2: variable lookup failure beyond defaults
@@ -438,6 +451,129 @@ func TestPushControl_TS22_11_VariablesReReadPerUpdate(t *testing.T) {
 	calls := atomic.LoadInt32(&varCalls)
 	if calls < 3 {
 		t.Errorf("expected at least 3 GetVariable calls across 3 updates; got %d", calls)
+	}
+}
+
+// ===========================================================================
+// sanitizeErrorText removes URL userinfo from free-form error text without
+// re-serialising anything else
+// Verifies: 22-REQ-4.5 (userinfo removed from forward errors),
+//           22-REQ-7.1 (userinfo removed from mirror_failed metadata)
+// ===========================================================================
+
+func TestSanitizeErrorText(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "http client error embedding a URL",
+			in:   `Get "https://alice:pw@host/repo.git/info/refs?service=git-receive-pack": dial tcp 10.0.0.1:443: connect: connection refused`,
+			want: `Get "https://host/repo.git/info/refs?service=git-receive-pack": dial tcp 10.0.0.1:443: connect: connection refused`,
+		},
+		{
+			name: "message ending in a URL",
+			in:   "authentication required: https://alice:pw@host/repo.git",
+			want: "authentication required: https://host/repo.git",
+		},
+		{
+			name: "ssh scheme",
+			in:   "ssh://git:tok@host/x",
+			want: "ssh://host/x",
+		},
+		{
+			name: "username only",
+			in:   "fatal: unable to access 'https://token@host/repo.git/'",
+			want: "fatal: unable to access 'https://host/repo.git/'",
+		},
+		{
+			name: "password containing @",
+			in:   "authentication required: https://alice:p@ss@host/repo.git",
+			want: "authentication required: https://host/repo.git",
+		},
+		{
+			name: "upper-case scheme",
+			in:   "HTTPS://alice:pw@host/x",
+			want: "HTTPS://host/x",
+		},
+		{
+			name: "URL without a path",
+			in:   `Post "https://alice:pw@host": EOF`,
+			want: `Post "https://host": EOF`,
+		},
+		{
+			name: "several URLs in one message",
+			in:   "redirect https://a:b@one/x to https://c:d@two/y",
+			want: "redirect https://one/x to https://two/y",
+		},
+		{
+			name: "URL without userinfo is untouched",
+			in:   "authentication required: https://host/repo.git",
+			want: "authentication required: https://host/repo.git",
+		},
+		{
+			name: "at sign after the path is not userinfo",
+			in:   "see https://host/path/user@example.com",
+			want: "see https://host/path/user@example.com",
+		},
+		{
+			name: "plain text is not re-encoded",
+			in:   "context deadline exceeded",
+			want: "context deadline exceeded",
+		},
+		{
+			name: "hook-style message is not re-encoded",
+			in:   "command error on refs/heads/p2: pre-receive hook declined",
+			want: "command error on refs/heads/p2: pre-receive hook declined",
+		},
+		{
+			name: "address without a scheme is untouched",
+			in:   "contact admin@example.com",
+			want: "contact admin@example.com",
+		},
+		{
+			name: "empty",
+			in:   "",
+			want: "",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := sanitizeErrorText(tc.in)
+			if got != tc.want {
+				t.Errorf("sanitizeErrorText(%q)\n got: %q\nwant: %q", tc.in, got, tc.want)
+			}
+			// Idempotent: a second pass changes nothing.
+			if again := sanitizeErrorText(got); again != got {
+				t.Errorf("sanitizeErrorText is not idempotent: %q -> %q", got, again)
+			}
+		})
+	}
+}
+
+// stripUserinfo is the URL-only helper used for git_url. It must still
+// remove userinfo, and must not leak it when the string does not parse.
+func TestStripUserinfo(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"https with credentials", "https://alice:pw@host/repo.git", "https://host/repo.git"},
+		{"https without credentials", "https://host/repo.git", "https://host/repo.git"},
+		{"local path", "/srv/git/repo.git", "/srv/git/repo.git"},
+		// url.Parse rejects the port, so the helper falls back to the
+		// regexp rather than returning the credentials unchanged.
+		{"unparsable URL", "https://alice:pw@host:notaport/repo.git", "https://host:notaport/repo.git"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := stripUserinfo(tc.in); got != tc.want {
+				t.Errorf("stripUserinfo(%q) = %q; want %q", tc.in, got, tc.want)
+			}
+		})
 	}
 }
 

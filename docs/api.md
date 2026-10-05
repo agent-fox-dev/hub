@@ -2601,7 +2601,8 @@ Only ref updates that the hub actually accepted (report-status entry is `ok`)
 drive side effects. A rejected ref does not appear in the `hub.git.push` audit
 event's `refs_updated` list, does not trigger the post-push hook, and does not
 enqueue a rebuild. If no update was accepted, no audit event is emitted and no
-post-push hook runs.
+post-push hook runs. `head_sha` is the exception: it is refreshed from the
+trunk HEAD after every push, including a push in which every ref was rejected.
 
 ### Post-Push Hooks
 

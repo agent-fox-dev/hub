@@ -32,9 +32,14 @@ type WorkspaceLoader struct {
 	reqCtx   context.Context
 	reqActor *apikit.AuthInfo
 
-	// lastStorer holds the most recent thinPackSafeStorer created by Load.
-	// Used by the receive-pack handler to retrieve hook-rejected refs after
-	// the session completes.
+	// lastStorer holds the thinPackSafeStorer created by Load on a
+	// per-request loader (one built by forRequest). The receive-pack handler
+	// reads it to retrieve hook-rejected refs after the session completes.
+	//
+	// It is deliberately never written on the shared base loader: that
+	// loader backs the startup transport and serves concurrent info/refs
+	// requests, so an unsynchronised write there is a data race. A
+	// per-request loader is used by a single goroutine.
 	lastStorer *thinPackSafeStorer
 }
 
@@ -48,7 +53,14 @@ func NewWorkspaceLoader(db *sql.DB, workspaceRoot string) *WorkspaceLoader {
 // and actor bound. The returned loader is used for a single receive-pack
 // session so the storer it creates can consult the pre-receive hook with
 // the correct request context and actor identity.
+//
+// A nil ctx is replaced by context.Background() so that a non-nil reqCtx
+// reliably marks a per-request loader (see lastStorer). The storer treats a
+// nil ctx as Background anyway, so behaviour is unchanged.
 func (l *WorkspaceLoader) forRequest(ctx context.Context, actor *apikit.AuthInfo) *WorkspaceLoader {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	return &WorkspaceLoader{
 		db:            l.db,
 		workspaceRoot: l.workspaceRoot,
@@ -105,7 +117,10 @@ func (l *WorkspaceLoader) Load(ep *transport.Endpoint) (storer.Storer, error) {
 		slug:   slug,
 		actor:  l.reqActor,
 	}
-	l.lastStorer = wrapper
+	// Record the storer only on a per-request loader; see lastStorer.
+	if l.reqCtx != nil {
+		l.lastStorer = wrapper
+	}
 	return wrapper, nil
 }
 

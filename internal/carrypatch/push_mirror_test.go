@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/go-git/go-git/v5/plumbing/transport"
@@ -1112,6 +1113,230 @@ exit 0
 			t.Errorf("expected >= 1 rebuild job; got %d", count)
 		}
 	})
+}
+
+// ===========================================================================
+// Mirror applicability is decided before any variable is read or any
+// credential is resolved
+// Verifies: 22-REQ-1.5, 22-REQ-6.4
+// ===========================================================================
+
+func TestMirror_StandardWorkspaceReadsNoVariables(t *testing.T) {
+	env := newMirrorTestEnv(t)
+	mustExecMirror(t, env.db, `UPDATE workspaces SET workspace_mode = 'standard' WHERE slug = 'myws'`)
+	seedPatch(t, env.db, "p1-id", "myws", "p1", 1, "active")
+
+	var varCalls, authCalls int32
+	getVar := func(_, _, key string) (string, error) {
+		atomic.AddInt32(&varCalls, 1)
+		if key == "PUSH_PATCHES_TO_ORIGIN" {
+			return "true", nil
+		}
+		return "", fmt.Errorf("not found")
+	}
+	emitter := &recordingEmitter{}
+	deps := PostPushMirrorDeps{
+		ResolveAuth: func(string) (transport.AuthMethod, error) {
+			atomic.AddInt32(&authCalls, 1)
+			return nil, nil
+		},
+		WorkspaceRoot: env.workspaceRoot,
+		Audit:         emitter,
+	}
+
+	mirrorBranches(env.db, "myws", []string{"p1"}, deps, getVar, nopLogger())
+
+	if n := atomic.LoadInt32(&varCalls); n != 0 {
+		t.Errorf("GetVariable called %d times for a standard workspace; want 0", n)
+	}
+	if n := atomic.LoadInt32(&authCalls); n != 0 {
+		t.Errorf("ResolveAuth called %d times for a standard workspace; want 0", n)
+	}
+	if evs := emitter.Events(); len(evs) != 0 {
+		t.Errorf("expected no events; got %d", len(evs))
+	}
+}
+
+// ===========================================================================
+// A credential-resolution failure is logged and emitted: one
+// hub.patch.mirror_failed event per applicable branch, no push attempted
+// Verifies: 22-REQ-7.1, 22-REQ-7.3
+// ===========================================================================
+
+func TestMirror_CredentialFailureEmitsEventPerApplicableBranch(t *testing.T) {
+	env := newMirrorTestEnv(t)
+	seedPatch(t, env.db, "p1-id", "myws", "p1", 1, "active")
+	seedPatch(t, env.db, "p2-id", "myws", "p2", 2, "active")
+	// Integration branch with a patch row, and an unregistered branch:
+	// neither is applicable, so neither gets an event.
+	seedPatch(t, env.db, "int-id", "myws", "main-int", 3, "active")
+
+	// Both applicable branches exist on the trunk so a push attempt would
+	// succeed against the local bare origin if the mirror ignored the
+	// credential failure.
+	for _, b := range []string{"p1", "p2"} {
+		runGitCmdR(t, env.trunk, "checkout", "-b", b)
+		addCommitR(t, env.trunk, b+".txt", b+" commit")
+		runGitCmdR(t, env.trunk, "checkout", "main")
+	}
+
+	getVar := func(_, _, key string) (string, error) {
+		if key == "PUSH_PATCHES_TO_ORIGIN" {
+			return "true", nil
+		}
+		return "", fmt.Errorf("not found")
+	}
+
+	var authCalls int32
+	emitter := &recordingEmitter{}
+	deps := PostPushMirrorDeps{
+		ResolveAuth: func(string) (transport.AuthMethod, error) {
+			atomic.AddInt32(&authCalls, 1)
+			return nil, fmt.Errorf("credential store unavailable: https://alice:pw@host/x")
+		},
+		WorkspaceRoot: env.workspaceRoot,
+		Audit:         emitter,
+	}
+
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	mirrorBranches(env.db, "myws", []string{"p1", "p2", "main-int", "feature"}, deps, getVar, logger)
+
+	if n := atomic.LoadInt32(&authCalls); n != 1 {
+		t.Errorf("ResolveAuth called %d times; want exactly 1", n)
+	}
+
+	events := emitter.Events()
+	if len(events) != 2 {
+		t.Fatalf("expected 2 mirror_failed events (p1, p2); got %d: %+v", len(events), events)
+	}
+	gotBranches := map[string]bool{}
+	for _, ev := range events {
+		if ev.EventType != audit.EventPatchMirrorFailed {
+			t.Errorf("event type = %q; want %q", ev.EventType, audit.EventPatchMirrorFailed)
+		}
+		if ev.Workspace != "myws" || ev.ResourceType != "patch" || ev.Action != "mirror" || ev.ActorType != "system" {
+			t.Errorf("unexpected event envelope: %+v", ev)
+		}
+		branch, _ := ev.Metadata["branch_name"].(string)
+		gotBranches[branch] = true
+
+		errText, _ := ev.Metadata["error"].(string)
+		if !strings.HasPrefix(errText, "failed to resolve origin credentials") {
+			t.Errorf("metadata.error = %q; want prefix %q", errText, "failed to resolve origin credentials")
+		}
+		if strings.Contains(errText, "alice") || strings.Contains(errText, "pw@") {
+			t.Errorf("metadata.error contains credentials: %q", errText)
+		}
+	}
+	if !gotBranches["p1"] || !gotBranches["p2"] || len(gotBranches) != 2 {
+		t.Errorf("event branches = %v; want exactly p1 and p2", gotBranches)
+	}
+
+	// Nothing was pushed.
+	for _, b := range []string{"p1", "p2"} {
+		if mirrorRefExists(t, env.bareOrigin, "refs/heads/"+b) {
+			t.Errorf("origin should not have %s after a credential failure", b)
+		}
+	}
+
+	logOutput := logBuf.String()
+	if !strings.Contains(logOutput, "level=WARN") {
+		t.Errorf("expected a WARN line; got:\n%s", logOutput)
+	}
+	if strings.Contains(logOutput, "alice") || strings.Contains(logOutput, "pw@") {
+		t.Errorf("log contains credentials: %s", logOutput)
+	}
+}
+
+// With no applicable branch the credentials are never resolved, so a
+// resolver failure cannot produce an event.
+func TestMirror_NoApplicableBranchDoesNotResolveCredentials(t *testing.T) {
+	env := newMirrorTestEnv(t)
+	// Integration branch with a patch row; "feature" has no patch row.
+	seedPatch(t, env.db, "int-id", "myws", "main-int", 1, "active")
+
+	getVar := func(_, _, key string) (string, error) {
+		if key == "PUSH_PATCHES_TO_ORIGIN" {
+			return "true", nil
+		}
+		return "", fmt.Errorf("not found")
+	}
+
+	var authCalls int32
+	emitter := &recordingEmitter{}
+	deps := PostPushMirrorDeps{
+		ResolveAuth: func(string) (transport.AuthMethod, error) {
+			atomic.AddInt32(&authCalls, 1)
+			return nil, fmt.Errorf("credential store unavailable")
+		},
+		WorkspaceRoot: env.workspaceRoot,
+		Audit:         emitter,
+	}
+
+	mirrorBranches(env.db, "myws", []string{"feature", "main-int"}, deps, getVar, nopLogger())
+
+	if n := atomic.LoadInt32(&authCalls); n != 0 {
+		t.Errorf("ResolveAuth called %d times with no applicable branch; want 0", n)
+	}
+	if evs := emitter.Events(); len(evs) != 0 {
+		t.Errorf("expected no events; got %d: %+v", len(evs), evs)
+	}
+}
+
+// ===========================================================================
+// The mirror_failed metadata (and the warning log) is sanitised as free
+// text: userinfo embedded in a URL inside a go-git error is removed
+// Verifies: 22-REQ-7.1
+// ===========================================================================
+
+func TestMirror_FailedEventErrorSanitised(t *testing.T) {
+	env := newMirrorTestEnv(t)
+	seedPatch(t, env.db, "p1-id", "myws", "p1", 1, "active")
+
+	runGitCmdR(t, env.trunk, "checkout", "-b", "p1")
+	addCommitR(t, env.trunk, "p1.txt", "p1 commit")
+	runGitCmdR(t, env.trunk, "checkout", "main")
+
+	// Nothing listens on port 1, so the push fails with a connection error
+	// that embeds the remote URL (including its userinfo).
+	runGitCmdR(t, env.trunk, "remote", "set-url", "origin", "https://mirroruser:pw@127.0.0.1:1/repo.git")
+
+	getVar := func(_, _, key string) (string, error) {
+		if key == "PUSH_PATCHES_TO_ORIGIN" {
+			return "true", nil
+		}
+		return "", fmt.Errorf("not found")
+	}
+	emitter := &recordingEmitter{}
+	deps := PostPushMirrorDeps{
+		ResolveAuth:   func(string) (transport.AuthMethod, error) { return nil, nil },
+		WorkspaceRoot: env.workspaceRoot,
+		Audit:         emitter,
+	}
+
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	mirrorBranches(env.db, "myws", []string{"p1"}, deps, getVar, logger)
+
+	events := emitter.Events()
+	if len(events) != 1 {
+		t.Fatalf("expected 1 mirror_failed event; got %d", len(events))
+	}
+	errText, _ := events[0].Metadata["error"].(string)
+	if !strings.Contains(errText, "127.0.0.1:1") {
+		t.Fatalf("expected a connection error mentioning the host; got %q", errText)
+	}
+	for _, s := range []string{"mirroruser", "pw"} {
+		if strings.Contains(errText, s) {
+			t.Errorf("metadata.error contains credential text %q: %s", s, errText)
+		}
+		if strings.Contains(logBuf.String(), s) {
+			t.Errorf("log contains credential text %q: %s", s, logBuf.String())
+		}
+	}
 }
 
 // mustExecMirror executes a SQL statement and fails the test on error.

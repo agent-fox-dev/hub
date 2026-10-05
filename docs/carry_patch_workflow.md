@@ -1445,9 +1445,10 @@ are logged but do not affect the push response.
   does not fail the push or the rebuild. The mirror runs even when
   `AUTO_REBUILD_AFTER_PUSH=false`.
 
-Only accepted ref updates drive `head_sha`, the `hub.git.push` event and
-the post-push hook (including the rebuild enqueue). Rejected or forwarded
-refs that fail do not trigger these side effects.
+`head_sha` is refreshed from the trunk HEAD after every push, including a
+push in which every ref was rejected. Only accepted ref updates drive the
+`hub.git.push` event and the post-push hook (including the rebuild
+enqueue). Rejected refs, and forwards that fail, trigger neither.
 
 ### Rerere integration
 
