@@ -48,6 +48,15 @@ type batchEnv struct {
 	fetchCalls  int
 	credCalls   int
 	getVarCalls int
+
+	// flipModeAfterRead, when non-empty, switches mode to this value as soon
+	// as PATCH_BRANCH_SOURCE has been read once. It simulates an operator
+	// changing the variable while a request is in flight.
+	flipModeAfterRead string
+
+	// wrapRunner, when set, wraps every GitRunner the resolver opens. It lets
+	// a test inject git failures (for example a failing update-ref).
+	wrapRunner func(carrypatch.GitRunner) carrypatch.GitRunner
 }
 
 func newBatchEnv(t *testing.T, slug, mode string) *batchEnv {
@@ -102,6 +111,9 @@ func newBatchEnv(t *testing.T, slug, mode string) *batchEnv {
 		env.mu.Lock()
 		env.getVarCalls++
 		m := env.mode
+		if key == "PATCH_BRANCH_SOURCE" && env.flipModeAfterRead != "" {
+			env.mode = env.flipModeAfterRead
+		}
 		env.mu.Unlock()
 		if key == "PATCH_BRANCH_SOURCE" {
 			return m, nil
@@ -122,9 +134,25 @@ func newBatchEnv(t *testing.T, slug, mode string) *batchEnv {
 		t.Fatalf("RegisterRoutesWithConfig: %v", err)
 	}
 
+	// Runner factory: the real one, optionally wrapped by the test.
+	realRunners := carrypatch.NewGitRunnerFactory()
+	runnerFactory := func(repoPath string) (carrypatch.GitRunner, error) {
+		r, err := realRunners(repoPath)
+		if err != nil {
+			return nil, err
+		}
+		env.mu.Lock()
+		wrap := env.wrapRunner
+		env.mu.Unlock()
+		if wrap != nil {
+			return wrap(r), nil
+		}
+		return r, nil
+	}
+
 	// Register the carrypatch resolver hook.
 	hook := carrypatch.NewBranchResolverHook(
-		carrypatch.NewGitRunnerFactory(),
+		runnerFactory,
 		workspaceRoot,
 		getVar,
 		credResolver,
@@ -184,6 +212,14 @@ func (env *batchEnv) resetCounters() {
 func (env *batchEnv) setMode(mode string) {
 	env.mu.Lock()
 	env.mode = mode
+	env.mu.Unlock()
+}
+
+// flipModeAfterFirstRead makes the variable getter switch to mode right after
+// the first PATCH_BRANCH_SOURCE read, simulating a mid-request change.
+func (env *batchEnv) flipModeAfterFirstRead(mode string) {
+	env.mu.Lock()
+	env.flipModeAfterRead = mode
 	env.mu.Unlock()
 }
 
@@ -325,6 +361,71 @@ func TestTS21_5_PatchBranchSourceChangeBetweenRequests(t *testing.T) {
 	}
 	if gv2 != 1 {
 		t.Errorf("second request: getVarCalls = %d; want 1", gv2)
+	}
+}
+
+// ===========================================================================
+// TS-21-5 (integration, batch): PATCH_BRANCH_SOURCE is read once for a whole
+// batch request, so a change mid-batch cannot mix modes within one request.
+// Verifies: 21-REQ-1.5
+// ===========================================================================
+
+func TestTS21_5_PatchBranchSourceReadOncePerBatchRequest(t *testing.T) {
+	slug := "ts21-5-batch-once"
+	env := newBatchEnv(t, slug, "origin")
+	auth := userAuth("user-1")
+
+	// Two branches that exist only on the fork: each needs origin mode.
+	batchCreateBranchOnBare(t, env.forkDir, "batch-fork-a", "a.txt", "a content", "add a")
+	batchCreateBranchOnBare(t, env.forkDir, "batch-fork-b", "b.txt", "b content", "add b")
+
+	// The variable flips to hub right after the first read. If the resolver
+	// re-read it for the second element, that element would resolve in hub
+	// mode and the batch would answer 400.
+	env.flipModeAfterFirstRead("hub")
+	env.resetCounters()
+
+	body := `[{"branch_name":"batch-fork-a"},{"branch_name":"batch-fork-b"}]`
+	rec := env.doReq(t, http.MethodPost, "/api/v1/workspaces/"+slug+"/patches", body, auth)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d; want 201; body: %s", rec.Code, rec.Body.String())
+	}
+
+	env.mu.Lock()
+	gv := env.getVarCalls
+	fc := env.fetchCalls
+	env.mu.Unlock()
+	if gv != 1 {
+		t.Errorf("getVarCalls = %d; want 1 (PATCH_BRANCH_SOURCE read once per request)", gv)
+	}
+	if fc != 2 {
+		t.Errorf("fetchCalls = %d; want 2 (both elements resolved in origin mode)", fc)
+	}
+	if env.countPatches(t) != 2 {
+		t.Errorf("patch count = %d; want 2", env.countPatches(t))
+	}
+	for _, b := range []string{"batch-fork-a", "batch-fork-b"} {
+		if batchRevParse(t, env.trunkDir, "refs/heads/"+b) == "" {
+			t.Errorf("refs/heads/%s should exist", b)
+		}
+	}
+
+	// The memo is per request: the next request reads the variable afresh and
+	// now sees hub mode.
+	env.flipModeAfterFirstRead("")
+	batchCreateBranchOnBare(t, env.forkDir, "batch-fork-c", "c.txt", "c content", "add c")
+	env.resetCounters()
+	rec2 := env.doReq(t, http.MethodPost, "/api/v1/workspaces/"+slug+"/patches",
+		`{"branch_name":"batch-fork-c"}`, auth)
+	if rec2.Code != http.StatusBadRequest {
+		t.Fatalf("next request: status = %d; want 400 (hub mode); body: %s", rec2.Code, rec2.Body.String())
+	}
+	env.mu.Lock()
+	gv2 := env.getVarCalls
+	env.mu.Unlock()
+	if gv2 != 1 {
+		t.Errorf("next request: getVarCalls = %d; want 1", gv2)
 	}
 }
 
@@ -854,7 +955,7 @@ func TestTS21_28_LockReleasedAfterResolution(t *testing.T) {
 		name   string
 		mode   string
 		setup  func(t *testing.T, env *batchEnv) string // returns branch name
-		expect int                                       // expected status
+		expect int                                      // expected status
 	}{
 		{
 			name: "tracking_create_success",
@@ -883,21 +984,84 @@ func TestTS21_28_LockReleasedAfterResolution(t *testing.T) {
 			},
 			expect: http.StatusBadRequest,
 		},
+		{
+			// The fetch itself fails: the branch exists on the fork but the
+			// trunk's origin no longer points at it.
+			name: "fetch_failure",
+			mode: "origin",
+			setup: func(t *testing.T, env *batchEnv) string {
+				batchCreateBranchOnBare(t, env.forkDir, "lock28-fetchfail", "ff.txt", "ff", "ff")
+				batchGit(t, env.trunkDir, "remote", "set-url", "origin", "/nonexistent/path/to/repo.git")
+				return "lock28-fetchfail"
+			},
+			expect: http.StatusBadGateway,
+		},
+		{
+			// Creating the local ref fails after the lock was taken.
+			name: "write_failure",
+			mode: "hub",
+			setup: func(t *testing.T, env *batchEnv) string {
+				batchCreateBranchOnBare(t, env.forkDir, "lock28-write", "w.txt", "w", "w")
+				batchGit(t, env.trunkDir, "fetch", "origin", "lock28-write")
+				env.mu.Lock()
+				env.wrapRunner = func(inner carrypatch.GitRunner) carrypatch.GitRunner {
+					return &updateRefFailRunner{inner: inner}
+				}
+				env.mu.Unlock()
+				return "lock28-write"
+			},
+			expect: http.StatusInternalServerError,
+		},
 	}
 
 	for _, sc := range scenarios {
 		t.Run(sc.name, func(t *testing.T) {
-			slug := "ts21-28-" + sc.name
+			slug := "ts21-28-" + strings.ReplaceAll(sc.name, "_", "-")
 			env := newBatchEnv(t, slug, sc.mode)
 			auth := userAuth("user-1")
 
 			branch := sc.setup(t, env)
+
+			// Probe the lock the moment the resolver hook returns. The handler
+			// inserts the row (when it inserts at all) after the hook returns,
+			// on the same goroutine, so a lock that is free here is not held
+			// at insert time.
+			inner := branchCheckHook
+			if inner == nil {
+				t.Fatal("expected the resolver hook to be registered")
+			}
+			var probes []bool
+			RegisterBranchCheckHook(func(ctx context.Context, s, b string) (string, error) {
+				method, err := inner(ctx, s, b)
+				unlock, free := wslock.TryLock(s)
+				if free {
+					unlock()
+				}
+				probes = append(probes, free)
+				return method, err
+			})
 
 			body := fmt.Sprintf(`{"branch_name": %q}`, branch)
 			rec := env.doReq(t, http.MethodPost, "/api/v1/workspaces/"+slug+"/patches", body, auth)
 
 			if rec.Code != sc.expect {
 				t.Fatalf("status = %d; want %d; body: %s", rec.Code, sc.expect, rec.Body.String())
+			}
+
+			if len(probes) != 1 {
+				t.Fatalf("lock probed %d times; want 1 (once per hook call)", len(probes))
+			}
+			if !probes[0] {
+				t.Error("workspace lock still held when the resolver hook returned (before insert)")
+			}
+
+			// The failure classes leave no row; the success classes leave one.
+			wantRows := 0
+			if sc.expect == http.StatusCreated {
+				wantRows = 1
+			}
+			if got := env.countPatches(t); got != wantRows {
+				t.Errorf("patch count = %d; want %d", got, wantRows)
 			}
 
 			// After the response, TryLock should succeed (lock released).

@@ -746,7 +746,13 @@ paths:
         local branch is created at that commit; (3) `origin_fetch` — only
         when `PATCH_BRANCH_SOURCE` is `origin`, the branch is fetched from
         the fork and the local branch is created. Tags, bare SHAs and
-        remote-qualified names are not accepted.
+        remote-qualified names are not accepted. `PATCH_BRANCH_SOURCE` is read
+        once per request, so every element of a batch resolves in the same
+        mode.
+
+        A batch validates the syntax of every element first (name,
+        integration branch, position) and starts resolving branches only
+        after all elements pass.
 
         Ownership is not enforced.
       x-required-scopes: ["patches:write"]

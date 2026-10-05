@@ -122,8 +122,18 @@ func TestTS21_22_BatchResolvesAllBeforeInsert(t *testing.T) {
 			env := newPatchTestEnv(t, slug, "deploy")
 			auth := userAuth("user-1")
 
+			// Each hook call also records how many rows exist at call time, so
+			// the test can show that resolution precedes any insert.
 			var callOrder []int
+			var rowsAtCall []int
 			RegisterBranchCheckHook(func(_ context.Context, _ string, branch string) (string, error) {
+				var rows int
+				if err := env.db.QueryRow(
+					`SELECT COUNT(*) FROM patches WHERE workspace_slug = ?`, slug,
+				).Scan(&rows); err != nil {
+					t.Errorf("count rows in hook: %v", err)
+				}
+				rowsAtCall = append(rowsAtCall, rows)
 				switch branch {
 				case "a":
 					callOrder = append(callOrder, 0)
@@ -158,15 +168,16 @@ func TestTS21_22_BatchResolvesAllBeforeInsert(t *testing.T) {
 					rec.Code, tc.wantStatus, rec.Body.String())
 			}
 
-			// Verify call order: elements 0, 1, 2 in array order.
-			if len(callOrder) < 3 {
-				// The first failing element stops the loop, so we may have
-				// fewer calls. But elements 0 and 1 should be called before 2.
-				for i := 0; i < len(callOrder)-1; i++ {
-					if callOrder[i] >= callOrder[i+1] {
-						t.Errorf("call order not ascending: %v", callOrder)
-						break
-					}
+			// Verify call order: the failing element is the last one, so all
+			// three elements are resolved, in array order.
+			if fmt.Sprint(callOrder) != "[0 1 2]" {
+				t.Errorf("call order = %v; want [0 1 2]", callOrder)
+			}
+
+			// Resolution precedes any insert: no row existed at any hook call.
+			for i, rows := range rowsAtCall {
+				if rows != beforeCount {
+					t.Errorf("hook call %d saw %d rows; want %d (resolve before insert)", i, rows, beforeCount)
 				}
 			}
 
@@ -177,6 +188,119 @@ func TestTS21_22_BatchResolvesAllBeforeInsert(t *testing.T) {
 			).Scan(&afterCount)
 			if afterCount != beforeCount {
 				t.Errorf("patch count changed from %d to %d; want unchanged", beforeCount, afterCount)
+			}
+		})
+	}
+}
+
+// TS-21-22 (integration, success path): When every element resolves, the
+// hook has run for all of them, in array order, before the first row is
+// inserted; the rows then appear in one go.
+// Verifies: 21-REQ-6.1
+func TestTS21_22_BatchSuccessResolvesAllBeforeInsert(t *testing.T) {
+	slug := "ts21-22-success"
+	env := newPatchTestEnv(t, slug, "deploy")
+	auth := userAuth("user-1")
+
+	var callOrder []string
+	var rowsAtCall []int
+	RegisterBranchCheckHook(func(_ context.Context, _ string, branch string) (string, error) {
+		var rows int
+		if err := env.db.QueryRow(
+			`SELECT COUNT(*) FROM patches WHERE workspace_slug = ?`, slug,
+		).Scan(&rows); err != nil {
+			t.Errorf("count rows in hook: %v", err)
+		}
+		callOrder = append(callOrder, branch)
+		rowsAtCall = append(rowsAtCall, rows)
+		return ResolutionLocal, nil
+	})
+	t.Cleanup(func() { RegisterBranchCheckHook(nil) })
+
+	body := `[{"branch_name":"a"},{"branch_name":"b"},{"branch_name":"c"}]`
+	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/"+slug+"/patches", body, auth)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("POST batch status = %d; want %d; body: %s",
+			rec.Code, http.StatusCreated, rec.Body.String())
+	}
+
+	if fmt.Sprint(callOrder) != "[a b c]" {
+		t.Errorf("call order = %v; want [a b c]", callOrder)
+	}
+	for i, rows := range rowsAtCall {
+		if rows != 0 {
+			t.Errorf("hook call %d saw %d rows; want 0 (resolve before insert)", i, rows)
+		}
+	}
+
+	var count int
+	if err := env.db.QueryRow(
+		`SELECT COUNT(*) FROM patches WHERE workspace_slug = ?`, slug,
+	).Scan(&count); err != nil {
+		t.Fatalf("count query failed: %v", err)
+	}
+	if count != 3 {
+		t.Errorf("patch count = %d; want 3", count)
+	}
+}
+
+// TS-21-22 (integration, validation order): The batch handler validates the
+// syntax of every element (name, integration branch, position) before it
+// resolves any of them, so an invalid later element is reported without the
+// resolution side effects (fetches, ref creation) for earlier ones. See
+// docs/errata/21_fork_patch_registration_divergences.md, divergence 6.
+// Verifies: 21-REQ-6.1
+func TestTS21_22_BatchValidatesSyntaxBeforeResolving(t *testing.T) {
+	cases := []struct {
+		name    string
+		body    string
+		wantMsg string
+	}{
+		{
+			name:    "bad_position_after_missing_branch",
+			body:    `[{"branch_name":"missing"},{"branch_name":"other","position":0}]`,
+			wantMsg: "patch[1]: position must be >= 1",
+		},
+		{
+			name:    "empty_name_after_missing_branch",
+			body:    `[{"branch_name":"missing"},{"branch_name":""}]`,
+			wantMsg: "patch[1]: branch_name is required",
+		},
+		{
+			name:    "integration_branch_after_missing_branch",
+			body:    `[{"branch_name":"missing"},{"branch_name":"deploy"}]`,
+			wantMsg: "patch[1]: branch_name cannot be the integration branch",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			slug := "ts21-22-syntax-" + strings.ReplaceAll(tc.name, "_", "-")
+			env := newPatchTestEnv(t, slug, "deploy")
+			auth := userAuth("user-1")
+
+			hookCalls := 0
+			RegisterBranchCheckHook(func(_ context.Context, _, _ string) (string, error) {
+				hookCalls++
+				return "", NewBranchResolveError(BranchResolveKindNotFound, fmt.Errorf("not found"))
+			})
+			t.Cleanup(func() { RegisterBranchCheckHook(nil) })
+
+			rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/"+slug+"/patches", tc.body, auth)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("POST batch status = %d; want %d; body: %s",
+					rec.Code, http.StatusBadRequest, rec.Body.String())
+			}
+
+			var errResp errorEnvelope
+			if err := json.Unmarshal(rec.Body.Bytes(), &errResp); err != nil {
+				t.Fatalf("failed to decode error response: %v", err)
+			}
+			if errResp.Error.Message != tc.wantMsg {
+				t.Errorf("error message = %q; want %q", errResp.Error.Message, tc.wantMsg)
+			}
+			if hookCalls != 0 {
+				t.Errorf("hook calls = %d; want 0 (syntax validation precedes resolution)", hookCalls)
 			}
 		})
 	}
