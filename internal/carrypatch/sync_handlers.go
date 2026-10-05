@@ -439,10 +439,17 @@ func runCarryPatchSync(cfg SyncAPIConfig, c echo.Context) (*CarryPatchSyncRespon
 // enabled (16-REQ-5.3, 16-REQ-5.4, 20-REQ-5.4). The success path and the
 // ref-write failure path share it so both honour the variable.
 func autoRebuildEnabled(cfg SyncAPIConfig, slug string) bool {
-	if cfg.GetVariable == nil {
+	return autoRebuildEnabledFor(cfg.GetVariable, slug)
+}
+
+// autoRebuildEnabledFor is autoRebuildEnabled for a caller that holds the
+// variable lookup rather than a SyncAPIConfig. Sync and the patch reset
+// (RecoveryService.RunReset) share it, so both honour the variable the same way.
+func autoRebuildEnabledFor(getVariable GetVariableFunc, slug string) bool {
+	if getVariable == nil {
 		return true
 	}
-	val, _ := cfg.GetVariable("workspace", slug, "AUTO_REBUILD_AFTER_SYNC")
+	val, _ := getVariable("workspace", slug, "AUTO_REBUILD_AFTER_SYNC")
 	return val != "false"
 }
 
@@ -470,24 +477,48 @@ func refreshFailureMessage(err error) string {
 // When ignoreResult is true, the return values are not meaningful (used on
 // the ref-write failure path where we fire-and-forget).
 func enqueueRebuildIfNeeded(cfg SyncAPIConfig, slug, integrationBranch, userID string, ignoreResult bool) (string, bool) {
-	payload := BuildRebuildPayload(slug, integrationBranch, userID, cfg.GetVariable, "", "")
-	payloadJSON, _ := json.Marshal(payload)
-	groupKey := slug + ":" + integrationBranch
-	nonce := uuid.New().String()
+	jobID, enqueued, err := enqueueRebuildJob(cfg.Queue, cfg.GetVariable, slug, integrationBranch, userID)
+	if err != nil {
+		// A failed enqueue never fails the sync; it is logged so it is not lost.
+		slog.Error("sync: failed to enqueue rebuild",
+			"slug", slug,
+			"integration_branch", integrationBranch,
+			"error", err,
+		)
+		return "", false
+	}
+	return jobID, enqueued
+}
 
-	jobID, duplicate, enqErr := cfg.Queue.Enqueue(jobqueue.EnqueueParams{
+// enqueueRebuildJob enqueues a rebuild job for slug and its integration
+// branch: the payload from BuildRebuildPayload (strategy and fail mode read
+// from the workspace variables), grouped by FormatGroupKey so rebuilds of one
+// integration branch serialise, under a fresh nonce. enqueued is false, with a
+// nil error, when an equal job is already queued or running. It is the one
+// enqueue behind the sync rebuild and the patch reset rebuild
+// (RecoveryService.RunReset).
+func enqueueRebuildJob(q RebuildEnqueuer, getVariable GetVariableFunc, slug, integrationBranch, userID string) (jobID string, enqueued bool, err error) {
+	payload := BuildRebuildPayload(slug, integrationBranch, userID, getVariable, "", "")
+	payloadJSON, err := json.Marshal(payload)
+	if err != nil {
+		return "", false, fmt.Errorf("marshal rebuild payload: %w", err)
+	}
+
+	jobID, duplicate, err := q.Enqueue(jobqueue.EnqueueParams{
 		Type:        "rebuild",
 		Key:         slug,
-		Nonce:       nonce,
+		Nonce:       uuid.New().String(),
 		Payload:     payloadJSON,
 		SubmittedBy: userID,
-		Group:       groupKey,
+		Group:       FormatGroupKey(slug, integrationBranch),
 	})
-
-	if enqErr == nil && !duplicate {
-		return jobID, true
+	if err != nil {
+		return "", false, err
 	}
-	return "", false
+	if duplicate {
+		return "", false, nil
+	}
+	return jobID, true, nil
 }
 
 // handleCarryPatchSyncEndpoint adapts runCarryPatchSync to an echo.HandlerFunc

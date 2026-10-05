@@ -320,14 +320,21 @@ func (s *SQLPatchStore) ListExpiredDeletedPatches(_ context.Context, olderThan s
 }
 
 // DeletePatchByIDIfDeleted permanently removes a patch row only if its
-// current status is 'deleted'. Returns nil when the row does not exist
-// or is not in deleted status.
-func (s *SQLPatchStore) DeletePatchByIDIfDeleted(_ context.Context, patchID string) error {
-	_, err := s.DB.Exec(
+// current status is 'deleted'. deleted is false, with a nil error, when the
+// row does not exist or is not in deleted status.
+func (s *SQLPatchStore) DeletePatchByIDIfDeleted(_ context.Context, patchID string) (bool, error) {
+	result, err := s.DB.Exec(
 		`DELETE FROM patches WHERE id = ? AND status = 'deleted'`,
 		patchID,
 	)
-	return err
+	if err != nil {
+		return false, err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
 }
 
 // CompactPositions re-numbers the non-deleted patches of a workspace to
@@ -388,7 +395,7 @@ func (s *SQLPatchStore) CompactPositions(_ context.Context, workspaceSlug string
 // status='deleted' for longer than the specified retention period (7 days).
 // Returns the number of patches purged.
 func PurgeExpiredDeletedPatches(ctx context.Context, store PatchStore) (int64, error) {
-	cutoff := time.Now().UTC().Add(-7 * 24 * time.Hour).Format(time.RFC3339)
+	cutoff := apikit.FormatUTC(time.Now().Add(-7 * 24 * time.Hour))
 	return store.PurgeDeletedPatches(ctx, cutoff)
 }
 

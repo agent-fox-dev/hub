@@ -1604,6 +1604,14 @@ rebuild job is enqueued (same deduplication as sync), unless
 `AUTO_REBUILD_AFTER_SYNC` is `"false"`. A `disabled` patch does not trigger
 a rebuild.
 
+When the moved branch is checked out in the trunk, the work tree follows it
+(`git reset --hard`). A failure of that reset after the branch has moved does
+not fail the request: the response, the recorded state, the rebuild and the
+audit event all describe the move, and the failure is logged at error level.
+The `hub.patch.reset` event (and `hub.patch.replace` for action `replaced`) is
+emitted as soon as the reset succeeds, before the patch is read back for the
+response.
+
 **Error Codes:**
 
 | Status | Condition |
@@ -1611,7 +1619,7 @@ a rebuild.
 | 400 | Workspace is not active; workspace is not in `carry_patch` mode; patch branch is the integration branch |
 | 404 | Workspace not found or not owned by the caller; patch not found |
 | 409 | Workspace clone is not ready; patch status cannot be reset (`merged_upstream` or `deleted`); branch does not exist on origin (`error_type: missing_on_origin`); patch branch changed during reset (`error_type: ref_changed`); another operation holds the workspace lock (`error_type: workspace_busy`) |
-| 500 | Patch reset is not configured; failed to update patch branch |
+| 500 | Patch reset is not configured; failed to update patch branch (including a hub configured without its origin fetch or workspace lock); failed to fetch updated patch (the branch moved, but the patch row could not be read back; the audit event was still emitted) |
 | 502 | Origin fetch failed (`error_type: origin_fetch_failed`); failed to resolve origin credentials |
 
 ---

@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/agent-fox-dev/hub/internal/gitcmd"
 )
 
 // ===========================================================================
@@ -1125,4 +1127,179 @@ func TestRefreshPatchBranches_AncestorCheckFailure_ClassifiedSeparately(t *testi
 	if patchAdvanced {
 		t.Error("patchAdvanced = true although nothing moved")
 	}
+}
+
+// ===========================================================================
+// Issue #45 finding 1: the compare-and-swap move is one shared helper
+// ===========================================================================
+
+func TestCasUpdateRef_RunsOnlyTheCompareAndSwapUpdateRef(t *testing.T) {
+	m := newMockGitRunner()
+
+	if err := casUpdateRef(context.Background(), m, "refs/heads/x", "new-sha", "old-sha"); err != nil {
+		t.Fatalf("casUpdateRef returned %v", err)
+	}
+	if len(m.RunCalls) != 1 || strings.Join(m.RunCalls[0].Args, " ") != "update-ref refs/heads/x new-sha old-sha" {
+		t.Errorf("git calls = %v; want exactly one update-ref <ref> <new> <old>", m.RunCalls)
+	}
+
+	boom := errors.New("boom")
+	m.RunFunc = func(context.Context, ...string) (string, error) { return "", boom }
+	if err := casUpdateRef(context.Background(), m, "refs/heads/x", "n", "o"); !errors.Is(err, boom) {
+		t.Errorf("casUpdateRef error = %v; want it to wrap %v", err, boom)
+	}
+}
+
+func TestCasMoveRef_StageAndMoved(t *testing.T) {
+	const ref = "refs/heads/feat"
+	writeErr := errors.New("cannot lock ref")
+	resetErr := errors.New("cannot reset")
+
+	cases := []struct {
+		name      string
+		updateErr error
+		head      string // what `symbolic-ref -q HEAD` prints; "" means a detached HEAD
+		resetErr  error
+
+		wantMoved  bool
+		wantStage  RefStage
+		wantErr    error
+		wantResets int
+	}{
+		{name: "write_fails", updateErr: writeErr, head: ref,
+			wantMoved: false, wantStage: RefStageWrite, wantErr: writeErr, wantResets: 0},
+		{name: "moved_head_elsewhere", head: "refs/heads/main",
+			wantMoved: true, wantResets: 0},
+		{name: "moved_detached_head", head: "",
+			wantMoved: true, wantResets: 0},
+		{name: "moved_head_on_branch", head: ref,
+			wantMoved: true, wantResets: 1},
+		{name: "moved_reset_fails", head: ref, resetErr: resetErr,
+			wantMoved: true, wantStage: RefStageReset, wantErr: resetErr, wantResets: 1},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newMockGitRunner()
+			m.RunFunc = func(_ context.Context, args ...string) (string, error) {
+				switch args[0] {
+				case "update-ref":
+					return "", tc.updateErr
+				case "symbolic-ref":
+					if tc.head == "" {
+						return "", errors.New("not a symbolic ref")
+					}
+					return tc.head + "\n", nil
+				}
+				return "", nil
+			}
+			m.HardResetFunc = func(context.Context, string) error { return tc.resetErr }
+
+			moved, stage, err := casMoveRef(context.Background(), m, "/trunk", ref, "new-sha", "old-sha")
+
+			if moved != tc.wantMoved {
+				t.Errorf("moved = %v; want %v", moved, tc.wantMoved)
+			}
+			if tc.wantErr == nil {
+				if err != nil {
+					t.Errorf("err = %v; want nil", err)
+				}
+			} else {
+				if !errors.Is(err, tc.wantErr) {
+					t.Errorf("err = %v; want %v", err, tc.wantErr)
+				}
+				if stage != tc.wantStage {
+					t.Errorf("stage = %v; want %v", stage, tc.wantStage)
+				}
+			}
+			if len(m.HardResetCalls) != tc.wantResets {
+				t.Errorf("hard resets = %v; want %d", m.HardResetCalls, tc.wantResets)
+			}
+			// A failed write must stop before the work tree is looked at.
+			if !tc.wantMoved {
+				for _, call := range m.RunCalls {
+					if call.Args[0] == "symbolic-ref" {
+						t.Error("HEAD was inspected after a failed ref write")
+					}
+				}
+			}
+		})
+	}
+}
+
+// ===========================================================================
+// Issue #45 findings 4, 7, 8: a missing ref and a failed lookup are told apart
+// by the typed git exit code, never by error text
+// ===========================================================================
+
+func TestLookupRefSHA_MissingVersusFailed(t *testing.T) {
+	const sha = "aabbccddee00112233445566778899aabbccddee"
+	ctx := context.Background()
+
+	cases := []struct {
+		name      string
+		out       string
+		runErr    error
+		wantSHA   string
+		wantFound bool
+		wantErr   bool
+	}{
+		{name: "found", out: sha + "\n", wantSHA: sha, wantFound: true},
+		{name: "exit_1_is_missing", runErr: &gitcmd.GitError{ExitCode: 1}},
+		{name: "wrapped_exit_1_is_missing", runErr: fmt.Errorf("run: %w", &gitcmd.GitError{ExitCode: 1})},
+		{name: "exit_128_is_a_failure", runErr: &gitcmd.GitError{ExitCode: 128, Stderr: "fatal: not a git repository"}, wantErr: true},
+		{name: "exit_128_with_update_ref_text_is_a_failure", runErr: &gitcmd.GitError{ExitCode: 128, Stderr: "update_ref failed for ref"}, wantErr: true},
+		{name: "untyped_error_is_a_failure", runErr: errors.New("exec: git: executable file not found"), wantErr: true},
+		{name: "empty_output_is_missing", out: "\n"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newMockGitRunner()
+			m.RunFunc = func(context.Context, ...string) (string, error) { return tc.out, tc.runErr }
+
+			got, found, err := lookupRefSHA(ctx, m, "refs/hub/replaced/feat")
+
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("err = %v; want error: %v", err, tc.wantErr)
+			}
+			if got != tc.wantSHA || found != tc.wantFound {
+				t.Errorf("got (%q, %v); want (%q, %v)", got, found, tc.wantSHA, tc.wantFound)
+			}
+			wantArgs := "rev-parse --verify --quiet refs/hub/replaced/feat^{commit}"
+			if len(m.RunCalls) != 1 || strings.Join(m.RunCalls[0].Args, " ") != wantArgs {
+				t.Errorf("git calls = %v; want one %q", m.RunCalls, wantArgs)
+			}
+		})
+	}
+}
+
+func TestLookupRefSHA_RealGit(t *testing.T) {
+	tr := newRefTrunk(t)
+	runner := newRealGitRunner(t, tr.dir)
+	ctx := context.Background()
+
+	t.Run("existing_ref", func(t *testing.T) {
+		sha, found, err := lookupRefSHA(ctx, runner, "refs/heads/main")
+		if err != nil || !found || sha != tr.base {
+			t.Errorf("got (%q, %v, %v); want (%q, true, nil)", sha, found, err, tr.base)
+		}
+	})
+
+	t.Run("missing_ref", func(t *testing.T) {
+		// Real git must exit 1 here, or the typed classification is wrong.
+		sha, found, err := lookupRefSHA(ctx, runner, "refs/hub/replaced/feature/none")
+		if err != nil || found || sha != "" {
+			t.Errorf("got (%q, %v, %v); want (\"\", false, nil)", sha, found, err)
+		}
+	})
+
+	t.Run("cancelled_context_is_a_failure", func(t *testing.T) {
+		cancelled, cancel := context.WithCancel(ctx)
+		cancel()
+		_, found, err := lookupRefSHA(cancelled, runner, "refs/heads/main")
+		if err == nil || found {
+			t.Errorf("got (found=%v, err=%v); want a failure, not a missing ref", found, err)
+		}
+	})
 }

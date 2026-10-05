@@ -2,6 +2,7 @@ package workspace
 
 import (
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/agent-fox-dev/hub/internal/audit"
@@ -458,4 +459,99 @@ func TestResetAudit_FailedResetNoEvents_TS2368(t *testing.T) {
 	}
 }
 
+// ===========================================================================
+// Issue #45 finding 10: a reset that moved the branch is audited even when
+// the handler's re-read of the patch row fails afterwards
+// ===========================================================================
 
+func TestResetAudit_RereadFailureStillEmits(t *testing.T) {
+	cases := []struct {
+		name        string
+		result      ResetResult
+		wantReplace int
+	}{
+		{
+			name: "created",
+			result: ResetResult{
+				Action:    ResetActionCreated,
+				OriginSHA: "3333333333333333333333333333333333333333",
+			},
+			wantReplace: 0,
+		},
+		{
+			name: "replaced",
+			result: ResetResult{
+				Action:      ResetActionReplaced,
+				LocalSHA:    "6666666666666666666666666666666666666666",
+				OriginSHA:   "7777777777777777777777777777777777777777",
+				ReplacedSHA: "6666666666666666666666666666666666666666",
+			},
+			wantReplace: 1,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			const slug = "audit-reread"
+			const patchID = "p-reread"
+			const branch = "feature/reread"
+
+			env := newPatchTestEnv(t, slug, "main")
+			if _, err := env.db.Exec(`UPDATE workspaces SET clone_status = 'ready' WHERE slug = ?`, slug); err != nil {
+				t.Fatalf("update clone_status: %v", err)
+			}
+			seedPatchRaw(t, env.db, patchID, slug, branch, 1)
+
+			saved := recoveryHook
+			t.Cleanup(func() { recoveryHook = saved })
+
+			// The branch has already moved when RunReset returns; the row
+			// disappears before the handler reads it back.
+			hook := &stubRecoveryHookWithCalls{
+				resetResult: tc.result,
+				onReset: func() {
+					if _, err := env.db.Exec(`DELETE FROM patches WHERE id = ?`, patchID); err != nil {
+						t.Errorf("delete patch row: %v", err)
+					}
+				},
+			}
+			RegisterRecoveryHook(hook)
+
+			savedEmitter := defaultAuditEmitter
+			t.Cleanup(func() { defaultAuditEmitter = savedEmitter })
+			emitter := &stubAuditEmitter{}
+			defaultAuditEmitter = emitter
+
+			rec := env.doRequest(t, http.MethodPost, resetPath(slug, patchID), "", userAuth("user-1"))
+
+			if rec.Code != http.StatusInternalServerError {
+				t.Fatalf("status = %d; want 500; body: %s", rec.Code, rec.Body.String())
+			}
+			if !strings.Contains(rec.Body.String(), "failed to fetch updated patch") {
+				t.Errorf("body = %s; want message %q", rec.Body.String(), "failed to fetch updated patch")
+			}
+
+			var resets, replaces []audit.HubEvent
+			for _, ev := range emitter.events {
+				switch ev.EventType {
+				case audit.EventPatchReset:
+					resets = append(resets, ev)
+				case audit.EventPatchReplace:
+					replaces = append(replaces, ev)
+				}
+			}
+			if len(resets) != 1 {
+				t.Fatalf("hub.patch.reset events = %d; want 1 (the branch moved)", len(resets))
+			}
+			if resets[0].ResourceID != branch {
+				t.Errorf("reset resource_id = %q; want %q", resets[0].ResourceID, branch)
+			}
+			if resets[0].Metadata["action"] != string(tc.result.Action) {
+				t.Errorf("reset meta.action = %v; want %q", resets[0].Metadata["action"], string(tc.result.Action))
+			}
+			if len(replaces) != tc.wantReplace {
+				t.Errorf("hub.patch.replace events = %d; want %d", len(replaces), tc.wantReplace)
+			}
+		})
+	}
+}

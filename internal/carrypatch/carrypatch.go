@@ -192,9 +192,11 @@ type PatchStore interface {
 	// older than the cutoff, with id, workspace slug and branch name.
 	ListExpiredDeletedPatches(ctx context.Context, olderThan string) ([]ExpiredDeletedPatch, error)
 	// DeletePatchByIDIfDeleted permanently removes a patch row only if its
-	// current status is 'deleted'. Returns nil when the row does not exist
-	// or is not in deleted status.
-	DeletePatchByIDIfDeleted(ctx context.Context, patchID string) error
+	// current status is 'deleted'. deleted reports whether a row was removed:
+	// it is false, with a nil error, when the row does not exist or is no
+	// longer in deleted status (for example because it was restored since it
+	// was listed).
+	DeletePatchByIDIfDeleted(ctx context.Context, patchID string) (deleted bool, err error)
 }
 
 // FetchFunc fetches from the upstream remote of the repository at repoPath

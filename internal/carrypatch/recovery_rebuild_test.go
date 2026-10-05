@@ -703,6 +703,108 @@ func TestRecovery_RebuildEnqueueErrorLogged_TS2332(t *testing.T) {
 }
 
 // ===========================================================================
+// Issue #45 finding 2: the reset and the sync enqueue rebuilds through one
+// helper
+// ===========================================================================
+
+func TestAutoRebuildEnabledFor_Issue45(t *testing.T) {
+	variable := func(val string, err error) GetVariableFunc {
+		return func(scope, slug, key string) (string, error) {
+			if scope != "workspace" || slug != "ws" || key != "AUTO_REBUILD_AFTER_SYNC" {
+				t.Errorf("unexpected lookup (%q, %q, %q)", scope, slug, key)
+			}
+			return val, err
+		}
+	}
+
+	cases := []struct {
+		name string
+		get  GetVariableFunc
+		want bool
+	}{
+		{"no_lookup", nil, true},
+		{"unset", variable("", nil), true},
+		{"true", variable("true", nil), true},
+		{"false", variable("false", nil), false},
+		{"other_value_leaves_it_on", variable("FALSE", nil), true},
+		{"lookup_error_leaves_it_on", variable("", fmt.Errorf("store down")), true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := autoRebuildEnabledFor(tc.get, "ws"); got != tc.want {
+				t.Errorf("autoRebuildEnabledFor = %v; want %v", got, tc.want)
+			}
+			// The sync wrapper must agree.
+			if got := autoRebuildEnabled(SyncAPIConfig{GetVariable: tc.get}, "ws"); got != tc.want {
+				t.Errorf("autoRebuildEnabled = %v; want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestEnqueueRebuildJob_Issue45(t *testing.T) {
+	getVar := func(_, _, key string) (string, error) {
+		if key == "REBUILD_STRATEGY" {
+			return StrategyMerge, nil
+		}
+		return "", nil
+	}
+
+	t.Run("job_parameters", func(t *testing.T) {
+		q := &recordingEnqueuer{}
+		jobID, enqueued, err := enqueueRebuildJob(q, getVar, "ws", "deploy", "user-1")
+		if err != nil || !enqueued || jobID != "job-recorded" {
+			t.Fatalf("got (%q, %v, %v); want (\"job-recorded\", true, nil)", jobID, enqueued, err)
+		}
+		if len(q.calls) != 1 {
+			t.Fatalf("enqueue calls = %d; want 1", len(q.calls))
+		}
+		p := q.calls[0]
+		if p.Type != "rebuild" || p.Key != "ws" || p.Group != "ws:deploy" || p.SubmittedBy != "user-1" || p.Nonce == "" {
+			t.Errorf("params = %+v; want type rebuild, key ws, group ws:deploy, submitter user-1 and a nonce", p)
+		}
+		var payload RebuildPayload
+		if err := json.Unmarshal(p.Payload, &payload); err != nil {
+			t.Fatalf("payload is not a RebuildPayload: %v", err)
+		}
+		if payload.WorkspaceSlug != "ws" || payload.IntegrationBranch != "deploy" ||
+			payload.SubmittedBy != "user-1" || payload.Strategy != StrategyMerge {
+			t.Errorf("payload = %+v; want slug ws, branch deploy, submitter user-1, strategy merge", payload)
+		}
+
+		// Every enqueue uses a fresh nonce.
+		if _, _, err := enqueueRebuildJob(q, getVar, "ws", "deploy", "user-1"); err != nil {
+			t.Fatalf("second enqueue: %v", err)
+		}
+		if q.calls[0].Nonce == q.calls[1].Nonce {
+			t.Error("two enqueues share a nonce")
+		}
+	})
+
+	t.Run("enqueued_and_duplicate", func(t *testing.T) {
+		q, _ := newTestQueue(t)
+		_ = RegisterRebuildJob(q, &RebuildHandler{})
+
+		jobID, enqueued, err := enqueueRebuildJob(q, nil, "dup-ws", "deploy", "user-1")
+		if err != nil || !enqueued || jobID == "" {
+			t.Fatalf("first enqueue = (%q, %v, %v); want a job", jobID, enqueued, err)
+		}
+		// The same key is already queued: a duplicate, not an error.
+		jobID, enqueued, err = enqueueRebuildJob(q, nil, "dup-ws", "deploy", "user-1")
+		if err != nil || enqueued || jobID != "" {
+			t.Errorf("second enqueue = (%q, %v, %v); want (\"\", false, nil)", jobID, enqueued, err)
+		}
+	})
+
+	t.Run("queue_error_is_returned", func(t *testing.T) {
+		_, enqueued, err := enqueueRebuildJob(&failingJobQueue{}, nil, "ws", "deploy", "user-1")
+		if err == nil || enqueued {
+			t.Errorf("got (enqueued=%v, err=%v); want the queue error", enqueued, err)
+		}
+	})
+}
+
+// ===========================================================================
 // Test helpers
 // ===========================================================================
 

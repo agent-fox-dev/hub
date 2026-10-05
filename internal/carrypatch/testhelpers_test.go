@@ -518,11 +518,11 @@ func (m *mockPatchStore) ListExpiredDeletedPatches(_ context.Context, _ string) 
 	return nil, nil
 }
 
-func (m *mockPatchStore) DeletePatchByIDIfDeleted(_ context.Context, patchID string) error {
+func (m *mockPatchStore) DeletePatchByIDIfDeleted(_ context.Context, patchID string) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.DeletedPatches = append(m.DeletedPatches, patchID)
-	return nil
+	return true, nil
 }
 
 // ===========================================================================

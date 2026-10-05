@@ -524,9 +524,148 @@ func (s *failingListPatchStore) ClearOriginSyncStateForMergedDeleted(_ context.C
 func (s *failingListPatchStore) ListExpiredDeletedPatches(_ context.Context, _ string) ([]ExpiredDeletedPatch, error) {
 	return nil, s.err
 }
-func (s *failingListPatchStore) DeletePatchByIDIfDeleted(_ context.Context, _ string) error {
+func (s *failingListPatchStore) DeletePatchByIDIfDeleted(_ context.Context, _ string) (bool, error) {
 	s.deleteCalls++
-	return nil
+	return true, nil
+}
+
+// ===========================================================================
+// Issue #45 finding 9: the purge counts only the rows it deleted
+// ===========================================================================
+
+// scriptedPurgeStore lists a fixed set of expired rows and answers each
+// delete from a table.
+type scriptedPurgeStore struct {
+	*mockPatchStore
+	expired []ExpiredDeletedPatch
+	deleted map[string]bool // id -> whether the delete removed a row
+	errs    map[string]error
+	calls   []string
+}
+
+func (s *scriptedPurgeStore) ListExpiredDeletedPatches(context.Context, string) ([]ExpiredDeletedPatch, error) {
+	return s.expired, nil
+}
+
+func (s *scriptedPurgeStore) DeletePatchByIDIfDeleted(_ context.Context, id string) (bool, error) {
+	s.calls = append(s.calls, id)
+	return s.deleted[id], s.errs[id]
+}
+
+func TestPurgeExpiredDeletedPatchesWithRefs_CountsOnlyDeletedRows_Issue45(t *testing.T) {
+	store := &scriptedPurgeStore{
+		mockPatchStore: newMockPatchStore(nil),
+		expired: []ExpiredDeletedPatch{
+			{ID: "gone", Slug: "ws", Branch: "feature/gone"},
+			{ID: "restored", Slug: "ws", Branch: "feature/restored"},
+			{ID: "errored", Slug: "ws", Branch: "feature/errored"},
+			{ID: "also-gone", Slug: "ws", Branch: "feature/also-gone"},
+		},
+		deleted: map[string]bool{"gone": true, "also-gone": true},
+		errs:    map[string]error{"errored": fmt.Errorf("database is locked")},
+	}
+
+	// No trunk on disk: the ref removal counts as success for every row.
+	n, err := PurgeExpiredDeletedPatchesWithRefs(context.Background(), store, t.TempDir(), NewGitRunnerFactory())
+	if err != nil {
+		t.Fatalf("PurgeExpiredDeletedPatchesWithRefs returned error: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("purged = %d; want 2 (a restored row and a failed delete are not counted)", n)
+	}
+	if len(store.calls) != 4 {
+		t.Errorf("delete calls = %v; want one per listed row", store.calls)
+	}
+}
+
+func TestPurgeExpiredDeletedPatchesWithRefs_RowRestoredBeforeDelete_Issue45(t *testing.T) {
+	db := openTestDB(t)
+	createPatchesTable(t, db)
+
+	eightDaysAgo := time.Now().UTC().Add(-8 * 24 * time.Hour).Format(time.RFC3339)
+	seedPatchDeleted(t, db, "p-restored", "ws", "feature/restored", -1, eightDaysAgo)
+	seedPatchDeleted(t, db, "p-expired", "ws", "feature/expired", -2, eightDaysAgo)
+
+	// The first row is restored after the expired rows were listed and before
+	// its delete runs.
+	store := &restoreBeforeDeleteStore{SQLPatchStore: NewSQLPatchStore(db), restoreID: "p-restored"}
+
+	n, err := PurgeExpiredDeletedPatchesWithRefs(context.Background(), store, t.TempDir(), NewGitRunnerFactory())
+	if err != nil {
+		t.Fatalf("PurgeExpiredDeletedPatchesWithRefs returned error: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("purged = %d; want 1", n)
+	}
+
+	var status string
+	if err := db.QueryRow(`SELECT status FROM patches WHERE id = 'p-restored'`).Scan(&status); err != nil {
+		t.Fatalf("the restored row must survive the purge: %v", err)
+	}
+	if status != "active" {
+		t.Errorf("restored row status = %q; want active", status)
+	}
+	var count int
+	db.QueryRow(`SELECT COUNT(*) FROM patches WHERE id = 'p-expired'`).Scan(&count)
+	if count != 0 {
+		t.Error("the still-deleted expired row should be purged")
+	}
+}
+
+// restoreBeforeDeleteStore restores one row right before the delete of that
+// row runs, as a concurrent restore request would.
+type restoreBeforeDeleteStore struct {
+	*SQLPatchStore
+	restoreID string
+}
+
+func (s *restoreBeforeDeleteStore) DeletePatchByIDIfDeleted(ctx context.Context, id string) (bool, error) {
+	if id == s.restoreID {
+		if err := s.SQLPatchStore.RestorePatch(ctx, id); err != nil {
+			return false, err
+		}
+	}
+	return s.SQLPatchStore.DeletePatchByIDIfDeleted(ctx, id)
+}
+
+func TestSQLPatchStore_DeletePatchByIDIfDeleted_ReportsRows_Issue45(t *testing.T) {
+	db := openTestDB(t)
+	createPatchesTable(t, db)
+	store := NewSQLPatchStore(db)
+	ctx := context.Background()
+
+	eightDaysAgo := time.Now().UTC().Add(-8 * 24 * time.Hour).Format(time.RFC3339)
+	seedPatchDeleted(t, db, "p-deleted", "ws", "feature/deleted", -1, eightDaysAgo)
+	seedPatch(t, db, "p-active", "ws", "feature/active", 1, "active")
+	seedPatchDeleted(t, db, "p-restored", "ws", "feature/restored", -2, eightDaysAgo)
+	if err := store.RestorePatch(ctx, "p-restored"); err != nil {
+		t.Fatalf("RestorePatch: %v", err)
+	}
+
+	cases := []struct {
+		id          string
+		wantDeleted bool
+		wantRowLeft bool
+	}{
+		{"p-deleted", true, false},
+		{"p-active", false, true},
+		{"p-restored", false, true},
+		{"p-missing", false, false},
+	}
+	for _, tc := range cases {
+		deleted, err := store.DeletePatchByIDIfDeleted(ctx, tc.id)
+		if err != nil {
+			t.Fatalf("%s: DeletePatchByIDIfDeleted returned error: %v", tc.id, err)
+		}
+		if deleted != tc.wantDeleted {
+			t.Errorf("%s: deleted = %v; want %v", tc.id, deleted, tc.wantDeleted)
+		}
+		var count int
+		db.QueryRow(`SELECT COUNT(*) FROM patches WHERE id = ?`, tc.id).Scan(&count)
+		if (count == 1) != tc.wantRowLeft {
+			t.Errorf("%s: row present = %v; want %v", tc.id, count == 1, tc.wantRowLeft)
+		}
+	}
 }
 
 // ===========================================================================

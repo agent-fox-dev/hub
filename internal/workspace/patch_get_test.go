@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/labstack/echo/v4"
 	"github.com/txsvc/apikit"
 
 	_ "modernc.org/sqlite"
@@ -333,6 +334,38 @@ func TestGetPatch_OtherEndpoints_NoReplacedSHA_TS238(t *testing.T) {
 			`{"branch_name":"feature/new-for-test"}`, auth)
 		if rec.Code != http.StatusCreated {
 			t.Fatalf("status = %d; want 201; body: %s", rec.Code, rec.Body.String())
+		}
+		assertNoReplacedSHAInBody(t, rec.Body.Bytes())
+	})
+
+	// Restore a soft-deleted patch.
+	t.Run("restore", func(t *testing.T) {
+		seedPatchWithStatus(t, env, "patch-uuid-8-deleted", slug, "feature/restore-me", -2, "deleted")
+
+		path := fmt.Sprintf("/api/v1/workspaces/%s/patches/%s/restore", slug, "patch-uuid-8-deleted")
+		rec := env.doRequest(t, http.MethodPost, path, "", auth)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d; want 200; body: %s", rec.Code, rec.Body.String())
+		}
+		assertNoReplacedSHAInBody(t, rec.Body.Bytes())
+	})
+
+	// Sync: the carry-patch fields are merged into the workspace record and
+	// carry no replaced_sha.
+	t.Run("sync", func(t *testing.T) {
+		if _, err := env.db.Exec(`UPDATE workspaces SET clone_status = 'ready' WHERE slug = ?`, slug); err != nil {
+			t.Fatalf("update clone_status: %v", err)
+		}
+		registerSyncHook(t, func(_ echo.Context, _, _ string) (map[string]any, bool, error) {
+			return map[string]any{
+				"patches_merged":    []string{},
+				"rebuild_triggered": false,
+			}, true, nil
+		})
+
+		rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/"+slug+"/sync", "", adminAuth())
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d; want 200; body: %s", rec.Code, rec.Body.String())
 		}
 		assertNoReplacedSHAInBody(t, rec.Body.Bytes())
 	})

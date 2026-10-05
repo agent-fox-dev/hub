@@ -108,6 +108,15 @@ func TestDocs_TS_23_63_RecoveryDocumentation(t *testing.T) {
 	requireContains(t, "permissions.md patches:write", patchesWriteSec,
 		"reset-to-origin",
 	)
+	// Every patch handler resolves the workspace through lookupWorkspaceForAuth
+	// (owner or admin, 404 for others), so neither section may say that
+	// ownership is not enforced (issue #45 finding 11).
+	for name, sec := range map[string]string{"patches:read": patchesReadSec, "patches:write": patchesWriteSec} {
+		if strings.Contains(sec, "Not enforced") {
+			t.Errorf("permissions.md %s section still says ownership is \"Not enforced\"", name)
+		}
+		requireContains(t, "permissions.md "+name+" ownership", sec, "owner", "404")
+	}
 
 	// --- docs/carry_patch_workflow.md ---
 	wf := readDoc(t, "carry_patch_workflow.md")
