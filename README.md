@@ -136,7 +136,7 @@ make test             # tests only
 make fmt              # gofmt in place
 make vet              # go vet
 make lint             # golangci-lint, if installed
-make doc              # Go package docs into build/docs
+make doc              # Go package docs into docs/generated
 make build-containers # build the container images via podman
 make hub-reset        # reset data and first-boot
 make hub-run          # run the server locally
