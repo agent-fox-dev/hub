@@ -315,15 +315,7 @@ func extractFirstSHA(body string) string {
 func pktLine(s string) string {
 	// pkt-line length includes the 4-byte length prefix itself.
 	length := len(s) + 4
-	return strings.Replace(
-		strings.Replace(
-			strings.Replace(
-				strings.Replace(
-					pktLineHex(length), "", "", 0,
-				), "", "", 0,
-			), "", "", 0,
-		), "", "", 0,
-	) + s
+	return pktLineHex(length) + s
 }
 
 // pktLineHex formats an integer as a 4-character hex string for pkt-line.

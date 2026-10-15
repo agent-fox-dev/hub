@@ -856,7 +856,7 @@ func TestTS21_26_LockRecheck(t *testing.T) {
 		return recorder, nil
 	}
 
-	hook := NewBranchResolverHook(
+	_ = NewBranchResolverHook(
 		wrappedFactory,
 		workspaceRoot,
 		getVar,
@@ -866,7 +866,7 @@ func TestTS21_26_LockRecheck(t *testing.T) {
 
 	// Inject a lock hook that creates refs/heads/feat while the lock is
 	// being acquired (simulating a concurrent push).
-	hook = newBranchResolverHookWithLockFunc(
+	hook := newBranchResolverHookWithLockFunc(
 		wrappedFactory,
 		workspaceRoot,
 		getVar,

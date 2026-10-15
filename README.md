@@ -130,14 +130,18 @@ curl http://localhost:8080/readyz
 ## Development
 
 ```sh
-make check            # lint + tests
+make help             # list all targets
+make check            # fmt, vet, lint and test
 make test             # tests only
-make lint             # go vet + gofmt check
-make build-container  # build container image via podman
+make fmt              # gofmt in place
+make vet              # go vet
+make lint             # golangci-lint, if installed
+make doc              # Go package docs into build/docs
+make build-containers # build the container images via podman
 make hub-reset        # reset data and first-boot
 make hub-run          # run the server locally
-make hub-runc         # run the af-hub container
-make clean            # remove build binaries and container image
+make hub-runc         # run the hub container
+make clean            # remove build output
 ```
 
 ## License

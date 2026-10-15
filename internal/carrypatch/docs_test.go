@@ -2917,10 +2917,10 @@ func TestDocs_TS_24_66_RemovingContentMakesTestFail(t *testing.T) {
 // ===========================================================================
 
 func TestDocs_TS_24_1_QuotedTokensExistInCodeOrRefDocs(t *testing.T) {
-	// Load the three rewritten documents.
-	guide := readDoc(t, "carry_patch_workflow.md")
-	agent := readDoc(t, "examples/AGENTS_carry_patch.md")
-	adr01 := readDoc(t, "adr/01-choose-the-authority-for-patch-branches.md")
+	// The three rewritten documents must exist.
+	_ = readDoc(t, "carry_patch_workflow.md")
+	_ = readDoc(t, "examples/AGENTS_carry_patch.md")
+	_ = readDoc(t, "adr/01-choose-the-authority-for-patch-branches.md")
 
 	// Load the reference documents.
 	apiMd := readDoc(t, "api.md")
@@ -3024,16 +3024,6 @@ func TestDocs_TS_24_1_QuotedTokensExistInCodeOrRefDocs(t *testing.T) {
 		inCLI := strings.Contains(cliMd, tok)
 		if !inCode && !inAPI && !inCLI {
 			t.Errorf("token %q not found in internal/ source, docs/api.md or docs/cli.md", tok)
-		}
-	}
-
-	// Verify each token also appears in at least one of the rewritten docs.
-	allDocs := guide + "\n" + agent + "\n" + adr01
-	for _, tok := range tokens {
-		if !strings.Contains(allDocs, tok) {
-			// Not all tokens need to be in every doc; some are only in the
-			// guide. This is a sanity check that the token list is relevant.
-			// We only check that the token exists in the code/ref docs above.
 		}
 	}
 }

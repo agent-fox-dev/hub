@@ -21,3 +21,6 @@ admin_token
 **/config.toml
 .env
 /secrets/
+
+# `make doc` output
+/build/
