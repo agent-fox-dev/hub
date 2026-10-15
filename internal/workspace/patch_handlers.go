@@ -514,8 +514,7 @@ func handleUpdatePatch(db *sql.DB) echo.HandlerFunc {
 		}
 
 		// Update other fields (status, description, upstream_pr_url, updated_at).
-		p, err = updatePatch(db, p)
-		if err != nil {
+		if _, err = updatePatch(db, p); err != nil {
 			return respondError(c, http.StatusInternalServerError, "failed to update patch")
 		}
 

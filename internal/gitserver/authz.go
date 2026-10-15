@@ -43,7 +43,7 @@ func authorizeGitAccess(c echo.Context, ws *workspaceInfo) error {
 	// API keys and PATs must belong to the workspace owner.
 	// Non-owner, non-admin → HTTP 404 for anti-enumeration (06-PROP-3).
 	if info.UserID != ws.OwnerID {
-		writePktLineError(c, http.StatusNotFound, "repository not found")
+		_ = writePktLineError(c, http.StatusNotFound, "repository not found")
 		return errAccessDenied
 	}
 

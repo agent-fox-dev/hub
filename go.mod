@@ -1,6 +1,6 @@
 module github.com/agent-fox-dev/hub
 
-go 1.27.2
+go 1.27
 
 require (
 	github.com/BurntSushi/toml v1.6.0

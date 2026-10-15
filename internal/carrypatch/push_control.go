@@ -340,6 +340,3 @@ func forwardToOrigin(
 
 	return nil
 }
-
-// zeroHashStr is the zero hash as a string for comparisons.
-var zeroHashStr = plumbing.ZeroHash.String()

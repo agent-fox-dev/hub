@@ -199,27 +199,6 @@ func listAllWorkspaces(db *sql.DB, includeArchived bool) ([]*Workspace, error) {
 	return scanWorkspaces(rows)
 }
 
-// updateWorkspaceStatus updates the status of a workspace and refreshes updated_at.
-// Returns the updated workspace, or nil if no workspace with the given slug exists.
-func updateWorkspaceStatus(db *sql.DB, slug, status string) (*Workspace, error) {
-	now := time.Now().UTC().Format(timestampFormat)
-	result, err := db.Exec(
-		`UPDATE workspaces SET status = ?, updated_at = ? WHERE slug = ?`,
-		status, now, slug,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("update workspace %q status: %w", slug, err)
-	}
-	affected, err := result.RowsAffected()
-	if err != nil {
-		return nil, fmt.Errorf("update workspace %q: rows affected: %w", slug, err)
-	}
-	if affected == 0 {
-		return nil, nil
-	}
-	return getWorkspaceBySlug(db, slug)
-}
-
 // updateWorkspaceRow updates all mutable fields of a workspace and refreshes
 // updated_at. This is used by the PATCH handler after loading the current state
 // and applying only the provided field changes to the in-memory struct.
