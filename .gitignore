@@ -22,5 +22,5 @@ admin_token
 .env
 /secrets/
 
-# `make doc` output
+# Build output
 /build/
