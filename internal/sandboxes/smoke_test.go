@@ -231,6 +231,52 @@ ttl   = "3h"
 	}
 }
 
+// newRealHub mounts the sandbox routes behind a real apikit server (its auth
+// middleware, its permission registry with sandboxes.Permissions() and its PAT
+// handlers) over a real database holding one user with an API key. It returns
+// a function that serves a request in process, and the API key. The config
+// file and the XDG variables must already point at a directory the test owns.
+func newRealHub(t *testing.T, svc *Service) (do func(method, path, credential, body string) *httptest.ResponseRecorder, apiKey string) {
+	t.Helper()
+	cfg, err := apikit.LoadConfig()
+	if err != nil {
+		t.Fatalf("apikit.LoadConfig: %v", err)
+	}
+	database, err := apikit.OpenDatabase(cfg.Database.Path)
+	if err != nil {
+		t.Fatalf("apikit.OpenDatabase: %v", err)
+	}
+	t.Cleanup(func() { database.Close() })
+
+	server := apikit.NewServer(cfg, func() error { return nil })
+	if err := server.MountHandlers(database, Permissions()...); err != nil {
+		t.Fatalf("MountHandlers: %v", err)
+	}
+	RegisterRoutes(server.APIGroup(), svc)
+
+	now := apikit.NowUTC()
+	if _, err := database.SqlDB.Exec(`INSERT INTO users (id, username, email, full_name, role, status, provider, provider_id, created_at, updated_at)
+		VALUES ('u1', 'smoke', 'smoke@example.com', '', 'user', 'active', 'github', 'p1', ?, ?)`, now, now); err != nil {
+		t.Fatalf("inserting a user: %v", err)
+	}
+	key, err := apikit.GenerateAPIKey(database.SqlDB, "u1", 0, echo.New().Logger)
+	if err != nil {
+		t.Fatalf("apikit.GenerateAPIKey: %v", err)
+	}
+
+	do = func(method, path, credential, body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(method, path, strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		if credential != "" {
+			req.Header.Set("Authorization", "Bearer "+credential)
+		}
+		rec := httptest.NewRecorder()
+		server.Echo().ServeHTTP(rec, req)
+		return rec
+	}
+	return do, key.FullKey
+}
+
 // TS-25-58 (smoke): Without a [sandbox] section the start logs that sandboxes
 // are disabled, the two scopes are registered with apikit, and the route
 // answers 404 sandboxes_disabled to every authenticated caller, behind
@@ -242,16 +288,6 @@ func TestSmoke_DisabledRoute_TS_25_58(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", dir)
 	writeConfigFile(t, dir, "[server]\nport = 0\n\n[database]\npath = \""+filepath.Join(dir, "hub.db")+"\"\n")
 
-	cfg, err := apikit.LoadConfig()
-	if err != nil {
-		t.Fatalf("apikit.LoadConfig: %v", err)
-	}
-	database, err := apikit.OpenDatabase(cfg.Database.Path)
-	if err != nil {
-		t.Fatalf("apikit.OpenDatabase: %v", err)
-	}
-	t.Cleanup(func() { database.Close() })
-
 	// The start-up wiring of cmd/af-hub for a hub without a [sandbox] section.
 	logger, buf := newCapturedLogger()
 	svc, err := Init(logger, apikit.ConfigPath(), (&recordingFactory{provider: newFakeProvider()}).build)
@@ -262,35 +298,10 @@ func TestSmoke_DisabledRoute_TS_25_58(t *testing.T) {
 	if len(records) != 1 || records[0]["level"] != "INFO" || !strings.Contains(records[0]["msg"].(string), "disabled") {
 		t.Fatalf("start-up log = %s; want one info line saying sandboxes are disabled", buf)
 	}
-	server := apikit.NewServer(cfg, func() error { return nil })
-	if err := server.MountHandlers(database, Permissions()...); err != nil {
-		t.Fatalf("MountHandlers: %v", err)
-	}
-	RegisterRoutes(server.APIGroup(), svc)
 
-	// A real user with a real API key.
-	now := apikit.NowUTC()
-	if _, err := database.SqlDB.Exec(`INSERT INTO users (id, username, email, full_name, role, status, provider, provider_id, created_at, updated_at)
-		VALUES ('u1', 'smoke', 'smoke@example.com', '', 'user', 'active', 'github', 'p1', ?, ?)`, now, now); err != nil {
-		t.Fatalf("inserting a user: %v", err)
-	}
-	key, err := apikit.GenerateAPIKey(database.SqlDB, "u1", 0, echo.New().Logger)
-	if err != nil {
-		t.Fatalf("apikit.GenerateAPIKey: %v", err)
-	}
-
-	do := func(method, path, credential, body string) *httptest.ResponseRecorder {
-		req := httptest.NewRequest(method, path, strings.NewReader(body))
-		req.Header.Set("Content-Type", "application/json")
-		if credential != "" {
-			req.Header.Set("Authorization", "Bearer "+credential)
-		}
-		rec := httptest.NewRecorder()
-		server.Echo().ServeHTTP(rec, req)
-		return rec
-	}
+	do, apiKey := newRealHub(t, svc)
 	createPAT := func(permissions string) *httptest.ResponseRecorder {
-		return do(http.MethodPost, "/api/v1/user/tokens", key.FullKey, `{"name":"smoke","permissions":`+permissions+`}`)
+		return do(http.MethodPost, "/api/v1/user/tokens", apiKey, `{"name":"smoke","permissions":`+permissions+`}`)
 	}
 
 	// Both scopes are registered with apikit: a PAT can carry them, and an
@@ -323,7 +334,7 @@ func TestSmoke_DisabledRoute_TS_25_58(t *testing.T) {
 		"error_type": "sandboxes_disabled",
 	}}
 	for name, credential := range map[string]string{
-		"API key":                 key.FullKey,
+		"API key":                 apiKey,
 		"PAT with sandbox scopes": created.Token,
 		"PAT without scopes":      unrelated.Token,
 	} {

@@ -434,29 +434,28 @@ func TestNoEnvValuesLeak_Property_TS_25_46(t *testing.T) {
 		}
 		var body string
 
-		loaded, err := LoadConfig(writeConfigFile(t, dir, buf.String()))
+		// Init is the start-up path: it loads, validates, starts and logs.
+		initLogger, initLog := newCapturedLogger()
+		fake := newFakeProvider()
+		if r.IntN(4) == 0 {
+			fake.reapErr = errors.New("engine down")
+		}
+		factory := &recordingFactory{provider: fake}
+		svc, err := Init(initLogger, writeConfigFile(t, dir, buf.String()), factory.build)
 		note(err)
 		if err == nil {
-			fake := newFakeProvider()
-			if r.IntN(4) == 0 {
-				fake.reapErr = errors.New("engine down")
+			started++
+			if !strings.Contains(initLog.String(), "sandboxes are enabled") {
+				t.Fatalf("case %d: Init started without logging the enabled line: %s", i, initLog)
 			}
-			factory := &recordingFactory{provider: fake}
-			svc, err := Start(loaded, factory.build)
-			note(err)
-			if err == nil {
-				started++
-				for _, auth := range []*apikit.AuthInfo{adminAuth(), patAuth("sandboxes:read")} {
-					body += getProfiles(t, newHandlerEcho(svc), auth).Body.String()
-				}
-			} else {
-				refused++
+			for _, auth := range []*apikit.AuthInfo{adminAuth(), patAuth("sandboxes:read")} {
+				body += getProfiles(t, newHandlerEcho(svc), auth).Body.String()
 			}
 		} else {
 			refused++
 		}
 
-		output := strings.Join(errTexts, "\n") + "\n" + body + "\n" + logs.String()
+		output := strings.Join(errTexts, "\n") + "\n" + body + "\n" + logs.String() + "\n" + initLog.String()
 		for _, s := range sentinels {
 			if strings.Contains(output, s) {
 				t.Fatalf("case %d: the env value %q leaked into errors, logs or the listing:\n%s", i, s, output)

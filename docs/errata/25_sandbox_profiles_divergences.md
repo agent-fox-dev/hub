@@ -22,10 +22,19 @@ delivered behaviour.
    timeout, and the tests count `Reap` calls and read the deadline of the
    context they receive. See `probe` in `internal/sandboxes/service.go`
    (the `p.Reap(ctx)` call) and `TestService_ProbesOnceWithinTenSeconds_TS_25_28`
-   in `internal/sandboxes/service_test.go`. The later specs
-   `sandbox_leases`, `sandbox_expiry` and `sandbox_gateway_provider` assume
-   `Provider.List` and `Provider.Destroy` in the same way and need the same
-   correction.
+   in `internal/sandboxes/service_test.go`.
+
+   `Reap` is not read-only. At every hub start it removes the containers and
+   volumes that AgentKit labelled as sandboxes and whose expiry label has
+   passed, whichever process created them, which `sandbox_expiry` was to own.
+   It also returns an error when one of those removals fails, so a stuck
+   leftover stops the start; the error says `failed its start-up check`, not
+   that the engine is unreachable. A side-effect-free probe needs a `List` on
+   the Podman provider in agentkit-go.
+
+   The later specs `sandbox_gateway`, `sandbox_expiry` and
+   `sandbox_gateway_provider` assume `Provider.List` and `Provider.Destroy` in
+   the same way and need the same correction.
 
 2. **A fractional `cpus` is accepted.** 25-REQ-5.7 refuses a fractional `cpus`
    when AgentKit's CPU field is a whole number. `sandbox.Resources.CPUs` is a
@@ -45,7 +54,11 @@ delivered behaviour.
    exercises `apikit.ConfigPath()` with `LoadConfig`.
 
 4. **`afc sandbox profiles` reports errors on stdout.** TS-25-51 expects the
-   error message on stderr and nothing on stdout. 25-REQ-9.3 requires
+   error message on stderr and nothing on stdout, and 25-REQ-9.2 a usage error
+   on stderr. The usage error of the real `afc` is printed by
+   `apikit.CLIPrintError` as the JSON envelope on stdout, like every `afc`
+   error, and TS-25-50 asserts the error, its exit code 2 and the absent
+   request. 25-REQ-9.3 requires
    `apikit.CLIHandleError`, which writes the JSON error envelope to stdout and
    nothing to stderr, as every `afc` command does and as `docs/cli.md`
    documents. The test asserts the envelope with the hub's code and message on

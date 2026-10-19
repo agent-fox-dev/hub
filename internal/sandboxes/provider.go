@@ -14,7 +14,9 @@ type ProviderFactory func(podman.Options) (sandbox.Provider, error)
 // PodmanFactory builds the real Podman (or Docker) provider. It is the only
 // factory production code uses: the unisolated local provider is never
 // selectable from configuration.
-var PodmanFactory ProviderFactory = podman.New
+func PodmanFactory(o podman.Options) (sandbox.Provider, error) {
+	return podman.New(o)
+}
 
 // BuildProvider builds the provider for v through factory. The engine binary,
 // the runtime and the user namespace go to the provider unchanged, so an

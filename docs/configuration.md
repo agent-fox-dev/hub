@@ -124,8 +124,12 @@ the hub is restarted.
 - **All failures are reported together.** A start-up error lists every faulty
   key and profile, each naming the profile (by `name`, or as
   `sandbox.profiles[i]` when the name is missing) and the field.
-- **No value is ever shown.** Validation errors, the start-up log line and the
-  profile listing contain no `env` value and no secret value.
+- **No `env` value is ever shown.** Validation errors, the start-up log line and
+  the profile listing contain no `env` value and no secret value (the hub reads
+  no secret value in this release). Everything else in the section is shown as
+  written after `${NAME}` expansion: profile names, secret names, `image` (the
+  listing returns it as is) and the deployment keys appear in errors, so do not
+  put a credential into any key but `env`.
 
 #### Deployment keys
 
@@ -136,11 +140,13 @@ the hub is restarted.
 | `runtime` | string | `""` | The engine's OCI runtime: empty for its default, or `"krun"` for a micro-VM (podman only). Passed to the provider unchanged; the provider refuses what it does not support. |
 | `userns` | string | `""` | Passed to the engine as `--userns=<value>` when set. |
 | `max_ttl` | string | `"4h"` | The longest lifetime a profile may ask for, as a Go duration (`"90m"`, `"4h"`). Must be greater than zero. |
-| `network_modes` | list of strings | `["none"]` | The network modes profiles may use. Entries must be non-empty and unique, and each must be a mode the provider honours: `"none"` and `"unrestricted"` for Podman and Docker. A sandbox has no network unless the operator allows one. |
+| `network_modes` | list of strings | `["none"]` | The network modes profiles may use. Entries must be non-empty and unique, and each must be a mode the provider honours: `"none"` and `"unrestricted"` for Podman and Docker. A sandbox has no network unless the operator allows one. An empty list is accepted but leaves no mode for any profile, so every profile is then refused. |
 
 #### [[sandbox.profiles]]
 
-This table is repeatable. At least one profile is required.
+This table is repeatable. At least one profile is required. This release
+validates and publishes the profiles but creates no sandbox: the descriptions
+below say what a sandbox of the profile will get once sandboxes can be created.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
@@ -172,9 +178,11 @@ When the keys and profiles pass, the hub builds the provider from
    and names `sandbox.provider` and `sandbox.engine_binary`.
 2. It probes the engine with one call under a 10-second timeout. The call is
    the provider's `Reap`, the one provider operation that reaches the engine
-   without creating a sandbox; it removes only leftovers whose own expiry has
-   already passed. An unreachable engine stops the start with the same kind of
-   error.
+   without creating a sandbox. It removes the containers and volumes that
+   AgentKit labelled as sandboxes and whose own expiry has already passed,
+   whichever process created them. An engine that cannot be listed, and an
+   expired leftover that cannot be removed, both stop the start with the same
+   kind of error (`failed its start-up check`).
 3. Every `network_modes` entry must be a mode the provider honours.
 4. Each profile is turned into a sandbox spec (image, the profile's fixed `env`
    only, network, resources, `ttl`, `require_landlock`) that AgentKit's

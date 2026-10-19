@@ -3545,7 +3545,7 @@ The request is checked in this order:
 | `profiles[].default` | boolean | `true` for the one profile marked as the default; none may be marked |
 | `profiles[].image` | string | The container image |
 | `profiles[].network` | string | The network mode of a sandbox: `none`, `allowlist` or `unrestricted`, one of the deployment's allowed modes |
-| `profiles[].ttl_seconds` | integer | The profile's lifetime in whole seconds |
+| `profiles[].ttl_seconds` | integer | The profile's lifetime in whole seconds, rounded down |
 | `profiles[].resources` | object | `cpus` (number), `memory_mb`, `pids` and `disk_mb` (integers). `0` means the provider's default |
 | `profiles[].secrets` | array of string | Names of the secrets the profile injects, sorted ascending; `[]` when there are none |
 | `profiles[].optional_secrets` | array of string | Names of the secrets injected when they exist, sorted ascending; `[]` when there are none |

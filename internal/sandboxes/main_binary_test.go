@@ -168,6 +168,9 @@ listenx  = "an unknown key"
 	if !strings.Contains(output, "sandbox.listenx") {
 		t.Errorf("output does not name the unknown key sandbox.listenx:\n%s", output)
 	}
+	if strings.Contains(output, "queue started") {
+		t.Errorf("a job queue started before the sandbox section was validated:\n%s", output)
+	}
 	if exists(filepath.Join(env.dataDir, "workspaces")) {
 		t.Error("the workspace root was created before the sandbox section was validated")
 	}

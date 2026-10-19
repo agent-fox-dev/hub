@@ -74,13 +74,15 @@ func newService(v *Validated, p sandbox.Provider, check specChecker) (*Service, 
 // probe shows that the provider reaches its engine.
 //
 // sandbox.Provider has no List: Reap is the one provider method that contacts
-// the engine without creating a sandbox. It removes only leftovers whose own
-// expiry label has already passed, which the provider would remove anyway.
+// the engine without creating a sandbox. It removes the leftovers, labelled by
+// AgentKit, whose own expiry has already passed, and it returns an error when
+// the engine cannot be listed and also when one of those removals fails, so
+// the failure is worded as a failed check, not as an unreachable engine.
 func probe(v *Validated, p sandbox.Provider) error {
 	ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
 	defer cancel()
 	if _, err := p.Reap(ctx); err != nil {
-		return fmt.Errorf("sandbox: sandbox.provider %q is not reachable through sandbox.engine_binary %q: %w", v.Provider, v.EngineBinary, err)
+		return fmt.Errorf("sandbox: sandbox.provider %q failed its start-up check through sandbox.engine_binary %q: %w", v.Provider, v.EngineBinary, err)
 	}
 	return nil
 }

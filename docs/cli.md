@@ -1923,26 +1923,26 @@ $ afc sandbox profiles
 {
   "profiles": [
     {
-      "name": "agent",
       "default": true,
+      "env_keys": [
+        "LANG"
+      ],
       "image": "registry.example.com/agent:1.4",
+      "name": "agent",
       "network": "none",
-      "ttl_seconds": 1200,
+      "optional_secrets": [],
+      "require_landlock": true,
       "resources": {
         "cpus": 2,
+        "disk_mb": 0,
         "memory_mb": 4096,
-        "pids": 512,
-        "disk_mb": 0
+        "pids": 512
       },
       "secrets": [
         "ANTHROPIC_API_KEY",
         "GIT_PAT"
       ],
-      "optional_secrets": [],
-      "env_keys": [
-        "LANG"
-      ],
-      "require_landlock": true
+      "ttl_seconds": 1200
     }
   ]
 }
@@ -1953,8 +1953,8 @@ $ afc sandbox profiles
 | Code | Condition |
 |------|-----------|
 | 0 | Profiles listed |
-| 1 | Not authenticated, PAT without `sandboxes:read` or `sandboxes:write`, sandboxes not enabled on the hub, API error, or network error |
-| 2 | Usage error, such as a positional argument |
+| 1 | The hub answered with an error: not authenticated (401), PAT without `sandboxes:read` or `sandboxes:write` (403), sandboxes not enabled on the hub (404), or a server error |
+| 2 | Usage error such as a positional argument, no API key configured (run `afc login`), or the hub could not be reached |
 
 ---
 

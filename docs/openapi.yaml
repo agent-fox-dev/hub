@@ -5859,7 +5859,7 @@ components:
             modes: `none`, `allowlist` or `unrestricted`.
         ttl_seconds:
           type: integer
-          description: The profile's lifetime in whole seconds.
+          description: The profile's lifetime in whole seconds, rounded down.
         resources:
           $ref: "#/components/schemas/SandboxResources"
         secrets:
