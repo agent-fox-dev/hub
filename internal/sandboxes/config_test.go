@@ -457,3 +457,33 @@ func TestLoadConfig_ReadAndDecodeErrors_TS_25_7(t *testing.T) {
 		}
 	})
 }
+
+// Unknown keys are the one loader error that comes with the decoded
+// configuration, so that start-up can report them together with the
+// validation failures of the rest of the section (25-PATH-3). The unknown key
+// itself is not part of the configuration.
+// Requirement: 25-REQ-1.4
+func TestLoadConfig_UnknownKeysComeWithConfiguration(t *testing.T) {
+	path := writeConfigFile(t, t.TempDir(), `
+[sandbox]
+provider = "podman"
+listenx  = ":9000"
+
+[[sandbox.profiles]]
+name  = "dev"
+image = "registry.example/dev:1"
+`)
+	cfg, err := LoadConfig(path)
+	if err == nil || !strings.Contains(err.Error(), "sandbox.listenx") {
+		t.Fatalf("error = %v; want it to name sandbox.listenx", err)
+	}
+	if cfg == nil || cfg.Provider != "podman" || len(cfg.Profiles) != 1 || cfg.Profiles[0].Name != "dev" {
+		t.Errorf("configuration = %+v; want the decoded section next to the error", cfg)
+	}
+
+	// Every other loader error comes with a nil configuration.
+	cfg, err = LoadConfig(writeConfigFile(t, t.TempDir(), "[sandbox\n"))
+	if err == nil || cfg != nil {
+		t.Errorf("LoadConfig(invalid TOML) = (%v, %v); want a nil configuration and an error", cfg, err)
+	}
+}

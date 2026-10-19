@@ -63,6 +63,10 @@ type ProfileConfig struct {
 // key under [sandbox] that hub does not know, is an error. Keys outside the
 // sandbox section belong to apikit and are ignored.
 //
+// Unknown keys are the one error that comes with the decoded configuration, so
+// that a caller can report them together with the validation failures of the
+// rest of the section (see Init); every other error comes with a nil one.
+//
 // ${NAME} is replaced in every string value of the section after decoding, by
 // the environment variable NAME or by an empty string when it is unset. The
 // rest of the file is never expanded. No error produced here contains a
@@ -86,21 +90,29 @@ func LoadConfig(path string) (*Config, error) {
 	if doc.Sandbox == nil {
 		return nil, nil
 	}
-	if err := unknownKeysError(md, data); err != nil {
-		return nil, err
-	}
 
 	expandStrings(reflect.ValueOf(doc.Sandbox).Elem())
+	if err := findUnknownKeys(md, data); err != nil {
+		return doc.Sandbox, err
+	}
 	return doc.Sandbox, nil
 }
 
-// unknownKeysError returns an error naming the full path of every key under
-// [sandbox] that the decoder left undecoded, or nil when there is none.
+// unknownKeysError is the failure of one or more unknown keys under [sandbox],
+// one wrapped error per key.
+type unknownKeysError struct{ errs []error }
+
+func (e *unknownKeysError) Error() string   { return errors.Join(e.errs...).Error() }
+func (e *unknownKeysError) Unwrap() []error { return e.errs }
+
+// findUnknownKeys returns an *unknownKeysError naming the full path of every
+// key under [sandbox] that the decoder left undecoded, or nil when there is
+// none.
 //
 // The decoder's own list has no array index, so the path of a key in a
 // profile is completed from a second, untyped decode: sandbox.profiles[1].cpu
 // names every profile that holds the key.
-func unknownKeysError(md toml.MetaData, data []byte) error {
+func findUnknownKeys(md toml.MetaData, data []byte) error {
 	// The decoder lists a key once for every table that holds it.
 	var unknown []toml.Key
 	seen := map[string]bool{}
@@ -141,7 +153,7 @@ func unknownKeysError(md toml.MetaData, data []byte) error {
 		}
 		errs = append(errs, fmt.Errorf("sandbox: unknown key %s", key))
 	}
-	return errors.Join(errs...)
+	return &unknownKeysError{errs: errs}
 }
 
 // hasUnknownParent reports whether another unknown key is a proper prefix of

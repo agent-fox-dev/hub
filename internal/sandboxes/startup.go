@@ -1,6 +1,7 @@
 package sandboxes
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 )
@@ -22,10 +23,16 @@ import (
 // a route exists.
 func Init(logger *slog.Logger, path string, factory ProviderFactory) (*Service, error) {
 	cfg, err := LoadConfig(path)
-	if err != nil {
+	var unknown *unknownKeysError
+	switch {
+	case errors.As(err, &unknown):
+		// An unknown key does not hide the other static failures: report them
+		// all, without building or probing the provider.
+		_, invalid := Validate(cfg)
+		return nil, fmt.Errorf("sandbox: cannot enable sandboxes with the configuration in %s:\n%w", path, errors.Join(err, invalid))
+	case err != nil:
 		return nil, err
-	}
-	if cfg == nil {
+	case cfg == nil:
 		logger.Info("sandboxes are disabled: the configuration has no [sandbox] section")
 		return nil, nil
 	}
