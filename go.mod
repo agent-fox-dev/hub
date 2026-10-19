@@ -4,6 +4,8 @@ go 1.27
 
 require (
 	github.com/BurntSushi/toml v1.6.0
+	github.com/agent-fox-dev/agentkit-go v0.0.0
+	github.com/agent-fox-dev/agentkit-go/sandbox v0.0.0
 	github.com/go-git/go-git/v5 v5.19.3
 	github.com/google/uuid v1.6.0
 	github.com/labstack/echo/v4 v4.16.0
@@ -69,3 +71,7 @@ require (
 )
 
 replace github.com/txsvc/apikit => ../apikit
+
+replace github.com/agent-fox-dev/agentkit-go => ../agentkit-go
+
+replace github.com/agent-fox-dev/agentkit-go/sandbox => ../agentkit-go/sandbox

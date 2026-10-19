@@ -66,6 +66,9 @@ jobs:
       - name: clone apikit dependency
         run: git clone https://github.com/txsvc/apikit.git ../apikit
 
+      - name: clone agentkit-go dependency
+        run: git clone https://github.com/agent-fox-dev/agentkit-go.git ../agentkit-go
+
       - name: build afc
         env:
           CGO_ENABLED: "0"
