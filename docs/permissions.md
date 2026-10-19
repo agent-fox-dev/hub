@@ -193,6 +193,12 @@ sit outside it.
 Admin-role API keys have the same access as user-role — they do NOT see
 other users' workspaces.
 
+#### Sandbox Endpoints (all API keys)
+
+| Endpoint | Access | Ownership |
+|----------|--------|-----------|
+| `GET /api/v1/sandbox-profiles` | allowed | none; every authorised caller sees the same list |
+
 #### Git Endpoints (all API keys, ownership enforced)
 
 | Endpoint | Access | Ownership |
@@ -625,6 +631,36 @@ for startup registration.
 
 ---
 
+## Hub Sandbox Permissions
+
+These 2 permissions are registered by `Permissions()` in
+`hub/internal/sandboxes/permissions.go` and passed to `apikit.Server.MountHandlers()`
+at startup via the `extraPerms` parameter. They are registered on every start,
+whether or not a `[sandbox]` section is configured, so PATs can be issued with
+them before an operator enables sandboxes.
+
+### sandboxes:read
+
+| | |
+|---|---|
+| **Source** | hub |
+| **Grants** | List the deployment's sandbox profiles: names, images, resources, network, TTL, secret names and env key names, never a value |
+| **Endpoints** | `GET /api/v1/sandbox-profiles` |
+| **Implied by** | `sandboxes:write` |
+| **Ownership** | None. Every authorised caller sees the same list, whatever their workspaces, user or organisation. |
+| **Note** | API keys and admin tokens are not scope-checked. Without a `[sandbox]` section the endpoint answers `404` with `error_type: sandboxes_disabled` to every authenticated caller, before the scope is checked. |
+
+### sandboxes:write
+
+| | |
+|---|---|
+| **Source** | hub |
+| **Grants** | Reserved for creating and releasing sandbox leases (spec `sandbox_leases`). It grants no endpoint of its own yet. |
+| **Endpoints** | *(none yet)* |
+| **Implies** | `sandboxes:read` |
+
+---
+
 ## Implied Permissions Summary
 
 | Scope | Implies |
@@ -638,6 +674,7 @@ for startup registration.
 | `secrets:manage` | `secrets:list`, `secrets:write`, `secrets:delete` |
 | `vars:manage` | `vars:read`, `vars:write`, `vars:delete` |
 | `vars:write` | `vars:read` |
+| `sandboxes:write` | `sandboxes:read` |
 
 \* The `workspaces:create` and `workspaces:write` implication of
 `workspaces:read` is implemented via `hasReadAccess()` in workspace CRUD
@@ -653,7 +690,7 @@ endpoint checks for the literal `workspaces:write` scope string.
 
 ## Complete Permission List
 
-All 33 registered permission scopes, sorted alphabetically:
+All 35 registered permission scopes, sorted alphabetically:
 
 | # | Scope | Source | Resource | Action |
 |---|-------|--------|----------|--------|
@@ -671,25 +708,27 @@ All 33 registered permission scopes, sorted alphabetically:
 | 12 | `patches:write` | hub | patches | write |
 | 13 | `rebuilds:read` | hub | rebuilds | read |
 | 14 | `rebuilds:write` | hub | rebuilds | write |
-| 15 | `secrets:delete` | hub | secrets | delete |
-| 16 | `secrets:list` | hub | secrets | list |
-| 17 | `secrets:manage` | hub | secrets | manage |
-| 18 | `secrets:write` | hub | secrets | write |
-| 19 | `sessions:read` | hub | sessions | read |
-| 20 | `sessions:write` | hub | sessions | write |
-| 21 | `tokens:manage` | apikit | tokens | manage |
-| 22 | `tokens:read` | apikit | tokens | read |
-| 23 | `tokens:write` | apikit | tokens | write |
-| 24 | `users:read` | apikit | users | read |
-| 25 | `vars:delete` | hub | vars | delete |
-| 26 | `vars:manage` | hub | vars | manage |
-| 27 | `vars:read` | hub | vars | read |
-| 28 | `vars:write` | hub | vars | write |
-| 29 | `workspaces:create` | hub | workspaces | create |
-| 30 | `workspaces:delete` | hub | workspaces | delete |
-| 31 | `workspaces:read` | hub | workspaces | read |
-| 32 | `workspaces:sync` | hub | workspaces | sync |
-| 33 | `workspaces:write` | hub | workspaces | write |
+| 15 | `sandboxes:read` | hub | sandboxes | read |
+| 16 | `sandboxes:write` | hub | sandboxes | write |
+| 17 | `secrets:delete` | hub | secrets | delete |
+| 18 | `secrets:list` | hub | secrets | list |
+| 19 | `secrets:manage` | hub | secrets | manage |
+| 20 | `secrets:write` | hub | secrets | write |
+| 21 | `sessions:read` | hub | sessions | read |
+| 22 | `sessions:write` | hub | sessions | write |
+| 23 | `tokens:manage` | apikit | tokens | manage |
+| 24 | `tokens:read` | apikit | tokens | read |
+| 25 | `tokens:write` | apikit | tokens | write |
+| 26 | `users:read` | apikit | users | read |
+| 27 | `vars:delete` | hub | vars | delete |
+| 28 | `vars:manage` | hub | vars | manage |
+| 29 | `vars:read` | hub | vars | read |
+| 30 | `vars:write` | hub | vars | write |
+| 31 | `workspaces:create` | hub | workspaces | create |
+| 32 | `workspaces:delete` | hub | workspaces | delete |
+| 33 | `workspaces:read` | hub | workspaces | read |
+| 34 | `workspaces:sync` | hub | workspaces | sync |
+| 35 | `workspaces:write` | hub | workspaces | write |
 
 ---
 

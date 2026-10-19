@@ -53,7 +53,7 @@
       "done_when": [
         "go.mod contains a replace to ../agentkit-go"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     },
     {
@@ -95,7 +95,7 @@
       "done_when": [
         "`go test ./internal/sandboxes/ -run 'TestLoad|TestConfigPath' -count=1` passes"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     },
     {
@@ -145,7 +145,7 @@
       "done_when": [
         "`go test ./internal/sandboxes/ -run TestValidate -count=1` passes"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     },
     {
@@ -192,7 +192,7 @@
       "done_when": [
         "`go test ./internal/sandboxes/ -run TestValidate -count=1` passes"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     },
     {
@@ -238,7 +238,7 @@
       "done_when": [
         "`go test ./internal/sandboxes/ -run 'TestService|TestStart|TestBuildProvider' -count=1` passes"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     },
     {
@@ -271,7 +271,7 @@
       "done_when": [
         "`go test ./internal/sandboxes/ -run 'TestPermissions|TestCanRead' -count=1` passes"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     },
     {
@@ -316,7 +316,7 @@
       "done_when": [
         "`go test ./internal/sandboxes/ -count=1` passes"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     },
     {
@@ -353,7 +353,7 @@
         "`go test ./internal/cli/ -run Sandbox -count=1` passes",
         "`go list -deps ./cmd/afc` lists no agentkit-go package"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     },
     {
@@ -394,7 +394,7 @@
       "done_when": [
         "With an invalid sandbox section `af-hub --admin-email` still exits 0 and writes the token"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     },
     {
@@ -433,7 +433,7 @@
       "done_when": [
         "`make test` and `make lint` pass"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     }
   ]

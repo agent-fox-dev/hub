@@ -34,6 +34,9 @@ operations.
 
 - Go 1.27+
 - CGO enabled (`CGO_ENABLED=1`) — required by the DuckDB audit storage driver
+- Sibling checkouts of [apikit](https://github.com/txsvc/apikit) at `../apikit`
+  and [agentkit-go](https://github.com/agent-fox-dev/agentkit-go) at
+  `../agentkit-go` (both are `replace` targets in `go.mod`)
 - A GitHub OAuth application (for user login)
 
 ### Build

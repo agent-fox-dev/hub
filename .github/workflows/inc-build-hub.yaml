@@ -61,6 +61,9 @@ jobs:
       - name: clone apikit dependency
         run: git clone https://github.com/txsvc/apikit.git ../apikit
 
+      - name: clone agentkit-go dependency
+        run: git clone https://github.com/agent-fox-dev/agentkit-go.git ../agentkit-go
+
       - name: login to RH registry
         uses: docker/login-action@v3
         with:
@@ -91,6 +94,7 @@ jobs:
           file: "containers/${{ inputs.container_name }}/Containerfile"
           build-contexts: |
             apikit=../apikit
+            agentkit=../agentkit-go
           tags: ${{ env.IMAGE_NAME }}:${{ needs.prepare.outputs.version }}-${{ matrix.suffix }}
           labels: ${{ steps.metadata.outputs.labels }}
           platforms: ${{ matrix.platform }}

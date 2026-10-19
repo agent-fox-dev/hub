@@ -20,6 +20,7 @@ import (
 	"github.com/agent-fox-dev/hub/internal/health"
 	"github.com/agent-fox-dev/hub/internal/jobqueue"
 	"github.com/agent-fox-dev/hub/internal/merge"
+	"github.com/agent-fox-dev/hub/internal/sandboxes"
 	"github.com/agent-fox-dev/hub/internal/secrets"
 	"github.com/agent-fox-dev/hub/internal/workspace"
 	"github.com/agent-fox-dev/hub/internal/wslock"
@@ -45,6 +46,18 @@ func main() {
 		AdminEmail: *adminEmail,
 		ResetToken: *resetToken,
 	}); err != nil {
+		log.Fatal(err)
+	}
+
+	// Load, validate and probe the [sandbox] section of config.toml (spec 25).
+	// This runs after apikit.Bootstrap, so that first-boot admin-token
+	// generation never depends on the sandbox configuration, and before the
+	// workspace root, the queues, the workers and the routes exist, so that an
+	// invalid section stops the start before any of them is set up. The result
+	// is nil when sandboxes are not configured; the routes then answer
+	// sandboxes_disabled.
+	sandboxSvc, err := sandboxes.Init(slog.Default(), apikit.ConfigPath(), sandboxes.PodmanFactory)
+	if err != nil {
 		log.Fatal(err)
 	}
 
@@ -218,6 +231,9 @@ func main() {
 	extraPerms = append(extraPerms, merge.MergePermissions()...)
 	extraPerms = append(extraPerms, carrypatch.CarryPatchPermissions()...)
 	extraPerms = append(extraPerms, audit.Permissions()...)
+	// Registered whether or not sandboxes are configured, so PATs can be issued
+	// with the sandbox scopes ahead of time (25-REQ-6.1).
+	extraPerms = append(extraPerms, sandboxes.Permissions()...)
 
 	// Mount all built-in handlers (OAuth, users, orgs, keys, PATs) and
 	// workspace handlers with workspace, git, secrets, variables, and
@@ -285,6 +301,10 @@ func main() {
 	)
 	mergeCfg.Audit = auditEmitter
 	merge.RegisterMergeRoutes(server.APIGroup(), mergeCfg)
+
+	// Mount the sandbox profile listing. The route exists even when sandboxes
+	// are not configured (a nil service) and then answers sandboxes_disabled.
+	sandboxes.RegisterRoutes(server.APIGroup(), sandboxSvc)
 
 	// ---------------------------------------------------------------------------
 	// Carry-patch HTTP routes (spec 16)

@@ -12,7 +12,8 @@ order is:
 2. `./config.toml` (current working directory, used when `XDG_CONFIG_HOME` is
    unset).
 
-The configuration is loaded by `apikit.LoadConfig()`.
+The configuration is loaded by `apikit.LoadConfig()`. hub reads its own
+`[sandbox]` section from the same file (see [`[sandbox]`](#sandbox)).
 
 ## Example config.toml
 
@@ -37,6 +38,17 @@ workers = 4              # path omitted; resolved at runtime (see defaults below
 name          = "github"
 client_id     = "${GITHUB_CLIENT_ID}"
 client_secret = "${GITHUB_CLIENT_SECRET}"
+
+# Optional: sandboxes for agents. Leave the whole section out to turn them off.
+[sandbox]
+provider = "podman"
+
+[[sandbox.profiles]]
+name    = "agent"
+default = true
+image   = "registry.example.com/agent:1.4"
+ttl     = "20m"
+secrets = ["GIT_PAT"]
 ```
 
 ## Server Configuration Sections
@@ -84,6 +96,138 @@ provider.
 | `authorize_url` | string | Override the built-in OAuth authorization endpoint URL. Optional; used for custom or self-hosted providers. |
 | `token_url` | string | Override the built-in OAuth token endpoint URL. Optional; used for custom or self-hosted providers. |
 | `userinfo_url` | string | Override the built-in OAuth userinfo endpoint URL. Optional; used for custom or self-hosted providers. |
+
+### [sandbox]
+
+The `[sandbox]` table and its `[[sandbox.profiles]]` tables define where
+sandboxes run and what shape they take. The section is optional. Without it
+(or without a config file) sandboxes are off: the hub starts as usual, logs one
+info line saying sandboxes are disabled, and `GET /api/v1/sandbox-profiles`
+answers `404` with `error_type: sandboxes_disabled`.
+
+With the section present, the hub validates it at start, right after the admin
+bootstrap and before it sets up the workspace root, the job queues, the
+workers or any route. The first-boot admin token therefore never depends on
+the sandbox configuration. Profiles change only when the file is edited and
+the hub is restarted.
+
+- **Unknown keys refuse start.** The error names the full key path, for example
+  `sandbox.profiles[1].memroy_mb`. Keys of the sections above are not checked
+  here.
+- **`${NAME}` is replaced** in every string value of the section, including
+  list entries and `env` values, by the environment variable `NAME`, or by an
+  empty string when it is unset. A bare `$` stays as it is, and a replacement
+  is not expanded again. Note that apikit also expands `$VAR` and `${VAR}` in
+  the whole file before it parses its own sections, so a variable whose value
+  contains a double quote breaks the start even when only `[sandbox]`
+  references it.
+- **All failures are reported together.** A start-up error lists every faulty
+  key and profile, each naming the profile (by `name`, or as
+  `sandbox.profiles[i]` when the name is missing) and the field.
+- **No `env` value is ever shown.** Validation errors, the start-up log line and
+  the profile listing contain no `env` value and no secret value (the hub reads
+  no secret value in this release). Everything else in the section is shown as
+  written after `${NAME}` expansion: profile names, secret names, `image` (the
+  listing returns it as is) and the deployment keys appear in errors, so do not
+  put a credential into any key but `env`.
+
+#### Deployment keys
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `provider` | string | *(required)* | The provider that creates sandboxes. `"podman"` is the only accepted value; `"gateway"` is refused as not supported by this build. |
+| `engine_binary` | string | `"podman"` | The container engine command, `"podman"` or `"docker"`, or a path to one. A bare name is looked up in the `PATH` of the hub process. |
+| `runtime` | string | `""` | The engine's OCI runtime: empty for its default, or `"krun"` for a micro-VM (podman only). Passed to the provider unchanged; the provider refuses what it does not support. |
+| `userns` | string | `""` | Passed to the engine as `--userns=<value>` when set. |
+| `max_ttl` | string | `"4h"` | The longest lifetime a profile may ask for, as a Go duration (`"90m"`, `"4h"`). Must be greater than zero. |
+| `network_modes` | list of strings | `["none"]` | The network modes profiles may use. Entries must be non-empty and unique, and each must be a mode the provider honours: `"none"` and `"unrestricted"` for Podman and Docker. A sandbox has no network unless the operator allows one. An empty list is accepted but leaves no mode for any profile, so every profile is then refused. |
+
+#### [[sandbox.profiles]]
+
+This table is repeatable. At least one profile is required. This release
+validates and publishes the profiles but creates no sandbox: the descriptions
+below say what a sandbox of the profile will get once sandboxes can be created.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `name` | string | *(required)* | The profile name callers choose. Must match `^[a-z0-9][a-z0-9_-]{0,62}$` and be unique. |
+| `default` | boolean | `false` | Marks the default profile. At most one profile may set it; having none is valid. |
+| `image` | string | *(required)* | The container image. Must not be empty. The hub does not build, pull or check images. |
+| `cpus` | number | `0` | CPU bound, `0` or more; a fraction such as `0.5` is allowed. |
+| `memory_mb` | integer | `0` | Memory bound in MiB, `0` or more. |
+| `pids` | integer | `0` | Process count bound, `0` or more. |
+| `disk_mb` | integer | `0` | Disk bound in MiB, `0` or more. The Podman provider cannot bound disk, so a profile that sets it is refused at start. |
+| `network` | string | `"none"` | The network mode of the sandbox. Must be one of `network_modes`. `"allowlist"` can be named only when the provider honours it, and this release cannot configure its endpoints. |
+| `ttl` | string | *(required)* | The sandbox lifetime as a Go duration. Must be greater than zero and at most `max_ttl`. |
+| `secrets` | list of strings | `[]` | Names of the hub secrets injected into the sandbox. Each name must be a valid secret key (alphanumeric and `_`, not starting with a digit, at most 255 characters). Reserved names such as `GIT_PAT` are allowed. |
+| `optional_secrets` | list of strings | `[]` | Names of secrets injected when they exist. Same rules as `secrets`. |
+| `env` | table of strings | `{}` | Fixed environment variables of the sandbox. Keys follow the secret key rules and must not equal, ignoring case, a name in `secrets` or `optional_secrets`. Values are never shown by the API or in logs. |
+| `require_landlock` | boolean | `false` | Refuse to create a sandbox whose agent cannot confine itself with Landlock. |
+
+Zero for `cpus`, `memory_mb`, `pids` and `disk_mb` means the provider's
+default. Secret names are compared ignoring case, within `secrets`, within
+`optional_secrets` and across the two lists.
+
+#### Checks against the provider
+
+When the keys and profiles pass, the hub builds the provider from
+`engine_binary`, `runtime` and `userns` and checks it once:
+
+1. It builds the Podman provider. A missing engine binary or an option the
+   provider refuses stops the start with an error that starts with `sandbox:`
+   and names `sandbox.provider` and `sandbox.engine_binary`.
+2. It probes the engine with one call under a 10-second timeout. The call is
+   the provider's `Reap`, the one provider operation that reaches the engine
+   without creating a sandbox. It removes the containers and volumes that
+   AgentKit labelled as sandboxes and whose own expiry has already passed,
+   whichever process created them. An engine that cannot be listed, and an
+   expired leftover that cannot be removed, both stop the start with the same
+   kind of error (`failed its start-up check`).
+3. Every `network_modes` entry must be a mode the provider honours.
+4. Each profile is turned into a sandbox spec (image, the profile's fixed `env`
+   only, network, resources, `ttl`, `require_landlock`) that AgentKit's
+   `sandbox.CheckSpec` must accept against the provider's capabilities. A
+   refusal names the profile and carries `CheckSpec`'s text.
+
+The hub never creates a sandbox at start. After a successful start it logs one
+info line with the provider name and the profile names, and nothing else from
+the section.
+
+```toml
+[sandbox]
+provider      = "podman"
+engine_binary = "podman"
+max_ttl       = "2h"
+network_modes = ["none", "unrestricted"]
+
+[[sandbox.profiles]]
+name             = "agent"
+default          = true
+image            = "registry.example.com/agent:1.4"
+cpus             = 2
+memory_mb        = 4096
+pids             = 512
+network          = "none"
+ttl              = "20m"
+secrets          = ["ANTHROPIC_API_KEY", "GIT_PAT"]
+optional_secrets = ["GH_TOKEN"]
+require_landlock = true
+
+[sandbox.profiles.env]
+LANG = "C.UTF-8"
+TZ   = "UTC"
+
+[[sandbox.profiles]]
+name    = "build"
+image   = "registry.example.com/build:3"
+network = "unrestricted"
+ttl     = "1h"
+```
+
+Callers read the validated profiles with `GET /api/v1/sandbox-profiles` and
+`afc sandbox profiles`. The hub registers the `sandboxes:read` and
+`sandboxes:write` PAT scopes on every start, whether or not the section is
+present.
 
 ## Environment Variables
 
