@@ -395,7 +395,7 @@
       "done_when": [
         "exactly one hub.sandbox.lease event is emitted per successful POST and none for DELETE"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 10,

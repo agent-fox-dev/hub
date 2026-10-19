@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"fmt"
 	"io"
+	"log/slog"
 	"maps"
 	"slices"
 	"sync"
@@ -163,7 +164,39 @@ func (s *LeaseService) Issue(ctx context.Context, slug string, auth *apikit.Auth
 	if err := s.insertWithinCapacity(ctx, lease, HashToken(token)); err != nil {
 		return nil, "", err
 	}
+	s.emitIssued(ctx, auth, lease, ttl)
 	return lease, token, nil
+}
+
+// emitIssued records a hub.sandbox.lease event for a lease that has just been
+// stored. The event names the secrets, never their values, and holds neither the
+// token nor the fixed environment. Without an emitter nothing is recorded, and a
+// failed emit is logged and does not undo the lease.
+func (s *LeaseService) emitIssued(ctx context.Context, auth *apikit.AuthInfo, lease *Lease, ttl time.Duration) {
+	if s.audit == nil {
+		return
+	}
+	event := audit.HubEvent{
+		EventType:    audit.EventSandboxLease,
+		ResourceType: "sandbox",
+		ResourceID:   lease.ID,
+		Action:       "lease",
+		Workspace:    lease.Workspace,
+		ActorID:      auth.UserID,
+		ActorType:    auth.CredentialType,
+		Metadata: map[string]any{
+			"lease_id":              lease.ID,
+			"profile":               lease.Profile,
+			"purpose":               lease.Purpose,
+			"ttl":                   ttl.String(),
+			"secret_names":          lease.Secrets,
+			"optional_secret_names": lease.OptionalSecrets,
+		},
+	}
+	if err := s.audit.Emit(ctx, event); err != nil {
+		slog.Error("audit: failed to emit "+audit.EventSandboxLease,
+			"workspace", lease.Workspace, "lease_id", lease.ID, "error", err)
+	}
 }
 
 // insertWithinCapacity stores the lease unless max_sandboxes leases are live
