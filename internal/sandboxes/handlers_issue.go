@@ -1,6 +1,7 @@
 package sandboxes
 
 import (
+	"errors"
 	"log/slog"
 	"net/http"
 
@@ -40,13 +41,21 @@ func handleIssueLease(s *LeaseService) echo.HandlerFunc {
 	}
 }
 
-// writeIssueError answers a failed POST: a request the caller got wrong is a
-// 400, anything else a 500 whose cause goes to the log, not the response. The
-// logged error never holds a token or a secret value: it comes from the
-// database or the random source.
+// writeIssueError answers a failed POST. A request the caller got wrong is a
+// 400, required secrets that exist nowhere are a 422 secret_missing, the limit
+// on live leases is a 409 sandbox_capacity, and anything else is a 500 whose
+// cause goes to the log, not the response. The logged error never holds a token
+// or a secret value: it comes from the database or the random source.
 func writeIssueError(c echo.Context, slug string, err error) error {
-	if re, ok := asRequestError(err); ok {
+	var missing *MissingSecretsError
+	var full *CapacityError
+	switch re, isRequestError := asRequestError(err); {
+	case isRequestError:
 		return apikit.WriteAPIError(c, http.StatusBadRequest, re.msg)
+	case errors.As(err, &missing):
+		return apikit.WriteAPIErrorWithType(c, http.StatusUnprocessableEntity, missing.Error(), "secret_missing")
+	case errors.As(err, &full):
+		return apikit.WriteAPIErrorWithType(c, http.StatusConflict, full.Error(), "sandbox_capacity")
 	}
 	slog.Error("sandbox lease: issuing failed", "workspace", slug, "error", err)
 	return apikit.WriteAPIError(c, http.StatusInternalServerError, "internal server error")

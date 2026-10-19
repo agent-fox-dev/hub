@@ -4,9 +4,11 @@ import (
 	"context"
 	"crypto/rand"
 	"database/sql"
+	"fmt"
 	"io"
 	"maps"
 	"slices"
+	"sync"
 	"time"
 
 	"github.com/txsvc/apikit"
@@ -35,11 +37,17 @@ type LeaseConfig struct {
 type LeaseService struct {
 	profiles *Service
 	db       *sql.DB
-	store    *LeaseStore
-	secrets  SecretLister
-	audit    audit.Emitter
-	now      func() time.Time
-	rand     io.Reader
+	// issueMu serialises the capacity count and the insert. Hub runs as one
+	// replica on one SQLite file, so a lock in the process is enough. Hub's own
+	// database handle also begins its transactions IMMEDIATE; the lock keeps the
+	// limit with a handle whose transactions are deferred, which would let two
+	// requests both pass the count.
+	issueMu sync.Mutex
+	store   *LeaseStore
+	secrets SecretLister
+	audit   audit.Emitter
+	now     func() time.Time
+	rand    io.Reader
 }
 
 // NewLeaseService returns a lease service built from cfg.
@@ -60,6 +68,13 @@ func NewLeaseService(cfg LeaseConfig) *LeaseService {
 	}
 	s.store = NewLeaseStore(cfg.DB, s.now)
 	return s
+}
+
+// CapacityError reports that the deployment's limit on live leases is reached.
+type CapacityError struct{ Limit int }
+
+func (e *CapacityError) Error() string {
+	return fmt.Sprintf("sandbox capacity reached: at most %d leases may be live at once (max_sandboxes)", e.Limit)
 }
 
 // issueParams are the validated inputs of Issue.
@@ -145,16 +160,40 @@ func (s *LeaseService) Issue(ctx context.Context, slug string, auth *apikit.Auth
 		UpdatedAt:       stamp,
 	}
 
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, "", err
-	}
-	defer tx.Rollback() // a no-op once Commit has succeeded
-	if err := s.store.InsertLease(tx, lease, HashToken(token)); err != nil {
-		return nil, "", err
-	}
-	if err := tx.Commit(); err != nil {
+	if err := s.insertWithinCapacity(ctx, lease, HashToken(token)); err != nil {
 		return nil, "", err
 	}
 	return lease, token, nil
+}
+
+// insertWithinCapacity stores the lease unless max_sandboxes leases are live
+// already, in which case it returns a *CapacityError. The count and the insert
+// happen under one lock in the process and in one transaction, so concurrent
+// issuers can never overshoot the limit; any failure rolls back, releases the
+// lock and leaves no partial row.
+func (s *LeaseService) insertWithinCapacity(ctx context.Context, lease *Lease, tokenHash string) error {
+	s.issueMu.Lock()
+	defer s.issueMu.Unlock()
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() // a no-op once Commit has succeeded
+
+	now, err := apikit.ParseUTC(lease.CreatedAt)
+	if err != nil {
+		return err
+	}
+	live, err := s.store.countLive(tx, now)
+	if err != nil {
+		return err
+	}
+	if limit := s.profiles.MaxSandboxes(); live >= limit {
+		return &CapacityError{Limit: limit}
+	}
+	if err := s.store.InsertLease(tx, lease, tokenHash); err != nil {
+		return err
+	}
+	return tx.Commit()
 }

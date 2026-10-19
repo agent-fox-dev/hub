@@ -244,3 +244,15 @@ func (s *LeaseStore) RevokeToken(id string) error {
 	_, err := s.EndLease(&Lease{ID: id}, leaseDestroyed, "revoked")
 	return err
 }
+
+// countLive returns the number of leases that count against capacity: those
+// leased or active whose expires_at is later than now, in every workspace. A
+// lease past its expires_at does not count although nothing has ended it yet,
+// so a caller that crashed cannot hold capacity for good. The timestamps are
+// RFC 3339 UTC strings of one width, so comparing them as text compares time.
+func (s *LeaseStore) countLive(x dbtx, now time.Time) (int, error) {
+	var n int
+	err := x.QueryRow(`SELECT COUNT(*) FROM sandbox_leases WHERE state IN ('leased', 'active') AND expires_at > ?`,
+		apikit.FormatUTC(now)).Scan(&n)
+	return n, err
+}

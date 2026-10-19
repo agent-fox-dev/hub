@@ -275,7 +275,7 @@
       "done_when": [
         "N concurrent POSTs never leave more than max_sandboxes live leases"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 7,
