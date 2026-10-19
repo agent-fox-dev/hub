@@ -126,6 +126,7 @@ curl http://localhost:8080/readyz
 | [Server Configuration](docs/configuration.md) | `config.toml` reference and environment variables |
 | [Permissions](docs/permissions.md) | Permission model, scopes, and access control |
 | [Carry-Patch Workflow](docs/carry_patch_workflow.md) | Guide to maintaining fork patches with automated rebuild |
+| [Product Requirements](docs/prd/) | PRDs: sandboxes and leases (01), the forge API and webhook ingress (02) |
 
 ## Development
 
