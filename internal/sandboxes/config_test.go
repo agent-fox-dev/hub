@@ -487,3 +487,72 @@ image = "registry.example/dev:1"
 		t.Errorf("LoadConfig(invalid TOML) = (%v, %v); want a nil configuration and an error", cfg, err)
 	}
 }
+
+// leaseSection returns a valid [sandbox] section whose deployment keys include
+// extra.
+func leaseSection(extra string) string {
+	return "[sandbox]\nprovider = \"podman\"\n" + extra + `
+[[sandbox.profiles]]
+name  = "dev"
+image = "registry.example/dev:1"
+ttl   = "1h"
+`
+}
+
+// TS-26-29: max_sandboxes defaults to 16, and an explicit value loads without an
+// unknown-key error and reaches the service.
+// Requirement: 26-REQ-5.1
+func TestMaxSandboxes_DefaultAndExplicit_TS_26_29(t *testing.T) {
+	dir := t.TempDir()
+
+	absent := requireValid(t, mustLoad(t, writeConfigFile(t, dir, leaseSection(""))))
+	if absent.MaxSandboxes != 16 {
+		t.Errorf("limit without max_sandboxes = %d; want 16", absent.MaxSandboxes)
+	}
+
+	cfg, err := LoadConfig(writeConfigFile(t, dir, leaseSection("max_sandboxes = 3\n")))
+	if err != nil {
+		t.Fatalf("a section with max_sandboxes = 3 failed to load: %v", err)
+	}
+	explicit := requireValid(t, cfg)
+	if explicit.MaxSandboxes != 3 {
+		t.Errorf("limit with max_sandboxes = 3 is %d; want 3", explicit.MaxSandboxes)
+	}
+
+	svc, err := New(explicit, newFakeProvider())
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	if svc.MaxSandboxes() != 3 {
+		t.Errorf("Service.MaxSandboxes() = %d; want 3", svc.MaxSandboxes())
+	}
+}
+
+// TS-26-30: An invalid max_sandboxes fails naming the key.
+// Requirement: 26-REQ-5.2
+func TestMaxSandboxes_Invalid_TS_26_30(t *testing.T) {
+	for _, value := range []string{"0", "-1", "2.5", "0.9", "1e300", "inf", "nan"} {
+		t.Run(value, func(t *testing.T) {
+			cfg, err := LoadConfig(writeConfigFile(t, t.TempDir(), leaseSection("max_sandboxes = "+value+"\n")))
+			if err == nil {
+				_, err = Validate(cfg)
+			}
+			if err == nil || !strings.Contains(err.Error(), "sandbox.max_sandboxes") {
+				t.Errorf("max_sandboxes = %s: error = %v; want it to name sandbox.max_sandboxes", value, err)
+			}
+		})
+	}
+
+	// A value of the wrong type is a decode error that names the key.
+	_, err := LoadConfig(writeConfigFile(t, t.TempDir(), leaseSection("max_sandboxes = \"3\"\n")))
+	if err == nil || !strings.Contains(err.Error(), "max_sandboxes") {
+		t.Errorf("max_sandboxes = \"3\": error = %v; want it to name max_sandboxes", err)
+	}
+
+	for _, ok := range []string{"1", "16", "1000"} {
+		cfg := mustLoad(t, writeConfigFile(t, t.TempDir(), leaseSection("max_sandboxes = "+ok+"\n")))
+		if _, err := Validate(cfg); err != nil {
+			t.Errorf("max_sandboxes = %s was refused: %v", ok, err)
+		}
+	}
+}

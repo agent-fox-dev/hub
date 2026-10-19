@@ -95,7 +95,7 @@
       "done_when": [
         "a section with max_sandboxes = 3 loads with limit 3 and no unknown-key error"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 3,
