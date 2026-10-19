@@ -353,7 +353,7 @@
         "`go test ./internal/cli/ -run Sandbox -count=1` passes",
         "`go list -deps ./cmd/afc` lists no agentkit-go package"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     },
     {

@@ -1882,6 +1882,82 @@ rebuild was enqueued).
 
 ---
 
+## Sandbox Commands
+
+The `sandbox` command group works with the sandboxes of a hub. A hub offers
+sandboxes only when its `config.toml` has a `[sandbox]` section (see
+[Server Configuration](configuration.md#sandbox)). The group has one
+subcommand in this release.
+
+### afc sandbox profiles
+
+List the sandbox profiles of the hub: the named shapes a sandbox can take.
+
+**Usage:**
+
+```
+afc sandbox profiles
+```
+
+**Arguments:** none. A positional argument is rejected as a usage error
+before any request is sent.
+
+**Behavior:**
+
+- Sends `GET /api/v1/sandbox-profiles` with the configured credential.
+- Prints the response to stdout as one JSON document. It lists every profile
+  sorted by name, with its image, network, `ttl_seconds`, resources, the
+  names of its secrets and optional secrets, and the keys of its fixed
+  environment. It never contains a secret value or an `env` value. See
+  [`GET /api/v1/sandbox-profiles`](api.md#get-apiv1sandbox-profiles) for the
+  fields.
+- Works with an API key, an admin token, or a PAT holding `sandboxes:read` or
+  `sandboxes:write`.
+- A hub without a `[sandbox]` section answers 404. The error envelope on
+  stdout carries the hub's message, `sandboxes are not enabled on this hub`.
+
+**Example:**
+
+```
+$ afc sandbox profiles
+{
+  "profiles": [
+    {
+      "name": "agent",
+      "default": true,
+      "image": "registry.example.com/agent:1.4",
+      "network": "none",
+      "ttl_seconds": 1200,
+      "resources": {
+        "cpus": 2,
+        "memory_mb": 4096,
+        "pids": 512,
+        "disk_mb": 0
+      },
+      "secrets": [
+        "ANTHROPIC_API_KEY",
+        "GIT_PAT"
+      ],
+      "optional_secrets": [],
+      "env_keys": [
+        "LANG"
+      ],
+      "require_landlock": true
+    }
+  ]
+}
+```
+
+**Exit Codes:**
+
+| Code | Condition |
+|------|-----------|
+| 0 | Profiles listed |
+| 1 | Not authenticated, PAT without `sandboxes:read` or `sandboxes:write`, sandboxes not enabled on the hub, API error, or network error |
+| 2 | Usage error, such as a positional argument |
+
+---
+
 ## apikit-Provided Commands
 
 The following commands are provided by the `apikit` library and manage
