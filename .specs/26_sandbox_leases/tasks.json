@@ -429,7 +429,7 @@
       "done_when": [
         "the --token-file output has mode 0600 and stdout never contains the token"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 11,
