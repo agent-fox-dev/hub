@@ -59,6 +59,8 @@ they can access. The following scopes are available for workspace operations:
 | `sessions:write` | Open, close, and report token usage on agent sessions | POST /api/v1/sessions, POST /api/v1/sessions/:id/complete, POST /api/v1/sessions/:id/usage |
 | `audit:read` | Query audit events, view transcripts, and connect to SSE stream | GET /api/v1/audit, GET /api/v1/workspaces/:slug/runs/:run_id/transcript, GET /api/v1/events |
 | `audit:write` | Ingest agent audit events, traces, and session outcomes | POST endpoints under /api/v1/workspaces/:slug/runs/:run_id/ |
+| `sandboxes:read` | List the deployment's sandbox profiles | GET /api/v1/sandbox-profiles |
+| `sandboxes:write` | Reserved for sandbox leases; implies `sandboxes:read` | GET /api/v1/sandbox-profiles (no write endpoint yet) |
 
 ### Implied Permissions
 
@@ -78,6 +80,8 @@ they can access. The following scopes are available for workspace operations:
   with manage scope has full CRUD access to variables.
 - `vars:write` implies `vars:read` — a PAT with write scope can also list and
   read variable values.
+- `sandboxes:write` implies `sandboxes:read` — a PAT with write scope can also
+  list sandbox profiles.
 
 ### Scopes Checked Literally
 
@@ -192,6 +196,7 @@ The `error_type` field is omitted when not applicable. Known error types:
 | `missing_on_origin` | POST /api/v1/workspaces/:slug/patches/:id/reset-to-origin | The patch branch does not exist on the fork |
 | `ref_changed` | POST /api/v1/workspaces/:slug/patches/:id/reset-to-origin | The patch branch was modified by another operation between the SHA resolution and the compare-and-swap write; retry |
 | `workspace_busy` | archive, sync, reclone, rollback, batch rebase, rerere forget, reset-to-origin | Another operation currently holds the workspace lock; retry later. A rebuild holds the lock only in its fetch phase and final phase, so sync, rollback, rerere forget and batch rebase are rejected only then; archive and reclone are rejected for the whole rebuild |
+| `sandboxes_disabled` | GET /api/v1/sandbox-profiles | The hub has no `[sandbox]` section in its `config.toml`, so sandboxes are not enabled. Answered with 404 to every authenticated caller before any scope is checked |
 
 ---
 
@@ -3477,6 +3482,88 @@ behavior. They can be set via the
 | `PUSH_PATCHES_TO_ORIGIN` | `"true"` | (disabled) | Enables forwarding or mirroring of hub pushes to registered patch branches. Only the exact string `"true"` enables it. In `origin` mode (`PATCH_BRANCH_SOURCE=origin`): when enabled, a push to a registered patch branch is forwarded to the fork before the hub writes its ref; when disabled, the push is rejected. In `hub` mode: when enabled, accepted pushes to registered patch branches are mirrored (force-pushed) to the fork after the push is accepted. |
 | `SQUASH_MERGE_DETECTION` | `"ancestry_only"`, `"content_based"`, `"both"` | `"both"` | Controls which strategies are used to detect upstream merges during carry-patch sync. `"ancestry_only"` uses only `git merge-base --is-ancestor`. `"content_based"` uses only `git cherry` and PR-number scanning. `"both"` (default) uses all strategies. |
 | `CHECK_COMMAND` | any string | (unset) | Shell command executed via `sh -c` after a merge rebase to validate the result. If it exits non-zero, the rebase is rolled back. |
+
+---
+
+## Sandbox Profile Endpoints
+
+A hub with a `[sandbox]` section in its `config.toml` publishes the sandbox
+profiles of its deployment: the shapes a sandbox can take. A caller reads the
+list to choose a profile by name. The profiles are defined by the operator (see
+[Server Configuration](configuration.md#sandbox)), are checked against the
+provider when the hub starts and change only when the file is edited and the
+hub is restarted.
+
+The listing never contains a secret value or an `env` value. It names the
+secrets a profile injects and the keys of its fixed environment, and shows
+nothing of the provider, its options or the deployment's limits.
+
+### GET /api/v1/sandbox-profiles
+
+List the deployment's sandbox profiles.
+
+**Authentication:** API Key, Admin Token, or PAT with the `sandboxes:read` or
+`sandboxes:write` scope.
+
+The request is checked in this order:
+
+1. No credential: 401.
+2. The hub has no `[sandbox]` section: 404 with `error_type: sandboxes_disabled`,
+   for every authenticated caller, including a PAT without sandbox scopes.
+3. A PAT with neither `sandboxes:read` nor `sandboxes:write`: 403.
+
+**Response (success):** HTTP 200 OK
+
+```json
+{
+  "profiles": [
+    {
+      "name": "agent",
+      "default": true,
+      "image": "registry.example.com/agent:1.4",
+      "network": "none",
+      "ttl_seconds": 1200,
+      "resources": {
+        "cpus": 2,
+        "memory_mb": 4096,
+        "pids": 512,
+        "disk_mb": 0
+      },
+      "secrets": ["ANTHROPIC_API_KEY", "GIT_PAT"],
+      "optional_secrets": ["GH_TOKEN"],
+      "env_keys": ["LANG", "TZ"],
+      "require_landlock": true
+    }
+  ]
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `profiles` | array | Every profile, sorted by `name` |
+| `profiles[].name` | string | The profile name a caller chooses |
+| `profiles[].default` | boolean | `true` for the one profile marked as the default; none may be marked |
+| `profiles[].image` | string | The container image |
+| `profiles[].network` | string | The network mode of a sandbox: `none`, `allowlist` or `unrestricted`, one of the deployment's allowed modes |
+| `profiles[].ttl_seconds` | integer | The profile's lifetime in whole seconds |
+| `profiles[].resources` | object | `cpus` (number), `memory_mb`, `pids` and `disk_mb` (integers). `0` means the provider's default |
+| `profiles[].secrets` | array of string | Names of the secrets the profile injects, sorted ascending; `[]` when there are none |
+| `profiles[].optional_secrets` | array of string | Names of the secrets injected when they exist, sorted ascending; `[]` when there are none |
+| `profiles[].env_keys` | array of string | Keys of the profile's fixed environment, sorted ascending; `[]` when there are none. Their values are never returned |
+| `profiles[].require_landlock` | boolean | Whether a sandbox of this profile must confine its agent with Landlock |
+
+The response is built from the profiles the hub validated at start. It makes
+no provider call and reads no database, so it keeps answering after the
+container engine becomes unreachable. Every authorised caller gets the same
+list, whatever their workspaces, user or organisation.
+
+**Error Codes:**
+
+| Status | Condition |
+|--------|-----------|
+| 401 | Unauthenticated request |
+| 403 | PAT has neither `sandboxes:read` nor `sandboxes:write` scope |
+| 404 | The hub has no `[sandbox]` section (`error_type: sandboxes_disabled`, message `sandboxes are not enabled on this hub`) |
 
 ---
 

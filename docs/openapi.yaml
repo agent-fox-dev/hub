@@ -21,7 +21,7 @@ info:
 
     | Prefix | Contents |
     |--------|----------|
-    | `/api/v1` | Everything under the API mount point: workspaces, patches, rebuilds, merges, secrets, variables, sessions, audit, and the apikit identity and administration endpoints |
+    | `/api/v1` | Everything under the API mount point: workspaces, patches, rebuilds, merges, secrets, variables, sandbox profiles, sessions, audit, and the apikit identity and administration endpoints |
     | `/git` | Built-in git smart HTTP server (`/git/<org>/<slug>.git`) |
     | *(root)* | `/healthz`, `/readyz`, `/version`, and `/metrics` |
 
@@ -129,6 +129,8 @@ tags:
     description: Write-only secret storage scoped to a user, org, or workspace.
   - name: Variables
     description: Readable variable storage scoped to a user, org, or workspace.
+  - name: Sandboxes
+    description: The deployment's sandbox profiles. Read-only; defined in config.toml.
   - name: Sessions
     description: Agent session lifecycle, token usage, and cost aggregation.
   - name: Audit Ingestion
@@ -2388,6 +2390,53 @@ paths:
                 $ref: "#/components/schemas/Error"
         "500":
           $ref: "#/components/responses/InternalServerError"
+
+  # ---------------------------------------------------------------------------
+  # Sandboxes
+  # ---------------------------------------------------------------------------
+
+  /api/v1/sandbox-profiles:
+    get:
+      tags: [Sandboxes]
+      operationId: listSandboxProfiles
+      summary: List the deployment's sandbox profiles
+      description: |
+        Returns the profiles from the `[sandbox]` section of the hub's
+        `config.toml`, sorted by name. The list is built from the profiles the
+        hub validated at start: it makes no provider call and reads no
+        database, and every authorised caller gets the same list.
+
+        Secret values and `env` values are never returned -- only the names of
+        the secrets a profile injects and the keys of its fixed environment.
+        The provider, its options and the deployment's limits are not shown.
+
+        The checks run in this order: no credential is `401`; a hub without a
+        `[sandbox]` section answers every authenticated caller `404` with
+        `error_type: sandboxes_disabled`; a PAT with neither scope is `403`.
+        API keys and admin tokens are not scope-checked.
+      x-required-scopes: ["sandboxes:read", "sandboxes:write"]
+      responses:
+        "200":
+          description: The sandbox profiles.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SandboxProfileListResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/MissingScope"
+        "404":
+          description: The hub has no `[sandbox]` section, so sandboxes are not enabled.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: 404
+                  message: sandboxes are not enabled on this hub
+                  error_type: sandboxes_disabled
 
   # ---------------------------------------------------------------------------
   # Agent sessions
@@ -5274,6 +5323,7 @@ components:
                 - workspace_mode_mismatch
                 - no_active_patches
                 - concurrent_rebuild
+                - sandboxes_disabled
                 - workspace_mismatch
                 - workspace_access_denied
                 - workspace_archived
@@ -5764,6 +5814,97 @@ components:
             format: uuid
 
     # -- Rerere ----------------------------------------------------------------
+
+    SandboxProfileListResponse:
+      type: object
+      required: [profiles]
+      properties:
+        profiles:
+          type: array
+          description: Every profile, sorted by name.
+          items:
+            $ref: "#/components/schemas/SandboxProfile"
+
+    SandboxProfile:
+      type: object
+      description: >-
+        A sandbox shape. It names the secrets and the environment keys and
+        carries no value.
+      required:
+        - name
+        - default
+        - image
+        - network
+        - ttl_seconds
+        - resources
+        - secrets
+        - optional_secrets
+        - env_keys
+        - require_landlock
+      properties:
+        name:
+          type: string
+          description: The profile name a caller chooses.
+          pattern: "^[a-z0-9][a-z0-9_-]{0,62}$"
+        default:
+          type: boolean
+          description: True for the one profile marked as the default. No profile need be.
+        image:
+          type: string
+          description: The container image.
+        network:
+          type: string
+          description: >-
+            The network mode of a sandbox, one of the deployment's allowed
+            modes: `none`, `allowlist` or `unrestricted`.
+        ttl_seconds:
+          type: integer
+          description: The profile's lifetime in whole seconds.
+        resources:
+          $ref: "#/components/schemas/SandboxResources"
+        secrets:
+          type: array
+          description: Names of the secrets the profile injects, sorted ascending.
+          items:
+            type: string
+        optional_secrets:
+          type: array
+          description: Names of the secrets injected when they exist, sorted ascending.
+          items:
+            type: string
+        env_keys:
+          type: array
+          description: Keys of the profile's fixed environment, sorted ascending. Values are never returned.
+          items:
+            type: string
+        require_landlock:
+          type: boolean
+          description: Whether a sandbox of this profile must confine its agent with Landlock.
+      example:
+        name: agent
+        default: true
+        image: registry.example.com/agent:1.4
+        network: none
+        ttl_seconds: 1200
+        resources: {cpus: 2, memory_mb: 4096, pids: 512, disk_mb: 0}
+        secrets: [ANTHROPIC_API_KEY, GIT_PAT]
+        optional_secrets: [GH_TOKEN]
+        env_keys: [LANG, TZ]
+        require_landlock: true
+
+    SandboxResources:
+      type: object
+      description: A profile's resource bounds. Zero means the provider's default.
+      required: [cpus, memory_mb, pids, disk_mb]
+      properties:
+        cpus:
+          type: number
+        memory_mb:
+          type: integer
+        pids:
+          type: integer
+        disk_mb:
+          type: integer
 
     RerereListResponse:
       type: object
