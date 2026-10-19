@@ -230,7 +230,7 @@
       "done_when": [
         "16 labels, a 63-character key, a 256-byte value, a 64-rune purpose and ttl 1m are accepted"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 6,
