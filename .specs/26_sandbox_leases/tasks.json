@@ -66,7 +66,7 @@
       "done_when": [
         "InitSchema is idempotent and no production file in internal/sandboxes defines a second ending path"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 2,
