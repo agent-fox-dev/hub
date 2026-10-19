@@ -127,7 +127,7 @@
       "done_when": [
         "the only secrets API used by production code in internal/sandboxes is ListSecrets"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 4,
