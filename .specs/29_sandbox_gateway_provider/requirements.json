@@ -1,0 +1,654 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/requirements.v2.json",
+  "spec_id": "29",
+  "spec_name": "sandbox_gateway_provider",
+  "schema_version": 2,
+  "introduction": "This spec adds a second way to build the sandbox provider that specs 25–28 already use: with `[sandbox].provider = \"gateway\"`, hub dials a remote agentkit-gateway under one hub-held token, probes it at start, snapshots its capabilities and runs its own lease-enforcing gateway in front of it. Callers keep the same API, leases and guarantees and never see the remote gateway's address or token.",
+  "glossary": {
+    "capability snapshot": "The single `Capabilities()` value hub reads from the remote client after a successful probe and keeps for the life of the process.",
+    "gateway factory": "The gateway variant of spec 25's provider factory seam; production uses `gateway.Dial`, tests inject a client pointing at an in-process remote.",
+    "hub gateway": "Hub's own embedded `gatewayd.Server` on `[sandbox].listen` (spec 27), which authenticates lease tokens; its URL is the lease's `gateway_url`.",
+    "loopback host": "`localhost` or a loopback IP literal, decided without a DNS lookup (spec 27's rule).",
+    "redacting value": "The type hub stores the validated token in, whose fmt, slog and JSON renderings are all `[redacted]`.",
+    "remote client": "The `sandbox.Provider` returned by `gateway.Dial(gateway_url, gateway.Options{Token: gateway_token})` (or a test-injected equivalent) that hub uses as its provider.",
+    "remote gateway": "The deployment's agentkit-gateway that hub reaches at the configured `sandbox.gateway_url` and that runs the boxes on its own backend.",
+    "remote refusal": "A remote call that fails with gRPC status `Unauthenticated` or `PermissionDenied` because the remote gateway rejected hub's token.",
+    "scrub set": "The values spec 27's scrubber replaces with `[redacted]` in provider error text (27-REQ-9.1); for the gateway provider it also holds the token, the `gateway_url` string and the URL's `url.Host`."
+  },
+  "requirements": [
+    {
+      "id": "29-REQ-1",
+      "title": "Selecting the remote provider",
+      "rationale": "The source PRD asks for one API over either a host engine or a remote agentkit-gateway, chosen per deployment.",
+      "criteria": [
+        {
+          "id": "29-REQ-1.1",
+          "pattern": "event_driven",
+          "condition": "hub starts with `provider = \"gateway\"`, a valid `gateway_url` and `gateway_token`, and a reachable remote gateway that accepts the token",
+          "system": "sandboxes start-up (Init/Start)",
+          "action": "return a running sandbox service whose `Provider()` is the remote client",
+          "contract": "`Init` returns a non-nil `*Service` and a nil error; hub proceeds to bind its listeners"
+        },
+        {
+          "id": "29-REQ-1.2",
+          "pattern": "unwanted",
+          "condition": "`[sandbox].provider` is set to a value other than `\"podman\"` or `\"gateway\"`",
+          "system": "sandboxes validation",
+          "action": "refuse start with a static failure that names `sandbox.provider` and lists both `podman` and `gateway` as accepted values",
+          "contract": "`Validate` returns a joined error containing `sandbox.provider`, `podman` and `gateway`; no provider factory is called"
+        },
+        {
+          "id": "29-REQ-1.3",
+          "pattern": "state_driven",
+          "condition": "`provider = \"gateway\"` is configured",
+          "system": "sandboxes start-up",
+          "action": "build no Podman provider and execute no engine binary at any point in the process",
+          "contract": "the Podman provider factory is called zero times and no child process is started"
+        },
+        {
+          "id": "29-REQ-1.4",
+          "pattern": "ubiquitous",
+          "system": "sandboxes validation",
+          "action": "apply spec 25's profile rules, `max_ttl`, `network_modes`, scope, profile-listing and disabled-state behaviour identically for `provider = \"gateway\"` and `provider = \"podman\"`",
+          "contract": "a profile set accepted or rejected under podman is accepted or rejected with the same message under gateway, given the same provider capabilities"
+        }
+      ]
+    },
+    {
+      "id": "29-REQ-2",
+      "title": "Validating gateway_url",
+      "rationale": "The token grants access to every box hub runs, so the address must be unambiguous and must not carry credentials or travel in plaintext over a network.",
+      "criteria": [
+        {
+          "id": "29-REQ-2.1",
+          "pattern": "ubiquitous",
+          "system": "sandboxes configuration",
+          "action": "recognise `sandbox.gateway_url` and `sandbox.gateway_token` as known keys, expand `${NAME}` in both like every other string, and validate both together with the other static checks before any provider is built",
+          "contract": "neither key is reported as unknown; all static failures, including these keys', arrive in one `errors.Join` error"
+        },
+        {
+          "id": "29-REQ-2.2",
+          "pattern": "unwanted",
+          "condition": "`provider = \"gateway\"` and `gateway_url` is absent or empty after expansion",
+          "system": "sandboxes validation",
+          "action": "refuse start with a static failure naming `sandbox.gateway_url` and stating that it is required",
+          "contract": "joined error contains `sandbox.gateway_url` and `required`"
+        },
+        {
+          "id": "29-REQ-2.3",
+          "pattern": "unwanted",
+          "condition": "`gateway_url` does not parse as an absolute URL, or its scheme is neither `https` nor `http` with a loopback host",
+          "system": "sandboxes validation",
+          "action": "refuse start with a static failure naming `sandbox.gateway_url` and the scheme or parse rule it broke",
+          "contract": "joined error contains `sandbox.gateway_url`; `http://127.0.0.1:9000` and `http://localhost:9000` and `https://gw.example:443` pass, `http://gw.example:9000` and `ftp://127.0.0.1` fail"
+        },
+        {
+          "id": "29-REQ-2.4",
+          "pattern": "unwanted",
+          "condition": "`gateway_url` has an empty host, or a port that is non-numeric or outside 1 to 65535",
+          "system": "sandboxes validation",
+          "action": "refuse start with a static failure naming `sandbox.gateway_url` and the host or port rule it broke",
+          "contract": "joined error contains `sandbox.gateway_url`; ports 1 and 65535 pass, ports 0 and 65536 fail"
+        },
+        {
+          "id": "29-REQ-2.5",
+          "pattern": "unwanted",
+          "condition": "`gateway_url` carries userinfo, a query, a fragment, or a path other than empty or `/`",
+          "system": "sandboxes validation",
+          "action": "refuse start with a static failure naming `sandbox.gateway_url` and the rule it broke",
+          "contract": "joined error contains `sandbox.gateway_url`; `https://gw.example/` passes, `https://gw.example/api`, `https://gw.example?x=1` and `https://gw.example#f` fail"
+        },
+        {
+          "id": "29-REQ-2.6",
+          "pattern": "ubiquitous",
+          "system": "sandboxes validation",
+          "action": "remove any userinfo from `gateway_url` before quoting it in any failure message",
+          "contract": "for `https://user:pw@gw.example`, the error contains neither `user:pw` nor `pw@`"
+        }
+      ]
+    },
+    {
+      "id": "29-REQ-3",
+      "title": "Validating gateway_token",
+      "rationale": "gRPC metadata accepts only printable ASCII, trailing newlines from secret files are common, and a short token is weak and would make scrubbing mangle ordinary text.",
+      "criteria": [
+        {
+          "id": "29-REQ-3.1",
+          "pattern": "unwanted",
+          "condition": "`provider = \"gateway\"` and `gateway_token` is absent or empty after `${NAME}` expansion",
+          "system": "sandboxes validation",
+          "action": "refuse start with a static failure naming `sandbox.gateway_token` and stating that it is required",
+          "contract": "joined error contains `sandbox.gateway_token` and `required`"
+        },
+        {
+          "id": "29-REQ-3.2",
+          "pattern": "unwanted",
+          "condition": "`gateway_token` is shorter than 16 characters",
+          "system": "sandboxes validation",
+          "action": "refuse start with a static failure naming `sandbox.gateway_token` and the minimum length of 16",
+          "contract": "a 15-character token fails, a 16-character token passes"
+        },
+        {
+          "id": "29-REQ-3.3",
+          "pattern": "unwanted",
+          "condition": "`gateway_token` contains any byte outside 0x21–0x7E, including a space or a trailing newline",
+          "system": "sandboxes validation",
+          "action": "refuse start with a static failure naming `sandbox.gateway_token` and the printable-ASCII-without-spaces rule",
+          "contract": "joined error contains `sandbox.gateway_token`; a token of 16 valid characters plus `\\n` fails"
+        },
+        {
+          "id": "29-REQ-3.4",
+          "pattern": "ubiquitous",
+          "system": "sandboxes validation",
+          "action": "for any `gateway_token` value, valid or invalid, produce validation error text that contains neither the token nor any contiguous substring of it of 8 or more characters",
+          "contract": "property test over generated tokens: `strings.Contains(err.Error(), sub)` is false for every such substring"
+        }
+      ]
+    },
+    {
+      "id": "29-REQ-4",
+      "title": "Refusing the other provider's keys",
+      "rationale": "A silently ignored `runtime` or `userns` under a remote provider would make an operator believe in isolation that does not exist.",
+      "criteria": [
+        {
+          "id": "29-REQ-4.1",
+          "pattern": "unwanted",
+          "condition": "`provider = \"gateway\"` and any of `engine_binary`, `runtime` or `userns` is non-empty",
+          "system": "sandboxes validation",
+          "action": "refuse start with one static failure per such key, naming the key and stating it applies only to provider `\"podman\"`",
+          "contract": "joined error contains e.g. `sandbox.runtime` and `podman`"
+        },
+        {
+          "id": "29-REQ-4.2",
+          "pattern": "unwanted",
+          "condition": "`provider = \"podman\"` and `gateway_url` or `gateway_token` is non-empty",
+          "system": "sandboxes validation",
+          "action": "refuse start with one static failure per such key, naming the key and stating it applies only to provider `\"gateway\"`, without echoing the token value",
+          "contract": "joined error contains `sandbox.gateway_token` and `gateway` and does not contain the configured token"
+        },
+        {
+          "id": "29-REQ-4.3",
+          "pattern": "ubiquitous",
+          "system": "sandboxes validation",
+          "action": "collect other-provider key failures in the same joined error as every other static failure",
+          "contract": "a config with an other-provider key and an invalid `max_ttl` yields one error that names both keys"
+        }
+      ]
+    },
+    {
+      "id": "29-REQ-5",
+      "title": "Building and probing the remote client",
+      "rationale": "The probe proves at start that the remote is reachable and accepts hub's token without creating anything.",
+      "criteria": [
+        {
+          "id": "29-REQ-5.1",
+          "pattern": "event_driven",
+          "condition": "static validation passes with `provider = \"gateway\"`",
+          "system": "sandboxes start-up",
+          "action": "build the remote client by calling the gateway factory once with the validated `gateway_url` and `gateway_token`; the production factory calls `gateway.Dial(gateway_url, gateway.Options{Token: gateway_token})`",
+          "contract": "the gateway factory receives exactly the configured URL and token"
+        },
+        {
+          "id": "29-REQ-5.2",
+          "pattern": "event_driven",
+          "condition": "the remote client has been built",
+          "system": "sandboxes start-up",
+          "action": "probe it with exactly one `List` call under a 10-second timeout and make no `Create` or `Destroy` call on the remote during start",
+          "contract": "a recording remote backend observes 1 List, 0 Create and 0 Destroy calls under hub's token after start"
+        },
+        {
+          "id": "29-REQ-5.3",
+          "pattern": "unwanted",
+          "condition": "static validation fails",
+          "system": "sandboxes start-up",
+          "action": "return the static failures without calling the gateway factory or issuing any `List`",
+          "contract": "the injected gateway factory is called 0 times; `Start` returns the joined static error"
+        },
+        {
+          "id": "29-REQ-5.4",
+          "pattern": "unwanted",
+          "condition": "the gateway factory returns an error, or the probe fails because the remote is unreachable, a TLS failure occurs, the remote refuses the token, or the 10-second timeout expires",
+          "system": "sandboxes start-up",
+          "action": "refuse start with an error that starts with `sandbox:`, names `sandbox.provider`, `sandbox.gateway_url` and `sandbox.gateway_token`, and includes the client's error text with the token replaced by `[redacted]` and URL userinfo removed",
+          "contract": "`Init` returns a non-nil error and a nil service; the error text contains the three key names and not the token"
+        },
+        {
+          "id": "29-REQ-5.5",
+          "pattern": "unwanted",
+          "condition": "the remote accepts the connection but does not answer the probe `List`",
+          "system": "sandboxes start-up",
+          "action": "abandon the probe when the 10-second timeout expires and refuse start as in 29-REQ-5.4",
+          "contract": "`Init` returns an error no later than 10 seconds plus 1 second after the probe began"
+        }
+      ]
+    },
+    {
+      "id": "29-REQ-6",
+      "title": "Remote capability snapshot",
+      "rationale": "The assumed `Capabilities()` takes no context and returns no error, so reading the remote on every call could block hub's gateway or report empty modes during an outage.",
+      "criteria": [
+        {
+          "id": "29-REQ-6.1",
+          "pattern": "event_driven",
+          "condition": "the probe succeeds",
+          "system": "sandboxes start-up",
+          "action": "read the remote client's `Capabilities()` exactly once and keep that snapshot for the life of the process",
+          "contract": "the remote client's `Capabilities()` is called once across start-up and any number of later backend `Capabilities()` calls"
+        },
+        {
+          "id": "29-REQ-6.2",
+          "pattern": "unwanted",
+          "condition": "a `network_modes` entry is not in the snapshot's `NetworkModes`",
+          "system": "sandboxes start-up",
+          "action": "refuse start with the message of 25-REQ-5.4 unchanged",
+          "contract": "`Init` returns that error and no service"
+        },
+        {
+          "id": "29-REQ-6.3",
+          "pattern": "unwanted",
+          "condition": "`sandbox.CheckSpec` rejects a profile's spec against the snapshot",
+          "system": "sandboxes start-up",
+          "action": "refuse start with the per-profile message of 25-REQ-5.5 to 25-REQ-5.7 unchanged",
+          "contract": "`Init` returns that error and no service"
+        },
+        {
+          "id": "29-REQ-6.4",
+          "pattern": "ubiquitous",
+          "system": "hub gateway backend",
+          "action": "answer `Capabilities()` (27-REQ-7.1) by narrowing the snapshot without any call to the remote, so a change to the remote's capabilities takes effect only after hub restarts",
+          "contract": "backend `Capabilities()` returns the narrowed snapshot while the remote is stopped"
+        }
+      ]
+    },
+    {
+      "id": "29-REQ-7",
+      "title": "Lease behaviour over the remote provider",
+      "rationale": "Hub's gateway, the lease API and expiry use the remote client through the same `sandbox.Provider` seam, with only three remote-specific behaviours.",
+      "criteria": [
+        {
+          "id": "29-REQ-7.1",
+          "pattern": "event_driven",
+          "condition": "a caller obtains a lease from `POST /api/v1/workspaces/widgets/sandboxes`, calls `gateway.Dial(lease.gateway_url, lease token)` and then `Create(sandbox.Spec{})`",
+          "system": "hub gateway",
+          "action": "create exactly one box on the remote gateway's backend under hub's token, with the lease's image and TTL and an `Env` equal to the profile's `env` merged with the resolved secrets",
+          "contract": "the recording remote backend captures one Spec with the lease's Image, TTL and Env; the caller receives a sandbox handle"
+        },
+        {
+          "id": "29-REQ-7.2",
+          "pattern": "ubiquitous",
+          "system": "hub gateway backend",
+          "action": "send only hub's configured `gateway_token` to the remote and never send a lease token to it, and return a lease `gateway_url` equal to hub's own gateway URL (27-REQ-2.6), never the configured remote `gateway_url`",
+          "contract": "the remote authenticator sees only hub's token; the lease representation's `gateway_url` differs from `sandbox.gateway_url`"
+        },
+        {
+          "id": "29-REQ-7.3",
+          "pattern": "unwanted",
+          "condition": "a caller issues a second `Create` under the same lease token, or dials hub's gateway with a token hub never minted",
+          "system": "hub gateway",
+          "action": "refuse the call without contacting the remote",
+          "contract": "second Create returns gRPC `FailedPrecondition`; an unminted token returns `Unauthenticated`; the remote records no additional Create"
+        },
+        {
+          "id": "29-REQ-7.4",
+          "pattern": "event_driven",
+          "condition": "a client calls `DELETE` on an active lease, or the caller calls `Close` on its sandbox handle",
+          "system": "hub gateway and lease API",
+          "action": "destroy the box on the remote and revoke the lease token",
+          "contract": "the remote's `List` no longer contains the box; a later dial with the lease token is `Unauthenticated`"
+        },
+        {
+          "id": "29-REQ-7.5",
+          "pattern": "event_driven",
+          "condition": "a destroy through the remote client fails with an error matching `errors.Is(err, sandbox.ErrNotFound)` or with gRPC status `NotFound`",
+          "system": "hub gateway backend, DELETE path and expiry sweep",
+          "action": "treat the box as destroyed, exactly as spec 27 and spec 28 treat a provider not-found",
+          "contract": "the lease ends as it would after a successful destroy; `DELETE` answers its success status, not 502"
+        },
+        {
+          "id": "29-REQ-7.6",
+          "pattern": "unwanted",
+          "condition": "a remote call made after start fails with gRPC status `Unauthenticated` or `PermissionDenied`",
+          "system": "hub gateway backend",
+          "action": "return the error to the hub gateway caller with code `Unavailable` and the scrubbed message, apply spec 27's lease outcome unchanged, and log exactly one error record that names `sandbox.gateway_token` without its value",
+          "contract": "caller sees `codes.Unavailable`; a Create leaves the lease `failed`, a Destroy leaves it `active`, a `DELETE` answers 502; one slog error record per occurrence"
+        },
+        {
+          "id": "29-REQ-7.7",
+          "pattern": "unwanted",
+          "condition": "a remote `Create` fails or its response is lost",
+          "system": "hub gateway backend",
+          "action": "not retry the remote `Create`",
+          "contract": "the remote backend records exactly one Create per caller Create, including failed ones"
+        }
+      ]
+    },
+    {
+      "id": "29-REQ-8",
+      "title": "The remote token and address never leave hub",
+      "rationale": "Callers must never see the provider, and the token grants access to every box hub runs.",
+      "criteria": [
+        {
+          "id": "29-REQ-8.1",
+          "pattern": "state_driven",
+          "condition": "`provider = \"gateway\"` is configured",
+          "system": "sandboxes scrubber",
+          "action": "include in the scrub set of 27-REQ-9.1, besides the secret and `env` values, the token, the configured `gateway_url` string and the URL's `url.Host`",
+          "contract": "scrubbing a text containing any of the three yields `[redacted]` in its place"
+        },
+        {
+          "id": "29-REQ-8.2",
+          "pattern": "event_driven",
+          "condition": "the remote backend returns an error whose text contains hub's remote token and the remote host",
+          "system": "hub",
+          "action": "keep both values out of every lease representation, HTTP response body, audit event, log line, gateway error message and lease `error` field",
+          "contract": "none of the captured outputs contains the token or the remote host string"
+        },
+        {
+          "id": "29-REQ-8.3",
+          "pattern": "ubiquitous",
+          "system": "hub",
+          "action": "exclude the token from every HTTP response including the profile listing and error bodies, every metric label, and the start-up info record, whose attributes remain exactly `provider` and `profiles` (25-REQ-8.2)",
+          "contract": "the start-up info record has attributes {provider, profiles} only; `/metrics` and the profile listing do not contain the token"
+        },
+        {
+          "id": "29-REQ-8.4",
+          "pattern": "ubiquitous",
+          "system": "redacting value",
+          "action": "render the validated token as `[redacted]` under `%v`, `%+v`, `%#v`, `%s`, `slog` and `json.Marshal`, including when it is a field of a printed struct",
+          "contract": "each rendering of a struct holding the token contains `[redacted]` and not the token"
+        },
+        {
+          "id": "29-REQ-8.5",
+          "pattern": "ubiquitous",
+          "system": "sandboxes start-up",
+          "action": "for any start-up error produced under 29-REQ-2 to 29-REQ-6, contain no occurrence of the token and quote `gateway_url` only with its userinfo removed",
+          "contract": "property test over generated configs and probe failures: the error text never contains the token or userinfo"
+        }
+      ]
+    },
+    {
+      "id": "29-REQ-9",
+      "title": "Remote outages and shutdown",
+      "rationale": "Hub relies on the gateway client's own reconnection and must report outages as recorded, visible outcomes.",
+      "criteria": [
+        {
+          "id": "29-REQ-9.1",
+          "pattern": "state_driven",
+          "condition": "the remote gateway cannot be reached",
+          "system": "lease API",
+          "action": "keep issuing leases and listing profiles, since neither calls the provider",
+          "contract": "`POST /api/v1/workspaces/{ws}/sandboxes` returns its success status and the profile listing returns 200"
+        },
+        {
+          "id": "29-REQ-9.2",
+          "pattern": "unwanted",
+          "condition": "a caller's `Create` reaches hub's gateway while the remote is unreachable",
+          "system": "hub gateway backend",
+          "action": "mark the lease `failed` with the scrubbed provider error (27-REQ-6.3)",
+          "contract": "the caller receives an error; the lease's state is `failed` and its `error` field is scrubbed"
+        },
+        {
+          "id": "29-REQ-9.3",
+          "pattern": "unwanted",
+          "condition": "a client sends `DELETE` for an `active` lease while the remote is unreachable",
+          "system": "lease API",
+          "action": "change nothing about the lease",
+          "contract": "HTTP 502 with error code `sandbox_provider_error`; the lease stays `active` and its token stays valid"
+        },
+        {
+          "id": "29-REQ-9.4",
+          "pattern": "unwanted",
+          "condition": "a caller calls `Close` on its sandbox handle while the remote is unreachable",
+          "system": "hub gateway",
+          "action": "leave the lease `active`",
+          "contract": "`Close` returns a non-nil error; the lease state is `active`"
+        },
+        {
+          "id": "29-REQ-9.5",
+          "pattern": "unwanted",
+          "condition": "the expiry sweep tries to destroy a box while the remote is unreachable",
+          "system": "expiry sweep",
+          "action": "log the failure and try the same lease again on its next run",
+          "contract": "one warning or error log per failed destroy; the lease is destroyed on the first run after the remote returns"
+        },
+        {
+          "id": "29-REQ-9.6",
+          "pattern": "event_driven",
+          "condition": "the remote gateway restarts on the same address after being down",
+          "system": "hub gateway backend",
+          "action": "succeed on the next provider call without hub restarting and without hub redialling or building a new client",
+          "contract": "the next lease's `Create` returns a sandbox; the gateway factory call count stays 1"
+        },
+        {
+          "id": "29-REQ-9.7",
+          "pattern": "event_driven",
+          "condition": "hub shuts down with `provider = \"gateway\"`",
+          "system": "sandboxes shutdown",
+          "action": "close the remote client, if it implements `io.Closer`, only after spec 28's shutdown step has finished destroying active boxes",
+          "contract": "`Close` on the client is called once, after the last shutdown Destroy; a client without `Close` causes no error"
+        }
+      ]
+    },
+    {
+      "id": "29-REQ-10",
+      "title": "Build isolation",
+      "rationale": "The `afc` CLI must stay free of the sandbox and gRPC dependency tree that this spec's dial code pulls in.",
+      "criteria": [
+        {
+          "id": "29-REQ-10.1",
+          "pattern": "ubiquitous",
+          "system": "afc build",
+          "action": "depend on no agentkit-go, `google.golang.org/grpc` or `internal/sandboxes` package after this spec's `gateway.Dial` dependency is added",
+          "contract": "`go list -deps ./cmd/afc` output contains none of those import paths (TS-25-54 stays green)"
+        }
+      ]
+    }
+  ],
+  "execution_paths": [
+    {
+      "id": "29-PATH-1",
+      "title": "Operator starts hub against a remote agentkit-gateway",
+      "steps": [
+        {
+          "actor": "operator",
+          "action": "starts af-hub with `provider = \"gateway\"`, `gateway_url = \"http://127.0.0.1:<port>\"` and `gateway_token = \"${AGENTKIT_GATEWAY_TOKEN}\"`"
+        },
+        {
+          "actor": "sandboxes validation",
+          "action": "expands and validates the keys and wraps the token in the redacting value"
+        },
+        {
+          "actor": "sandboxes start-up",
+          "action": "builds the remote client through the gateway factory and issues one `List` under a 10-second timeout"
+        },
+        {
+          "actor": "remote gateway",
+          "action": "authenticates hub's token and answers the `List`"
+        },
+        {
+          "actor": "sandboxes start-up",
+          "action": "reads and keeps the capability snapshot, checks `network_modes` and every profile, and logs one info record with `provider` and `profiles`"
+        },
+        {
+          "actor": "af-hub",
+          "action": "binds hub's gateway and the HTTP server"
+        }
+      ]
+    },
+    {
+      "id": "29-PATH-2",
+      "title": "Agent leases a box that runs on the remote gateway and deletes it",
+      "steps": [
+        {
+          "actor": "agent",
+          "action": "sends `POST /api/v1/workspaces/widgets/sandboxes` and receives a lease whose `gateway_url` is hub's gateway"
+        },
+        {
+          "actor": "agent",
+          "action": "calls `gateway.Dial(lease.gateway_url, token)` and `Create(sandbox.Spec{})`"
+        },
+        {
+          "actor": "hub gateway backend",
+          "action": "builds the spec from the lease and profile, adds resolved secrets, and calls `Create` on the remote client under hub's token"
+        },
+        {
+          "actor": "remote gateway",
+          "action": "creates the box on its backend with the lease's image, TTL and env"
+        },
+        {
+          "actor": "agent",
+          "action": "sends `DELETE` for the lease"
+        },
+        {
+          "actor": "hub gateway backend",
+          "action": "destroys the box through the remote client and revokes the lease token; the remote's `List` no longer contains the box"
+        }
+      ]
+    },
+    {
+      "id": "29-PATH-3",
+      "title": "Remote backend error carrying hub's token is scrubbed",
+      "steps": [
+        {
+          "actor": "agent",
+          "action": "obtains a lease and calls `Create` through hub's gateway"
+        },
+        {
+          "actor": "remote gateway",
+          "action": "fails the create with an error text containing hub's remote token and the remote host"
+        },
+        {
+          "actor": "hub gateway backend",
+          "action": "scrubs the text with the scrub set that includes the token, `gateway_url` and host"
+        },
+        {
+          "actor": "lease store",
+          "action": "marks the lease `failed` with the scrubbed `error` field and emits the audit event"
+        },
+        {
+          "actor": "agent",
+          "action": "receives a gateway error and reads the lease over HTTP, neither of which contains the token or host"
+        }
+      ]
+    },
+    {
+      "id": "29-PATH-4",
+      "title": "Remote outage and recovery on the same address",
+      "steps": [
+        {
+          "actor": "remote gateway",
+          "action": "shuts down"
+        },
+        {
+          "actor": "agent",
+          "action": "obtains a lease and calls `Create` through hub's gateway"
+        },
+        {
+          "actor": "hub gateway backend",
+          "action": "fails the remote call and marks the lease `failed` with the scrubbed error"
+        },
+        {
+          "actor": "remote gateway",
+          "action": "starts again on the same `127.0.0.1:<port>`"
+        },
+        {
+          "actor": "agent",
+          "action": "obtains a new lease and calls `Create`, which creates a box on the remote without hub restarting"
+        }
+      ]
+    },
+    {
+      "id": "29-PATH-5",
+      "title": "Hub shuts down and closes the remote client",
+      "steps": [
+        {
+          "actor": "operator",
+          "action": "stops af-hub while a lease is active"
+        },
+        {
+          "actor": "expiry shutdown step",
+          "action": "destroys every active box through the remote client"
+        },
+        {
+          "actor": "sandboxes shutdown",
+          "action": "closes the remote client because it implements `io.Closer`"
+        }
+      ]
+    }
+  ],
+  "external_apis": [
+    {
+      "package": "github.com/agent-fox-dev/agentkit-go",
+      "version": "sibling checkout via replace => ../agentkit-go",
+      "verified": false,
+      "symbols": [
+        {
+          "name": "gateway.Dial",
+          "import_path": "github.com/agent-fox-dev/agentkit-go/sandbox/gateway",
+          "signature": "func Dial(url string, opts gateway.Options) (sandbox.Provider, error)",
+          "notes": "Production gateway factory. Assumed non-blocking with lazy connect and automatic reconnection; returned value may implement io.Closer. Not readable from this repository."
+        },
+        {
+          "name": "gateway.Options",
+          "import_path": "github.com/agent-fox-dev/agentkit-go/sandbox/gateway",
+          "signature": "type Options struct { Token string; … }",
+          "notes": "Token sent as bearer credential on every RPC."
+        },
+        {
+          "name": "sandbox.Provider",
+          "import_path": "github.com/agent-fox-dev/agentkit-go/sandbox",
+          "signature": "interface { Create(ctx context.Context, s Spec) (Sandbox, error); List(ctx context.Context) ([]Sandbox, error); Destroy(ctx context.Context, id string) error; Capabilities() Capabilities; Reap(ctx context.Context) … }",
+          "notes": "Reap's return shape unverified."
+        },
+        {
+          "name": "sandbox.Capabilities",
+          "import_path": "github.com/agent-fox-dev/agentkit-go/sandbox",
+          "signature": "type Capabilities struct { NetworkModes []string; … }",
+          "notes": "May carry TTL or resource ceilings used by CheckSpec."
+        },
+        {
+          "name": "sandbox.CheckSpec",
+          "import_path": "github.com/agent-fox-dev/agentkit-go/sandbox",
+          "signature": "func CheckSpec(s Spec, c Capabilities) error"
+        },
+        {
+          "name": "sandbox.ErrNotFound",
+          "import_path": "github.com/agent-fox-dev/agentkit-go/sandbox",
+          "signature": "var ErrNotFound error",
+          "notes": "Tested with errors.Is."
+        },
+        {
+          "name": "gatewayd.New",
+          "import_path": "github.com/agent-fox-dev/agentkit-go/sandbox/gatewayd",
+          "signature": "func New(cfg gatewayd.Config) (*gatewayd.Server, error)",
+          "notes": "Tests only: the in-process remote with static Tokens over a recording wrapper around local."
+        },
+        {
+          "name": "(*gatewayd.Server).Serve",
+          "import_path": "github.com/agent-fox-dev/agentkit-go/sandbox/gatewayd",
+          "signature": "func (s *Server) Serve(l net.Listener) error",
+          "notes": "Tests only; Shutdown(ctx) error assumed alongside."
+        },
+        {
+          "name": "local.Unisolated",
+          "import_path": "github.com/agent-fox-dev/agentkit-go/sandbox/local",
+          "signature": "func Unisolated(…) sandbox.Provider",
+          "notes": "Tests only; constructor shape unverified."
+        }
+      ]
+    },
+    {
+      "package": "google.golang.org/grpc",
+      "version": "arrives with spec 27's gatewayd dependency",
+      "verified": false,
+      "symbols": [
+        {
+          "name": "status.Code",
+          "import_path": "google.golang.org/grpc/status",
+          "signature": "func Code(err error) codes.Code",
+          "notes": "Used with codes.NotFound, codes.Unauthenticated, codes.PermissionDenied, codes.Unavailable."
+        }
+      ]
+    }
+  ]
+}

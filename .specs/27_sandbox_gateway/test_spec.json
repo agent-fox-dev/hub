@@ -1,0 +1,1246 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/test_spec.v2.json",
+  "spec_id": "27",
+  "spec_name": "sandbox_gateway",
+  "schema_version": 2,
+  "tests": [
+    {
+      "id": "TS-27-1",
+      "kind": "unit",
+      "verifies": [
+        "27-REQ-1.1"
+      ],
+      "title": "A [sandbox] section without the four gateway keys validates with the default listen, and the keys are known and expanded",
+      "given": [
+        "a valid sandbox config with no listen, tls_cert, tls_key or external_url",
+        "an env var GWHOST=127.0.0.1"
+      ],
+      "when": "the config is loaded and validated; then loaded again with listen=\"${GWHOST}:0\" and with both an invalid listen and an invalid profile",
+      "then": [
+        "the first validates with listen \"127.0.0.1:8443\"",
+        "none of the four keys is reported as unknown",
+        "the expanded listen is \"127.0.0.1:0\"",
+        "the third returns one joined error naming both sandbox.listen and the profile failure"
+      ],
+      "pseudocode": "v,err = Validate(LoadConfig(p)); assert err==nil && v.Listen==\"127.0.0.1:8443\"; _,err = Validate(badBoth); assert contains(err,'sandbox.listen') && contains(err,'profiles')"
+    },
+    {
+      "id": "TS-27-2",
+      "kind": "unit",
+      "verifies": [
+        "27-REQ-1.2"
+      ],
+      "title": "Invalid listen addresses are refused naming sandbox.listen, and ports 0 and 65535 are accepted",
+      "given": [
+        "a valid base sandbox config"
+      ],
+      "when": "Validate runs with listen set to \"127.0.0.1\", \"127.0.0.1:http\", \"127.0.0.1:65536\", \"127.0.0.1:0\" and \"127.0.0.1:65535\"",
+      "then": [
+        "the first three return an error containing \"sandbox.listen\"",
+        "the last two validate without error"
+      ],
+      "pseudocode": "for a in bad: assert contains(Validate(cfg(a)).err,'sandbox.listen'); for a in good: assert err==nil"
+    },
+    {
+      "id": "TS-27-3",
+      "kind": "unit",
+      "verifies": [
+        "27-REQ-1.3"
+      ],
+      "title": "Loopback classification uses only localhost and literal loopback IPs",
+      "given": [
+        "the loopback classifier with no DNS access"
+      ],
+      "when": "it is applied to \"localhost:1\", \"127.0.0.1:1\", \"127.5.5.5:1\", \"[::1]:1\", \":1\", \"0.0.0.0:1\", \"[::]:1\", \"10.0.0.1:1\" and \"gw.example.com:1\"",
+      "then": [
+        "the first four are loopback",
+        "the remaining five are not loopback"
+      ],
+      "pseudocode": "for a in loop: assert isLoopback(a); for a in nonloop: assert !isLoopback(a)"
+    },
+    {
+      "id": "TS-27-4",
+      "kind": "unit",
+      "verifies": [
+        "27-REQ-1.4"
+      ],
+      "title": "Setting only one of tls_cert and tls_key names the missing key",
+      "given": [
+        "a valid loopback sandbox config"
+      ],
+      "when": "Validate runs with only tls_cert set, then with only tls_key set",
+      "then": [
+        "the first error contains \"sandbox.tls_key\"",
+        "the second error contains \"sandbox.tls_cert\""
+      ],
+      "pseudocode": "assert contains(Validate(certOnly).err,'sandbox.tls_key'); assert contains(Validate(keyOnly).err,'sandbox.tls_cert')"
+    },
+    {
+      "id": "TS-27-5",
+      "kind": "unit",
+      "verifies": [
+        "27-REQ-1.5"
+      ],
+      "title": "A non-loopback listen without TLS is refused with a loopback message",
+      "given": [
+        "a sandbox config with listen \"0.0.0.0:8443\", an external_url, and no TLS"
+      ],
+      "when": "Validate runs",
+      "then": [
+        "the error contains \"sandbox.listen\" and \"loopback\""
+      ],
+      "pseudocode": "err=Validate(cfg).err; assert contains(err,'sandbox.listen') && contains(err,'loopback')"
+    },
+    {
+      "id": "TS-27-6",
+      "kind": "unit",
+      "verifies": [
+        "27-REQ-1.6"
+      ],
+      "title": "A non-loopback listen without external_url is refused",
+      "given": [
+        "a sandbox config with listen \"0.0.0.0:8443\" and TLS cert and key set, no external_url"
+      ],
+      "when": "Validate runs",
+      "then": [
+        "the error contains \"sandbox.external_url\""
+      ],
+      "pseudocode": "assert contains(Validate(cfg).err,'sandbox.external_url')"
+    },
+    {
+      "id": "TS-27-7",
+      "kind": "unit",
+      "verifies": [
+        "27-REQ-1.7"
+      ],
+      "title": "Malformed external_url values are refused and a plain https URL with a root path validates",
+      "given": [
+        "a valid base sandbox config"
+      ],
+      "when": "Validate runs with external_url \"gw.example.com\", \"ftp://gw\", \"https://u:p@gw\", \"https://gw?x=1\", \"https://gw#f\", \"https://gw/api\" and \"https://gw.example.com/\"",
+      "then": [
+        "the first six return an error containing \"sandbox.external_url\"",
+        "the last validates"
+      ],
+      "pseudocode": "for u in bad: assert contains(Validate(cfg(u)).err,'sandbox.external_url'); assert Validate(cfg('https://gw.example.com/')).err==nil"
+    },
+    {
+      "id": "TS-27-8",
+      "kind": "unit",
+      "verifies": [
+        "27-REQ-1.8"
+      ],
+      "title": "An unloadable TLS key pair refuses start with both field names and the loader error",
+      "given": [
+        "statically valid config whose tls_cert and tls_key point at mismatched or garbage PEM files"
+      ],
+      "when": "the startup function loads the key pair",
+      "then": [
+        "it returns an error containing \"sandbox.tls_cert\", \"sandbox.tls_key\" and the tls.LoadX509KeyPair error text",
+        "the af-hub main treats the error as fatal (non-zero exit)",
+        "no listener is bound"
+      ],
+      "pseudocode": "_,err = StartGateway(cfg); want=tls.LoadX509KeyPair(c,k); assert contains(err,'sandbox.tls_cert') && contains(err,'sandbox.tls_key') && contains(err, want.Error())"
+    },
+    {
+      "id": "TS-27-9",
+      "kind": "integration",
+      "verifies": [
+        "27-REQ-2.1"
+      ],
+      "title": "Startup binds the listener, builds gatewayd with hub's settings, and a Dial client connects",
+      "given": [
+        "a Service with network_modes, max_sandboxes, max_ttl and a recording provider",
+        "listen 127.0.0.1:0, no TLS",
+        "a seam capturing the gatewayd.Config passed to gatewayd.New"
+      ],
+      "when": "the gateway start function runs and a gateway.Dial client connects to the bound address before any HTTP request is served",
+      "then": [
+        "Config.Backend is hub's wrapping backend",
+        "Config.Authenticate is non-nil and Config.Tokens is empty",
+        "Config.TLS is nil, NetworkModes, MaxSandboxes and MaxTTL equal the validated values",
+        "the client connects successfully"
+      ],
+      "pseudocode": "gw = StartGateway(cfg, captureNew); assert cap.Authenticate!=nil && len(cap.Tokens)==0; c = Dial(gw.URL, Options{Token:tok}); assert c.List(ctx) ok"
+    },
+    {
+      "id": "TS-27-10",
+      "kind": "unit",
+      "verifies": [
+        "27-REQ-2.2"
+      ],
+      "title": "A bind failure refuses start naming sandbox.listen",
+      "given": [
+        "a TCP listener already bound to a port"
+      ],
+      "when": "the gateway start function runs with listen set to that same address",
+      "then": [
+        "it returns an error containing \"sandbox.listen\" and the bind error text",
+        "main treats it as fatal (non-zero exit)"
+      ],
+      "pseudocode": "_,err = StartGateway(cfgSameAddr); assert contains(err,'sandbox.listen') && contains(err, bindErr)"
+    },
+    {
+      "id": "TS-27-11",
+      "kind": "unit",
+      "verifies": [
+        "27-REQ-2.3"
+      ],
+      "title": "A gatewayd.New error refuses start and closes the bound listener",
+      "given": [
+        "a gatewayd constructor seam that returns an error"
+      ],
+      "when": "the gateway start function runs on 127.0.0.1:0",
+      "then": [
+        "the returned error wraps the gatewayd.New error (errors.Is)",
+        "the bound port can be re-bound immediately (listener closed)"
+      ],
+      "pseudocode": "_,err = StartGateway(cfg, failingNew); assert errors.Is(err, sentinel); assert net.Listen(addr) ok"
+    },
+    {
+      "id": "TS-27-12",
+      "kind": "unit",
+      "verifies": [
+        "27-REQ-2.4"
+      ],
+      "title": "An unexpected Serve return is logged and triggers a non-zero exit",
+      "given": [
+        "a gateway whose Serve returns an error immediately",
+        "an injected exit function and captured slog output"
+      ],
+      "when": "the serve goroutine runs",
+      "then": [
+        "exactly one slog error record carries the Serve error",
+        "the exit function is called with a non-zero code"
+      ],
+      "pseudocode": "run(serveFn=returns(errX), exit=rec); assert rec.code!=0 && logs.count(ERROR, errX)==1"
+    },
+    {
+      "id": "TS-27-13",
+      "kind": "unit",
+      "verifies": [
+        "27-REQ-2.5"
+      ],
+      "title": "With the feature off no listener is bound and no gatewayd.Server is built",
+      "given": [
+        "a nil sandbox Service",
+        "a gatewayd constructor seam counting calls"
+      ],
+      "when": "the startup path runs",
+      "then": [
+        "it succeeds",
+        "the constructor call count is 0",
+        "the configured listen port is not accepting connections"
+      ],
+      "pseudocode": "gw,err = StartGateway(nil,...); assert err==nil && newCalls==0 && dial(addr) refused"
+    },
+    {
+      "id": "TS-27-14",
+      "kind": "unit",
+      "verifies": [
+        "27-REQ-2.6"
+      ],
+      "title": "gateway_url is external_url, or scheme plus the bound address",
+      "given": [
+        "listeners on 127.0.0.1:0"
+      ],
+      "when": "the gateway URL is computed for no TLS, TLS, and external_url \"https://gw.example.com\"",
+      "then": [
+        "no TLS gives \"http://127.0.0.1:<bound port>\" with port non-zero",
+        "TLS gives an https:// URL with the bound address",
+        "external_url gives exactly \"https://gw.example.com\""
+      ],
+      "pseudocode": "assert url(noTLS)=='http://'+l.Addr(); assert url(tls).startsWith('https://'); assert url(ext)==ext"
+    },
+    {
+      "id": "TS-27-15",
+      "kind": "integration",
+      "verifies": [
+        "27-REQ-2.7"
+      ],
+      "title": "POST, GET one, workspace list and admin list all carry gateway_url on leases in every state",
+      "given": [
+        "lease routes registered with a real SQLite lease store and a known gateway URL",
+        "leases in leased, active, destroyed and failed states"
+      ],
+      "when": "each of the four endpoints is called with suitable credentials",
+      "then": [
+        "every lease in every response has a gateway_url string equal to the configured value"
+      ],
+      "pseudocode": "for ep in [post,getOne,wsList,adminList]: for l in leases(ep): assert l.gateway_url==want"
+    },
+    {
+      "id": "TS-27-16",
+      "kind": "unit",
+      "verifies": [
+        "27-REQ-3.1"
+      ],
+      "title": "The authenticator accepts the token of a live unexpired lease and returns the lease id",
+      "given": [
+        "a leased lease and an active lease with expires_at in the future by the injected clock"
+      ],
+      "when": "the authenticator is called with each lease's token",
+      "then": [
+        "it returns (lease id, true) in both cases"
+      ],
+      "pseudocode": "id,ok = auth(ctx,tokL); assert ok && id==leaseL.ID"
+    },
+    {
+      "id": "TS-27-17",
+      "kind": "unit",
+      "verifies": [
+        "27-REQ-3.2"
+      ],
+      "title": "The authenticator refuses empty, unknown, terminal and expired tokens",
+      "given": [
+        "leases in destroyed, expired and failed states, one leased lease with expires_at equal to now, one past now"
+      ],
+      "when": "the authenticator is called with \"\", \"garbage\", an unknown sbl_ token and each of those leases' tokens",
+      "then": [
+        "every call returns (\"\", false)"
+      ],
+      "pseudocode": "for t in tokens: id,ok=auth(ctx,t); assert id==''&&!ok"
+    },
+    {
+      "id": "TS-27-18",
+      "kind": "integration",
+      "verifies": [
+        "27-REQ-3.2",
+        "27-REQ-3.3"
+      ],
+      "title": "Over real gRPC, revoked or unknown tokens get Unauthenticated on the very next RPC including relayed calls",
+      "given": [
+        "an in-process gatewayd.Server on 127.0.0.1:0 with hub's authenticator and a recording provider",
+        "an active lease with a live box"
+      ],
+      "when": "a gateway.Dial client with an unknown token calls Create; then the lease is moved to destroyed and the client of the original token calls List, Create and a relayed Agent RPC",
+      "then": [
+        "the unknown token gets gRPC Unauthenticated",
+        "all three RPCs on the revoked token get Unauthenticated",
+        "a failed lease likewise yields Unauthenticated on the next RPC"
+      ],
+      "pseudocode": "assert code(Dial(bad).Create())==Unauthenticated; store.Destroy(id); for rpc in [List,Create,Exec]: assert code(rpc)==Unauthenticated"
+    },
+    {
+      "id": "TS-27-19",
+      "kind": "unit",
+      "verifies": [
+        "27-REQ-3.4",
+        "27-REQ-3.5"
+      ],
+      "title": "Store errors refuse the token and no log contains the token or its hash",
+      "given": [
+        "captured slog output",
+        "a lease store that returns a non-not-found error for one lookup"
+      ],
+      "when": "the authenticator is called with accepted tokens, refused tokens and the erroring lookup",
+      "then": [
+        "the erroring lookup returns (\"\", false)",
+        "an error record is logged for it",
+        "captured logs contain neither any presented token nor its SHA-256 hex"
+      ],
+      "pseudocode": "id,ok=auth(errTok); assert !ok; for t in toks: assert !contains(logs,t) && !contains(logs,sha256hex(t))"
+    },
+    {
+      "id": "TS-27-20",
+      "kind": "unit",
+      "verifies": [
+        "27-REQ-4.1"
+      ],
+      "title": "Create without a principal fails before loading a lease or calling the provider",
+      "given": [
+        "an injected principal function that reports none",
+        "a recording provider and lease-load counter"
+      ],
+      "when": "backend.Create is called",
+      "then": [
+        "a non-nil error is returned",
+        "provider Create count is 0",
+        "no lease was loaded"
+      ],
+      "pseudocode": "_,err=b.Create(ctx,Spec{}); assert err!=nil && prov.creates==0 && store.loads==0"
+    },
+    {
+      "id": "TS-27-21",
+      "kind": "unit",
+      "verifies": [
+        "27-REQ-4.2"
+      ],
+      "title": "A concurrent Create for the same lease gets FailedPrecondition and claims are released",
+      "given": [
+        "a provider whose Create blocks until released",
+        "a leased lease"
+      ],
+      "when": "a first Create is started, a second Create is issued while it blocks, then the first is released",
+      "then": [
+        "the second returns FailedPrecondition without calling the provider",
+        "after the first returns the claim set does not contain the lease id",
+        "a claim is also released after a failing Create"
+      ],
+      "pseudocode": "go b.Create(); wait(blocked); _,err=b.Create(); assert code(err)==FailedPrecondition && prov.creates==1; release(); assert !claims.has(id)"
+    },
+    {
+      "id": "TS-27-22",
+      "kind": "unit",
+      "verifies": [
+        "27-REQ-4.3"
+      ],
+      "title": "Create on a non-leased lease names the state and changes nothing",
+      "given": [
+        "an active lease"
+      ],
+      "when": "Create is called with its principal",
+      "then": [
+        "FailedPrecondition whose message contains \"active\"",
+        "the lease row is unchanged",
+        "provider Create count is 0"
+      ],
+      "pseudocode": "err=Create; assert code==FailedPrecondition && contains(msg,'active') && lease==before"
+    },
+    {
+      "id": "TS-27-23",
+      "kind": "unit",
+      "verifies": [
+        "27-REQ-4.4"
+      ],
+      "title": "Create on an expired leased lease is refused without a state change",
+      "given": [
+        "a leased lease whose expires_at equals the injected now"
+      ],
+      "when": "Create is called",
+      "then": [
+        "FailedPrecondition whose message contains \"expired\"",
+        "the lease still reads leased",
+        "provider Create count is 0"
+      ],
+      "pseudocode": "assert code(err)==FailedPrecondition && contains(msg,'expired') && state=='leased' && prov.creates==0"
+    },
+    {
+      "id": "TS-27-24",
+      "kind": "unit",
+      "verifies": [
+        "27-REQ-4.5"
+      ],
+      "title": "A lease whose profile is no longer configured fails with a message naming the profile",
+      "given": [
+        "a leased lease with profile \"gone\" absent from the in-memory profiles",
+        "a recording emitter"
+      ],
+      "when": "Create is called",
+      "then": [
+        "FailedPrecondition whose message names \"gone\"",
+        "the lease reads failed with the same error",
+        "exactly one hub.sandbox.failed event is recorded"
+      ],
+      "pseudocode": "assert code==FailedPrecondition && lease.state=='failed' && lease.error==msg && emitter.count(failed)==1"
+    },
+    {
+      "id": "TS-27-25",
+      "kind": "unit",
+      "verifies": [
+        "27-REQ-4.6"
+      ],
+      "title": "The provider receives hub's spec, not the caller's",
+      "given": [
+        "a lease recording image, network and resources, with 90 minutes left",
+        "a profile with fixed env, require_landlock and a resource field the lease lacks"
+      ],
+      "when": "Create is called with caller spec image \"evil\", env {X:1}, network \"host\", TTL 99h, Workdir \"/w\"",
+      "then": [
+        "provider spec Image, Network and Resources equal the lease's values",
+        "unrecorded resource fields and RequireLandlock come from the profile",
+        "Workdir is \"/w\"",
+        "TTL is a whole-second duration no greater than the remaining lease time",
+        "Env has no key X"
+      ],
+      "pseudocode": "spec=prov.lastSpec; assert spec.Image==lease.Image && spec.Workdir=='/w' && spec.TTL%time.Second==0 && spec.TTL<=remaining && !has(spec.Env,'X')"
+    },
+    {
+      "id": "TS-27-26",
+      "kind": "unit",
+      "verifies": [
+        "27-REQ-4.7"
+      ],
+      "title": "Labels drop caller hub.* keys, prefix lease labels and set hub.lease and hub.workspace last",
+      "given": [
+        "a lease with label {team:x}, id L, workspace slug S"
+      ],
+      "when": "Create is called with caller labels {a:1, hub.lease:forged}",
+      "then": [
+        "the provider labels equal {a:1, hub.team:x, hub.lease:L, hub.workspace:S}"
+      ],
+      "pseudocode": "assert prov.lastSpec.Labels == {'a':'1','hub.team':'x','hub.lease':L,'hub.workspace':S}"
+    },
+    {
+      "id": "TS-27-27",
+      "kind": "property",
+      "verifies": [
+        "27-REQ-4.8"
+      ],
+      "title": "Caller-controlled spec fields never influence the provider spec",
+      "given": [
+        "a fixed leased lease and profile with a recording provider"
+      ],
+      "when": "for any generated caller sandbox.Spec (random image, env, network, resources, TTL, landlock flag)",
+      "then": [
+        "Image, Network, Resources, RequireLandlock and Env of the provider spec equal those produced for sandbox.Spec{} on a fresh equivalent lease"
+      ],
+      "pseudocode": "base=specFor(Spec{}); for s in gen(): got=specFor(s); assert eq(got.Image,base.Image)&&eq(got.Env,base.Env)&&eq(got.Network,base.Network)&&eq(got.Resources,base.Resources)&&got.RequireLandlock==base.RequireLandlock"
+    },
+    {
+      "id": "TS-27-28",
+      "kind": "integration",
+      "verifies": [
+        "27-REQ-5.1"
+      ],
+      "title": "Secrets resolve tier by tier at Create and a rotated value takes effect",
+      "given": [
+        "a real secrets.Store on SQLite",
+        "a name stored in workspace and user scopes with different values",
+        "the workspace value changed after the lease was POSTed"
+      ],
+      "when": "Create is called",
+      "then": [
+        "the provider Env has the current workspace value, not the user value, and not the pre-rotation value"
+      ],
+      "pseudocode": "store.Update(ws,K,'new'); Create(); assert prov.lastSpec.Env[K]=='new'"
+    },
+    {
+      "id": "TS-27-29",
+      "kind": "integration",
+      "verifies": [
+        "27-REQ-5.2"
+      ],
+      "title": "The org tier is searched only when the owner is a member of the workspace's org",
+      "given": [
+        "a real secrets.Store with a secret stored only at the org scope",
+        "a workspace with org_id set; two cases: owner is a member, owner is not"
+      ],
+      "when": "Create is called in each case with a profile requiring that secret",
+      "then": [
+        "member case: the secret is injected",
+        "non-member case: the secret is treated as missing and the lease fails with secret_missing"
+      ],
+      "pseudocode": "assert Env[K]=='orgval' (member); assert failed && startsWith(error,'secret_missing:') (nonmember)"
+    },
+    {
+      "id": "TS-27-30",
+      "kind": "unit",
+      "verifies": [
+        "27-REQ-5.3"
+      ],
+      "title": "A required secret found in no tier fails the lease naming the key and the scopes",
+      "given": [
+        "a leased lease requiring GIT_PAT which is stored nowhere",
+        "a recording provider and emitter"
+      ],
+      "when": "Create is called",
+      "then": [
+        "FailedPrecondition with text starting \"secret_missing:\" naming GIT_PAT and the scope types workspace, org, user",
+        "the lease reads failed with the same error",
+        "exactly one hub.sandbox.failed event",
+        "provider Create count is 0"
+      ],
+      "pseudocode": "assert startsWith(msg,'secret_missing:') && contains(msg,'GIT_PAT') && lease.error==msg && emitter.count(failed)==1 && prov.creates==0"
+    },
+    {
+      "id": "TS-27-31",
+      "kind": "unit",
+      "verifies": [
+        "27-REQ-5.4"
+      ],
+      "title": "A missing optional secret is omitted and Create succeeds",
+      "given": [
+        "a profile with an optional secret name stored nowhere"
+      ],
+      "when": "Create is called",
+      "then": [
+        "Create succeeds",
+        "the provider Env lacks that key"
+      ],
+      "pseudocode": "assert err==nil && !has(prov.lastSpec.Env,'OPT')"
+    },
+    {
+      "id": "TS-27-32",
+      "kind": "unit",
+      "verifies": [
+        "27-REQ-5.5"
+      ],
+      "title": "A store error leaves the lease leased with the claim released and retry proceeds",
+      "given": [
+        "a secrets lookup that returns a generic error once, then works"
+      ],
+      "when": "Create is called, then called again",
+      "then": [
+        "the first returns gRPC Internal",
+        "the lease reads leased with error null",
+        "the second Create proceeds and succeeds"
+      ],
+      "pseudocode": "assert code(err1)==Internal && lease.state=='leased' && lease.error==nil; assert err2==nil"
+    },
+    {
+      "id": "TS-27-33",
+      "kind": "unit",
+      "verifies": [
+        "27-REQ-5.6"
+      ],
+      "title": "Env is the fixed env plus resolved secrets under the profile's spelling",
+      "given": [
+        "profile secret GIT_PAT stored as git_pat with value V, and fixed env {A:1,B:2}"
+      ],
+      "when": "Create is called",
+      "then": [
+        "Env equals {A:1,B:2,GIT_PAT:V}"
+      ],
+      "pseudocode": "assert prov.lastSpec.Env == {'A':'1','B':'2','GIT_PAT':V}"
+    },
+    {
+      "id": "TS-27-34",
+      "kind": "integration",
+      "verifies": [
+        "27-REQ-5.7"
+      ],
+      "title": "No sandbox_leases column holds the planted secret value after Create",
+      "given": [
+        "a real SQLite lease store and secrets store with a planted secret value"
+      ],
+      "when": "Create succeeds and then fails (second lease)",
+      "then": [
+        "dumping every column of every sandbox_leases row never contains the planted value"
+      ],
+      "pseudocode": "rows=dumpAll('sandbox_leases'); assert !contains(rows, SECRET)"
+    },
+    {
+      "id": "TS-27-35",
+      "kind": "integration",
+      "verifies": [
+        "27-REQ-6.1"
+      ],
+      "title": "A successful Create moves the lease to active with sandbox_id and emits one create event",
+      "given": [
+        "a leased lease, a real SQLite store, a recording provider and emitter"
+      ],
+      "when": "Create is called",
+      "then": [
+        "a sandbox is returned",
+        "the lease reads active with sandbox_id equal to the box's ID()",
+        "exactly one hub.sandbox.create event with lease_id, sandbox_id, image and network"
+      ],
+      "pseudocode": "sb=Create(); l=get(id); assert l.state=='active' && l.sandbox_id==sb.ID() && emitter.count(create)==1"
+    },
+    {
+      "id": "TS-27-36",
+      "kind": "unit",
+      "verifies": [
+        "27-REQ-6.2"
+      ],
+      "title": "A DELETE during the provider Create destroys the new box and emits no create event",
+      "given": [
+        "a provider whose Create blocks, during which the lease is moved leased → destroyed",
+        "captured slog output"
+      ],
+      "when": "the provider Create is released",
+      "then": [
+        "Create returns FailedPrecondition naming \"destroyed\"",
+        "the provider List no longer has the box",
+        "zero hub.sandbox.create events",
+        "a warning log carries the lease id and sandbox id",
+        "the lease stays destroyed"
+      ],
+      "pseudocode": "assert code==FailedPrecondition && contains(msg,'destroyed') && len(prov.List())==0 && emitter.count(create)==0 && logs.has(WARN,leaseID,boxID)"
+    },
+    {
+      "id": "TS-27-37",
+      "kind": "unit",
+      "verifies": [
+        "27-REQ-6.3",
+        "27-REQ-9.3"
+      ],
+      "title": "A provider Create error is scrubbed, stored on the lease, evented and returned",
+      "given": [
+        "a provider whose Create fails with an error echoing a resolved secret and a URL with userinfo"
+      ],
+      "when": "Create is called",
+      "then": [
+        "the returned error text equals the scrubbed text",
+        "the lease reads failed with error equal to the scrubbed text",
+        "exactly one hub.sandbox.failed event with lease_id and an error field equal to the scrubbed text",
+        "the secret value appears in none of these"
+      ],
+      "pseudocode": "want=scrub(raw); assert err.msg==want && lease.error==want && ev.Metadata.error==want"
+    },
+    {
+      "id": "TS-27-38",
+      "kind": "unit",
+      "verifies": [
+        "27-REQ-6.4"
+      ],
+      "title": "State changes are conditional, set ended_at, clear the token hash on failure and never leave terminal states",
+      "given": [
+        "leases in leased, destroyed and failed states"
+      ],
+      "when": "each transition (leased→active, leased→failed, leased→destroyed, active→destroyed) is attempted with the right and with the wrong expected state, including from destroyed and failed",
+      "then": [
+        "a wrong expected state updates zero rows",
+        "no update moves a lease out of destroyed or failed",
+        "ended_at is set on entering failed or destroyed",
+        "a failed lease's token lookup returns not found"
+      ],
+      "pseudocode": "n=Transition(id,from,to); assert n==0 when state!=from; assert lookup(tokenOfFailed)==NotFound"
+    },
+    {
+      "id": "TS-27-39",
+      "kind": "integration",
+      "verifies": [
+        "27-REQ-6.5"
+      ],
+      "title": "A second Create under the same token is refused: FailedPrecondition when active, Unauthenticated when terminal",
+      "given": [
+        "a gatewayd.Server with hub's backend and authenticator, a counting provider, a real gateway.Dial client"
+      ],
+      "when": "Create succeeds, a second Create is issued; then the lease is destroyed and a third Create is issued; on another lease a failed Create is followed by a second Create",
+      "then": [
+        "second Create gets FailedPrecondition",
+        "after destroy or failure the next Create gets Unauthenticated",
+        "provider Create count stays 1 for the first lease"
+      ],
+      "pseudocode": "assert code(c.Create())==FailedPrecondition; destroy(); assert code(c.Create())==Unauthenticated; assert prov.creates==1"
+    },
+    {
+      "id": "TS-27-40",
+      "kind": "property",
+      "verifies": [
+        "27-REQ-6.6"
+      ],
+      "title": "Concurrent Creates with at most one DELETE call the provider at most once and leave no live box on a destroyed lease",
+      "given": [
+        "a leased lease and a recording provider with a randomised Create delay"
+      ],
+      "when": "for any number of concurrent Create calls (1..8) under one token, interleaved at a random point with zero or one DELETE",
+      "then": [
+        "provider Create count ≤ 1",
+        "if the lease ends destroyed the provider List has no live box for it"
+      ],
+      "pseudocode": "for sched in gen(): run(sched); assert prov.creates<=1; if lease.state=='destroyed': assert len(prov.List())==0"
+    },
+    {
+      "id": "TS-27-41",
+      "kind": "unit",
+      "verifies": [
+        "27-REQ-7.1"
+      ],
+      "title": "Capabilities narrows network modes to the intersection with network_modes",
+      "given": [
+        "a provider offering [none, bridge, host]",
+        "network_modes [none, bridge]"
+      ],
+      "when": "backend.Capabilities() is called",
+      "then": [
+        "NetworkModes equals [none, bridge]"
+      ],
+      "pseudocode": "assert eq(b.Capabilities().NetworkModes,['none','bridge'])"
+    },
+    {
+      "id": "TS-27-42",
+      "kind": "unit",
+      "verifies": [
+        "27-REQ-7.2"
+      ],
+      "title": "List returns only the principal's box, or the provider's list without a principal",
+      "given": [
+        "a provider holding three boxes",
+        "a principal whose lease is active with one of them, and a principal whose lease is leased"
+      ],
+      "when": "List is called with each principal and with none",
+      "then": [
+        "the active lease's principal gets exactly its box",
+        "the leased lease's principal gets an empty list",
+        "no principal gets all three boxes"
+      ],
+      "pseudocode": "assert ids(List(ctxActive))==[box]; assert len(List(ctxLeased))==0; assert len(List(noPrincipal))==3"
+    },
+    {
+      "id": "TS-27-43",
+      "kind": "integration",
+      "verifies": [
+        "27-REQ-7.3",
+        "27-REQ-7.5"
+      ],
+      "title": "Close through the gateway destroys the box, records client, and a provider not-found counts as success",
+      "given": [
+        "a gatewayd.Server with hub's backend, an emitter, a recording provider",
+        "two active leases; for the second, the provider's Destroy returns the not-found sentinel"
+      ],
+      "when": "each client calls Close on its sandbox",
+      "then": [
+        "both calls return nil",
+        "for the first the provider List no longer has the box",
+        "both leases read destroyed with end_reason \"client\"",
+        "exactly one hub.sandbox.destroy event per lease with lease_id, sandbox_id and reason \"client\""
+      ],
+      "pseudocode": "assert sb.Close()==nil; l=get(id); assert l.state=='destroyed' && l.end_reason=='client' && emitter.count(destroy)==1"
+    },
+    {
+      "id": "TS-27-44",
+      "kind": "unit",
+      "verifies": [
+        "27-REQ-7.4"
+      ],
+      "title": "Destroy of an id the principal's lease does not own is refused without touching the provider",
+      "given": [
+        "an active lease with sandbox_id B1"
+      ],
+      "when": "backend.Destroy(\"B2\") is called with that principal",
+      "then": [
+        "a not-found error is returned",
+        "provider Destroy count is 0",
+        "the lease is unchanged"
+      ],
+      "pseudocode": "assert code(err)==NotFound && prov.destroys==0 && lease==before"
+    },
+    {
+      "id": "TS-27-45",
+      "kind": "unit",
+      "verifies": [
+        "27-REQ-7.6"
+      ],
+      "title": "A non-not-found provider Destroy error on the client path returns the scrubbed error and leaves the lease active",
+      "given": [
+        "a provider whose Destroy fails with an error echoing a secret value"
+      ],
+      "when": "Close is called",
+      "then": [
+        "the returned error text equals the scrubbed text without the secret",
+        "the lease reads active",
+        "zero hub.sandbox.destroy events"
+      ],
+      "pseudocode": "assert err.msg==scrub(raw) && lease.state=='active' && emitter.count(destroy)==0"
+    },
+    {
+      "id": "TS-27-46",
+      "kind": "unit",
+      "verifies": [
+        "27-REQ-7.7"
+      ],
+      "title": "Reap passes through and handle methods other than Spec and Close delegate unchanged",
+      "given": [
+        "a recording provider and recording sandbox, and a handle returned by Create"
+      ],
+      "when": "backend.Reap is called once and relayed handle methods (e.g. ID, Exec) are called with arguments",
+      "then": [
+        "provider Reap is called once",
+        "the provider's sandbox receives each call with unchanged arguments"
+      ],
+      "pseudocode": "b.Reap(ctx); assert prov.reaps==1; h.Exec(a); assert sb.lastExecArgs==a"
+    },
+    {
+      "id": "TS-27-47",
+      "kind": "unit",
+      "verifies": [
+        "27-REQ-7.8"
+      ],
+      "title": "The handle's Spec() keeps Env keys but redacts every value",
+      "given": [
+        "a Create with fixed env and resolved secrets"
+      ],
+      "when": "handle.Spec() is called",
+      "then": [
+        "Env has the same key set as the provider spec",
+        "every value equals \"[redacted]\"",
+        "other fields are as built"
+      ],
+      "pseudocode": "s=h.Spec(); assert keys(s.Env)==keys(prov.lastSpec.Env) && all(v=='[redacted]'); assert s.Image==prov.lastSpec.Image"
+    },
+    {
+      "id": "TS-27-48",
+      "kind": "integration",
+      "verifies": [
+        "27-REQ-8.1",
+        "27-REQ-8.6"
+      ],
+      "title": "DELETE of an active lease destroys the box, records api, evented once, and revokes the token",
+      "given": [
+        "an active lease with a live box in a recording provider",
+        "lease routes with a real store and recording emitter, authorised caller"
+      ],
+      "when": "DELETE /api/v1/workspaces/widgets/sandboxes/:id is called",
+      "then": [
+        "HTTP 204",
+        "the provider Destroy was called under a context with a deadline ≤ 30s",
+        "GET one reads destroyed with end_reason \"api\"",
+        "a relayed RPC on the token answers Unauthenticated",
+        "exactly one hub.sandbox.destroy event with the box id, reason \"api\", ActorID and ActorType of the HTTP credential"
+      ],
+      "pseudocode": "r=del(); assert r.status==204 && prov.destroyDeadline<=30s && get().end_reason=='api' && ev.Metadata.sandbox_id==boxID && ev.ActorType==auth.CredentialType"
+    },
+    {
+      "id": "TS-27-49",
+      "kind": "unit",
+      "verifies": [
+        "27-REQ-8.2"
+      ],
+      "title": "DELETE treats a provider not-found as destroyed",
+      "given": [
+        "an active lease whose box the provider reports as not found on Destroy"
+      ],
+      "when": "DELETE is called",
+      "then": [
+        "HTTP 204",
+        "the lease reads destroyed with end_reason \"api\""
+      ],
+      "pseudocode": "assert status==204 && lease.end_reason=='api'"
+    },
+    {
+      "id": "TS-27-50",
+      "kind": "unit",
+      "verifies": [
+        "27-REQ-8.3"
+      ],
+      "title": "A provider Destroy failure or timeout on DELETE answers 502 sandbox_provider_error and changes nothing",
+      "given": [
+        "an active lease",
+        "a provider whose Destroy first fails with an error echoing a secret, then blocks past the deadline (injected short deadline), then succeeds"
+      ],
+      "when": "DELETE is called three times",
+      "then": [
+        "the first two answer 502 with error_type \"sandbox_provider_error\" and scrubbed message",
+        "the lease reads active and the token still authenticates after each",
+        "no hub.sandbox.destroy event after the failures",
+        "the third DELETE answers 204"
+      ],
+      "pseudocode": "assert r.status==502 && r.body.error_type=='sandbox_provider_error' && !contains(r.body,SECRET) && lease.state=='active'; later assert del().status==204"
+    },
+    {
+      "id": "TS-27-51",
+      "kind": "unit",
+      "verifies": [
+        "27-REQ-8.4",
+        "27-REQ-8.6"
+      ],
+      "title": "DELETE of a leased lease destroys it without calling the provider and emits one event with null sandbox_id",
+      "given": [
+        "a leased lease and a recording provider and emitter"
+      ],
+      "when": "DELETE is called",
+      "then": [
+        "HTTP 204",
+        "provider Destroy count is 0",
+        "GET one reads destroyed with end_reason \"api\"",
+        "one hub.sandbox.destroy event with sandbox_id null and reason \"api\"",
+        "a later Create under the token is refused with Unauthenticated"
+      ],
+      "pseudocode": "assert status==204 && prov.destroys==0 && ev.Metadata.sandbox_id==nil && ev.count==1"
+    },
+    {
+      "id": "TS-27-52",
+      "kind": "unit",
+      "verifies": [
+        "27-REQ-8.5"
+      ],
+      "title": "A state change between DELETE's read and update is re-read once and the box is destroyed",
+      "given": [
+        "a lease that is leased when DELETE reads it and becomes active (box created) before DELETE's conditional update"
+      ],
+      "when": "DELETE continues",
+      "then": [
+        "HTTP 204",
+        "the box is gone from the provider's List",
+        "the lease ends destroyed",
+        "exactly one destroy event"
+      ],
+      "pseudocode": "hook after read: createBox(); r=del(); assert r.status==204 && len(prov.List())==0 && lease.state=='destroyed' && ev.count==1"
+    },
+    {
+      "id": "TS-27-53",
+      "kind": "unit",
+      "verifies": [
+        "27-REQ-8.7"
+      ],
+      "title": "DELETE of a terminal lease keeps spec 26's behaviour with no provider call or event",
+      "given": [
+        "leases in destroyed, expired and failed states"
+      ],
+      "when": "DELETE is called for each",
+      "then": [
+        "each answers HTTP 204",
+        "provider Destroy count is 0",
+        "zero hub.sandbox.destroy events"
+      ],
+      "pseudocode": "for l in terminals: assert del(l).status==204; assert prov.destroys==0 && ev.count==0"
+    },
+    {
+      "id": "TS-27-54",
+      "kind": "unit",
+      "verifies": [
+        "27-REQ-9.1"
+      ],
+      "title": "Scrub replaces values, removes URL userinfo, then truncates",
+      "given": [
+        "secret value \"s3cret\"",
+        "fixed env value \"envval\""
+      ],
+      "when": "scrub is applied to \"pull https://u:tok@reg failed: -e K=s3cret\" and to a text containing envval",
+      "then": [
+        "the first becomes \"pull https://reg failed: -e K=[redacted]\"",
+        "envval becomes [redacted]",
+        "empty values are ignored (no change from an empty string value)",
+        "a 5000-byte text is cut to ≤1024 bytes"
+      ],
+      "pseudocode": "assert scrub(in,['s3cret'])=='pull https://reg failed: -e K=[redacted]'; assert scrub(x,[''])==x"
+    },
+    {
+      "id": "TS-27-55",
+      "kind": "property",
+      "verifies": [
+        "27-REQ-9.2"
+      ],
+      "title": "Scrub output is valid UTF-8, at most 1024 bytes, and contains no value",
+      "given": [
+        "generated non-empty values"
+      ],
+      "when": "for any text (including values placed across the 1024-byte boundary and multi-byte runes at the cut) and any set of non-empty values",
+      "then": [
+        "the output is valid UTF-8",
+        "len(output) ≤ 1024",
+        "no value is a substring of the output"
+      ],
+      "pseudocode": "for t,vals in gen(): o=scrub(t,vals); assert utf8.Valid(o) && len(o)<=1024; for v in vals: assert !contains(o,v)"
+    },
+    {
+      "id": "TS-27-56",
+      "kind": "integration",
+      "verifies": [
+        "27-REQ-9.4",
+        "27-REQ-9.7"
+      ],
+      "title": "A planted secret never appears in any HTTP body, event, log, gateway error, lease error or handle Spec",
+      "given": [
+        "a planted secret value and a fixed env value",
+        "a provider whose Create and Destroy errors contain the values",
+        "captured slog, recording emitter, HTTP body collection, a real gateway.Dial client"
+      ],
+      "when": "leases are driven through POST, a failing Create, a successful Create with Spec(), Close, and a failing then successful DELETE",
+      "then": [
+        "the planted value and env value are a substring of none of: HTTP bodies, audit events (all fields and metadata), log lines, gRPC error messages, lease error fields, handle Spec() output",
+        "no lease token or token hash appears in the logs"
+      ],
+      "pseudocode": "outputs=collect(); for o in outputs: assert !contains(o,SECRET) && !contains(o,ENVVAL) && !contains(logs,token)"
+    },
+    {
+      "id": "TS-27-57",
+      "kind": "unit",
+      "verifies": [
+        "27-REQ-9.5"
+      ],
+      "title": "The three events carry the correct actor, workspace, resource and secret names only",
+      "given": [
+        "a recording emitter and one lease driven through create, failed (second lease) and gateway destroy, and an HTTP DELETE"
+      ],
+      "when": "the events are inspected",
+      "then": [
+        "each has Workspace equal to the lease slug, ResourceType \"sandbox\", ResourceID the lease id",
+        "gateway-raised events have ActorType \"lease\" and ActorID the lease's created_by",
+        "no metadata value equals a secret or env value"
+      ],
+      "pseudocode": "for e in events: assert e.Workspace==slug && e.ResourceType=='sandbox' && e.ResourceID==id; gwEvents: assert e.ActorType=='lease' && e.ActorID==createdBy"
+    },
+    {
+      "id": "TS-27-58",
+      "kind": "unit",
+      "verifies": [
+        "27-REQ-9.6"
+      ],
+      "title": "A nil or failing emitter changes no outcome",
+      "given": [
+        "three runs: working emitter, nil emitter, emitter whose Emit returns an error",
+        "captured slog"
+      ],
+      "when": "Create, Close and DELETE are driven in each run",
+      "then": [
+        "results and final lease states are identical across the runs",
+        "the erroring emitter produces an slog error record",
+        "the nil emitter causes no panic"
+      ],
+      "pseudocode": "for em in [ok,nil,errEm]: r=run(em); assert r==baseline"
+    },
+    {
+      "id": "TS-27-59",
+      "kind": "unit",
+      "verifies": [
+        "27-REQ-10.1"
+      ],
+      "title": "The audit event constants have the expected names",
+      "given": [
+        "the audit package"
+      ],
+      "when": "the constants are read",
+      "then": [
+        "EventSandboxCreate == \"hub.sandbox.create\"",
+        "EventSandboxFailed == \"hub.sandbox.failed\"",
+        "EventSandboxDestroy == \"hub.sandbox.destroy\""
+      ],
+      "pseudocode": "assert audit.EventSandboxCreate=='hub.sandbox.create' && ..."
+    },
+    {
+      "id": "TS-27-60",
+      "kind": "integration",
+      "verifies": [
+        "27-REQ-10.2"
+      ],
+      "title": "The module builds and cmd/afc does not import gatewayd, grpc or internal/sandboxes",
+      "given": [
+        "the repository with go.mod including the agentkit-go requirement"
+      ],
+      "when": "`go build ./...` and `go list -deps ./cmd/afc` run",
+      "then": [
+        "the build succeeds",
+        "the dependency list contains no agentkit-go, google.golang.org/grpc or internal/sandboxes package"
+      ],
+      "pseudocode": "assert exec('go build ./...').ok; deps=exec('go list -deps ./cmd/afc'); assert none(contains(d,'agentkit-go')||contains(d,'google.golang.org/grpc')||contains(d,'internal/sandboxes'))"
+    },
+    {
+      "id": "TS-27-61",
+      "kind": "smoke",
+      "verifies": [
+        "27-PATH-1",
+        "27-REQ-6.1",
+        "27-REQ-4.6",
+        "27-REQ-5.6"
+      ],
+      "title": "A caller gets a lease over HTTP and creates a box through hub's gateway with the real client",
+      "given": [
+        "hub's lease routes, gateway and backend running in-process on 127.0.0.1:0 over a recording provider",
+        "a workspace with a stored secret and a profile requiring it"
+      ],
+      "when": "POST /api/v1/workspaces/widgets/sandboxes is called, then gateway.Dial(gateway_url, token).Create(sandbox.Spec{}) and GET one",
+      "then": [
+        "POST returns 201 with token and gateway_url",
+        "Create returns a live sandbox",
+        "the provider spec has the lease's image/network/resources/TTL and Env = fixed env + resolved secret",
+        "GET one reads active with sandbox_id",
+        "one hub.sandbox.create event"
+      ],
+      "real_components": [
+        "lease HTTP handlers",
+        "gatewayd.Server",
+        "gateway.Dial client",
+        "lease authenticator",
+        "wrapping backend",
+        "SQLite lease store",
+        "secrets.Store",
+        "audit emitter"
+      ]
+    },
+    {
+      "id": "TS-27-62",
+      "kind": "smoke",
+      "verifies": [
+        "27-PATH-2",
+        "27-REQ-5.3"
+      ],
+      "title": "A required secret deleted after POST fails the lease at Create",
+      "given": [
+        "a lease POSTed with a required secret present",
+        "the secret then deleted from the workspace"
+      ],
+      "when": "Create is called through the real gateway client, then another RPC on the token",
+      "then": [
+        "Create fails with FailedPrecondition containing \"secret_missing:\", the key and the scopes searched",
+        "the lease reads failed with that message",
+        "exactly one hub.sandbox.failed event",
+        "the following RPC answers Unauthenticated"
+      ],
+      "real_components": [
+        "lease HTTP handlers",
+        "gatewayd.Server",
+        "gateway.Dial client",
+        "lease authenticator",
+        "wrapping backend",
+        "SQLite lease store",
+        "secrets.Store",
+        "audit emitter"
+      ]
+    },
+    {
+      "id": "TS-27-63",
+      "kind": "smoke",
+      "verifies": [
+        "27-PATH-3",
+        "27-REQ-8.1"
+      ],
+      "title": "DELETE on an active lease destroys the box end to end",
+      "given": [
+        "an active lease with a box created through the real gateway client"
+      ],
+      "when": "DELETE /api/v1/workspaces/widgets/sandboxes/:id is sent and a relayed RPC is then attempted with the token",
+      "then": [
+        "204 is returned",
+        "the provider List no longer has the box",
+        "the lease reads destroyed with end_reason \"api\"",
+        "the relayed RPC gets Unauthenticated",
+        "one hub.sandbox.destroy event"
+      ],
+      "real_components": [
+        "lease HTTP handlers",
+        "gatewayd.Server",
+        "gateway.Dial client",
+        "lease authenticator",
+        "wrapping backend",
+        "SQLite lease store",
+        "audit emitter"
+      ]
+    },
+    {
+      "id": "TS-27-64",
+      "kind": "smoke",
+      "verifies": [
+        "27-PATH-4",
+        "27-REQ-7.3"
+      ],
+      "title": "The lease holder closes its box through the gateway",
+      "given": [
+        "an active lease with a box created through the real gateway client"
+      ],
+      "when": "Close is called on the sandbox returned by Create, then GET one",
+      "then": [
+        "Close returns nil",
+        "the provider List no longer has the box",
+        "GET one reads destroyed with end_reason \"client\"",
+        "one hub.sandbox.destroy event with reason \"client\""
+      ],
+      "real_components": [
+        "lease HTTP handlers",
+        "gatewayd.Server",
+        "gateway.Dial client",
+        "lease authenticator",
+        "wrapping backend",
+        "SQLite lease store",
+        "audit emitter"
+      ]
+    },
+    {
+      "id": "TS-27-65",
+      "kind": "smoke",
+      "verifies": [
+        "27-PATH-5",
+        "27-REQ-1.5",
+        "27-REQ-1.6"
+      ],
+      "title": "Hub refuses to start with an unsafe gateway configuration",
+      "given": [
+        "a config file with [sandbox].listen = \"0.0.0.0:8443\" and no tls_cert, tls_key or external_url"
+      ],
+      "when": "the af-hub startup path (config load, Validate, gateway start) runs",
+      "then": [
+        "the collected error names sandbox.listen and sandbox.external_url",
+        "no listener is bound on 8443",
+        "the startup returns an error that main turns into a non-zero exit"
+      ],
+      "real_components": [
+        "sandbox config loader",
+        "Validate",
+        "af-hub startup function"
+      ]
+    }
+  ]
+}

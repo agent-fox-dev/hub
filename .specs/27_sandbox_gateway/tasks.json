@@ -1,0 +1,431 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/tasks.v2.json",
+  "spec_id": "27",
+  "spec_name": "sandbox_gateway",
+  "schema_version": 2,
+  "test_commands": {
+    "all_tests": "make test",
+    "linter": "make lint",
+    "spec_tests": "go test ./internal/sandboxes/... ./internal/audit/... -count=1"
+  },
+  "dependencies": [
+    {
+      "spec": "25_sandbox_profiles",
+      "reason": "extends internal/sandboxes: Config, Validate, Service.Provider(), Service.Profiles(), network_modes, max_ttl, and the afc import boundary check"
+    },
+    {
+      "spec": "26_sandbox_leases",
+      "reason": "reads and transitions leases in sandbox_leases, reuses token hashing, the scope chain helper, max_sandboxes and the DELETE handler it extends"
+    },
+    {
+      "spec": "07",
+      "reason": "secrets.Store.GetSecretValue and *secrets.NotFoundError resolve values tier by tier"
+    },
+    {
+      "spec": "18",
+      "reason": "audit.Emitter with SSE broadcast carries the three sandbox events"
+    }
+  ],
+  "tasks": [
+    {
+      "id": 1,
+      "kind": "implement",
+      "title": "Add sandbox audit event constants and the agentkit-go gatewayd dependency",
+      "criteria": [
+        "27-REQ-10"
+      ],
+      "tests": [
+        "TS-27-59",
+        "TS-27-60"
+      ],
+      "steps": [
+        "Write TS-27-59 (constant values) and TS-27-60 (runs `go build ./...` and `go list -deps ./cmd/afc`, asserting no agentkit-go, google.golang.org/grpc or internal/sandboxes package) and confirm they fail or are red",
+        "In internal/audit/types.go add EventSandboxCreate=\"hub.sandbox.create\", EventSandboxFailed=\"hub.sandbox.failed\", EventSandboxDestroy=\"hub.sandbox.destroy\", each with a doc comment listing its metadata keys (create: lease_id, sandbox_id, image, network; failed: lease_id, error; destroy: lease_id, sandbox_id, reason), in the style of EventPatchSync",
+        "In go.mod require the agentkit-go module that provides sandbox/gatewayd (version with Config.Authenticate and PrincipalFromContext); if it is a different module from the sandbox module added by spec 25, add its own replace to ../agentkit-go; run go mod tidy",
+        "Confirm cmd/afc still does not transitively import gatewayd, grpc or internal/sandboxes"
+      ],
+      "touches": [
+        "internal/audit/types.go",
+        "internal/audit/types_sandbox_test.go",
+        "go.mod",
+        "go.sum",
+        "internal/sandboxes/imports_test.go"
+      ],
+      "done_when": [
+        "`go build ./...` succeeds"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 2,
+      "kind": "implement",
+      "title": "Validate the four gateway keys in the [sandbox] config",
+      "criteria": [
+        "27-REQ-1.1",
+        "27-REQ-1.2",
+        "27-REQ-1.3",
+        "27-REQ-1.4",
+        "27-REQ-1.5",
+        "27-REQ-1.6",
+        "27-REQ-1.7"
+      ],
+      "tests": [
+        "TS-27-1",
+        "TS-27-2",
+        "TS-27-3",
+        "TS-27-4",
+        "TS-27-5",
+        "TS-27-6",
+        "TS-27-7"
+      ],
+      "steps": [
+        "Write TS-27-1..TS-27-7 against internal/sandboxes (read config.go and validate.go from spec 25 first) and confirm they fail",
+        "Add Listen, TLSCert, TLSKey, ExternalURL fields to Config with TOML keys listen, tls_cert, tls_key, external_url; register them as known keys so Undecoded() filtering does not report them; expand ${NAME} like other strings; default Listen to \"127.0.0.1:8443\"",
+        "Add an unexported isLoopback(addr) helper: net.SplitHostPort, host == \"localhost\" or net.ParseIP(host).IsLoopback(); no DNS lookup; empty host, 0.0.0.0, :: and other hostnames are not loopback",
+        "In Validate, add failures (appended to the same errors.Join collection) naming sandbox.listen for bad split or non-numeric/out-of-range port (0..65535 accepted), sandbox.tls_key/sandbox.tls_cert for a single-sided pair, sandbox.listen with the word loopback for non-loopback without TLS, sandbox.external_url when non-loopback and empty",
+        "Validate external_url when set: url.Parse, scheme http or https, non-empty host, no userinfo, no query, no fragment, path empty or \"/\"; failures name sandbox.external_url",
+        "Expose the validated Listen, TLSCert, TLSKey, ExternalURL on the Validated struct so startup can use them"
+      ],
+      "touches": [
+        "internal/sandboxes/config.go",
+        "internal/sandboxes/validate.go",
+        "internal/sandboxes/config_gateway_test.go"
+      ],
+      "depends_on": [
+        1
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 3,
+      "kind": "implement",
+      "title": "Add the scrubber and conditional lease state transitions with error and end_reason",
+      "criteria": [
+        "27-REQ-9.1",
+        "27-REQ-9.2",
+        "27-REQ-6.4"
+      ],
+      "tests": [
+        "TS-27-54",
+        "TS-27-55",
+        "TS-27-38"
+      ],
+      "steps": [
+        "Write TS-27-54, TS-27-55 (property test with generated texts, values across the 1024-byte boundary, multi-byte runes at the cut) and TS-27-38 and confirm they fail",
+        "Create internal/sandboxes/scrub.go: copy carrypatch's userinfo pattern `(?i)([a-z][a-z0-9+.\\-]*://)[^/\\s?#]*@` locally (do not import carrypatch); scrub(text string, values []string) replaces every non-empty value with [redacted] (longest first), removes userinfo with ${1}, then truncates to 1024 bytes on a UTF-8 boundary, re-checking that no value survives",
+        "Read spec 26's lease store; check whether sandbox_leases has error and end_reason columns. If not, add an idempotent migration in the style of jobqueue.MigrateProgress (PRAGMA table_info guard, then ALTER TABLE ADD COLUMN); note the lease column is end_reason, carrying client|api, not a separate destroy_reason",
+        "Add lease store transition methods, each a single UPDATE conditioned on `state = ?` returning rows affected: leased→active (sets sandbox_id), leased→failed (sets error, ended_at, clears token hash), leased→destroyed and active→destroyed (set end_reason, ended_at, clear token hash); no transition can start from destroyed, failed or expired",
+        "Make the lease read type expose Error and EndReason and the JSON lease representation include error and end_reason (nullable)"
+      ],
+      "touches": [
+        "internal/sandboxes/scrub.go",
+        "internal/sandboxes/scrub_test.go",
+        "internal/sandboxes/lease_store.go",
+        "internal/sandboxes/lease_transitions_test.go"
+      ],
+      "depends_on": [
+        1
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 4,
+      "kind": "implement",
+      "title": "Implement the lease authenticator for gatewayd",
+      "criteria": [
+        "27-REQ-3"
+      ],
+      "tests": [
+        "TS-27-16",
+        "TS-27-17",
+        "TS-27-19"
+      ],
+      "steps": [
+        "Write TS-27-16, TS-27-17 and TS-27-19 (captured slog via swapping slog.Default, store seam returning a non-not-found error) and confirm they fail",
+        "Create internal/sandboxes/gateway_auth.go with a constructor returning func(ctx, token string) (string, bool), using spec 26's token hash + lookup function and the injected now func",
+        "Accept only a lease in leased or active whose expires_at is strictly after now; return the lease id as principal; refuse empty, malformed, unknown, terminal and expired tokens with (\"\", false)",
+        "No cache: read the store on every call",
+        "On a store error other than not-found, log slog.Error with the error but never the token or its SHA-256, and refuse; never log either on any path"
+      ],
+      "touches": [
+        "internal/sandboxes/gateway_auth.go",
+        "internal/sandboxes/gateway_auth_test.go"
+      ],
+      "depends_on": [
+        3
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 5,
+      "kind": "implement",
+      "title": "Build hub's spec in the wrapping backend's Create",
+      "criteria": [
+        "27-REQ-4"
+      ],
+      "tests": [
+        "TS-27-20",
+        "TS-27-21",
+        "TS-27-22",
+        "TS-27-23",
+        "TS-27-24",
+        "TS-27-25",
+        "TS-27-26",
+        "TS-27-27"
+      ],
+      "steps": [
+        "Write TS-27-20..TS-27-27 with a recording sandbox.Provider double and in-memory SQLite lease store, and confirm they fail",
+        "Create internal/sandboxes/backend.go: type Backend implementing sandbox.Provider, holding the provider, profiles, network_modes, lease store, secrets store, emitter, now func, a principal func defaulting to gatewayd.PrincipalFromContext, and a claims set guarded by a mutex",
+        "Create(ctx, spec): read principal (no principal → error before any lease load or provider call); claim the lease id (already claimed → FailedPrecondition), release via defer; load lease; state != leased → FailedPrecondition naming the state; expires_at <= now → FailedPrecondition containing \"expired\" with no state change",
+        "Look up the lease's profile in the in-memory profiles; if missing mark the lease failed through the leased→failed transition with a message naming the profile, and return FailedPrecondition with that message (event emission is wired in the events task; leave an emit hook method here)",
+        "Add buildSpec: Image, Network, Resources, required secret names from the lease; fixed env, optional secret names, require_landlock and unrecorded resource fields from the profile; TTL = (expires_at-now) truncated to whole seconds; Workdir from caller; labels = caller labels minus keys starting hub., plus hub.<k> per lease label, then hub.lease and hub.workspace last; ignore caller image, env, network, resources, TTL, landlock",
+        "Call the provider's Create with the built spec (secret resolution is added in the next task); use google.golang.org/grpc status codes for FailedPrecondition"
+      ],
+      "touches": [
+        "internal/sandboxes/backend.go",
+        "internal/sandboxes/create_spec.go",
+        "internal/sandboxes/backend_create_test.go",
+        "internal/sandboxes/testhelpers_test.go"
+      ],
+      "depends_on": [
+        3
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 6,
+      "kind": "implement",
+      "title": "Resolve secrets at Create and record Create outcomes",
+      "criteria": [
+        "27-REQ-5",
+        "27-REQ-6.1",
+        "27-REQ-6.2",
+        "27-REQ-6.3"
+      ],
+      "tests": [
+        "TS-27-28",
+        "TS-27-29",
+        "TS-27-30",
+        "TS-27-31",
+        "TS-27-32",
+        "TS-27-33",
+        "TS-27-34",
+        "TS-27-35",
+        "TS-27-36",
+        "TS-27-37"
+      ],
+      "steps": [
+        "Write TS-27-28..TS-27-37 using a real secrets.Store on in-memory SQLite (workspaces, orgs, org_members tables plus secrets.InitSchema) and confirm they fail",
+        "Create internal/sandboxes/secret_resolve.go: build the tier chain with spec 26's chain helper (workspace slug; org workspaces.org_id only when set and the owner is a member of it; user workspaces.owner_id); call GetSecretValue tier by tier, first hit wins, *secrets.NotFoundError (errors.As) moves on",
+        "Required name in no tier: leased→failed with error `secret_missing: <key> ... scopes searched: workspace, org, user`, FailedPrecondition with the same text, provider not called; optional miss is skipped; any other store error returns gRPC Internal, lease stays leased, claim released",
+        "Set Env to profile fixed env plus resolved values under the profile's spelling of the name; keep values only in memory, never persisted",
+        "On provider Create success run the conditional leased→active update setting sandbox_id = box ID(); if it affects zero rows, destroy the new box on the provider, slog.Warn with lease id and sandbox id, return FailedPrecondition naming the re-read state, emit nothing",
+        "On provider Create error: scrub the message with scrub() over resolved secret values and non-empty fixed env values, run leased→failed storing the scrubbed text, return the scrubbed error",
+        "Wire the lease emit hook to emit hub.sandbox.create (lease_id, sandbox_id, image, network) on success and hub.sandbox.failed (lease_id, error) on every failure path (missing profile, missing secret, provider error) — one event each; wrap the returned box in a handle type (delegating methods; Spec and Close are completed in the next task)"
+      ],
+      "touches": [
+        "internal/sandboxes/secret_resolve.go",
+        "internal/sandboxes/backend.go",
+        "internal/sandboxes/backend_outcomes_test.go"
+      ],
+      "depends_on": [
+        5
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 7,
+      "kind": "implement",
+      "title": "Implement the rest of the backend: capabilities, list, destroy and the handle",
+      "criteria": [
+        "27-REQ-7"
+      ],
+      "tests": [
+        "TS-27-41",
+        "TS-27-42",
+        "TS-27-43",
+        "TS-27-44",
+        "TS-27-45",
+        "TS-27-46",
+        "TS-27-47"
+      ],
+      "steps": [
+        "Write TS-27-41..TS-27-47 (TS-27-43 over a real in-process gatewayd.Server on 127.0.0.1:0 with the real gateway.Dial client) and confirm they fail",
+        "Capabilities(): provider capabilities with NetworkModes intersected with network_modes",
+        "List(ctx): with a principal return at most the one provider box whose ID equals the lease's sandbox_id (empty for a leased lease); without a principal return the provider's list",
+        "Destroy(ctx, id): with a principal, require lease.sandbox_id == id else return a gRPC NotFound without touching the provider; call provider Destroy; errors.Is(err, sandbox.ErrNotFound) counts as success; other errors are returned scrubbed and the lease stays active",
+        "On success run active→destroyed with end_reason client and emit hub.sandbox.destroy (lease_id, sandbox_id, reason \"client\") via the shared emit helper",
+        "Make the Create-returned handle's Close() call the same client destroy path; Spec() returns the built spec with every Env value replaced by \"[redacted]\"; Reap passes straight through to the provider; every other handle method delegates to the provider's sandbox with unchanged arguments"
+      ],
+      "touches": [
+        "internal/sandboxes/backend.go",
+        "internal/sandboxes/handle.go",
+        "internal/sandboxes/backend_rest_test.go"
+      ],
+      "depends_on": [
+        6
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 8,
+      "kind": "implement",
+      "title": "Start the gateway: bind, TLS load, gatewayd.Server, gateway_url and main wiring",
+      "criteria": [
+        "27-REQ-1.8",
+        "27-REQ-2.1",
+        "27-REQ-2.2",
+        "27-REQ-2.3",
+        "27-REQ-2.4",
+        "27-REQ-2.5",
+        "27-REQ-2.6"
+      ],
+      "tests": [
+        "TS-27-8",
+        "TS-27-9",
+        "TS-27-10",
+        "TS-27-11",
+        "TS-27-12",
+        "TS-27-13",
+        "TS-27-14"
+      ],
+      "steps": [
+        "Write TS-27-8..TS-27-14 using seams for gatewayd.New, the exit function and the serve function, and confirm they fail",
+        "Create internal/sandboxes/gateway.go with StartGateway(svc, deps, seams): when svc is nil bind nothing and build no server",
+        "When TLS is configured load tls.LoadX509KeyPair; on failure return an error naming sandbox.tls_cert and sandbox.tls_key and including the loader's error, before binding anything",
+        "net.Listen on listen; a failure returns an error naming sandbox.listen with the bind error",
+        "Build gatewayd.Config{Backend: the wrapping backend, Authenticate: lease authenticator, TLS, NetworkModes, MaxSandboxes, MaxTTL} with no Tokens; if gatewayd.New fails close the listener and return the wrapped error",
+        "Compute the gateway URL: external_url when set, else https:// when TLS or http:// otherwise plus the listener's bound address (port 0 resolves to the real port); store it on the service for the lease handlers",
+        "Serve on the bound listener in a goroutine; if Serve returns, slog.Error the error and call the injected exit function with a non-zero code (os.Exit(1) in production); never call Shutdown",
+        "Wire into cmd/af-hub/main.go (read it by path; cmd/ is gitignored for find_files): after auditEmitter, the lease schema and the sandbox Service exist and before server.Start(), call StartGateway and log.Fatal on error"
+      ],
+      "touches": [
+        "internal/sandboxes/gateway.go",
+        "internal/sandboxes/gateway_test.go",
+        "internal/sandboxes/service.go",
+        "cmd/af-hub/main.go"
+      ],
+      "depends_on": [
+        4,
+        7
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 9,
+      "kind": "implement",
+      "title": "Add gateway_url to lease responses and make DELETE destroy the box",
+      "criteria": [
+        "27-REQ-2.7",
+        "27-REQ-8"
+      ],
+      "tests": [
+        "TS-27-15",
+        "TS-27-48",
+        "TS-27-49",
+        "TS-27-50",
+        "TS-27-51",
+        "TS-27-52",
+        "TS-27-53"
+      ],
+      "steps": [
+        "Write TS-27-15 and TS-27-48..TS-27-53 using the echo harness with apikit.SetAuthInfo (see internal/merge/api_test.go), real SQLite lease store, a recording provider and recording emitter, and confirm they fail",
+        "Extend spec 26's route config with GatewayURL, the provider (box destroyer), emitter and a seam for the destroy deadline (default 30s) and a hook between the DELETE's read and update; add gateway_url to every lease representation (POST, GET one, workspace list, admin list) in every state",
+        "DELETE on an active lease: call provider Destroy(sandbox_id) under context.WithTimeout(30s); errors.Is(err, sandbox.ErrNotFound) counts as success; any other error or timeout answers 502 via apikit.WriteAPIErrorWithType(c, http.StatusBadGateway, scrubbedMsg, \"sandbox_provider_error\") and changes nothing, emits nothing",
+        "On success run active→destroyed with end_reason api and clear the token hash; DELETE on a leased lease runs leased→destroyed with end_reason api without calling the provider; terminal leases keep spec 26's 204 behaviour with no provider call or event",
+        "If the conditional update affects zero rows, re-read the lease once and act on the new state (destroy the box first when it became active)",
+        "Emit exactly one hub.sandbox.destroy per change into destroyed (lease_id, sandbox_id or nil, reason \"api\"), with ActorID/ActorType from apikit.GetAuthInfo; skip when the emitter is nil and slog.Error on emit errors",
+        "Pass the scrub values (fixed env values of the profile; resolved secrets are not available here) into the DELETE error scrub, and ensure the error text is scrubbed before being written"
+      ],
+      "touches": [
+        "internal/sandboxes/handlers.go",
+        "internal/sandboxes/delete_destroy.go",
+        "internal/sandboxes/handlers_gateway_test.go",
+        "cmd/af-hub/main.go"
+      ],
+      "depends_on": [
+        8
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 10,
+      "kind": "implement",
+      "title": "Prove emission rules, no-leak guarantees and one-shot Create over real gRPC",
+      "criteria": [
+        "27-REQ-9.3",
+        "27-REQ-9.4",
+        "27-REQ-9.5",
+        "27-REQ-9.6",
+        "27-REQ-9.7",
+        "27-REQ-6.5",
+        "27-REQ-6.6"
+      ],
+      "tests": [
+        "TS-27-18",
+        "TS-27-39",
+        "TS-27-40",
+        "TS-27-56",
+        "TS-27-57",
+        "TS-27-58"
+      ],
+      "steps": [
+        "Write TS-27-18, TS-27-39, TS-27-40 (property test with random schedules of up to 8 concurrent Creates and at most one DELETE), TS-27-56, TS-27-57 and TS-27-58 and confirm which fail",
+        "Centralise event emission in one helper: Workspace = lease slug, ResourceType the same value spec 26 uses for hub.sandbox.lease (\"sandbox\"), ResourceID = lease id; gateway-raised events use ActorType \"lease\" and ActorID = created_by; metadata has secret names only; nil emitter skips, an Emit error is logged with slog.Error and changes no outcome",
+        "Audit every path where provider error text reaches a lease error, event, log line, gateway error or HTTP body and make it go through scrub() with resolved secrets and fixed env values; remove any slog call that could carry a secret, env value, token or hash",
+        "Confirm the gatewayd-level behaviour: a second Create under the same token gets FailedPrecondition while active and Unauthenticated once destroyed or failed, with provider Create count staying 1; ensure the claim plus conditional updates guarantee at most one provider Create and no live box on a destroyed lease",
+        "Fix any production-code gap the tests expose (do not weaken the tests)"
+      ],
+      "touches": [
+        "internal/sandboxes/events.go",
+        "internal/sandboxes/backend.go",
+        "internal/sandboxes/delete_destroy.go",
+        "internal/sandboxes/gateway_grpc_test.go",
+        "internal/sandboxes/leak_test.go"
+      ],
+      "depends_on": [
+        9
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 11,
+      "kind": "integration",
+      "title": "Verify the gateway execution paths end to end and remove stubs",
+      "tests": [
+        "TS-27-61",
+        "TS-27-62",
+        "TS-27-63",
+        "TS-27-64",
+        "TS-27-65"
+      ],
+      "steps": [
+        "Write smoke tests TS-27-61..TS-27-65 with real lease HTTP handlers, gatewayd.Server on 127.0.0.1:0, the real gateway.Dial client, the real authenticator and backend, SQLite lease store, secrets.Store and audit emitter (a recording provider double or local provider underneath) and confirm they pass",
+        "Trace 27-PATH-1..27-PATH-5 through production code: POST → gateway_url → authenticator → Backend.Create → secret resolution → provider → leased→active → event; confirm each step calls the next and no stub remains",
+        "For every criterion with a contract confirm the producer's result is consumed in production code, not only tests: StartGateway is called from cmd/af-hub/main.go, the lease routes receive the GatewayURL, provider and emitter, Validate's results feed StartGateway",
+        "Confirm sandboxes.Init / StartGateway are called from production main after the Service and lease schema exist and before server.Start(), and that spec 25's RegisterRoutes entry point is called from production code",
+        "Search internal/sandboxes, internal/audit and cmd/af-hub for TODO, NotImplementedError, panic(\"not implemented\") and bare `return nil` on non-trivial paths and remove any that remain",
+        "Run `make test` and `make lint`, run `make doc` and update docs/configuration.md, docs/api.md, docs/openapi.yaml, docs/architecture.md, docs/cli.md and README.md, and add docs/adr/03-hub-is-the-sandbox-gateway.md (Context / Decision / Consequences / Alternatives); write no tests about docs"
+      ],
+      "touches": [
+        "internal/sandboxes/smoke_gateway_test.go",
+        "cmd/af-hub/main.go",
+        "docs/adr/03-hub-is-the-sandbox-gateway.md",
+        "docs/configuration.md",
+        "docs/api.md",
+        "docs/openapi.yaml",
+        "docs/architecture.md",
+        "docs/cli.md",
+        "README.md"
+      ],
+      "depends_on": [
+        10
+      ],
+      "done_when": [
+        "`make test` and `make lint` pass",
+        "every execution path 27-PATH-1..5 is live in production code"
+      ],
+      "state": "pending"
+    }
+  ]
+}

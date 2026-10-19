@@ -1,0 +1,948 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/test_spec.v2.json",
+  "spec_id": "29",
+  "spec_name": "sandbox_gateway_provider",
+  "schema_version": 2,
+  "tests": [
+    {
+      "id": "TS-29-1",
+      "kind": "unit",
+      "verifies": [
+        "29-REQ-1.2"
+      ],
+      "title": "An unknown provider value is refused with both accepted values listed",
+      "given": [
+        "a Config with provider = \"kubernetes\" and no other faults",
+        "a gateway factory and a podman factory that count calls"
+      ],
+      "when": "Validate / Start is called",
+      "then": [
+        "the joined error contains `sandbox.provider`, `podman` and `gateway`",
+        "neither factory is called"
+      ],
+      "pseudocode": "err = Start(cfg{provider:'kubernetes'}, counters); assert contains(err,'sandbox.provider','podman','gateway'); assert gwCalls==0 && podmanCalls==0"
+    },
+    {
+      "id": "TS-29-2",
+      "kind": "integration",
+      "verifies": [
+        "29-REQ-1.1"
+      ],
+      "title": "Init with provider gateway against a reachable remote returns a running service",
+      "given": [
+        "an in-process gatewayd.Server with static token T over local on 127.0.0.1:0",
+        "a config file with provider = \"gateway\", gateway_url = http://127.0.0.1:<port>, gateway_token = T and one valid profile",
+        "the gateway factory is the real gateway.Dial"
+      ],
+      "when": "Init(logger, path, factory) is called",
+      "then": [
+        "the error is nil and the service is non-nil",
+        "Service.Provider() is the remote client"
+      ],
+      "pseudocode": "svc, err = Init(log, path, dialFactory); assert err == nil; assert svc != nil; assert svc.Provider() != nil"
+    },
+    {
+      "id": "TS-29-3",
+      "kind": "integration",
+      "verifies": [
+        "29-REQ-1.3"
+      ],
+      "title": "No Podman provider is built and no engine binary runs under provider gateway",
+      "given": [
+        "a valid gateway config",
+        "a podman factory that fails the test if called",
+        "PATH points at a directory containing only a sentinel `podman` script that writes a marker file"
+      ],
+      "when": "Init runs to completion against the in-process remote and the service is exercised with one lease Create",
+      "then": [
+        "the podman factory is called 0 times",
+        "the marker file does not exist"
+      ],
+      "pseudocode": "Init(...); assert podmanCalls == 0; assert !exists(marker)"
+    },
+    {
+      "id": "TS-29-4",
+      "kind": "integration",
+      "verifies": [
+        "29-REQ-1.4"
+      ],
+      "title": "The same profile set is accepted or rejected identically under podman and gateway",
+      "given": [
+        "a table of profile sets: valid, bad max_ttl, bad network_modes entry, CheckSpec-rejected profile",
+        "a stub provider reporting identical capabilities for both provider settings"
+      ],
+      "when": "Start is called for each set once with provider podman and once with provider gateway (injected factories returning the stub)",
+      "then": [
+        "acceptance or rejection is equal for both providers",
+        "for rejections the profile-related message text is identical"
+      ],
+      "pseudocode": "for set in sets: e1 = Start(podmanCfg(set)); e2 = Start(gatewayCfg(set)); assert (e1==nil)==(e2==nil); assert profileMsg(e1)==profileMsg(e2)"
+    },
+    {
+      "id": "TS-29-5",
+      "kind": "unit",
+      "verifies": [
+        "29-REQ-2.1"
+      ],
+      "title": "gateway_url and gateway_token are known keys, expanded, and reported in one joined error",
+      "given": [
+        "a TOML file with [sandbox] provider = \"gateway\", gateway_url = \"${GW_URL}\", gateway_token = \"${GW_TOKEN}\" and env GW_URL, GW_TOKEN set",
+        "a second file with both keys invalid plus an invalid max_ttl"
+      ],
+      "when": "LoadConfig and Validate are called on each",
+      "then": [
+        "the first loads with no unknown-key error and the expanded values are used",
+        "the second yields a single errors.Join error naming sandbox.gateway_url, sandbox.gateway_token and sandbox.max_ttl"
+      ],
+      "pseudocode": "cfg = LoadConfig(p1); assert cfg.GatewayURL == env(GW_URL); _, err = Validate(LoadConfig(p2)); assert contains(err, three keys)"
+    },
+    {
+      "id": "TS-29-6",
+      "kind": "unit",
+      "verifies": [
+        "29-REQ-2.2"
+      ],
+      "title": "A missing or empty gateway_url under provider gateway is refused as required",
+      "given": [
+        "provider = \"gateway\" with a valid token",
+        "cases: key absent, empty string, ${UNSET} expanding to empty"
+      ],
+      "when": "Validate is called for each case",
+      "then": [
+        "each joined error contains `sandbox.gateway_url` and `required`"
+      ],
+      "pseudocode": "for c in cases: err = Validate(c); assert contains(err,'sandbox.gateway_url','required')"
+    },
+    {
+      "id": "TS-29-7",
+      "kind": "unit",
+      "verifies": [
+        "29-REQ-2.3"
+      ],
+      "title": "Scheme and parse rules accept loopback http and https and reject the rest",
+      "given": [
+        "provider = \"gateway\" with a valid token"
+      ],
+      "when": "Validate is called with gateway_url values from a table",
+      "then": [
+        "http://127.0.0.1:9000, http://localhost:9000 and https://gw.example:443 pass",
+        "http://gw.example:9000, ftp://127.0.0.1 and an unparseable relative value fail with an error containing `sandbox.gateway_url`"
+      ],
+      "pseudocode": "for (u, ok) in table: err = Validate(cfg(u)); assert (err==nil)==ok; if !ok assert contains(err,'sandbox.gateway_url')"
+    },
+    {
+      "id": "TS-29-8",
+      "kind": "unit",
+      "verifies": [
+        "29-REQ-2.4"
+      ],
+      "title": "Empty host and out-of-range or non-numeric ports are refused",
+      "given": [
+        "provider = \"gateway\" with a valid token"
+      ],
+      "when": "Validate is called with https://gw.example:1, :65535, :0, :65536, :abc and https://:443",
+      "then": [
+        "ports 1 and 65535 pass",
+        "ports 0, 65536, abc and the empty host fail with an error containing `sandbox.gateway_url`"
+      ],
+      "pseudocode": "assert Validate(url(':1'))==nil; assert Validate(url(':65535'))==nil; for u in bad: assert contains(Validate(u),'sandbox.gateway_url')"
+    },
+    {
+      "id": "TS-29-9",
+      "kind": "unit",
+      "verifies": [
+        "29-REQ-2.5"
+      ],
+      "title": "Userinfo, query, fragment and non-root path in gateway_url are refused",
+      "given": [
+        "provider = \"gateway\" with a valid token"
+      ],
+      "when": "Validate is called with https://gw.example/, https://gw.example/api, https://gw.example?x=1, https://gw.example#f and https://u:p@gw.example",
+      "then": [
+        "https://gw.example/ passes",
+        "the other four fail with an error containing `sandbox.gateway_url`"
+      ],
+      "pseudocode": "assert Validate('https://gw.example/')==nil; for u in rest: assert contains(Validate(u),'sandbox.gateway_url')"
+    },
+    {
+      "id": "TS-29-10",
+      "kind": "unit",
+      "verifies": [
+        "29-REQ-2.6"
+      ],
+      "title": "Userinfo is stripped from gateway_url before it is quoted in a failure",
+      "given": [
+        "provider = \"gateway\" with gateway_url = https://user:pw@gw.example and a valid token"
+      ],
+      "when": "Validate is called",
+      "then": [
+        "the error names sandbox.gateway_url",
+        "the error contains neither `user:pw` nor `pw@`"
+      ],
+      "pseudocode": "err = Validate(cfg('https://user:pw@gw.example')); assert !contains(err,'user:pw') && !contains(err,'pw@')"
+    },
+    {
+      "id": "TS-29-11",
+      "kind": "unit",
+      "verifies": [
+        "29-REQ-3.1"
+      ],
+      "title": "A missing or empty gateway_token under provider gateway is refused as required",
+      "given": [
+        "provider = \"gateway\" with a valid gateway_url",
+        "cases: absent, empty, ${UNSET} expanding to empty"
+      ],
+      "when": "Validate is called for each case",
+      "then": [
+        "each joined error contains `sandbox.gateway_token` and `required`"
+      ],
+      "pseudocode": "for c in cases: assert contains(Validate(c),'sandbox.gateway_token','required')"
+    },
+    {
+      "id": "TS-29-12",
+      "kind": "unit",
+      "verifies": [
+        "29-REQ-3.2"
+      ],
+      "title": "A 15-character token fails and a 16-character token passes",
+      "given": [
+        "provider = \"gateway\" with a valid gateway_url"
+      ],
+      "when": "Validate is called with tokens of 15 and 16 printable characters",
+      "then": [
+        "the 15-character token yields an error naming `sandbox.gateway_token` and the minimum 16",
+        "the 16-character token yields no token error"
+      ],
+      "pseudocode": "assert contains(Validate(tok(15)),'sandbox.gateway_token','16'); assert Validate(tok(16))==nil"
+    },
+    {
+      "id": "TS-29-13",
+      "kind": "unit",
+      "verifies": [
+        "29-REQ-3.3"
+      ],
+      "title": "Tokens with spaces, newline or non-ASCII bytes are refused",
+      "given": [
+        "provider = \"gateway\" with a valid gateway_url"
+      ],
+      "when": "Validate is called with 16 valid characters plus `\\n`, a token with an embedded space, a token with a tab, and a token with a byte 0x7F or 0x80+",
+      "then": [
+        "each error names `sandbox.gateway_token` and the printable-ASCII-without-spaces rule",
+        "a token spanning exactly 0x21 to 0x7E characters passes"
+      ],
+      "pseudocode": "for t in bad: assert contains(Validate(t),'sandbox.gateway_token'); assert Validate(allPrintable16)==nil"
+    },
+    {
+      "id": "TS-29-14",
+      "kind": "property",
+      "verifies": [
+        "29-REQ-3.4"
+      ],
+      "title": "Validation error text never contains the token or any 8+ character substring of it",
+      "given": [
+        "a valid or invalid configuration otherwise, with gateway_url possibly also faulty"
+      ],
+      "when": "for any generated gateway_token string (valid, too short, containing invalid bytes, empty), Validate is called",
+      "then": [
+        "for every contiguous substring of length 8 or more of the token, err.Error() does not contain it"
+      ],
+      "pseudocode": "for tok in gen_tokens(): err = Validate(cfg(tok)); for sub in substrings(tok, minLen=8): assert !strings.Contains(errText(err), sub)"
+    },
+    {
+      "id": "TS-29-15",
+      "kind": "unit",
+      "verifies": [
+        "29-REQ-4.1"
+      ],
+      "title": "engine_binary, runtime and userns under provider gateway are each refused",
+      "given": [
+        "a valid gateway config plus engine_binary, runtime = \"krun\" and userns set"
+      ],
+      "when": "Validate is called",
+      "then": [
+        "one failure per key, each naming the key and saying it applies only to provider \"podman\"",
+        "e.g. the error contains `sandbox.runtime` and `podman`"
+      ],
+      "pseudocode": "err = Validate(cfg); for k in [engine_binary,runtime,userns]: assert contains(err,'sandbox.'+k,'podman')"
+    },
+    {
+      "id": "TS-29-16",
+      "kind": "unit",
+      "verifies": [
+        "29-REQ-4.2"
+      ],
+      "title": "gateway_url and gateway_token under provider podman are refused without echoing the token",
+      "given": [
+        "provider = \"podman\" with gateway_url set and gateway_token = a known 20-character token"
+      ],
+      "when": "Validate is called",
+      "then": [
+        "one failure per key naming it and saying it applies only to provider \"gateway\"",
+        "the error does not contain the token"
+      ],
+      "pseudocode": "err = Validate(cfg); assert contains(err,'sandbox.gateway_url','sandbox.gateway_token','gateway'); assert !contains(err, token)"
+    },
+    {
+      "id": "TS-29-17",
+      "kind": "unit",
+      "verifies": [
+        "29-REQ-4.3"
+      ],
+      "title": "Other-provider key failures are collected with other static failures",
+      "given": [
+        "provider = \"gateway\" with runtime set and max_ttl = \"bogus\""
+      ],
+      "when": "Validate is called",
+      "then": [
+        "a single error names both `sandbox.runtime` and `sandbox.max_ttl`"
+      ],
+      "pseudocode": "err = Validate(cfg); assert contains(err,'sandbox.runtime','sandbox.max_ttl')"
+    },
+    {
+      "id": "TS-29-18",
+      "kind": "integration",
+      "verifies": [
+        "29-REQ-5.1"
+      ],
+      "title": "The gateway factory is called once with exactly the configured URL and token",
+      "given": [
+        "a valid gateway config with a known URL and token",
+        "a recording gateway factory returning a stub provider that answers List"
+      ],
+      "when": "Start is called",
+      "then": [
+        "the factory is called exactly once",
+        "it receives the configured URL string and token string"
+      ],
+      "pseudocode": "Start(cfg, recFactory); assert rec.calls==1; assert rec.url==cfgURL && rec.token==cfgToken"
+    },
+    {
+      "id": "TS-29-19",
+      "kind": "integration",
+      "verifies": [
+        "29-REQ-5.2"
+      ],
+      "title": "Start-up issues exactly one List and no Create or Destroy on the remote",
+      "given": [
+        "an in-process remote gatewayd with static token T over a recording wrapper around local",
+        "hub configured with the real gateway.Dial and token T"
+      ],
+      "when": "Init completes",
+      "then": [
+        "the recording backend observed 1 List, 0 Create, 0 Destroy",
+        "the List arrived under hub's token"
+      ],
+      "pseudocode": "Init(...); assert rec.lists==1 && rec.creates==0 && rec.destroys==0"
+    },
+    {
+      "id": "TS-29-20",
+      "kind": "integration",
+      "verifies": [
+        "29-REQ-5.3"
+      ],
+      "title": "Static validation failure returns the joined error without building or listing",
+      "given": [
+        "a config with an invalid gateway_url and a recording factory"
+      ],
+      "when": "Start is called",
+      "then": [
+        "the factory is called 0 times and no List is issued",
+        "the returned error is the joined static error naming sandbox.gateway_url"
+      ],
+      "pseudocode": "err = Start(badCfg, rec); assert rec.calls==0 && rec.lists==0; assert contains(err,'sandbox.gateway_url')"
+    },
+    {
+      "id": "TS-29-21",
+      "kind": "integration",
+      "verifies": [
+        "29-REQ-5.4"
+      ],
+      "title": "Factory error, unreachable remote and refused token each refuse start with a scrubbed sandbox: error",
+      "given": [
+        "case A: factory returns an error containing the token and https://user:pw@host",
+        "case B: real Dial to a closed 127.0.0.1 port",
+        "case C: in-process remote with token A, hub configured with token B"
+      ],
+      "when": "Init is called for each case",
+      "then": [
+        "each returns a non-nil error and a nil service",
+        "each error starts with `sandbox:` and contains `sandbox.provider`, `sandbox.gateway_url` and `sandbox.gateway_token`",
+        "no error contains the token or `user:pw`; case A shows `[redacted]`"
+      ],
+      "pseudocode": "for c in cases: svc, err = Init(c); assert svc==nil; assert hasPrefix(err,'sandbox:'); assert contains(err,3 keys); assert !contains(err, token)"
+    },
+    {
+      "id": "TS-29-22",
+      "kind": "integration",
+      "verifies": [
+        "29-REQ-5.5"
+      ],
+      "title": "A remote that never answers List fails start within 11 seconds",
+      "given": [
+        "a gateway factory returning a stub provider whose List blocks until its context is cancelled"
+      ],
+      "when": "Start is called and the elapsed time is measured",
+      "then": [
+        "Start returns an error starting with `sandbox:` naming the three keys",
+        "the elapsed time is at least 10 seconds and no more than 11 seconds"
+      ],
+      "pseudocode": "t0=now(); _, err = Start(cfg, blockingFactory); assert err != nil; assert 10s <= now()-t0 <= 11s"
+    },
+    {
+      "id": "TS-29-23",
+      "kind": "integration",
+      "verifies": [
+        "29-REQ-6.1"
+      ],
+      "title": "The remote client's Capabilities is read exactly once across start-up and later calls",
+      "given": [
+        "a counting stub provider answering List and Capabilities"
+      ],
+      "when": "Start succeeds and the hub backend's Capabilities() is then called 20 times",
+      "then": [
+        "the stub's Capabilities was called exactly once in total"
+      ],
+      "pseudocode": "svc = Start(cfg, f(stub)); for i in 1..20: backend.Capabilities(); assert stub.capCalls == 1"
+    },
+    {
+      "id": "TS-29-24",
+      "kind": "integration",
+      "verifies": [
+        "29-REQ-6.2"
+      ],
+      "title": "A network_modes entry the remote does not offer refuses start with 25-REQ-5.4's message",
+      "given": [
+        "a remote snapshot offering only [\"none\"] and a config whose network_modes include \"host\""
+      ],
+      "when": "Init is called, and the same config is run with provider podman and an identical stub",
+      "then": [
+        "Init returns an error and a nil service",
+        "the error text equals the one produced for provider podman"
+      ],
+      "pseudocode": "_, e1 = Start(gwCfg, stub); _, e2 = Start(podmanCfg, stub); assert e1 != nil; assert same(e1, e2)"
+    },
+    {
+      "id": "TS-29-25",
+      "kind": "integration",
+      "verifies": [
+        "29-REQ-6.3"
+      ],
+      "title": "A profile rejected by CheckSpec against the snapshot refuses start with the per-profile message",
+      "given": [
+        "a remote snapshot whose capabilities make sandbox.CheckSpec reject one profile"
+      ],
+      "when": "Init is called",
+      "then": [
+        "Init returns an error and a nil service",
+        "the error names that profile with spec 25's message unchanged"
+      ],
+      "pseudocode": "_, err = Start(cfg, stubRejecting); assert err != nil; assert contains(err, profileName); assert equals(msgPart(err), CheckSpec(spec, caps).Error())"
+    },
+    {
+      "id": "TS-29-26",
+      "kind": "integration",
+      "verifies": [
+        "29-REQ-6.4"
+      ],
+      "title": "Backend Capabilities returns the narrowed snapshot while the remote is stopped",
+      "given": [
+        "a service started against an in-process remote offering several network modes",
+        "the remote then shut down"
+      ],
+      "when": "the hub backend's Capabilities() is called",
+      "then": [
+        "it returns promptly with the narrowed snapshot (network modes limited to hub's configured set)",
+        "no call reaches the remote"
+      ],
+      "pseudocode": "remote.Shutdown(); caps = backend.Capabilities(); assert caps.NetworkModes == narrow(snapshot); assert rec.calls unchanged"
+    },
+    {
+      "id": "TS-29-27",
+      "kind": "integration",
+      "verifies": [
+        "29-REQ-7.1"
+      ],
+      "title": "A lease followed by Dial and Create produces one box on the remote with the lease's image, TTL and merged env",
+      "given": [
+        "an in-process remote gatewayd (static token T) over a recording wrapper around local.Unisolated",
+        "hub service and hub gateway on a second 127.0.0.1:0 with profile `widgets` having env and a resolved secret"
+      ],
+      "when": "POST /api/v1/workspaces/widgets/sandboxes, then gateway.Dial(lease.gateway_url, leaseToken) and Create(sandbox.Spec{})",
+      "then": [
+        "the recording backend captured exactly one Spec",
+        "its Image and TTL equal the lease's and its Env equals profile env merged with the secrets",
+        "the caller received a sandbox handle"
+      ],
+      "pseudocode": "lease = post(); c = Dial(lease.gateway_url, tok); sb = c.Create(ctx, Spec{}); assert rec.creates==1; assert rec.spec.Env == merge(profile.env, secrets)"
+    },
+    {
+      "id": "TS-29-28",
+      "kind": "integration",
+      "verifies": [
+        "29-REQ-7.2"
+      ],
+      "title": "Only hub's token reaches the remote and the lease gateway_url is hub's own",
+      "given": [
+        "a remote gatewayd whose authenticator records every token it sees",
+        "a lease obtained and a box created through hub's gateway"
+      ],
+      "when": "the lease representation is read and the recorded tokens are inspected",
+      "then": [
+        "every token seen by the remote equals hub's gateway_token and none equals a lease token",
+        "the lease gateway_url equals hub's own gateway URL and differs from sandbox.gateway_url"
+      ],
+      "pseudocode": "assert set(remote.seenTokens) == {hubToken}; assert lease.gateway_url == hubGatewayURL; assert lease.gateway_url != cfg.GatewayURL"
+    },
+    {
+      "id": "TS-29-29",
+      "kind": "integration",
+      "verifies": [
+        "29-REQ-7.3"
+      ],
+      "title": "A second Create is FailedPrecondition and an unminted token is Unauthenticated, without contacting the remote",
+      "given": [
+        "a lease whose caller already made one Create",
+        "the remote's recorded Create count is 1"
+      ],
+      "when": "the caller issues a second Create under the lease token, and another dial uses a token hub never minted",
+      "then": [
+        "the second Create returns gRPC code FailedPrecondition",
+        "the unminted token returns Unauthenticated",
+        "the remote records no additional Create"
+      ],
+      "pseudocode": "_, e = c.Create(ctx, Spec{}); assert status.Code(e)==FailedPrecondition; _, e2 = bad.Create(...); assert status.Code(e2)==Unauthenticated; assert rec.creates==1"
+    },
+    {
+      "id": "TS-29-30",
+      "kind": "integration",
+      "verifies": [
+        "29-REQ-7.4"
+      ],
+      "title": "DELETE and the caller's Close each destroy the remote box and revoke the lease token",
+      "given": [
+        "two leases each with a box created on the remote"
+      ],
+      "when": "DELETE is sent for the first lease, and Close is called on the second lease's handle",
+      "then": [
+        "the remote's List contains neither box",
+        "dialling hub's gateway with either lease token is Unauthenticated"
+      ],
+      "pseudocode": "del(lease1); sb2.Close(); assert remote.List() empty; assert status.Code(dialCreate(tok1))==Unauthenticated; same for tok2"
+    },
+    {
+      "id": "TS-29-31",
+      "kind": "unit",
+      "verifies": [
+        "29-REQ-7.5"
+      ],
+      "title": "A remote not-found in sentinel form or gRPC NotFound form counts as destroyed",
+      "given": [
+        "a stub remote client whose Destroy returns sandbox.ErrNotFound (wrapped) in one run and status.Error(codes.NotFound) in another",
+        "an active lease with a box"
+      ],
+      "when": "Backend.Destroy, DELETE and the expiry sweep each run against the stub",
+      "then": [
+        "each treats the box as destroyed and ends the lease as after a successful destroy",
+        "DELETE answers its success status, not 502"
+      ],
+      "pseudocode": "for form in [sentinel, grpcNotFound]: stub.destroyErr = form; r = delete(lease); assert r.status == okStatus; assert lease.state == ended"
+    },
+    {
+      "id": "TS-29-32",
+      "kind": "integration",
+      "verifies": [
+        "29-REQ-7.6"
+      ],
+      "title": "A remote Unauthenticated or PermissionDenied reaches the caller as Unavailable with one error log",
+      "given": [
+        "a stub remote client returning status Unauthenticated (run 1) and PermissionDenied (run 2) from Create and from Destroy",
+        "slog.Default captured by a buffer handler"
+      ],
+      "when": "a caller Create is made, then for a second active lease a DELETE is sent",
+      "then": [
+        "the caller sees codes.Unavailable with a scrubbed message",
+        "the Create leaves the lease `failed`; the Destroy leaves the lease `active` and DELETE answers 502",
+        "exactly one error record per occurrence names `sandbox.gateway_token` and no log contains the token value"
+      ],
+      "pseudocode": "e = c.Create(); assert status.Code(e)==Unavailable; assert lease.state=='failed'; r=del(l2); assert r.status==502 && l2.state=='active'; assert count(errorRecords containing 'sandbox.gateway_token') == 2 per run"
+    },
+    {
+      "id": "TS-29-33",
+      "kind": "integration",
+      "verifies": [
+        "29-REQ-7.7"
+      ],
+      "title": "The remote sees exactly one Create per caller Create, including failed ones",
+      "given": [
+        "a recording remote backend with an injectable failing Create"
+      ],
+      "when": "one caller Create succeeds and another caller Create fails at the remote",
+      "then": [
+        "the recording backend records two Creates in total, one per caller Create",
+        "no Create is retried"
+      ],
+      "pseudocode": "rec.failNext(); c1.Create(); c2.Create(); assert rec.creates == 2"
+    },
+    {
+      "id": "TS-29-34",
+      "kind": "unit",
+      "verifies": [
+        "29-REQ-8.1"
+      ],
+      "title": "The scrub set holds the token, the gateway_url string and url.Host under provider gateway",
+      "given": [
+        "a service built with provider gateway, token T, gateway_url http://127.0.0.1:41234"
+      ],
+      "when": "provider error text containing T, the URL string, and `127.0.0.1:41234` separately is scrubbed",
+      "then": [
+        "each occurrence is replaced by `[redacted]`",
+        "with provider podman the same text is not altered for those values"
+      ],
+      "pseudocode": "out = scrub(text, svc.scrubValues()); assert !contains(out,T,url,host); assert contains(out,'[redacted]')"
+    },
+    {
+      "id": "TS-29-35",
+      "kind": "integration",
+      "verifies": [
+        "29-REQ-8.2"
+      ],
+      "title": "A remote error carrying the token and host leaks into no output surface",
+      "given": [
+        "a remote recording backend whose Create returns an error containing hub's remote token and the remote host:port",
+        "slog.Default and the audit emitter captured"
+      ],
+      "when": "a caller Creates through hub's gateway, then the lease is read over HTTP",
+      "then": [
+        "the gateway error message, lease JSON, HTTP bodies, lease `error` field, audit events and log lines contain neither the token nor the remote host string",
+        "the lease is `failed`"
+      ],
+      "pseudocode": "rec.createErr = errorf('boom %s at %s', tok, host); e = c.Create(); for out in [e.Error(), leaseJSON, httpBodies, auditEvents, logs]: assert !contains(out,tok) && !contains(out,host)"
+    },
+    {
+      "id": "TS-29-36",
+      "kind": "integration",
+      "verifies": [
+        "29-REQ-8.3"
+      ],
+      "title": "The token is absent from HTTP responses, metrics and the start-up info record, whose attributes are provider and profiles",
+      "given": [
+        "a started service and HTTP server with provider gateway",
+        "slog captured"
+      ],
+      "when": "the profile listing, an error body (unknown workspace), a lease response and /metrics are fetched and the start-up records are inspected",
+      "then": [
+        "no response body or metric output contains the token",
+        "the single start-up info record has exactly the attributes `provider` and `profiles`"
+      ],
+      "pseudocode": "for u in urls: assert !contains(get(u).body, tok); rec = infoRecord(); assert keys(rec.attrs) == {provider, profiles}"
+    },
+    {
+      "id": "TS-29-37",
+      "kind": "unit",
+      "verifies": [
+        "29-REQ-8.4"
+      ],
+      "title": "The redacting token renders [redacted] under every formatting and encoding",
+      "given": [
+        "the validated token value and a struct holding it as a field"
+      ],
+      "when": "it is formatted with %v, %+v, %#v and %s, logged through slog (text and JSON handlers), and encoded with json.Marshal, both directly and as a struct field",
+      "then": [
+        "every rendering contains `[redacted]` and none contains the token"
+      ],
+      "pseudocode": "for f in [%v,%+v,%#v,%s]: out = Sprintf(f, holder); assert contains(out,'[redacted]') && !contains(out,tok); assert !contains(json.Marshal(holder), tok)"
+    },
+    {
+      "id": "TS-29-38",
+      "kind": "property",
+      "verifies": [
+        "29-REQ-8.5"
+      ],
+      "title": "No start-up error contains the token or URL userinfo",
+      "given": [
+        "a generator of configs (valid and faulty URL, token, other-provider keys, profiles) and of probe failures (factory errors and List errors whose text embeds the token, userinfo and URL)"
+      ],
+      "when": "for any generated config and probe failure, Start is called",
+      "then": [
+        "the returned error text never contains the token",
+        "it never contains URL userinfo, and any quoted gateway_url has userinfo removed"
+      ],
+      "pseudocode": "for cfg, fail in gen(): err = Start(cfg, factoryFailing(fail)); assert !contains(errText(err), cfg.token) && !contains(errText(err), userinfo)"
+    },
+    {
+      "id": "TS-29-39",
+      "kind": "integration",
+      "verifies": [
+        "29-REQ-9.1"
+      ],
+      "title": "Leases and the profile listing keep working while the remote is down",
+      "given": [
+        "a started service whose in-process remote has been shut down"
+      ],
+      "when": "POST /api/v1/workspaces/{ws}/sandboxes and the profile listing GET are called",
+      "then": [
+        "the lease POST returns its success status",
+        "the profile listing returns 200"
+      ],
+      "pseudocode": "remote.Shutdown(); assert post(lease).status == 201; assert get(profiles).status == 200"
+    },
+    {
+      "id": "TS-29-40",
+      "kind": "integration",
+      "verifies": [
+        "29-REQ-9.2"
+      ],
+      "title": "A Create while the remote is unreachable fails the lease with a scrubbed error",
+      "given": [
+        "a lease obtained while the remote is shut down"
+      ],
+      "when": "the caller dials hub's gateway and calls Create",
+      "then": [
+        "the caller receives an error",
+        "the lease state is `failed` and its `error` field contains neither the token nor the remote host"
+      ],
+      "pseudocode": "_, e = c.Create(); assert e != nil; l = getLease(); assert l.state=='failed'; assert !contains(l.error, tok, host)"
+    },
+    {
+      "id": "TS-29-41",
+      "kind": "integration",
+      "verifies": [
+        "29-REQ-9.3"
+      ],
+      "title": "DELETE of an active lease while the remote is down answers 502 and changes nothing",
+      "given": [
+        "an active lease with a box, then the remote shut down"
+      ],
+      "when": "DELETE is sent for the lease",
+      "then": [
+        "HTTP 502 with error code `sandbox_provider_error`",
+        "the lease stays `active` and its token still authenticates at hub's gateway"
+      ],
+      "pseudocode": "remote.Shutdown(); r = del(lease); assert r.status==502 && r.json.code=='sandbox_provider_error'; assert lease.state=='active'; assert tokenValid(tok)"
+    },
+    {
+      "id": "TS-29-42",
+      "kind": "integration",
+      "verifies": [
+        "29-REQ-9.4"
+      ],
+      "title": "Close while the remote is down returns an error and leaves the lease active",
+      "given": [
+        "an active lease with a caller handle, then the remote shut down"
+      ],
+      "when": "the caller calls Close on its sandbox handle",
+      "then": [
+        "Close returns a non-nil error",
+        "the lease state is `active`"
+      ],
+      "pseudocode": "remote.Shutdown(); err = sb.Close(); assert err != nil; assert lease.state=='active'"
+    },
+    {
+      "id": "TS-29-43",
+      "kind": "integration",
+      "verifies": [
+        "29-REQ-9.5"
+      ],
+      "title": "The expiry sweep logs a failed destroy and succeeds on the first run after the remote returns",
+      "given": [
+        "an expired active lease with a box on the remote",
+        "the remote shut down",
+        "slog captured"
+      ],
+      "when": "the sweep runs once while the remote is down, the remote restarts on the same address, and the sweep runs again",
+      "then": [
+        "the first run logs one warning or error for the failed destroy and the lease stays active",
+        "the second run destroys the box and ends the lease"
+      ],
+      "pseudocode": "remote.Shutdown(); sweep(); assert logs(warnOrError)==1 && state=='active'; remote.Restart(); sweep(); assert state=='expired'"
+    },
+    {
+      "id": "TS-29-44",
+      "kind": "integration",
+      "verifies": [
+        "29-REQ-9.6"
+      ],
+      "title": "Hub's next Create succeeds after the remote restarts on the same address without a redial",
+      "given": [
+        "a started service with a counting gateway factory wrapping the real gateway.Dial",
+        "the remote shut down and a new gatewayd served on the same 127.0.0.1:<port>"
+      ],
+      "when": "a new lease is obtained and the caller calls Create",
+      "then": [
+        "Create returns a sandbox",
+        "the factory call count is still 1"
+      ],
+      "pseudocode": "remote.Shutdown(); remote2 = serve(sameAddr); sb = c.Create(); assert sb != nil; assert factory.calls == 1"
+    },
+    {
+      "id": "TS-29-45",
+      "kind": "integration",
+      "verifies": [
+        "29-REQ-9.7"
+      ],
+      "title": "The remote client is closed once, after the last shutdown Destroy; a client without Close is fine",
+      "given": [
+        "a stub remote client that records the order of Destroy and Close calls, with two active boxes",
+        "a second stub that does not implement io.Closer"
+      ],
+      "when": "hub shuts down through the 28 shutdown step and the sandboxes shutdown",
+      "then": [
+        "Close is called exactly once, after the last Destroy",
+        "the non-Closer variant shuts down with no error"
+      ],
+      "pseudocode": "shutdown(); assert log == [destroy,destroy,close]; assert shutdown(nonCloser) == nil"
+    },
+    {
+      "id": "TS-29-46",
+      "kind": "unit",
+      "verifies": [
+        "29-REQ-10.1"
+      ],
+      "title": "The afc build depends on no agentkit, grpc or internal/sandboxes package",
+      "given": [
+        "go.mod with the agentkit-go replace and the gateway.Dial dependency"
+      ],
+      "when": "`go list -deps ./cmd/afc` is run",
+      "then": [
+        "the output contains no agentkit-go, google.golang.org/grpc or internal/sandboxes import path"
+      ],
+      "pseudocode": "out = exec('go','list','-deps','./cmd/afc'); for p in [agentkit, google.golang.org/grpc, internal/sandboxes]: assert !contains(out,p)"
+    },
+    {
+      "id": "TS-29-47",
+      "kind": "smoke",
+      "verifies": [
+        "29-PATH-1",
+        "29-REQ-1.1",
+        "29-REQ-5.2"
+      ],
+      "title": "An operator starts hub against a reachable remote agentkit-gateway",
+      "given": [
+        "an in-process remote gatewayd with static token T over a recording wrapper around local on 127.0.0.1:0",
+        "a config.toml with provider = \"gateway\", gateway_url = http://127.0.0.1:<port>, gateway_token = \"${AGENTKIT_GATEWAY_TOKEN}\" with the env var set, and valid profiles",
+        "slog captured"
+      ],
+      "when": "Init runs with the production gateway.Dial factory and hub's gateway and HTTP server are then bound",
+      "then": [
+        "Init succeeds",
+        "the remote observed 1 List and no Create or Destroy",
+        "one info record with attributes provider and profiles only",
+        "hub's gateway and HTTP server are listening"
+      ],
+      "real_components": [
+        "config loader and validator",
+        "gateway.Dial remote client",
+        "in-process gatewayd remote",
+        "sandboxes service",
+        "slog logger"
+      ]
+    },
+    {
+      "id": "TS-29-48",
+      "kind": "smoke",
+      "verifies": [
+        "29-PATH-2",
+        "29-REQ-7.1",
+        "29-REQ-7.4"
+      ],
+      "title": "An agent leases a box on the remote gateway, uses it and deletes it",
+      "given": [
+        "hub started against the in-process remote with a recording backend",
+        "a real SQLite lease store, lease API and hub gateway"
+      ],
+      "when": "the agent POSTs a lease, dials lease.gateway_url, Creates, and then sends DELETE",
+      "then": [
+        "the box exists on the remote with the lease's image, TTL and merged env",
+        "after DELETE the remote's List is empty and the lease token no longer authenticates"
+      ],
+      "real_components": [
+        "lease API (echo)",
+        "lease store (SQLite)",
+        "hub gatewayd server",
+        "wrapping backend",
+        "gateway.Dial clients",
+        "in-process remote gatewayd",
+        "local.Unisolated provider"
+      ]
+    },
+    {
+      "id": "TS-29-49",
+      "kind": "smoke",
+      "verifies": [
+        "29-PATH-3",
+        "29-REQ-8.2"
+      ],
+      "title": "A remote error carrying hub's token and host is scrubbed end to end",
+      "given": [
+        "hub started against the in-process remote whose Create returns an error containing the token and 127.0.0.1:<port>",
+        "logs and audit events captured"
+      ],
+      "when": "the agent obtains a lease, calls Create through hub's gateway and reads the lease over HTTP",
+      "then": [
+        "the lease is `failed` with a scrubbed `error` field and an audit event is emitted",
+        "the gateway error, HTTP bodies, audit events and log lines contain neither the token nor the host"
+      ],
+      "real_components": [
+        "lease API",
+        "lease store (SQLite)",
+        "hub gatewayd server",
+        "wrapping backend and scrubber",
+        "audit emitter",
+        "in-process remote gatewayd",
+        "gateway.Dial clients"
+      ]
+    },
+    {
+      "id": "TS-29-50",
+      "kind": "smoke",
+      "verifies": [
+        "29-PATH-4",
+        "29-REQ-9.2",
+        "29-REQ-9.6"
+      ],
+      "title": "A remote outage fails a lease and hub recovers when the remote returns on the same address",
+      "given": [
+        "hub started against the in-process remote on a recorded 127.0.0.1:<port>"
+      ],
+      "when": "the remote is shut down, a lease Create is attempted, the remote is restarted on the same port, and a new lease Create is attempted",
+      "then": [
+        "the first lease is `failed` with a scrubbed error",
+        "the second Create returns a sandbox and a box exists on the restarted remote",
+        "the gateway factory was called once"
+      ],
+      "real_components": [
+        "lease API",
+        "lease store (SQLite)",
+        "hub gatewayd server",
+        "wrapping backend",
+        "gateway.Dial client",
+        "in-process remote gatewayd (two instances on one address)"
+      ]
+    },
+    {
+      "id": "TS-29-51",
+      "kind": "smoke",
+      "verifies": [
+        "29-PATH-5",
+        "29-REQ-9.7"
+      ],
+      "title": "Hub shutdown destroys active boxes through the remote client and then closes it",
+      "given": [
+        "hub started against the in-process remote with one active lease and box",
+        "the remote client wrapped to record Destroy and Close order"
+      ],
+      "when": "hub is stopped",
+      "then": [
+        "the box is destroyed on the remote",
+        "the remote client's Close is called once, after the shutdown Destroy"
+      ],
+      "real_components": [
+        "sandboxes service",
+        "28 shutdown step",
+        "gateway.Dial remote client",
+        "in-process remote gatewayd",
+        "lease store (SQLite)"
+      ]
+    }
+  ]
+}

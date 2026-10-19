@@ -1,0 +1,433 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/tasks.v2.json",
+  "spec_id": "28",
+  "spec_name": "sandbox_expiry",
+  "schema_version": 2,
+  "test_commands": {
+    "all_tests": "make test",
+    "linter": "make lint",
+    "spec_tests": "go test ./internal/sandboxes/... ./internal/audit/... -count=1"
+  },
+  "dependencies": [
+    {
+      "spec": "25_sandbox_profiles",
+      "reason": "adds lease_timeout and reap_interval to its Config, Validate and recognised keys; uses Service.Provider() and the sandboxes.Init wiring"
+    },
+    {
+      "spec": "26_sandbox_leases",
+      "reason": "adds the lease_expires_at column, representation field and capacity exclusion; ends leases through its single EndLease; prunes its rows"
+    },
+    {
+      "spec": "27_sandbox_gateway",
+      "reason": "adds deadline checks, late-Create and lease-ended-during-Create handling, expire/shutdown/restart endings, shutdown refusal, Reap handling and gateway stop to its backend, authenticator and DELETE path"
+    },
+    {
+      "spec": "18_hub_audit_query",
+      "reason": "adds the EventSandboxExpire constant to internal/audit/types.go"
+    },
+    {
+      "spec": "19_sessions_metrics_retention",
+      "reason": "adds three collectors to audit.Metrics following its pre-initialisation and recalibration conventions"
+    }
+  ],
+  "tasks": [
+    {
+      "id": 1,
+      "kind": "implement",
+      "title": "Add EventSandboxExpire and the three sandbox metrics to internal/audit",
+      "criteria": [
+        "28-REQ-8.1",
+        "28-REQ-9.1"
+      ],
+      "tests": [
+        "TS-28-39",
+        "TS-28-45"
+      ],
+      "steps": [
+        "Write TS-28-39 and TS-28-45 (serve Metrics.MetricsHandler and parse the body) and confirm they fail",
+        "In internal/audit/types.go add `const EventSandboxExpire = \"hub.sandbox.expire\"` with a doc comment listing metadata keys lease_id, state (expired|destroyed) and sandbox_id (only when a box was destroyed), in the style of EventPatchSync",
+        "In internal/audit/metrics.go add fields SandboxesActive *prometheus.GaugeVec (label workspace), SandboxCreatesTotal *prometheus.CounterVec (label result) and SandboxLeaseSeconds prometheus.Histogram with buckets 60,300,600,1200,1800,3600,7200,14400,28800 named afhub_sandboxes_active, afhub_sandbox_creates_total and afhub_sandbox_lease_seconds",
+        "Register them in NewMetrics with MustRegister; pre-initialise SandboxesActive.WithLabelValues(\"\") and SandboxCreatesTotal.WithLabelValues(\"created\") and (\"failed\")",
+        "Add the three names to expectedMetrics in internal/audit/metrics_endpoint_test.go TestMetricsEndpoint_AllMetricsPresentOnStartup"
+      ],
+      "touches": [
+        "internal/audit/types.go",
+        "internal/audit/metrics.go",
+        "internal/audit/metrics_endpoint_test.go",
+        "internal/audit/sandbox_metrics_test.go"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 2,
+      "kind": "implement",
+      "title": "Add lease_timeout and reap_interval to the [sandbox] config and validation",
+      "criteria": [
+        "28-REQ-1"
+      ],
+      "tests": [
+        "TS-28-1",
+        "TS-28-2",
+        "TS-28-3",
+        "TS-28-4",
+        "TS-28-5"
+      ],
+      "steps": [
+        "Write TS-28-1..TS-28-5 beside spec 25's config tests and confirm they fail",
+        "In internal/sandboxes/config.go add LeaseTimeout and ReapInterval string fields (toml keys lease_timeout, reap_interval) to Config so they are decoded and never reported by the Undecoded() unknown-key filter",
+        "In internal/sandboxes/validate.go add LeaseTimeout and ReapInterval time.Duration to Validated; default 5m and 10m when empty",
+        "Parse with time.ParseDuration; lease_timeout must be >= 1s and <= max_ttl, reap_interval >= 10s and <= 1h; append failures naming `sandbox.lease_timeout` or `sandbox.reap_interval` to the existing errors.Join collection so they appear with every other [sandbox] failure",
+        "Validate lease_timeout against the parsed max_ttl only when max_ttl itself parsed; an invalid max_ttl must not hide the lease_timeout failure",
+        "Confirm Init still returns (nil, nil) when [sandbox] is absent and neither key is read"
+      ],
+      "touches": [
+        "internal/sandboxes/config.go",
+        "internal/sandboxes/validate.go",
+        "internal/sandboxes/config_expiry_test.go"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 3,
+      "kind": "implement",
+      "title": "Add the lease_expires_at column, field, deadline and capacity rule",
+      "criteria": [
+        "28-REQ-2.1",
+        "28-REQ-2.2",
+        "28-REQ-2.3",
+        "28-REQ-2.5"
+      ],
+      "tests": [
+        "TS-28-6",
+        "TS-28-7",
+        "TS-28-8",
+        "TS-28-10"
+      ],
+      "steps": [
+        "Write TS-28-6, 7, 8 and 10 (echo harness with apikit.SetAuthInfo, in-memory SQLite with SetMaxOpenConns(1), injected clock) and confirm they fail",
+        "Add MigrateLeaseExpiry(db *sql.DB) error in internal/sandboxes (pattern: jobqueue.MigrateProgress): return nil on nil db, check PRAGMA table_info('sandbox_leases'), then ALTER TABLE sandbox_leases ADD COLUMN lease_expires_at TEXT; idempotent, old rows stay NULL",
+        "Call it right after sandboxes.InitSchema in cmd/af-hub/main.go (read by path) on every start, regardless of whether the feature is enabled; return/log.Fatal on error like the schema call",
+        "Add a nullable LeaseExpiresAt field to the Lease struct and to every SELECT/scan in the lease store",
+        "In the create service compute lease_expires_at = min(created_at + Validated.LeaseTimeout, expires_at) and write it with apikit.FormatUTC in the INSERT; pass LeaseTimeout into the Service",
+        "Add lease_expires_at to the single render function (string or JSON null) so POST 201, GET one, both lists and the admin list carry it; update spec 26's exact-key-set test",
+        "Extend countLive in service.go to also exclude state='leased' rows whose lease_expires_at is non-NULL and <= FormatUTC(now) (equal to now counts as excluded)"
+      ],
+      "touches": [
+        "internal/sandboxes/lease_migrate.go",
+        "internal/sandboxes/lease.go",
+        "internal/sandboxes/service.go",
+        "internal/sandboxes/render.go",
+        "internal/sandboxes/lease_expiry_test.go",
+        "cmd/af-hub/main.go"
+      ],
+      "depends_on": [
+        2
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 4,
+      "kind": "implement",
+      "title": "Add the expiry-path ending with event emission and the metrics recorder",
+      "criteria": [
+        "28-REQ-8.2",
+        "28-REQ-8.4",
+        "28-REQ-8.5",
+        "28-REQ-9.2",
+        "28-REQ-9.7"
+      ],
+      "tests": [
+        "TS-28-40",
+        "TS-28-42",
+        "TS-28-43",
+        "TS-28-46",
+        "TS-28-51"
+      ],
+      "steps": [
+        "Write TS-28-40, 42, 43, 46 and 51 (recording emitter, recording provider double, injected clock) and confirm they fail",
+        "Add a *audit.Metrics field (nil-safe) to the sandbox Service/backend and a recorder in internal/sandboxes/metrics.go with nil-safe methods: activated(ws), endedFromActive(ws), observeLease(createdAt, endedAt), createResult(result), recalibrate(db)",
+        "Add an ending helper in internal/sandboxes/expire.go that ends a lease through EndLease and returns whether the conditional update changed a row; only when changed does it emit and record metrics (decrement gauge if the lease was active; observe ended_at-created_at on afhub_sandbox_lease_seconds when the target state is destroyed)",
+        "Implement the expiry path endExpired(ctx, lease): leased -> target expired with no provider call; active -> provider Destroy for sandbox_id under a per-call timeout (default 30s, field overridable in tests), then target destroyed; always end_reason expired and token cleared even when Destroy fails; log Destroy failures with lease_id, sandbox_id and the error text through the internal/sandboxes scrubber",
+        "Emit exactly one audit.HubEvent: EventType EventSandboxExpire, ResourceType sandbox, ResourceID lease id, Action expire, ActorType system, empty ActorID, Workspace slug, Metadata lease_id, state and sandbox_id only when a box was destroyed; emit no hub.sandbox.destroy for this path",
+        "Skip emission when the emitter is nil; log a failed Emit with slog.Error and still complete the ending",
+        "Increment afhub_sandboxes_active in the backend's conditional leased->active transition (spec 27 Create) and keep the DELETE/Close path decrementing through the same helper",
+        "Also add a destroy-with-reason ending (reasons shutdown and restart, ActorType system, empty ActorID) emitting hub.sandbox.destroy with metadata reason, reusing the same helper; used later by recovery and shutdown"
+      ],
+      "touches": [
+        "internal/sandboxes/expire.go",
+        "internal/sandboxes/metrics.go",
+        "internal/sandboxes/backend.go",
+        "internal/sandboxes/expire_test.go"
+      ],
+      "depends_on": [
+        1,
+        3
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 5,
+      "kind": "implement",
+      "title": "Build the sweeper: lapse, overdue destroy, retention pruning and gauge recalibration",
+      "criteria": [
+        "28-REQ-4.3",
+        "28-REQ-4.4",
+        "28-REQ-4.5",
+        "28-REQ-6"
+      ],
+      "tests": [
+        "TS-28-18",
+        "TS-28-19",
+        "TS-28-20",
+        "TS-28-30",
+        "TS-28-31",
+        "TS-28-32"
+      ],
+      "steps": [
+        "Write TS-28-18, 19, 20, 30, 31 and 32 (TS-28-32 as a property test over generated states/ages; capture slog with a custom handler) and confirm they fail",
+        "Create internal/sandboxes/sweeper.go with type Sweeper holding db, provider, emitter, metrics, now func() time.Time, logger and a call timeout; method Sweep(ctx) runs steps in order via a list of named step functions, logging each step error with slog and continuing to the next",
+        "Step Reap: call provider.Reap under context.WithTimeout(callTimeout)",
+        "Step lapse: SELECT leased rows with COALESCE(lease_expires_at, expires_at) <= FormatUTC(now) and call endExpired for each (no provider call); a row ended by another path emits nothing",
+        "Step overdue: SELECT active rows with expires_at <= FormatUTC(now); endExpired destroys the box then ends as destroyed/expired even when Destroy fails",
+        "Step prune: DELETE FROM sandbox_leases WHERE state IN ('destroyed','expired','failed') AND COALESCE(ended_at, updated_at) < FormatUTC(now - 24h) (exactly 24h stays); never touch leased or active",
+        "Step recalibrate: Reset() afhub_sandboxes_active then Set one value per workspace from SELECT workspace, COUNT(*) FROM sandbox_leases WHERE state='active' GROUP BY workspace; nil metrics does nothing",
+        "Leave a clear insertion point for the orphan step between the overdue and prune steps (added in the next task); all reads use the injected clock only"
+      ],
+      "touches": [
+        "internal/sandboxes/sweeper.go",
+        "internal/sandboxes/sweeper_test.go"
+      ],
+      "depends_on": [
+        4
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 6,
+      "kind": "implement",
+      "title": "Add the orphan step, sweep serialisation and per-call timeouts",
+      "criteria": [
+        "28-REQ-4.1",
+        "28-REQ-4.2",
+        "28-REQ-4.6",
+        "28-REQ-4.7",
+        "28-REQ-4.8"
+      ],
+      "tests": [
+        "TS-28-16",
+        "TS-28-17",
+        "TS-28-21",
+        "TS-28-22",
+        "TS-28-23"
+      ],
+      "steps": [
+        "Write TS-28-16, 17, 21, 22 and 23 (recording provider double logging call order and in-flight Reap count; a hang option that blocks until ctx is cancelled) and confirm they fail",
+        "Add the orphan step: provider.List under the call timeout; load the set of terminal leases (id and sandbox_id) from this hub's table; Destroy a listed box when its ID equals a terminal lease's sandbox_id, or when the listing exposes labels and its hub.lease label names a terminal lease; never Destroy boxes of leased/active leases, boxes with no hub.lease label or an unknown lease id",
+        "Insert it between the overdue and prune steps so the order is Reap, lapse, overdue, orphans, prune, recalibrate; Destroy errors are logged scrubbed and the loop continues",
+        "Serialise Sweep with a sync.Mutex so two sweeps never overlap; endings that return changed=false emit nothing",
+        "Apply the per-call timeout (field default 30s, overridable in tests) to every provider call (Reap, List, each Destroy); on timeout log it with slog and continue to the next item and step",
+        "If the sandbox.Provider.List element does not expose Spec().Labels (unverified AgentKit shape), fall back to ID matching only, behind a small helper",
+        "Confirm Sweep returns after all six steps even when Reap and List both fail"
+      ],
+      "touches": [
+        "internal/sandboxes/sweeper.go",
+        "internal/sandboxes/sweeper_orphans_test.go"
+      ],
+      "depends_on": [
+        5
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 7,
+      "kind": "implement",
+      "title": "Enforce deadlines at hub's gateway and handle a lease that ends during Create",
+      "criteria": [
+        "28-REQ-3",
+        "28-REQ-5.5",
+        "28-REQ-9.4"
+      ],
+      "tests": [
+        "TS-28-11",
+        "TS-28-12",
+        "TS-28-13",
+        "TS-28-14",
+        "TS-28-15",
+        "TS-28-28",
+        "TS-28-48"
+      ],
+      "steps": [
+        "Write TS-28-11..15, 28 and 48 over an in-process gatewayd.Server with the real gateway.Dial client, a recording provider double (Create can block until released) and an injected clock; TS-28-15 as a property test with concurrent late Create and sweeps; confirm they fail",
+        "In the backend's Create, after loading a leased lease: if COALESCE(lease_expires_at, expires_at) <= now, do not call the provider; end it via endExpired and return gRPC FailedPrecondition whose message contains \"expired\"",
+        "Confirm the lease authenticator rejects any lease with expires_at <= now regardless of state and rejects cleared token hashes; add tests only if spec 27 already behaves this way, otherwise fix it",
+        "When the conditional leased->active update affects zero rows after the provider Create, destroy the just-created box, re-read the lease, return FailedPrecondition naming its current state and leave its state and end_reason untouched; count result=failed",
+        "Record afhub_sandbox_creates_total once per accepted Create of a leased lease: created when the lease becomes active, failed for provider error, secret_missing and the left-leased case; refusals before acceptance record nothing",
+        "Implement Backend.Reap(ctx): when gatewayd.PrincipalFromContext(ctx) reports a principal return nil without anything; otherwise run Sweeper.Sweep(ctx) and return nil",
+        "Give the backend a reference to the Sweeper (interface with Sweep(ctx)) so it can be counted by a test double"
+      ],
+      "touches": [
+        "internal/sandboxes/backend.go",
+        "internal/sandboxes/gateway_auth.go",
+        "internal/sandboxes/backend_expiry_test.go"
+      ],
+      "depends_on": [
+        6
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 8,
+      "kind": "implement",
+      "title": "Add restart recovery, the reaper loop and main wiring",
+      "criteria": [
+        "28-REQ-5.1",
+        "28-REQ-5.2",
+        "28-REQ-5.3",
+        "28-REQ-5.4",
+        "28-REQ-5.6",
+        "28-REQ-9.3"
+      ],
+      "tests": [
+        "TS-28-24",
+        "TS-28-25",
+        "TS-28-26",
+        "TS-28-27",
+        "TS-28-29",
+        "TS-28-47"
+      ],
+      "steps": [
+        "Write TS-28-24, 25, 26, 27, 29 and 47 (provider double, recording emitter, injected ticker factory in the style of audit.WithTickerFactory, a listener double that records when it begins accepting) and confirm they fail",
+        "Create internal/sandboxes/reaper.go: RecoverActive(ctx) selects every active lease, calls provider Destroy under the call timeout, logs a scrubbed failure, and always ends the lease as destroyed with end_reason restart through the destroy-with-reason ending (hub.sandbox.destroy, reason restart, ActorType system, empty ActorID)",
+        "After recovery recalibrate afhub_sandboxes_active (Reset then one Set per workspace)",
+        "Add StartReaper(ctx, ...) that runs one Sweep immediately then one per tick of an injectable ticker factory (default time.NewTicker(ReapInterval)), returns a handle with Wait/Stop, and exits when its context is cancelled with no sweep after cancellation",
+        "Add RunStartup(ctx) that runs recovery, recalibration and the first sweep, logs errors and returns them to the caller, never calling os.Exit or log.Fatal; the reaper loop still starts afterwards",
+        "Wire it in cmd/af-hub/main.go after the metrics, auditEmitter, lease schema and migration exist and before the gateway begins serving; log (not fatal) a returned startup error",
+        "When the feature is disabled (nil service) run nothing and leave the sandbox_leases table untouched",
+        "Store the reaper handle and a cancel on the Service for the shutdown task"
+      ],
+      "touches": [
+        "internal/sandboxes/reaper.go",
+        "internal/sandboxes/service.go",
+        "internal/sandboxes/reaper_test.go",
+        "cmd/af-hub/main.go"
+      ],
+      "depends_on": [
+        6,
+        2
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 9,
+      "kind": "implement",
+      "title": "Implement shutdown mode and the sandbox shutdown step",
+      "criteria": [
+        "28-REQ-7",
+        "28-REQ-9.5"
+      ],
+      "tests": [
+        "TS-28-33",
+        "TS-28-34",
+        "TS-28-35",
+        "TS-28-36",
+        "TS-28-37",
+        "TS-28-38",
+        "TS-28-49"
+      ],
+      "steps": [
+        "Write TS-28-33..38 and TS-28-49 (TS-28-36 as a property test over random leased rows; TS-28-33 with a fake server whose Start returns at once and database handles that record Close order) and confirm they fail",
+        "Add an atomic shutdown-mode flag on the Service; EnterShutdown sets it. While set the backend's Create returns gRPC Unavailable without calling the provider or counting creates_total, and every ending (DELETE, Close, sweep) uses end_reason shutdown",
+        "Implement Service.Shutdown(ctx) (nil-safe and a no-op returning nil when the feature is disabled or already shut down, guarded by sync.Once/atomic): bound it with context.WithTimeout of 20s (field overridable in tests)",
+        "Shutdown order: enter shutdown mode; cancel the reaper and wait for an in-progress sweep; select active leases and for each call provider Destroy then end as destroyed/shutdown, concurrently via a WaitGroup; stop waiting when the limit expires and leave unfinished leases active; never touch leased leases",
+        "Then stop hub's gateway through the stop sandbox_gateway provides (gatewayd.Server.Shutdown via the gateway handle); return nil",
+        "In cmd/af-hub/main.go call svc.Shutdown after server.Start() returns, before the auditDB and database defers run (explicit call before returning, or a defer registered after both opens so it runs first), with the 20s limit; a log.Fatal path is unchanged",
+        "Extract the main wiring tail into a small testable function so TS-28-33 can assert call order shutdown_start, shutdown_end, auditDB.Close, database.Close"
+      ],
+      "touches": [
+        "internal/sandboxes/shutdown.go",
+        "internal/sandboxes/backend.go",
+        "internal/sandboxes/service.go",
+        "internal/sandboxes/shutdown_test.go",
+        "cmd/af-hub/main.go"
+      ],
+      "depends_on": [
+        8
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 10,
+      "kind": "implement",
+      "title": "Prove cross-cutting properties: stable deadline, one event per ending, no leaks, metric consistency",
+      "criteria": [
+        "28-REQ-2.4",
+        "28-REQ-8.3",
+        "28-REQ-8.6",
+        "28-REQ-9.6",
+        "28-REQ-9.8"
+      ],
+      "tests": [
+        "TS-28-9",
+        "TS-28-41",
+        "TS-28-44",
+        "TS-28-50",
+        "TS-28-52"
+      ],
+      "steps": [
+        "Write TS-28-9, 41, 44, 50 and 52 (property tests over generated operation sequences with an injected clock, recording emitter, captured slog and a provider double) and confirm which fail",
+        "Make sure no ending, sweep, shutdown or recovery code ever writes lease_expires_at after issue; fix any UPDATE that touches it",
+        "Verify each ending cause (late Create, sweep lapse, sweep overdue, shutdown, restart) emits exactly one of hub.sandbox.expire or hub.sandbox.destroy and none emits both; fix duplicates",
+        "Verify every log call in internal/sandboxes expiry code passes provider error text through the URL-userinfo scrubber and never logs tokens, token hashes, secret or env values; fix leaks",
+        "Verify afhub_sandbox_lease_seconds is observed once per lease that becomes destroyed (DELETE, sweep, shutdown, restart) with ended_at-created_at, and never for expired or failed leases",
+        "Verify afhub_sandboxes_active equals the per-workspace count of active rows after every activation, ending and sweep; fix drift"
+      ],
+      "touches": [
+        "internal/sandboxes/expire.go",
+        "internal/sandboxes/sweeper.go",
+        "internal/sandboxes/properties_expiry_test.go"
+      ],
+      "depends_on": [
+        9
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 11,
+      "kind": "integration",
+      "title": "Verify the expiry, shutdown, restart and retention paths end to end",
+      "tests": [
+        "TS-28-53",
+        "TS-28-54",
+        "TS-28-55",
+        "TS-28-56",
+        "TS-28-57",
+        "TS-28-58"
+      ],
+      "steps": [
+        "Write TS-28-53..58 against the real lease REST handlers, store, sweeper, gatewayd server with hub's backend, audit emitter and audit.Metrics, with an injected clock and a provider double (or AgentKit local); confirm they pass",
+        "Trace 28-PATH-1 to 28-PATH-6 through the real code: handler -> store -> Sweeper.Sweep -> endExpired/destroy-with-reason -> emitter and metrics; confirm each step calls the next and no stub remains",
+        "Confirm in cmd/af-hub/main.go that RunStartup, StartReaper and Service.Shutdown are called from production code, in the order: metrics and emitter exist, recovery and first sweep, gateway serves, Start, Shutdown, database closes",
+        "Confirm every producer with a contract (Sweep results, ending helper changed flag, Shutdown, Backend.Reap, the recorder) has a production caller, not only tests",
+        "Confirm the gateway Create path, authenticator, DELETE path and Reap in internal/sandboxes use the deadline, shutdown-mode and end_reason behaviour from this spec",
+        "Search internal/sandboxes, internal/audit and cmd/af-hub for panic(\"not implemented\"), TODO, NotImplementedError and bare `return nil` on non-trivial paths in files this plan touched, and remove any",
+        "Run make doc, update docs/configuration.md, docs/api.md, docs/openapi.yaml, docs/architecture.md and docs/cli.md as required by the steering and the PRD requirement 10 (no tests about docs), then run make check"
+      ],
+      "touches": [
+        "internal/sandboxes/smoke_expiry_test.go",
+        "docs/configuration.md",
+        "docs/api.md",
+        "docs/openapi.yaml",
+        "docs/architecture.md",
+        "docs/cli.md",
+        "docs/generated"
+      ],
+      "depends_on": [
+        10
+      ],
+      "done_when": [
+        "`make test` and `make lint` pass offline with no container engine"
+      ],
+      "state": "pending"
+    }
+  ]
+}

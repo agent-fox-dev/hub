@@ -1,0 +1,1047 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/test_spec.v2.json",
+  "spec_id": "25",
+  "spec_name": "sandbox_profiles",
+  "schema_version": 2,
+  "tests": [
+    {
+      "id": "TS-25-1",
+      "kind": "unit",
+      "verifies": [
+        "25-REQ-1.1"
+      ],
+      "title": "The loader reads the sandbox section from $XDG_CONFIG_HOME/config.toml, or ./config.toml when the variable is unset or empty, keeping profile file order",
+      "given": [
+        "a temp dir A with config.toml holding [sandbox] provider=\"podman\" and profiles \"zeta\" then \"alpha\"",
+        "a temp dir B with a different config.toml in the working directory"
+      ],
+      "when": "ConfigPath and LoadConfig are called with XDG_CONFIG_HOME=A, then with it unset, then with it set to the empty string",
+      "then": [
+        "with XDG set the path is A/config.toml and both profiles load in the order zeta, alpha",
+        "with XDG unset or empty the path is ./config.toml and B's content is loaded"
+      ],
+      "pseudocode": "t.Setenv('XDG_CONFIG_HOME',A); cfg=LoadConfig(ConfigPath()); assert names(cfg)==['zeta','alpha']; unset; chdir(B); assert ConfigPath()=='./config.toml'"
+    },
+    {
+      "id": "TS-25-2",
+      "kind": "unit",
+      "verifies": [
+        "25-REQ-1.2"
+      ],
+      "title": "A missing file or a file without [sandbox] yields a nil config, nil error and one info log line",
+      "given": [
+        "one case with no config file and one case with a config.toml holding only [server]",
+        "a captured slog handler"
+      ],
+      "when": "LoadConfig is called for each case and the start-up helper logs the disabled state",
+      "then": [
+        "both calls return a nil config and a nil error",
+        "exactly one info record is logged and it says sandboxes are disabled"
+      ],
+      "pseudocode": "cfg,err=LoadConfig(p); assert cfg==nil && err==nil; assert count(infoRecords)==1 && contains(msg,'disabled')"
+    },
+    {
+      "id": "TS-25-3",
+      "kind": "property",
+      "verifies": [
+        "25-REQ-1.3"
+      ],
+      "title": "For any string value in the sandbox section, ${NAME} is replaced and bare $ is untouched",
+      "given": [
+        "environment variables with random names and values set via t.Setenv, and some left unset"
+      ],
+      "when": "for any string composed of literal text, bare $ characters and ${NAME} references (to set or unset variables), placed in image, a secrets entry, a network_modes entry and an env value",
+      "then": [
+        "every ${NAME} is replaced by the variable's value, or by an empty string when unset",
+        "every $ not followed by {NAME} is preserved",
+        "the same expansion applies in scalar, list and env-map values"
+      ],
+      "pseudocode": "for s in gen_strings(): cfg=load(toml(s)); assert cfg.image==model_expand(s) for all four positions"
+    },
+    {
+      "id": "TS-25-4",
+      "kind": "unit",
+      "verifies": [
+        "25-REQ-1.3"
+      ],
+      "title": "Expansion is limited to the sandbox section and uses literal $ handling",
+      "given": [
+        "a config.toml where [server] and [workspace] values contain ${HOME_X} and where a sandbox env value contains a quote character and ${SANDBOX_TOKEN}"
+      ],
+      "when": "the file is loaded with SANDBOX_TOKEN=abc and HOME_X set",
+      "then": [
+        "the sandbox env value contains abc and the quote and still decodes",
+        "a value 'cost$5' stays 'cost$5'",
+        "values outside the sandbox section are not read or altered by the loader"
+      ],
+      "pseudocode": "cfg=LoadConfig(p); assert cfg.Profiles[0].Env['K']=='q\"abc'; assert cfg.Profiles[0].Image=='cost$5'"
+    },
+    {
+      "id": "TS-25-5",
+      "kind": "unit",
+      "verifies": [
+        "25-REQ-1.4"
+      ],
+      "title": "An unknown key under [sandbox] or a profile refuses with its full key path",
+      "given": [
+        "a config with two profiles where profiles[1] has memroy_mb = 512",
+        "a second config with an unknown key sandbox.listenx"
+      ],
+      "when": "LoadConfig is called for each",
+      "then": [
+        "the error is non-nil and contains sandbox.profiles[1].memroy_mb",
+        "the second error contains sandbox.listenx"
+      ],
+      "pseudocode": "_,err=LoadConfig(p); assert err!=nil && contains(err.Error(),'sandbox.profiles[1].memroy_mb')"
+    },
+    {
+      "id": "TS-25-6",
+      "kind": "unit",
+      "verifies": [
+        "25-REQ-1.5"
+      ],
+      "title": "Keys of apikit-owned sections never produce an unknown-key error",
+      "given": [
+        "a config.toml with a valid [sandbox] plus [server], [database], [workspace] and OAuth tables containing keys the sandbox package does not know"
+      ],
+      "when": "LoadConfig is called",
+      "then": [
+        "the error is nil",
+        "the config decodes normally"
+      ],
+      "pseudocode": "cfg,err=LoadConfig(p); assert err==nil && cfg!=nil"
+    },
+    {
+      "id": "TS-25-7",
+      "kind": "unit",
+      "verifies": [
+        "25-REQ-1.6"
+      ],
+      "title": "An unreadable or undecodable config file returns a wrapped error",
+      "given": [
+        "one path to a file with mode 0000 (or a directory named config.toml) and one file with invalid TOML syntax"
+      ],
+      "when": "LoadConfig is called for each",
+      "then": [
+        "each returns a non-nil error",
+        "the error wraps the underlying read error, or a toml decode error respectively (errors.As / errors.Unwrap)"
+      ],
+      "pseudocode": "_,err=LoadConfig(bad); assert err!=nil; assert errors.As(err,&toml.ParseError{})"
+    },
+    {
+      "id": "TS-25-8",
+      "kind": "integration",
+      "verifies": [
+        "25-REQ-1.7"
+      ],
+      "title": "With an invalid sandbox section af-hub still completes admin-token bootstrap, and otherwise exits before any listener opens",
+      "given": [
+        "the af-hub binary built from cmd/af-hub",
+        "a temp XDG_CONFIG_HOME whose config.toml has an invalid [sandbox] section",
+        "a temp database and workspace path, and a free port"
+      ],
+      "when": "af-hub is run once with --admin-email and once without it",
+      "then": [
+        "the --admin-email run writes the admin token and exits 0",
+        "the run without it exits non-zero with the sandbox error on stderr",
+        "no TCP connection to the port succeeds and no queue worker log line appears in the second run"
+      ],
+      "pseudocode": "run(bin,'--admin-email','a@b.c'); assert exit==0 && tokenFile exists; r=run(bin); assert r.exit!=0; assert !dial(port)"
+    },
+    {
+      "id": "TS-25-9",
+      "kind": "unit",
+      "verifies": [
+        "25-REQ-2.1"
+      ],
+      "title": "A [sandbox] table with no provider fails naming sandbox.provider",
+      "given": [
+        "a config with [sandbox] containing one valid profile but no provider, and one with provider = \"\""
+      ],
+      "when": "Validate is called on each",
+      "then": [
+        "the error contains sandbox.provider and says it is required"
+      ],
+      "pseudocode": "err=Validate(cfg); assert contains(err,'sandbox.provider')"
+    },
+    {
+      "id": "TS-25-10",
+      "kind": "unit",
+      "verifies": [
+        "25-REQ-2.2",
+        "25-REQ-2.3"
+      ],
+      "title": "provider gateway is unsupported and any other unknown provider lists accepted values",
+      "given": [
+        "configs with provider=\"gateway\" and provider=\"kubernetes\""
+      ],
+      "when": "Validate is called on each",
+      "then": [
+        "the gateway error contains sandbox.provider and 'not supported by this build'",
+        "the other error contains sandbox.provider and podman"
+      ],
+      "pseudocode": "assert contains(Validate(gw),'not supported by this build'); assert contains(Validate(k8s),'podman')"
+    },
+    {
+      "id": "TS-25-11",
+      "kind": "unit",
+      "verifies": [
+        "25-REQ-2.4"
+      ],
+      "title": "Engine options default and are passed to the provider constructor unchanged",
+      "given": [
+        "a recording provider factory standing in for podman.New",
+        "one config with engine_binary=\"docker\", runtime=\"runsc\", userns=\"keep-id\" and one config omitting all three"
+      ],
+      "when": "the provider is built from each config",
+      "then": [
+        "the first receives Binary docker, Runtime runsc, UserNS keep-id",
+        "the second receives Binary podman, Runtime empty, UserNS empty"
+      ],
+      "pseudocode": "BuildProvider(cfg, factory); assert factory.opts == {docker,runsc,keep-id}"
+    },
+    {
+      "id": "TS-25-12",
+      "kind": "unit",
+      "verifies": [
+        "25-REQ-2.5"
+      ],
+      "title": "max_ttl rejects invalid or non-positive values and defaults to 4h",
+      "given": [
+        "configs with max_ttl = \"soon\", \"0s\", \"-1h\" and one with max_ttl absent and a profile ttl of 4h"
+      ],
+      "when": "Validate is called on each",
+      "then": [
+        "the invalid values produce an error containing sandbox.max_ttl",
+        "the absent value passes with an effective max_ttl of 4h"
+      ],
+      "pseudocode": "assert contains(Validate(bad),'sandbox.max_ttl'); assert Validate(absent)==nil && eff.MaxTTL==4*time.Hour"
+    },
+    {
+      "id": "TS-25-13",
+      "kind": "unit",
+      "verifies": [
+        "25-REQ-2.6"
+      ],
+      "title": "network_modes rejects empty and duplicate entries and defaults to [none]",
+      "given": [
+        "configs with network_modes [\"none\",\"\"], [\"none\",\"bridge\",\"none\"] and one absent"
+      ],
+      "when": "Validate is called on each",
+      "then": [
+        "the bad lists produce an error containing sandbox.network_modes and the offending index",
+        "the absent key yields an effective [\"none\"]"
+      ],
+      "pseudocode": "assert contains(Validate(dup),'sandbox.network_modes[2]'); assert eff.NetworkModes==['none']"
+    },
+    {
+      "id": "TS-25-14",
+      "kind": "unit",
+      "verifies": [
+        "25-REQ-3.1"
+      ],
+      "title": "A sandbox section with no profiles fails",
+      "given": [
+        "a config with provider podman and no [[sandbox.profiles]]"
+      ],
+      "when": "Validate is called",
+      "then": [
+        "the error contains sandbox.profiles and says at least one profile is required"
+      ],
+      "pseudocode": "assert contains(Validate(cfg),'sandbox.profiles')"
+    },
+    {
+      "id": "TS-25-15",
+      "kind": "unit",
+      "verifies": [
+        "25-REQ-3.2"
+      ],
+      "title": "Missing, malformed and duplicate profile names are reported with the profile identifier",
+      "given": [
+        "profiles with names: missing (index 0), \"Upper\", \"-lead\", a 64-character name, and two profiles named \"dev\""
+      ],
+      "when": "Validate is called",
+      "then": [
+        "the missing name is reported as sandbox.profiles[0] with the field name",
+        "each malformed name error names the profile and name",
+        "the duplicate is reported naming dev and name",
+        "a 63-character valid name and 'a_b-c1' pass"
+      ],
+      "pseudocode": "err=Validate(cfg); assert contains(err,'sandbox.profiles[0]') && contains(err,'name')"
+    },
+    {
+      "id": "TS-25-16",
+      "kind": "unit",
+      "verifies": [
+        "25-REQ-3.3"
+      ],
+      "title": "Two default profiles fail, one or none pass",
+      "given": [
+        "three configs: two profiles with default=true, one with default=true, none with default"
+      ],
+      "when": "Validate is called on each",
+      "then": [
+        "the first error contains default and both profile names",
+        "the other two return no error"
+      ],
+      "pseudocode": "assert contains(Validate(two),'default'); assert Validate(none)==nil"
+    },
+    {
+      "id": "TS-25-17",
+      "kind": "unit",
+      "verifies": [
+        "25-REQ-3.4"
+      ],
+      "title": "A missing or empty image is reported with profile and field",
+      "given": [
+        "profile \"a\" without image and profile \"b\" with image = \"\""
+      ],
+      "when": "Validate is called",
+      "then": [
+        "the error contains a and image, and b and image"
+      ],
+      "pseudocode": "assert contains(err,'a') && contains(err,'image')"
+    },
+    {
+      "id": "TS-25-18",
+      "kind": "unit",
+      "verifies": [
+        "25-REQ-3.5"
+      ],
+      "title": "Negative or fractional resource values fail, zero passes",
+      "given": [
+        "profiles with cpus=-1, memory_mb=-5, pids=1.5, disk_mb=-1 and a profile with all four set to 0"
+      ],
+      "when": "Validate is called",
+      "then": [
+        "each bad field is reported with the profile name and the field name",
+        "the all-zero profile produces no error"
+      ],
+      "pseudocode": "for f in [cpus,memory_mb,pids,disk_mb]: assert contains(err, profile+' '+f)"
+    },
+    {
+      "id": "TS-25-19",
+      "kind": "unit",
+      "verifies": [
+        "25-REQ-3.6"
+      ],
+      "title": "A profile network outside network_modes fails; an absent network defaults to none",
+      "given": [
+        "network_modes [\"none\"] with a profile network=\"bridge\"",
+        "a profile with no network key"
+      ],
+      "when": "Validate is called",
+      "then": [
+        "the first error contains the profile name, network and bridge",
+        "the second passes and the validated network is none"
+      ],
+      "pseudocode": "assert contains(err,'network') && contains(err,'bridge'); assert prof.Network=='none'"
+    },
+    {
+      "id": "TS-25-20",
+      "kind": "unit",
+      "verifies": [
+        "25-REQ-3.7"
+      ],
+      "title": "ttl is required, positive, parseable and at most max_ttl",
+      "given": [
+        "max_ttl=\"1h\" and profiles with ttl missing, \"abc\", \"0s\", \"61m\", and \"1h\""
+      ],
+      "when": "Validate is called",
+      "then": [
+        "the first four each produce an error naming the profile and ttl",
+        "ttl \"1h\" equal to max_ttl passes"
+      ],
+      "pseudocode": "assert contains(err,'ttl'); assert noErrorFor('1h')"
+    },
+    {
+      "id": "TS-25-21",
+      "kind": "unit",
+      "verifies": [
+        "25-REQ-3.8"
+      ],
+      "title": "require_landlock defaults to false when omitted",
+      "given": [
+        "a valid profile without require_landlock and one with require_landlock=true"
+      ],
+      "when": "the configuration is validated",
+      "then": [
+        "the first validated profile has RequireLandlock false",
+        "the second has true"
+      ],
+      "pseudocode": "assert !p1.RequireLandlock && p2.RequireLandlock"
+    },
+    {
+      "id": "TS-25-22",
+      "kind": "unit",
+      "verifies": [
+        "25-REQ-4.1"
+      ],
+      "title": "Invalid secret names are reported with profile, list and index",
+      "given": [
+        "a profile with secrets [\"OK\",\"1BAD\"] and optional_secrets [\"has-dash\"]"
+      ],
+      "when": "Validate is called",
+      "then": [
+        "the error names the profile and secrets[1]",
+        "the error names the profile and optional_secrets[0]"
+      ],
+      "pseudocode": "assert contains(err,'secrets[1]') && contains(err,'optional_secrets[0]')"
+    },
+    {
+      "id": "TS-25-23",
+      "kind": "unit",
+      "verifies": [
+        "25-REQ-4.2"
+      ],
+      "title": "Case-insensitive duplicate secret names fail within and across lists",
+      "given": [
+        "profile with secrets [\"API_KEY\",\"api_key\"]",
+        "profile with secrets [\"TOKEN\"] and optional_secrets [\"token\"]"
+      ],
+      "when": "Validate is called",
+      "then": [
+        "each error names the profile and the repeated name"
+      ],
+      "pseudocode": "assert contains(err,'api_key') ; assert contains(err,'token')"
+    },
+    {
+      "id": "TS-25-24",
+      "kind": "unit",
+      "verifies": [
+        "25-REQ-4.3"
+      ],
+      "title": "Reserved names such as GIT_PAT are accepted as secrets",
+      "given": [
+        "a profile with secrets [\"GIT_PAT\"] and optional_secrets [\"GH_TOKEN\"]"
+      ],
+      "when": "Validate is called",
+      "then": [
+        "no error is returned"
+      ],
+      "pseudocode": "assert Validate(cfg)==nil"
+    },
+    {
+      "id": "TS-25-25",
+      "kind": "unit",
+      "verifies": [
+        "25-REQ-4.4"
+      ],
+      "title": "An invalid env key is reported by key without its value",
+      "given": [
+        "a profile with env {\"BAD-KEY\":\"supersecretvalue\"}"
+      ],
+      "when": "Validate is called",
+      "then": [
+        "the error contains the profile, env and BAD-KEY",
+        "the error does not contain supersecretvalue"
+      ],
+      "pseudocode": "assert contains(err,'BAD-KEY') && !contains(err,'supersecretvalue')"
+    },
+    {
+      "id": "TS-25-26",
+      "kind": "unit",
+      "verifies": [
+        "25-REQ-4.5"
+      ],
+      "title": "An env key colliding with a secret name ignoring case fails without leaking the value",
+      "given": [
+        "a profile with secrets [\"GIT_PAT\"] and env {\"git_pat\":\"leakme\"}, and another with optional_secrets [\"X\"] and env {\"x\":\"leakme\"}"
+      ],
+      "when": "Validate is called",
+      "then": [
+        "each error names the profile and the colliding key",
+        "no error contains leakme"
+      ],
+      "pseudocode": "assert contains(err,'git_pat') && !contains(err,'leakme')"
+    },
+    {
+      "id": "TS-25-27",
+      "kind": "property",
+      "verifies": [
+        "25-REQ-4.6"
+      ],
+      "title": "For any section with N independent static faults, one joined error contains all N messages",
+      "given": [
+        "a catalogue of independent fault injectors (bad max_ttl, bad network_modes, bad name, duplicate name, missing image, negative resource, bad ttl, bad secret, env collision)"
+      ],
+      "when": "for any non-empty subset of fault injectors applied to distinct profiles or deployment keys of an otherwise valid section",
+      "then": [
+        "Validate returns exactly one error value",
+        "its text contains the failure message of each injected fault"
+      ],
+      "pseudocode": "for subset in gen_subsets(): err=Validate(apply(subset)); for f in subset: assert contains(err,f.expected)"
+    },
+    {
+      "id": "TS-25-28",
+      "kind": "unit",
+      "verifies": [
+        "25-REQ-5.1"
+      ],
+      "title": "After static validation the provider is built and List is called once with a deadline within 10 seconds",
+      "given": [
+        "a valid config and a test-double provider that records List contexts and advertises network mode none"
+      ],
+      "when": "New(cfg, provider) is called",
+      "then": [
+        "the double records exactly one List call",
+        "the context had a deadline no more than 10 seconds in the future when called"
+      ],
+      "pseudocode": "New(cfg,fake); assert fake.listCalls==1; assert fake.deadline - callTime <= 10s"
+    },
+    {
+      "id": "TS-25-29",
+      "kind": "unit",
+      "verifies": [
+        "25-REQ-5.2"
+      ],
+      "title": "Static failures are reported without building the provider or probing",
+      "given": [
+        "a config with a duplicate profile name and a recording provider factory and double"
+      ],
+      "when": "the service is started from that config",
+      "then": [
+        "the returned error names the duplicate",
+        "the factory is not invoked and List has zero calls"
+      ],
+      "pseudocode": "err=Start(cfg,factory); assert factory.calls==0 && fake.listCalls==0"
+    },
+    {
+      "id": "TS-25-30",
+      "kind": "unit",
+      "verifies": [
+        "25-REQ-5.3"
+      ],
+      "title": "Provider construction failure, List error and List timeout refuse start with the sandbox: prefix",
+      "given": [
+        "a factory returning an error, a double whose List returns 'engine down', and a double whose List blocks until its context is done"
+      ],
+      "when": "the service is started with each",
+      "then": [
+        "every error starts with \"sandbox:\" and contains sandbox.provider and sandbox.engine_binary",
+        "the first two contain the provider error text",
+        "the blocking case returns within about 10 seconds with a deadline error"
+      ],
+      "pseudocode": "assert hasPrefix(err,'sandbox:') && contains(err,'sandbox.engine_binary') && contains(err,'engine down')"
+    },
+    {
+      "id": "TS-25-31",
+      "kind": "unit",
+      "verifies": [
+        "25-REQ-5.4"
+      ],
+      "title": "A network_modes entry the provider does not support refuses start",
+      "given": [
+        "network_modes [\"none\",\"host\"] and a double whose capabilities list only none"
+      ],
+      "when": "New is called",
+      "then": [
+        "the error contains sandbox.network_modes and host"
+      ],
+      "pseudocode": "assert contains(err,'sandbox.network_modes') && contains(err,'host')"
+    },
+    {
+      "id": "TS-25-32",
+      "kind": "unit",
+      "verifies": [
+        "25-REQ-5.5"
+      ],
+      "title": "Each profile is converted to a Spec with image, fixed env only, network, resources, TTL and landlock and checked once",
+      "given": [
+        "two profiles with secrets [\"GIT_PAT\"], optional_secrets [\"X\"] and env {\"LANG\":\"C\"}, a double recording the Spec seen by CheckSpec (or the real CheckSpec against double capabilities)"
+      ],
+      "when": "New is called",
+      "then": [
+        "CheckSpec is run once per profile",
+        "Spec.Image, Network, Resources, TTL (equal to ttl) and RequireLandlock equal the profile values",
+        "Spec.Env equals {LANG: C} and contains no secret names"
+      ],
+      "pseudocode": "specs=captured; assert len(specs)==2; assert specs[0].Env=={'LANG':'C'}"
+    },
+    {
+      "id": "TS-25-33",
+      "kind": "unit",
+      "verifies": [
+        "25-REQ-5.6"
+      ],
+      "title": "A profile refused by CheckSpec fails start naming the profile and the error text",
+      "given": [
+        "a double whose capabilities reject profile \"big\" (for example require_landlock unsupported) and accept profile \"small\""
+      ],
+      "when": "New is called",
+      "then": [
+        "the error names big and includes the CheckSpec error text",
+        "small is not reported"
+      ],
+      "pseudocode": "assert contains(err,'big') && contains(err,checkSpecErr.Error()) && !contains(err,'small')"
+    },
+    {
+      "id": "TS-25-34",
+      "kind": "unit",
+      "verifies": [
+        "25-REQ-5.7"
+      ],
+      "title": "A fractional cpus value refuses start when AgentKit's CPU field is a whole number",
+      "given": [
+        "a profile with cpus = 1.5 and a valid double provider",
+        "AgentKit's CPU field type checked at implementation time; if it is a float the case is skipped and 1.5 passes"
+      ],
+      "when": "New is called",
+      "then": [
+        "with an integer CPU field the error contains the profile name and cpus",
+        "a whole value such as cpus = 2 is accepted"
+      ],
+      "pseudocode": "if cpuIsInt: assert contains(err,'cpus') && contains(err,profile)"
+    },
+    {
+      "id": "TS-25-35",
+      "kind": "unit",
+      "verifies": [
+        "25-REQ-5.8"
+      ],
+      "title": "The service keeps provider and profiles and never calls Create or Destroy",
+      "given": [
+        "a recording double provider and a valid config"
+      ],
+      "when": "New is called and the service's accessors are used",
+      "then": [
+        "the service exposes the provider and the validated profiles",
+        "the double records zero Create and zero Destroy calls"
+      ],
+      "pseudocode": "svc=New(cfg,fake); assert svc.Provider()==fake && len(svc.Profiles())==2; assert fake.create==0 && fake.destroy==0"
+    },
+    {
+      "id": "TS-25-36",
+      "kind": "unit",
+      "verifies": [
+        "25-REQ-6.1"
+      ],
+      "title": "Permissions returns exactly sandboxes:read and sandboxes:write",
+      "given": [],
+      "when": "Permissions() is called",
+      "then": [
+        "the result equals [{sandboxes read} {sandboxes write}] in that order"
+      ],
+      "pseudocode": "assert Permissions()==[{Resource:'sandboxes',Action:'read'},{Resource:'sandboxes',Action:'write'}]"
+    },
+    {
+      "id": "TS-25-37",
+      "kind": "property",
+      "verifies": [
+        "25-REQ-6.2"
+      ],
+      "title": "For any PAT, read access holds exactly when it has sandboxes:read or sandboxes:write",
+      "given": [],
+      "when": "for any permission list drawn from sandboxes:read, sandboxes:write and unrelated scopes, on a PAT credential",
+      "then": [
+        "canReadSandboxes is true iff the list contains sandboxes:read or sandboxes:write"
+      ],
+      "pseudocode": "for perms in gen(): assert canRead(pat(perms)) == ('sandboxes:read' in perms or 'sandboxes:write' in perms)"
+    },
+    {
+      "id": "TS-25-38",
+      "kind": "property",
+      "verifies": [
+        "25-REQ-6.3"
+      ],
+      "title": "Any api_key or admin_token credential gets read access regardless of permissions",
+      "given": [],
+      "when": "for any permissions list (including empty) on an api_key or admin_token credential",
+      "then": [
+        "canReadSandboxes is true"
+      ],
+      "pseudocode": "for t in [api_key,admin_token]: for perms in gen(): assert canRead({t,perms})"
+    },
+    {
+      "id": "TS-25-39",
+      "kind": "unit",
+      "verifies": [
+        "25-REQ-7.1"
+      ],
+      "title": "No credential gets 401 before the feature-off check",
+      "given": [
+        "the route registered once with a nil service (disabled) and once with a service, no auth middleware setting AuthInfo"
+      ],
+      "when": "GET /api/v1/sandbox-profiles is sent in each setup",
+      "then": [
+        "both return 401 in apikit's error envelope",
+        "neither returns the sandboxes_disabled error"
+      ],
+      "pseudocode": "assert rec.Code==401 && body.error.error_type != 'sandboxes_disabled'"
+    },
+    {
+      "id": "TS-25-40",
+      "kind": "unit",
+      "verifies": [
+        "25-REQ-7.2"
+      ],
+      "title": "With the feature off every authenticated caller gets 404 sandboxes_disabled",
+      "given": [
+        "routes registered with a nil service",
+        "callers: admin_token, api_key, and a PAT with no sandbox scopes"
+      ],
+      "when": "GET /api/v1/sandbox-profiles is sent as each caller",
+      "then": [
+        "each response is 404",
+        "the body is exactly {\"error\":{\"code\":404,\"message\":\"sandboxes are not enabled on this hub\",\"error_type\":\"sandboxes_disabled\"}}"
+      ],
+      "pseudocode": "assert rec.Code==404; assert jsonEq(rec.Body, expected)"
+    },
+    {
+      "id": "TS-25-41",
+      "kind": "unit",
+      "verifies": [
+        "25-REQ-7.3"
+      ],
+      "title": "With the feature on a PAT without sandbox scopes gets 403",
+      "given": [
+        "routes registered with a valid service",
+        "a PAT holding only secrets:list"
+      ],
+      "when": "GET /api/v1/sandbox-profiles is sent",
+      "then": [
+        "the status is 403 in apikit's error envelope",
+        "a PAT with sandboxes:read gets 200 and one with sandboxes:write gets 200"
+      ],
+      "pseudocode": "assert get(pat(['secrets:list'])).Code==403; assert get(pat(['sandboxes:write'])).Code==200"
+    },
+    {
+      "id": "TS-25-42",
+      "kind": "unit",
+      "verifies": [
+        "25-REQ-7.4"
+      ],
+      "title": "The listing returns every profile sorted by name with the documented fields",
+      "given": [
+        "a service with profiles \"zeta\" (ttl 90m, default, cpus 1, memory_mb 512, pids 100, disk_mb 0) and \"alpha\"",
+        "an admin_token caller"
+      ],
+      "when": "GET /api/v1/sandbox-profiles is sent",
+      "then": [
+        "the status is 200 and the body is {\"profiles\":[alpha, zeta]}",
+        "each element has name, default, image, network, ttl_seconds, resources {cpus, memory_mb, pids, disk_mb}, secrets, optional_secrets, env_keys and require_landlock",
+        "zeta's ttl_seconds is the JSON integer 5400"
+      ],
+      "pseudocode": "assert names==['alpha','zeta']; assert p.ttl_seconds==5400; assert keys(p)==expected"
+    },
+    {
+      "id": "TS-25-43",
+      "kind": "property",
+      "verifies": [
+        "25-REQ-7.5"
+      ],
+      "title": "For any profile the three name lists are sorted ascending JSON arrays, never null",
+      "given": [],
+      "when": "for any profile whose secrets, optional_secrets and env keys are random valid names in any order, including empty lists",
+      "then": [
+        "each of secrets, optional_secrets and env_keys is a JSON array",
+        "each array is sorted in ascending order",
+        "an empty list renders as [] and not null"
+      ],
+      "pseudocode": "for p in gen(): body=get(); for f in lists: assert isArray(body[f]) && body[f]==sorted(body[f])"
+    },
+    {
+      "id": "TS-25-44",
+      "kind": "unit",
+      "verifies": [
+        "25-REQ-7.6"
+      ],
+      "title": "The listing makes no provider call and no database read and still answers after the engine fails",
+      "given": [
+        "a service built with a double that counts every method call after start",
+        "the handler wired without any database handle",
+        "the double afterwards set to fail all calls"
+      ],
+      "when": "GET /api/v1/sandbox-profiles is sent",
+      "then": [
+        "the status is 200 with the full profile list",
+        "the double records zero calls during the request"
+      ],
+      "pseudocode": "fake.failAll(); fake.reset(); rec=get(); assert rec.Code==200 && fake.total()==0"
+    },
+    {
+      "id": "TS-25-45",
+      "kind": "property",
+      "verifies": [
+        "25-REQ-7.7"
+      ],
+      "title": "Every authorised caller receives an identical profile list",
+      "given": [
+        "a service with a fixed set of profiles"
+      ],
+      "when": "for any authorised caller (admin_token, api_key, PAT with read or write scope) with any user ID, key ID and workspace memberships",
+      "then": [
+        "the response body bytes are identical for all callers"
+      ],
+      "pseudocode": "base=get(admin).Body; for c in gen_callers(): assert get(c).Body==base"
+    },
+    {
+      "id": "TS-25-46",
+      "kind": "property",
+      "verifies": [
+        "25-REQ-8.1"
+      ],
+      "title": "For any sandbox section no env value appears in the listing, logs or errors",
+      "given": [
+        "a captured slog handler and a unique random sentinel as each env value"
+      ],
+      "when": "for any sandbox section with random env values, valid or containing static faults, loaded, validated, started with a double and listed",
+      "then": [
+        "no env value is a substring of the listing body",
+        "no env value is a substring of any log record",
+        "no env value is a substring of any returned error"
+      ],
+      "pseudocode": "for cfg in gen(): err,logs,body=run(cfg); for v in envValues(cfg): assert v not in err+logs+body"
+    },
+    {
+      "id": "TS-25-47",
+      "kind": "unit",
+      "verifies": [
+        "25-REQ-8.2"
+      ],
+      "title": "Enabling the feature logs one info line with only provider and profile names",
+      "given": [
+        "a captured slog handler, a valid config whose image, secrets and env values are distinctive strings"
+      ],
+      "when": "the start-up helper logs the enabled state",
+      "then": [
+        "exactly one info record is emitted",
+        "its attributes are only the provider name and the list of profile names",
+        "no image, secret, env or max_ttl value appears in the record"
+      ],
+      "pseudocode": "assert len(recs)==1; assert attrKeys(recs[0])==['provider','profiles']"
+    },
+    {
+      "id": "TS-25-48",
+      "kind": "unit",
+      "verifies": [
+        "25-REQ-8.3"
+      ],
+      "title": "Listing omits provider, options and max_ttl and construction needs no store or database",
+      "given": [
+        "a config with provider podman, engine_binary \"/opt/podman-x\", runtime \"runsc\", max_ttl \"3h\""
+      ],
+      "when": "the service is built and the listing is requested",
+      "then": [
+        "the body contains none of podman-x, runsc, 'podman', max_ttl or 3h",
+        "the exported constructors and loaders compile without a *secrets.Store or *sql.DB parameter"
+      ],
+      "pseudocode": "assert !contains(body,'runsc') && !contains(body,'max_ttl'); New(cfg, provider) compiles with no db"
+    },
+    {
+      "id": "TS-25-49",
+      "kind": "unit",
+      "verifies": [
+        "25-REQ-9.1"
+      ],
+      "title": "afc sandbox profiles prints the response as one JSON document",
+      "given": [
+        "an httptest hub answering GET /api/v1/sandbox-profiles with a fixed profiles JSON body and recording the Authorization header"
+      ],
+      "when": "runRootCmd is run with --endpoint-url, --api-key and sandbox profiles",
+      "then": [
+        "stdout is one JSON document equal to the response body",
+        "the request carried the configured credential",
+        "the exit code is 0"
+      ],
+      "pseudocode": "out,err=runRootCmd(t,'--endpoint-url',url,'--api-key',k,'sandbox','profiles'); assert jsonEq(out,body) && err==nil"
+    },
+    {
+      "id": "TS-25-50",
+      "kind": "unit",
+      "verifies": [
+        "25-REQ-9.2"
+      ],
+      "title": "afc sandbox profiles rejects positional arguments without a request",
+      "given": [
+        "an httptest hub counting requests"
+      ],
+      "when": "runRootCmd is run with sandbox profiles extra",
+      "then": [
+        "the command fails with a usage error",
+        "the exit code is non-zero",
+        "the hub saw zero requests"
+      ],
+      "pseudocode": "_,err=run('sandbox','profiles','extra'); assert err!=nil && ExitCode(err)!=0 && hits==0"
+    },
+    {
+      "id": "TS-25-51",
+      "kind": "unit",
+      "verifies": [
+        "25-REQ-9.3"
+      ],
+      "title": "Error statuses from the hub are reported through CLIHandleError with nothing on stdout",
+      "given": [
+        "an httptest hub answering 404 with error_type sandboxes_disabled, then 401, then 403 in apikit's envelope"
+      ],
+      "when": "runRootCmd runs sandbox profiles against each",
+      "then": [
+        "stdout is empty",
+        "the error message mentions the hub's message",
+        "the exit code equals apikit's mapping for each status and is non-zero"
+      ],
+      "pseudocode": "for s in [404,401,403]: out,err=run(...); assert out=='' && ExitCode(err)==apikitCode(s)"
+    },
+    {
+      "id": "TS-25-52",
+      "kind": "unit",
+      "verifies": [
+        "25-REQ-9.4"
+      ],
+      "title": "BuildRootCommand registers the sandbox group whose only subcommand is profiles",
+      "given": [],
+      "when": "BuildRootCommand() is built and the sandbox command is looked up",
+      "then": [
+        "a command named sandbox exists",
+        "its subcommands are exactly [profiles]"
+      ],
+      "pseudocode": "c=find(root,'sandbox'); assert names(c.Commands())==['profiles']"
+    },
+    {
+      "id": "TS-25-53",
+      "kind": "unit",
+      "verifies": [
+        "25-REQ-10.1",
+        "25-REQ-10.3"
+      ],
+      "title": "Build files wire the agentkit-go sibling like apikit",
+      "given": [
+        "go.mod, containers/hub/Containerfile, Makefile and the two workflow files read as text"
+      ],
+      "when": "the files are inspected",
+      "then": [
+        "go.mod has a require for the agentkit-go sandbox module and a replace to ../agentkit-go next to the apikit replace",
+        "the Containerfile copies from the agentkit build context",
+        "the build-hub-container target passes --build-context agentkit=../agentkit-go",
+        "inc-build-hub.yaml and build-hub-cli.yaml clone agentkit-go and inc-build-hub.yaml passes it as a build context"
+      ],
+      "pseudocode": "assert contains(gomod,'=> ../agentkit-go'); assert contains(makefile,'--build-context agentkit=../agentkit-go')"
+    },
+    {
+      "id": "TS-25-54",
+      "kind": "unit",
+      "verifies": [
+        "25-REQ-10.2"
+      ],
+      "title": "afc and internal/cli do not depend on internal/sandboxes or agentkit-go",
+      "given": [
+        "the repository module graph"
+      ],
+      "when": "go list -deps is run for ./cmd/afc and ./internal/cli",
+      "then": [
+        "neither list contains internal/sandboxes or any agentkit-go package"
+      ],
+      "pseudocode": "deps=goList('-deps','./cmd/afc','./internal/cli'); assert none(d contains 'internal/sandboxes' or 'agentkit-go')"
+    },
+    {
+      "id": "TS-25-55",
+      "kind": "smoke",
+      "verifies": [
+        "25-PATH-1",
+        "25-REQ-5.1",
+        "25-REQ-7.4"
+      ],
+      "title": "A valid sandbox section starts the service and a PAT with sandboxes:read lists profiles",
+      "given": [
+        "a temp XDG_CONFIG_HOME config.toml with provider podman and two profiles using ${NAME} env values and secret names",
+        "a test-double sandbox.Provider with network mode none that records calls",
+        "an echo server with a test auth middleware"
+      ],
+      "when": "LoadConfig, validation and New run with the double, routes are registered and a PAT with sandboxes:read sends GET /api/v1/sandbox-profiles",
+      "then": [
+        "start succeeds with exactly one List call and one CheckSpec per profile",
+        "the start-up info log has provider and profile names only",
+        "the response is 200 sorted by name with secret names and env key names",
+        "no env value appears in the body"
+      ],
+      "pseudocode": "cfg=LoadConfig(ConfigPath()); svc=New(cfg,fake); RegisterRoutes(api,svc); rec=get(pat(['sandboxes:read'])); assert 200 and sorted and no env values",
+      "real_components": [
+        "sandbox config loader and validator",
+        "sandbox service",
+        "profile listing handler",
+        "echo router with apikit AuthInfo",
+        "BurntSushi toml decoder"
+      ]
+    },
+    {
+      "id": "TS-25-56",
+      "kind": "smoke",
+      "verifies": [
+        "25-PATH-2",
+        "25-REQ-9.1"
+      ],
+      "title": "afc sandbox profiles prints the profiles served by the real handler",
+      "given": [
+        "an httptest server hosting the real sandboxes route over a service built with a double provider",
+        "the real cli.BuildRootCommand, run from an internal/sandboxes test package"
+      ],
+      "when": "the root command is executed with --endpoint-url, --api-key and sandbox profiles",
+      "then": [
+        "the handler answers 200 from memory",
+        "stdout is one JSON document equal to the handler's body",
+        "the exit code is 0"
+      ],
+      "pseudocode": "srv=httptest(realHandler); out=run(cli.BuildRootCommand(),'sandbox','profiles'); assert jsonEq(out,handlerBody)",
+      "real_components": [
+        "cli.BuildRootCommand and sandbox profiles command",
+        "apikit CLI client",
+        "profile listing handler",
+        "sandbox service"
+      ]
+    },
+    {
+      "id": "TS-25-57",
+      "kind": "smoke",
+      "verifies": [
+        "25-PATH-3",
+        "25-REQ-4.6",
+        "25-REQ-1.4"
+      ],
+      "title": "An invalid sandbox section refuses start with every failure and no provider contact",
+      "given": [
+        "a config.toml with an unknown profile key, a duplicate profile name and a ttl over max_ttl",
+        "the af-hub binary with a fake engine_binary that records invocations to a file"
+      ],
+      "when": "af-hub is started against that config",
+      "then": [
+        "the process exits non-zero before any HTTP listener opens",
+        "stderr contains the unknown key path, the duplicate name with name, and the ttl field with the profile name",
+        "the engine binary was never invoked"
+      ],
+      "pseudocode": "r=run(afhub); assert r.exit!=0 && contains(r.stderr,'ttl') && !exists(engineLog) && !dial(port)",
+      "real_components": [
+        "af-hub binary start-up",
+        "sandbox config loader and validator",
+        "BurntSushi toml decoder"
+      ]
+    },
+    {
+      "id": "TS-25-58",
+      "kind": "smoke",
+      "verifies": [
+        "25-PATH-4",
+        "25-REQ-1.2",
+        "25-REQ-6.1",
+        "25-REQ-7.2"
+      ],
+      "title": "Without a [sandbox] section hub starts and the route answers 404 sandboxes_disabled",
+      "given": [
+        "a config.toml with no [sandbox] table",
+        "the real start-up wiring with sandboxes.Permissions() appended and routes registered in disabled mode"
+      ],
+      "when": "the server starts and an authenticated client sends GET /api/v1/sandbox-profiles",
+      "then": [
+        "one info line says sandboxes are disabled",
+        "the sandboxes:read and sandboxes:write scopes are registered",
+        "the response is 404 with error_type sandboxes_disabled and message 'sandboxes are not enabled on this hub'"
+      ],
+      "pseudocode": "cfg=LoadConfig(p); assert cfg==nil; RegisterRoutes(api,nil); rec=get(admin); assert 404 and error_type=='sandboxes_disabled'",
+      "real_components": [
+        "sandbox config loader",
+        "profile listing handler",
+        "echo router with apikit AuthInfo",
+        "apikit permission registration"
+      ]
+    }
+  ]
+}

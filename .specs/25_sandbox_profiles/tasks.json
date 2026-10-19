@@ -1,0 +1,440 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/tasks.v2.json",
+  "spec_id": "25",
+  "spec_name": "sandbox_profiles",
+  "schema_version": 2,
+  "test_commands": {
+    "all_tests": "make test",
+    "linter": "make lint",
+    "spec_tests": "go test ./internal/sandboxes/... ./internal/cli/... -count=1"
+  },
+  "dependencies": [
+    {
+      "spec": "07_secrets_variables",
+      "reason": "Profile secret and env names are validated with secrets.ValidateKey."
+    },
+    {
+      "spec": "agentkit-go sandbox module (external)",
+      "reason": "Provides sandbox.Spec, sandbox.Provider, sandbox.CheckSpec, capabilities, podman.New and local for tests; consumed through a sibling replace ../agentkit-go."
+    }
+  ],
+  "tasks": [
+    {
+      "id": 1,
+      "kind": "implement",
+      "title": "Add the agentkit-go sibling dependency to the module, container and CI builds",
+      "criteria": [
+        "25-REQ-10"
+      ],
+      "tests": [
+        "TS-25-53",
+        "TS-25-54"
+      ],
+      "steps": [
+        "Write TS-25-53 (reads go.mod, containers/hub/Containerfile, Makefile and the two workflow files as text from the repo root) and TS-25-54 (runs `go list -deps` for ./cmd/afc and ./internal/cli and asserts no internal/sandboxes or agentkit-go package) in internal/sandboxes/build_test.go; confirm they fail",
+        "Read ../agentkit-go/go.mod to learn the real module path of the sandbox module and add a require plus `replace <module> => ../agentkit-go` next to the apikit replace in go.mod",
+        "In containers/hub/Containerfile add `COPY --from=agentkit . /build/agentkit-go` next to the apikit copy",
+        "In the Makefile build-hub-container target add `--build-context agentkit=../agentkit-go`",
+        "In .github/workflows/inc-build-hub.yaml add a clone step for agentkit-go next to the apikit clone and add the agentkit build context to build-contexts",
+        "In .github/workflows/build-hub-cli.yaml add a clone step for agentkit-go next to the apikit clone",
+        "Add the ../agentkit-go sibling checkout as a build prerequisite in README.md",
+        "Run `go mod tidy` only if the sibling resolves; keep afc free of agentkit imports (do not touch internal/cli imports)"
+      ],
+      "touches": [
+        "go.mod",
+        "go.sum",
+        "containers/hub/Containerfile",
+        "Makefile",
+        ".github/workflows/inc-build-hub.yaml",
+        ".github/workflows/build-hub-cli.yaml",
+        "README.md",
+        "internal/sandboxes/build_test.go"
+      ],
+      "done_when": [
+        "go.mod contains a replace to ../agentkit-go"
+      ],
+      "state": "pending",
+      "optional": false
+    },
+    {
+      "id": 2,
+      "kind": "implement",
+      "title": "Load the [sandbox] section from config.toml with env expansion and unknown-key detection",
+      "criteria": [
+        "25-REQ-1.1",
+        "25-REQ-1.3",
+        "25-REQ-1.4",
+        "25-REQ-1.5",
+        "25-REQ-1.6"
+      ],
+      "tests": [
+        "TS-25-1",
+        "TS-25-3",
+        "TS-25-4",
+        "TS-25-5",
+        "TS-25-6",
+        "TS-25-7"
+      ],
+      "steps": [
+        "Write TS-25-1, 3, 4, 5, 6 and 7 in internal/sandboxes/config_test.go (package sandboxes) and confirm they fail",
+        "Create internal/sandboxes/config.go with Config (provider, engine_binary, runtime, userns, max_ttl string, network_modes []string, Profiles []ProfileConfig) and ProfileConfig (name, default, image, cpus float64, memory_mb, pids, disk_mb as numbers that preserve non-integer input for later validation, network, ttl string, secrets, optional_secrets, env map[string]string, require_landlock); use toml tags and pointer/presence-aware fields where absence must be distinguishable from zero",
+        "Implement ConfigPath(): $XDG_CONFIG_HOME/config.toml when the variable is set and non-empty, otherwise ./config.toml",
+        "Implement LoadConfig(path) (*Config, error): return nil,nil when the file does not exist; wrap read errors and toml decode errors with %w; read with os.ReadFile and decode into struct{Sandbox *Config `toml:\"sandbox\"`} using toml.Decode WITHOUT expanding the whole file",
+        "Detect unknown keys via MetaData.Undecoded(), keep only keys whose first element is `sandbox`, and return an error naming the full key path (e.g. sandbox.profiles[1].memroy_mb; build the index form from the key parts), ignoring all keys of apikit-owned sections",
+        "Return nil,nil when the decoded file has no [sandbox] table",
+        "After decoding, expand ${NAME} in every string value of the section (scalars, list entries, env values) with os.Getenv semantics (empty when unset); a bare $ and `$5` stay literal; implement with a small scanner or regexp `\\$\\{([A-Za-z_][A-Za-z0-9_]*)\\}`, not os.ExpandEnv",
+        "Never include env values in any error produced by the loader"
+      ],
+      "touches": [
+        "internal/sandboxes/config.go",
+        "internal/sandboxes/config_test.go"
+      ],
+      "depends_on": [
+        1
+      ],
+      "done_when": [
+        "`go test ./internal/sandboxes/ -run 'TestLoad|TestConfigPath' -count=1` passes"
+      ],
+      "state": "pending",
+      "optional": false
+    },
+    {
+      "id": 3,
+      "kind": "implement",
+      "title": "Validate deployment keys and profile identity, image and default",
+      "criteria": [
+        "25-REQ-2.1",
+        "25-REQ-2.2",
+        "25-REQ-2.3",
+        "25-REQ-2.5",
+        "25-REQ-2.6",
+        "25-REQ-3.1",
+        "25-REQ-3.2",
+        "25-REQ-3.3",
+        "25-REQ-3.4"
+      ],
+      "tests": [
+        "TS-25-9",
+        "TS-25-10",
+        "TS-25-12",
+        "TS-25-13",
+        "TS-25-14",
+        "TS-25-15",
+        "TS-25-16",
+        "TS-25-17"
+      ],
+      "steps": [
+        "Write TS-25-9, 10, 12, 13, 14, 15, 16 and 17 in internal/sandboxes/validate_test.go and confirm they fail",
+        "Create internal/sandboxes/validate.go with `Validate(cfg *Config) (*Validated, error)` that collects failures in a slice and returns errors.Join of all of them; Validated holds the effective deployment values (Provider, EngineBinary default \"podman\", Runtime, UserNS, MaxTTL default 4h, NetworkModes default [\"none\"]) and validated profiles",
+        "provider: required (message names sandbox.provider), \"gateway\" -> `sandbox.provider: the gateway provider is not supported by this build`, other values -> message naming sandbox.provider and listing accepted values (podman)",
+        "max_ttl: parse with time.ParseDuration, must be > 0, failure names sandbox.max_ttl; default 4h when absent",
+        "network_modes: each entry non-empty and unique, failure names sandbox.network_modes[i]",
+        "Require at least one profile (failure names sandbox.profiles)",
+        "Profile identifier helper: the profile name, or sandbox.profiles[i] when the name is missing; name must match ^[a-z0-9][a-z0-9_-]{0,62}$ and be unique (failure names the profile and `name`)",
+        "default: more than one profile with default=true fails naming `default` and the profiles; zero defaults is valid",
+        "image: required and non-empty, failure names the profile and `image`",
+        "Produce a ValidatedProfile type (name, default, image, resources, network, ttl time.Duration, secrets, optionalSecrets, env, requireLandlock) used later by the service; the fields for tasks 4 may be filled in task 4"
+      ],
+      "touches": [
+        "internal/sandboxes/validate.go",
+        "internal/sandboxes/validate_test.go"
+      ],
+      "depends_on": [
+        2
+      ],
+      "done_when": [
+        "`go test ./internal/sandboxes/ -run TestValidate -count=1` passes"
+      ],
+      "state": "pending",
+      "optional": false
+    },
+    {
+      "id": 4,
+      "kind": "implement",
+      "title": "Validate resources, network, ttl, secret and env names and report all failures together",
+      "criteria": [
+        "25-REQ-3.5",
+        "25-REQ-3.6",
+        "25-REQ-3.7",
+        "25-REQ-3.8",
+        "25-REQ-4"
+      ],
+      "tests": [
+        "TS-25-18",
+        "TS-25-19",
+        "TS-25-20",
+        "TS-25-21",
+        "TS-25-22",
+        "TS-25-23",
+        "TS-25-24",
+        "TS-25-25",
+        "TS-25-26",
+        "TS-25-27"
+      ],
+      "steps": [
+        "Write TS-25-18 through TS-25-27 in internal/sandboxes/validate_profile_test.go (TS-25-27 as a property test using testing/quick or a table of fault injectors over subsets) and confirm they fail",
+        "Resources: cpus must be >= 0, memory_mb, pids, disk_mb must be non-negative integers (a fractional value such as 1.5 fails); 0 is accepted; failures name the profile and the field",
+        "network: default \"none\" when absent; must be in the effective network_modes; failure names the profile, network and the rejected mode",
+        "ttl: required, ParseDuration, > 0, <= max_ttl (equal passes); failure names the profile and ttl",
+        "require_landlock defaults to false",
+        "secrets and optional_secrets: every entry passes internal/secrets.ValidateKey (failure names profile, list field and index); case-insensitive repeats within a list or across the two lists fail naming the profile and the repeated name; reserved names such as GIT_PAT are accepted",
+        "env: every key passes secrets.ValidateKey and must not equal (case-insensitive) a name in secrets or optional_secrets; failures name the profile, env and the key only, never the value",
+        "Ensure Validate still returns one errors.Join error containing every failure from the deployment and profile checks; keep error text value-free",
+        "Fill the ValidatedProfile fields that this task parses"
+      ],
+      "touches": [
+        "internal/sandboxes/validate.go",
+        "internal/sandboxes/validate_profile_test.go"
+      ],
+      "depends_on": [
+        3
+      ],
+      "done_when": [
+        "`go test ./internal/sandboxes/ -run TestValidate -count=1` passes"
+      ],
+      "state": "pending",
+      "optional": false
+    },
+    {
+      "id": 5,
+      "kind": "implement",
+      "title": "Build and probe the provider, check capabilities and keep the validated service in memory",
+      "criteria": [
+        "25-REQ-2.4",
+        "25-REQ-5"
+      ],
+      "tests": [
+        "TS-25-11",
+        "TS-25-28",
+        "TS-25-29",
+        "TS-25-30",
+        "TS-25-31",
+        "TS-25-32",
+        "TS-25-33",
+        "TS-25-34",
+        "TS-25-35"
+      ],
+      "steps": [
+        "Read the real agentkit-go source in ../agentkit-go (sandbox.Spec, Resources and the CPU field type, Provider, Capabilities, CheckSpec, podman.New/Options, local) and adapt names to it; note whether the CPU field is a whole number",
+        "Write TS-25-11, 28 through 35 in internal/sandboxes/service_test.go with a test-double provider (configurable Capabilities, recorded List contexts, failing or blocking List, counters for Create/Destroy) and a recording ProviderFactory; confirm they fail",
+        "Create internal/sandboxes/provider.go: `type ProviderFactory func(podman.Options) (sandbox.Provider, error)`, `BuildProvider(v *Validated, factory ProviderFactory)` passing Binary, Runtime, UserNS unchanged (defaults podman, \"\", \"\") and `NewPodmanProvider` using podman.New",
+        "Create internal/sandboxes/service.go: `New(v *Validated, p sandbox.Provider) (*Service, error)` that calls List exactly once with context.WithTimeout 10s, then checks every network_modes entry against Capabilities().NetworkModes (failure names sandbox.network_modes and the mode), converts each profile to sandbox.Spec (image, only fixed env, network, resources, TTL, RequireLandlock) and calls sandbox.CheckSpec once per profile; collect failures with errors.Join, each naming the profile and including the CheckSpec text",
+        "If the CPU field is a whole number, a fractional cpus fails naming the profile and `cpus`; if it is a float skip that check",
+        "Probe or construction failures return an error prefixed `sandbox:` that names sandbox.provider and sandbox.engine_binary and wraps the provider error with %w",
+        "Create `Start(cfg *Config, factory ProviderFactory) (*Service, error)` that runs Validate first and returns static failures without calling the factory or List, then BuildProvider, then New",
+        "Expose Service.Provider() and Service.Profiles(); never call Create or Destroy",
+        "Never put env values in any error"
+      ],
+      "touches": [
+        "internal/sandboxes/provider.go",
+        "internal/sandboxes/service.go",
+        "internal/sandboxes/service_test.go",
+        "go.mod",
+        "go.sum"
+      ],
+      "depends_on": [
+        4
+      ],
+      "done_when": [
+        "`go test ./internal/sandboxes/ -run 'TestService|TestStart|TestBuildProvider' -count=1` passes"
+      ],
+      "state": "pending",
+      "optional": false
+    },
+    {
+      "id": 6,
+      "kind": "implement",
+      "title": "Register sandboxes:read and sandboxes:write and add the sandbox auth helpers",
+      "criteria": [
+        "25-REQ-6"
+      ],
+      "tests": [
+        "TS-25-36",
+        "TS-25-37",
+        "TS-25-38"
+      ],
+      "steps": [
+        "Write TS-25-36, 37 and 38 in internal/sandboxes/permissions_test.go (37 and 38 as property tests) and confirm they fail",
+        "Create internal/sandboxes/permissions.go following internal/audit/permissions.go: package vars SandboxesReadScope and SandboxesWriteScope (apikit.Permission{Resource:\"sandboxes\",Action:\"read\"/\"write\"}) and `Permissions()` returning exactly [read, write] in that order",
+        "Create internal/sandboxes/auth.go following internal/workspace/auth.go: standalone isPAT(*apikit.AuthInfo), hasScope(auth, scopes...) using slices.Contains(auth.Permissions, s), and canReadSandboxes(auth) that returns true for api_key and admin_token without checking scopes and, for a PAT, only when it holds sandboxes:read or sandboxes:write",
+        "Update docs/permissions.md: add the two scopes to the registry tables, the implied-permission table (sandboxes:write implies sandboxes:read for PATs) and the Complete Permission List (33 -> 35)"
+      ],
+      "touches": [
+        "internal/sandboxes/permissions.go",
+        "internal/sandboxes/auth.go",
+        "internal/sandboxes/permissions_test.go",
+        "docs/permissions.md"
+      ],
+      "depends_on": [
+        1
+      ],
+      "done_when": [
+        "`go test ./internal/sandboxes/ -run 'TestPermissions|TestCanRead' -count=1` passes"
+      ],
+      "state": "pending",
+      "optional": false
+    },
+    {
+      "id": 7,
+      "kind": "implement",
+      "title": "Serve GET /api/v1/sandbox-profiles from memory and keep values out of it",
+      "criteria": [
+        "25-REQ-7",
+        "25-REQ-8.1",
+        "25-REQ-8.3"
+      ],
+      "tests": [
+        "TS-25-39",
+        "TS-25-40",
+        "TS-25-41",
+        "TS-25-42",
+        "TS-25-43",
+        "TS-25-44",
+        "TS-25-45",
+        "TS-25-46",
+        "TS-25-48"
+      ],
+      "steps": [
+        "Write TS-25-39 through TS-25-46 and TS-25-48 in internal/sandboxes/handlers_test.go using the harness from internal/merge/api_test.go (echo.New, /api/v1 group, test middleware reading X-Test-Auth into apikit.SetAuthInfo, httptest) plus the double provider from task 5; confirm they fail",
+        "Create internal/sandboxes/handlers.go with `RegisterRoutes(api *echo.Group, svc *Service)` where a nil svc means disabled; register GET /sandbox-profiles always",
+        "Handler order: apikit.GetAuthInfo nil -> apikit.WriteAPIError 401; nil svc -> apikit.WriteAPIErrorWithType(c, 404, \"sandboxes are not enabled on this hub\", \"sandboxes_disabled\"); PAT without read access (canReadSandboxes) -> apikit.WriteAPIError 403; otherwise 200",
+        "Define response types: {\"profiles\":[...]} with name, default, image, network, ttl_seconds (int64), resources{cpus,memory_mb,pids,disk_mb}, secrets, optional_secrets, env_keys, require_landlock; sort profiles by name; sort the three lists ascending and render [] (never null)",
+        "Build the response only from the Service's in-memory profiles: no provider call, no database or secrets.Store parameter anywhere in the exported API; never include env values, provider name, engine options or max_ttl",
+        "Property tests: random valid names for lists, identical body bytes for every authorised caller, env sentinel values absent from body, logs and errors across loaded/validated/started/listed runs",
+        "Update docs/api.md (new `Sandbox Profile Endpoints` section with schema and errors; add `sandboxes_disabled` to the error_type table) and docs/openapi.yaml (path, schema, tag, error type)"
+      ],
+      "touches": [
+        "internal/sandboxes/handlers.go",
+        "internal/sandboxes/handlers_test.go",
+        "docs/api.md",
+        "docs/openapi.yaml"
+      ],
+      "depends_on": [
+        5,
+        6
+      ],
+      "done_when": [
+        "`go test ./internal/sandboxes/ -count=1` passes"
+      ],
+      "state": "pending",
+      "optional": false
+    },
+    {
+      "id": 8,
+      "kind": "implement",
+      "title": "Add the afc sandbox profiles command",
+      "criteria": [
+        "25-REQ-9"
+      ],
+      "tests": [
+        "TS-25-49",
+        "TS-25-50",
+        "TS-25-51",
+        "TS-25-52"
+      ],
+      "steps": [
+        "Write TS-25-49 through TS-25-52 in internal/cli/sandbox_cmd_test.go using setupTestEnv, runRootCmd and an httptest hub, and confirm they fail",
+        "Create internal/cli/sandbox_cmd.go following internal/cli/rerere_cmd.go: `SandboxCmd()` parent (SilenceErrors/SilenceUsage) with one subcommand `profiles` using cobra.NoArgs",
+        "RunE: apikit.CLIClientFromCmd, client.DoRequest(cmd.Context(), http.MethodGet, apiPath(\"sandbox-profiles\"), nil), apikit.CLIPrintResult; errors through apikit.CLIHandleError",
+        "Add SandboxCmd() to the root.AddCommand call in BuildRootCommand in internal/cli/workspace_cmd.go",
+        "Do not import internal/sandboxes or agentkit from internal/cli; keep TS-25-54 passing",
+        "Update docs/cli.md with an `afc sandbox profiles` section"
+      ],
+      "touches": [
+        "internal/cli/sandbox_cmd.go",
+        "internal/cli/sandbox_cmd_test.go",
+        "internal/cli/workspace_cmd.go",
+        "docs/cli.md"
+      ],
+      "depends_on": [
+        1
+      ],
+      "done_when": [
+        "`go test ./internal/cli/ -run Sandbox -count=1` passes",
+        "`go list -deps ./cmd/afc` lists no agentkit-go package"
+      ],
+      "state": "pending",
+      "optional": false
+    },
+    {
+      "id": 9,
+      "kind": "implement",
+      "title": "Wire sandbox start-up into af-hub after Bootstrap with start-up logging",
+      "criteria": [
+        "25-REQ-1.2",
+        "25-REQ-1.7",
+        "25-REQ-8.2"
+      ],
+      "tests": [
+        "TS-25-2",
+        "TS-25-8",
+        "TS-25-47"
+      ],
+      "steps": [
+        "Write TS-25-2 and TS-25-47 in internal/sandboxes/startup_test.go with a captured slog handler, and TS-25-8 as a test that builds cmd/af-hub and runs it with a temp XDG_CONFIG_HOME holding an invalid [sandbox] section (once with --admin-email, once without); confirm they fail",
+        "Add to internal/sandboxes a helper `Init(logger *slog.Logger, path string, factory ProviderFactory) (*Service, error)`: LoadConfig; nil config -> exactly one info line saying sandboxes are disabled and return nil,nil; otherwise Start and, on success, log exactly one info record whose attributes are only `provider` and `profiles` (profile names)",
+        "In cmd/af-hub/main.go, call sandboxes.Init(slog.Default(), sandboxes.ConfigPath(), sandboxes.NewPodmanFactory/podman.New) immediately after apikit.Bootstrap and before workspace.EnsureWorkspaceRoot, queues, workers and routes; on error log.Fatal(err)",
+        "Append sandboxes.Permissions()... to extraPerms on every start",
+        "Call sandboxes.RegisterRoutes(server.APIGroup(), svc) alongside the other RegisterXxxRoutes calls (nil svc when disabled)",
+        "Update docs/configuration.md (`[sandbox]` and `[[sandbox.profiles]]` with every key, type, default and rule of R1-R4) and docs/architecture.md (internal/sandboxes package and provider construction at start); run `make doc`"
+      ],
+      "touches": [
+        "internal/sandboxes/startup.go",
+        "internal/sandboxes/startup_test.go",
+        "internal/sandboxes/main_binary_test.go",
+        "cmd/af-hub/main.go",
+        "docs/configuration.md",
+        "docs/architecture.md",
+        "docs/generated"
+      ],
+      "depends_on": [
+        5,
+        7
+      ],
+      "done_when": [
+        "With an invalid sandbox section `af-hub --admin-email` still exits 0 and writes the token"
+      ],
+      "state": "pending",
+      "optional": false
+    },
+    {
+      "id": 10,
+      "kind": "integration",
+      "title": "Verify the sandbox profile paths end to end",
+      "tests": [
+        "TS-25-55",
+        "TS-25-56",
+        "TS-25-57",
+        "TS-25-58"
+      ],
+      "steps": [
+        "Write TS-25-55, 56, 57 and 58 (TS-25-56 from an internal/sandboxes test package that runs the real cli.BuildRootCommand against an httptest server hosting the real route; TS-25-57 against the built af-hub binary with a fake engine_binary that records invocations) and confirm they pass",
+        "Trace 25-PATH-1 through the real code: main.go -> sandboxes.Init -> LoadConfig -> Validate -> Start/New -> RegisterRoutes -> handler; confirm each step calls the next and no stub remains",
+        "Trace 25-PATH-2 (afc -> handler), 25-PATH-3 (invalid section exits before queues, workers and routes) and 25-PATH-4 (nil service answers sandboxes_disabled); confirm sandboxes.Permissions() is appended to extraPerms in main.go",
+        "For every criterion with a contract, confirm the producer's result is consumed in production code: Service.Profiles() by the handler, Init's service by RegisterRoutes, Validate's result by Start",
+        "Search every file named in the tasks' touches for `panic(\"not implemented\")`, `TODO`, and bare `return nil` on non-trivial paths, and remove any",
+        "Confirm `go list -deps ./cmd/afc` lists no internal/sandboxes or agentkit-go package, and run `make test` and `make lint`"
+      ],
+      "touches": [
+        "internal/sandboxes/smoke_test.go",
+        "internal/sandboxes/smoke_binary_test.go"
+      ],
+      "depends_on": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9
+      ],
+      "done_when": [
+        "`make test` and `make lint` pass"
+      ],
+      "state": "pending",
+      "optional": false
+    }
+  ]
+}

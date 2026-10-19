@@ -1,0 +1,1136 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/test_spec.v2.json",
+  "spec_id": "28",
+  "spec_name": "sandbox_expiry",
+  "schema_version": 2,
+  "tests": [
+    {
+      "id": "TS-28-1",
+      "kind": "unit",
+      "verifies": [
+        "28-REQ-1.1"
+      ],
+      "title": "A [sandbox] section without lease_timeout and reap_interval validates to 5m and 10m defaults",
+      "given": [
+        "a minimal valid sandbox.Config with no lease_timeout and no reap_interval"
+      ],
+      "when": "Validate is called on the config",
+      "then": [
+        "the error is nil",
+        "Validated.LeaseTimeout equals 5*time.Minute",
+        "Validated.ReapInterval equals 10*time.Minute"
+      ],
+      "pseudocode": "v, err = Validate(cfg); assert err == nil; assert v.LeaseTimeout == 5*time.Minute; assert v.ReapInterval == 10*time.Minute"
+    },
+    {
+      "id": "TS-28-2",
+      "kind": "unit",
+      "verifies": [
+        "28-REQ-1.2"
+      ],
+      "title": "Valid lease_timeout and reap_interval values, including every boundary, are decoded and never reported as unknown keys",
+      "given": [
+        "a TOML file with max_ttl = 1h and a [sandbox] section"
+      ],
+      "when": "LoadConfig and Validate run for the pairs (1s,10s), (max_ttl,1h) and (90s,30s)",
+      "then": [
+        "LoadConfig reports no unknown key for either name",
+        "Validate returns a nil error",
+        "the parsed time.Duration values equal the strings written"
+      ],
+      "pseudocode": "for (lt, ri) in [(1s,10s),(1h,1h),(90s,30s)]: cfg = LoadConfig(write(lt, ri)); v, err = Validate(cfg); assert err == nil; assert v.LeaseTimeout == parse(lt); assert v.ReapInterval == parse(ri)"
+    },
+    {
+      "id": "TS-28-3",
+      "kind": "unit",
+      "verifies": [
+        "28-REQ-1.3"
+      ],
+      "title": "An unparseable or out-of-range lease_timeout is reported by key together with every other [sandbox] failure",
+      "given": [
+        "a config that also has a second invalid key, for example an unknown runtime",
+        "max_ttl = 1h"
+      ],
+      "when": "Validate is called with lease_timeout set to \"abc\", \"999ms\" and \"2h\" in turn",
+      "then": [
+        "each call returns a non-nil error",
+        "each error text contains \"sandbox.lease_timeout\"",
+        "each error text also contains the other collected failure"
+      ],
+      "pseudocode": "for bad in ['abc','999ms','2h']: _, err = Validate(cfg(lease_timeout=bad, runtime='bogus')); assert err != nil; assert 'sandbox.lease_timeout' in err.Error(); assert 'sandbox.runtime' in err.Error()"
+    },
+    {
+      "id": "TS-28-4",
+      "kind": "unit",
+      "verifies": [
+        "28-REQ-1.4"
+      ],
+      "title": "An unparseable or out-of-range reap_interval is reported by key together with every other [sandbox] failure",
+      "given": [
+        "a config that also has a second invalid key"
+      ],
+      "when": "Validate is called with reap_interval set to \"xyz\", \"9s\" and \"61m\" in turn",
+      "then": [
+        "each call returns a non-nil error",
+        "each error text contains \"sandbox.reap_interval\"",
+        "each error text also contains the other collected failure"
+      ],
+      "pseudocode": "for bad in ['xyz','9s','61m']: _, err = Validate(cfg(reap_interval=bad, runtime='bogus')); assert err != nil; assert 'sandbox.reap_interval' in err.Error(); assert 'sandbox.runtime' in err.Error()"
+    },
+    {
+      "id": "TS-28-5",
+      "kind": "unit",
+      "verifies": [
+        "28-REQ-1.5"
+      ],
+      "title": "A configuration file without a [sandbox] section reads neither key and leaves the feature disabled",
+      "given": [
+        "a config file with no [sandbox] section"
+      ],
+      "when": "sandboxes.Init is called on that path",
+      "then": [
+        "the returned service is nil",
+        "the returned error is nil"
+      ],
+      "pseudocode": "svc, err = Init(logger, path, factory); assert svc == nil; assert err == nil"
+    },
+    {
+      "id": "TS-28-6",
+      "kind": "integration",
+      "verifies": [
+        "28-REQ-2.1"
+      ],
+      "title": "POST stores lease_expires_at as the earlier of created_at + lease_timeout and expires_at",
+      "given": [
+        "an in-memory SQLite database with the lease schema and migration",
+        "an injected clock",
+        "lease_timeout 5m"
+      ],
+      "when": "a lease is created with ttl 1h and another with ttl 2m through POST /workspaces/:slug/sandboxes",
+      "then": [
+        "both answer 201",
+        "the first body's lease_expires_at equals FormatUTC(created_at+5m)",
+        "the second body's lease_expires_at equals its expires_at (created_at+2m)",
+        "the stored column value equals the body value"
+      ],
+      "pseudocode": "r1 = post(ttl=1h); assert r1.lease_expires_at == FormatUTC(created+5m); r2 = post(ttl=2m); assert r2.lease_expires_at == r2.expires_at"
+    },
+    {
+      "id": "TS-28-7",
+      "kind": "unit",
+      "verifies": [
+        "28-REQ-2.2"
+      ],
+      "title": "The lease_expires_at migration is idempotent, leaves old rows NULL and tolerates a nil database",
+      "given": [
+        "a sandbox_leases table created without the column and holding one row"
+      ],
+      "when": "the migration runs twice, and once more on a nil *sql.DB",
+      "then": [
+        "both runs return nil",
+        "PRAGMA table_info lists lease_expires_at exactly once",
+        "the pre-existing row reads lease_expires_at NULL",
+        "the nil database call returns nil without panicking"
+      ],
+      "pseudocode": "assert Migrate(db) == nil; assert Migrate(db) == nil; assert count(pragma, 'lease_expires_at') == 1; assert select(lease_expires_at) IS NULL; assert Migrate(nil) == nil"
+    },
+    {
+      "id": "TS-28-8",
+      "kind": "integration",
+      "verifies": [
+        "28-REQ-2.3"
+      ],
+      "title": "Every lease representation carries lease_expires_at as an RFC 3339 string or null",
+      "given": [
+        "one lease issued with a deadline and one legacy row with NULL lease_expires_at"
+      ],
+      "when": "the POST 201 body, GET one, the workspace list, the all=true list and the admin list are fetched",
+      "then": [
+        "each lease object has the key lease_expires_at",
+        "the value is an RFC 3339 string for the new lease and JSON null for the legacy row",
+        "the exact-key-set assertion of spec 26 includes lease_expires_at"
+      ],
+      "pseudocode": "for rep in [post, get_one, list, list_all, admin_list]: assert 'lease_expires_at' in rep; assert legacy.lease_expires_at is None; assert parse_rfc3339(new.lease_expires_at)"
+    },
+    {
+      "id": "TS-28-9",
+      "kind": "property",
+      "verifies": [
+        "28-REQ-2.4"
+      ],
+      "title": "lease_expires_at never changes after the lease is issued, whatever transitions are applied",
+      "given": [
+        "a lease service, gateway backend, sweeper and shutdown over an in-memory database with an injected clock"
+      ],
+      "when": "for any lease and any sequence of Create, DELETE, Close, clock advance, sweep, shutdown and restart recovery",
+      "then": [
+        "the stored lease_expires_at equals the value written at issue after every step"
+      ],
+      "pseudocode": "for ops in gen_op_sequences(): l = issue(); v0 = l.lease_expires_at; for op in ops: apply(op); assert read(l.id).lease_expires_at == v0"
+    },
+    {
+      "id": "TS-28-10",
+      "kind": "unit",
+      "verifies": [
+        "28-REQ-2.5"
+      ],
+      "title": "The capacity count excludes leased leases whose lease_expires_at is at or before now, including exactly now",
+      "given": [
+        "max_sandboxes = 1",
+        "one leased lease whose lease_expires_at is before now, and in a second case exactly equal to now",
+        "an injected clock"
+      ],
+      "when": "a new lease is requested with POST",
+      "then": [
+        "the POST answers 201 in both cases",
+        "with a leased lease whose lease_expires_at is one second in the future the POST is refused for capacity"
+      ],
+      "pseudocode": "seed(leased, lease_expires_at=now); assert post().status == 201; reset(); seed(leased, lease_expires_at=now+1s); assert post().status == capacity_error"
+    },
+    {
+      "id": "TS-28-11",
+      "kind": "integration",
+      "verifies": [
+        "28-REQ-3.1"
+      ],
+      "title": "A late Create is refused with FailedPrecondition naming expired, without a provider call, and expires the lease",
+      "given": [
+        "a leased lease whose lease_expires_at is before the injected now and no sweep has run",
+        "a recording provider double",
+        "an in-process gatewayd server with hub's backend and a real gateway client"
+      ],
+      "when": "the client sends Create with the lease token",
+      "then": [
+        "the RPC fails with FailedPrecondition whose message contains \"expired\"",
+        "provider Create count is 0",
+        "GET of the lease reads state expired and end_reason expired",
+        "exactly one hub.sandbox.expire event with state expired is recorded"
+      ],
+      "pseudocode": "clock.advance_past(lease_expires_at); err = client.Create(); assert code(err) == FailedPrecondition; assert 'expired' in msg; assert provider.creates == 0; assert get(id).state == 'expired'; assert count(events, 'hub.sandbox.expire') == 1"
+    },
+    {
+      "id": "TS-28-12",
+      "kind": "integration",
+      "verifies": [
+        "28-REQ-3.2"
+      ],
+      "title": "The authenticator rejects the token of any lease whose expires_at has passed, in any state",
+      "given": [
+        "leases in leased, active, destroyed-with-token and failed-with-token style rows whose expires_at is at or before now but whose token hashes are still stored"
+      ],
+      "when": "an RPC is sent with each lease's token",
+      "then": [
+        "every RPC fails with gRPC Unauthenticated"
+      ],
+      "pseudocode": "for state in [leased, active, expired, failed]: seed(state, expires_at=now, keep_token=True); assert code(rpc(token)) == Unauthenticated"
+    },
+    {
+      "id": "TS-28-13",
+      "kind": "integration",
+      "verifies": [
+        "28-REQ-3.3"
+      ],
+      "title": "After the expiry path ends a lease its token fails with Unauthenticated",
+      "given": [
+        "a leased lease with a valid token that has been ended through the expiry path by a sweep"
+      ],
+      "when": "a Create and then a second RPC are sent with that token",
+      "then": [
+        "both RPCs fail with Unauthenticated",
+        "the lease's token_hash column is NULL"
+      ],
+      "pseudocode": "sweep(); assert code(client.Create()) == Unauthenticated; assert code(client.Close()) == Unauthenticated; assert token_hash(id) is NULL"
+    },
+    {
+      "id": "TS-28-14",
+      "kind": "integration",
+      "verifies": [
+        "28-REQ-3.4"
+      ],
+      "title": "A lease that leaves leased while its box is being created has the box destroyed and keeps its terminal state",
+      "given": [
+        "a provider double whose Create blocks until released",
+        "a leased lease with a valid token"
+      ],
+      "when": "Create is in flight, the lease is deleted (and in a second run expired by a sweep), then the provider Create is released",
+      "then": [
+        "the Create RPC fails with FailedPrecondition naming the lease's current state",
+        "provider Destroy is called once with the new box's ID",
+        "the lease keeps its state and end_reason from the earlier ending",
+        "afhub_sandbox_creates_total{result=failed} increased by 1"
+      ],
+      "pseudocode": "start create in goroutine; wait provider.entered; delete(lease); provider.release(); err = join(); assert code(err) == FailedPrecondition; assert provider.destroyed == [box.id]; assert get(id).end_reason == 'api'"
+    },
+    {
+      "id": "TS-28-15",
+      "kind": "property",
+      "verifies": [
+        "28-REQ-3.5"
+      ],
+      "title": "A late Create and a sweep racing on the same lapsed lease end it exactly once",
+      "given": [
+        "a leased lease past its lease_expires_at"
+      ],
+      "when": "for any interleaving and ordering of one late Create and one or more sweeps run concurrently",
+      "then": [
+        "exactly one hub.sandbox.expire event exists for the lease",
+        "the lease changed state to expired exactly once"
+      ],
+      "pseudocode": "for schedule in gen_schedules(): setup(); run_concurrently(create, sweep, sweep, order=schedule); assert count(events, id) == 1; assert get(id).state == 'expired'"
+    },
+    {
+      "id": "TS-28-16",
+      "kind": "integration",
+      "verifies": [
+        "28-REQ-4.1"
+      ],
+      "title": "A sweep runs Reap before List and prunes and recalibrates after the endings",
+      "given": [
+        "a recording provider double logging every call in order",
+        "an active overdue lease, a lapsed leased lease, an old terminal lease and a gauge value that disagrees with the table"
+      ],
+      "when": "one sweep runs with the injected clock",
+      "then": [
+        "Reap is recorded before List",
+        "the endings and Destroy calls occur before the old lease row is deleted",
+        "the gauge equals the table's active count when the sweep returns"
+      ],
+      "pseudocode": "sweep(); assert idx(calls,'Reap') < idx(calls,'List'); assert row_deleted_after_endings; assert gauge('ws') == count(active)"
+    },
+    {
+      "id": "TS-28-17",
+      "kind": "integration",
+      "verifies": [
+        "28-REQ-4.2"
+      ],
+      "title": "A failing sweep step is logged and every later step still runs",
+      "given": [
+        "a provider whose Reap and List both return errors",
+        "an overdue active lease, a lapsed leased lease and an old terminal lease",
+        "a captured slog handler"
+      ],
+      "when": "one sweep runs",
+      "then": [
+        "the sweep function returns after all six steps",
+        "the lapsed lease reads expired",
+        "the overdue lease reads destroyed",
+        "the old terminal row is deleted",
+        "the gauge is recalibrated",
+        "two error records are logged"
+      ],
+      "pseudocode": "provider.reap_err = E; provider.list_err = E; sweep(); assert get(leased).state == 'expired'; assert get(old) is None; assert len(error_logs) >= 2"
+    },
+    {
+      "id": "TS-28-18",
+      "kind": "integration",
+      "verifies": [
+        "28-REQ-4.3"
+      ],
+      "title": "A sweep lapses a leased lease past lease_expires_at, or past expires_at when the column is NULL, without calling the provider",
+      "given": [
+        "one leased lease with lease_expires_at before now",
+        "one legacy leased lease with NULL lease_expires_at and expires_at before now",
+        "one leased lease with a future deadline"
+      ],
+      "when": "one sweep runs",
+      "then": [
+        "the first two leases read expired with end_reason expired",
+        "the third lease stays leased",
+        "one hub.sandbox.expire event with state expired per lapsed lease",
+        "provider Destroy count is 0",
+        "the lapsed tokens fail with Unauthenticated"
+      ],
+      "pseudocode": "sweep(); assert get(a).state == 'expired' and get(b).state == 'expired'; assert get(c).state == 'leased'; assert provider.destroys == 0; assert count(expire_events) == 2"
+    },
+    {
+      "id": "TS-28-19",
+      "kind": "integration",
+      "verifies": [
+        "28-REQ-4.4"
+      ],
+      "title": "A sweep destroys the box of an active lease past expires_at and ends it as destroyed with end_reason expired",
+      "given": [
+        "an active lease with a real box in the provider double (or AgentKit local)",
+        "the clock advanced past expires_at"
+      ],
+      "when": "one sweep runs",
+      "then": [
+        "provider List no longer contains the box",
+        "the lease reads destroyed with end_reason expired",
+        "exactly one hub.sandbox.expire event with state destroyed and the sandbox_id",
+        "no hub.sandbox.destroy event is recorded"
+      ],
+      "pseudocode": "sweep(); assert box.id not in provider.List(); l = get(id); assert l.state == 'destroyed' and l.end_reason == 'expired'; assert events == [expire(state=destroyed, sandbox_id=box.id)]"
+    },
+    {
+      "id": "TS-28-20",
+      "kind": "integration",
+      "verifies": [
+        "28-REQ-4.5"
+      ],
+      "title": "A failing Destroy still ends an overdue active lease and revokes its token, logging the scrubbed error",
+      "given": [
+        "an overdue active lease",
+        "a provider whose Destroy returns an error containing https://user:pw@host/x",
+        "a captured slog handler"
+      ],
+      "when": "one sweep runs",
+      "then": [
+        "the lease reads destroyed with end_reason expired",
+        "its token fails with Unauthenticated",
+        "one log record carries lease_id, sandbox_id and the error text without the userinfo \"user:pw\""
+      ],
+      "pseudocode": "provider.destroy_err = Err('GET https://user:pw@host/x failed'); sweep(); assert get(id).state == 'destroyed'; r = find_log(lease_id=id); assert r.sandbox_id == sid; assert 'user:pw' not in r.error"
+    },
+    {
+      "id": "TS-28-21",
+      "kind": "integration",
+      "verifies": [
+        "28-REQ-4.6"
+      ],
+      "title": "The orphan step destroys exactly the boxes matched to a terminal lease and no others",
+      "given": [
+        "a provider listing boxes: B1 whose ID equals the sandbox_id of a destroyed lease, B2 whose hub.lease label names an expired lease, B3 belonging to an active lease, B4 with no hub.lease label, B5 labelled with a lease ID unknown to this hub",
+        "a second run where the listing exposes no labels"
+      ],
+      "when": "one sweep runs",
+      "then": [
+        "Destroy is called exactly for B1 and B2 in the labelled run",
+        "Destroy is called for B1 only in the label-less run",
+        "Destroy is never called for B3, B4 or B5"
+      ],
+      "pseudocode": "sweep(); assert set(provider.destroyed) == {B1, B2}; assert B3 not in destroyed and B4 not in destroyed and B5 not in destroyed"
+    },
+    {
+      "id": "TS-28-22",
+      "kind": "integration",
+      "verifies": [
+        "28-REQ-4.7"
+      ],
+      "title": "Concurrent sweep requests are serialised and no lease receives a second ending event",
+      "given": [
+        "a provider double whose Reap blocks briefly and records the concurrent in-flight count",
+        "overdue leases"
+      ],
+      "when": "ten goroutines call the sweep at once",
+      "then": [
+        "the maximum observed concurrent sweeps is 1",
+        "each overdue lease has exactly one ending event",
+        "a lease ended by another path before the sweep reaches it emits no event"
+      ],
+      "pseudocode": "parallel(10, sweep); assert provider.max_inflight_reap == 1; for l in leases: assert count(events, l.id) == 1"
+    },
+    {
+      "id": "TS-28-23",
+      "kind": "integration",
+      "verifies": [
+        "28-REQ-4.8"
+      ],
+      "title": "A provider call that hangs is cancelled at the per-call limit and the sweep continues",
+      "given": [
+        "the per-call limit configured to 50ms",
+        "a provider whose Reap, List and one Destroy block until their context is cancelled",
+        "a lapsed leased lease, an overdue active lease and an old terminal lease"
+      ],
+      "when": "one sweep runs",
+      "then": [
+        "the sweep returns in well under the sum of several seconds",
+        "a timeout is logged for each hung call",
+        "the lapsed lease reads expired",
+        "the old terminal row is deleted"
+      ],
+      "pseudocode": "cfg.callTimeout = 50ms; t0 = now(); sweep(); assert now()-t0 < 2s; assert get(leased).state == 'expired'; assert get(old) is None"
+    },
+    {
+      "id": "TS-28-24",
+      "kind": "integration",
+      "verifies": [
+        "28-REQ-5.1"
+      ],
+      "title": "Restart recovery destroys the box of every active lease and ends it as destroyed with end_reason restart",
+      "given": [
+        "two active leases and one leased lease left by an earlier process",
+        "an audit emitter recording events",
+        "a gateway listener that records when it begins accepting"
+      ],
+      "when": "the start-up sequence runs",
+      "then": [
+        "provider Destroy is called for both boxes",
+        "both leases read destroyed with end_reason restart before the listener accepts",
+        "one hub.sandbox.destroy event per lease with reason restart, ActorType system and empty ActorID",
+        "the leased lease is unchanged"
+      ],
+      "pseudocode": "startup(); assert all(get(l).end_reason == 'restart' for l in active); assert recovery_done_at < listener_accept_at; for e in events: assert e.metadata.reason == 'restart' and e.actor_type == 'system' and e.actor_id == ''"
+    },
+    {
+      "id": "TS-28-25",
+      "kind": "integration",
+      "verifies": [
+        "28-REQ-5.2"
+      ],
+      "title": "A Destroy failure during restart recovery still ends the lease and a later sweep retries the box",
+      "given": [
+        "an active lease whose provider Destroy fails once and whose box still exists",
+        "a captured slog handler"
+      ],
+      "when": "restart recovery runs and then a sweep runs",
+      "then": [
+        "the lease reads destroyed with end_reason restart",
+        "start-up proceeds",
+        "the logged error text is scrubbed",
+        "the sweep's orphan step calls Destroy for the box again"
+      ],
+      "pseudocode": "provider.destroy_err_once = Err; recovery(); assert get(id).state == 'destroyed'; sweep(); assert provider.destroy_calls[box.id] == 2"
+    },
+    {
+      "id": "TS-28-26",
+      "kind": "integration",
+      "verifies": [
+        "28-REQ-5.3"
+      ],
+      "title": "After recovery one sweep runs, then one per tick, and none after the reaper context is cancelled",
+      "given": [
+        "an injected ticker factory",
+        "a counting sweep observed through provider Reap"
+      ],
+      "when": "the reaper is started, three ticks are fired, the context is cancelled and a fourth tick is fired",
+      "then": [
+        "Reap count is 1 after start (initial sweep)",
+        "Reap count is 4 after three ticks",
+        "Reap count stays 4 after cancellation and the loop goroutine has exited"
+      ],
+      "pseudocode": "r = StartReaper(ctx, tickers); assert reaps == 1; for i in 3: tick(); wait(); assert reaps == 4; cancel(); join(r); tick(); assert reaps == 4"
+    },
+    {
+      "id": "TS-28-27",
+      "kind": "integration",
+      "verifies": [
+        "28-REQ-5.4"
+      ],
+      "title": "Errors from recovery or the first sweep are returned and logged and never terminate the process",
+      "given": [
+        "a provider whose Destroy, Reap and List all fail"
+      ],
+      "when": "the start-up routine runs",
+      "then": [
+        "it returns (and logs) the error instead of exiting",
+        "the caller continues and the reaper loop is still running",
+        "the test process is not terminated"
+      ],
+      "pseudocode": "err = RunStartup(); assert err is not None; assert logged(err); assert reaper.running()"
+    },
+    {
+      "id": "TS-28-28",
+      "kind": "unit",
+      "verifies": [
+        "28-REQ-5.5"
+      ],
+      "title": "Backend Reap runs the sweep only when the context carries no lease principal",
+      "given": [
+        "hub's backend with a counting sweep and a recording provider"
+      ],
+      "when": "Reap is called with a plain context and then with a context carrying a lease principal",
+      "then": [
+        "both calls return nil",
+        "the sweep count is 1 after both calls",
+        "the principal call made no provider call"
+      ],
+      "pseudocode": "assert backend.Reap(ctx) == nil; assert sweeps == 1; assert backend.Reap(withPrincipal(ctx,'L1')) == nil; assert sweeps == 1; assert provider.calls_after == provider.calls_before"
+    },
+    {
+      "id": "TS-28-29",
+      "kind": "integration",
+      "verifies": [
+        "28-REQ-5.6"
+      ],
+      "title": "With the feature disabled no recovery, sweep or reaper runs and the lease table is untouched",
+      "given": [
+        "a database holding active, leased and old terminal rows",
+        "a configuration with no [sandbox] section"
+      ],
+      "when": "hub's start-up wiring runs and time passes past several reap intervals",
+      "then": [
+        "the lease table is identical before and after",
+        "no provider call is made"
+      ],
+      "pseudocode": "before = dump(leases); wire(disabled); tick_many(); assert dump(leases) == before"
+    },
+    {
+      "id": "TS-28-30",
+      "kind": "integration",
+      "verifies": [
+        "28-REQ-6.1"
+      ],
+      "title": "A terminal lease that ended 24 hours or less ago stays readable, including after a sweep",
+      "given": [
+        "terminal leases ended 23h ago, exactly 24h ago, and one with NULL ended_at whose updated_at is 23h ago"
+      ],
+      "when": "a sweep runs and then GET one, GET ?all=true and the admin list are called",
+      "then": [
+        "GET one answers 200 for each",
+        "the all=true and admin lists contain each"
+      ],
+      "pseudocode": "sweep(); for l in leases: assert get(l.id).status == 200; assert l.id in list_all and l.id in admin_list"
+    },
+    {
+      "id": "TS-28-31",
+      "kind": "integration",
+      "verifies": [
+        "28-REQ-6.2"
+      ],
+      "title": "A sweep deletes a terminal lease that ended more than 24 hours ago",
+      "given": [
+        "a destroyed, an expired and a failed lease each ended 24h plus 1s ago, and one with NULL ended_at whose updated_at is 25h ago"
+      ],
+      "when": "one sweep runs",
+      "then": [
+        "GET one answers 404 for each",
+        "neither the all=true list nor the admin list contains them"
+      ],
+      "pseudocode": "sweep(); for l in old: assert get(l.id).status == 404; assert l.id not in list_all"
+    },
+    {
+      "id": "TS-28-32",
+      "kind": "property",
+      "verifies": [
+        "28-REQ-6.3"
+      ],
+      "title": "A sweep never deletes a lease in leased or active state, whatever its age",
+      "given": [
+        "a lease table with leases of random states and ages"
+      ],
+      "when": "for any lease in leased or active state with any created_at, expires_at and updated_at, a sweep runs",
+      "then": [
+        "the row still exists afterwards (it may have changed to a terminal state)"
+      ],
+      "pseudocode": "for rows in gen_rows(states=[leased, active], age=any): seed(rows); sweep(); for r in rows: assert exists(r.id)"
+    },
+    {
+      "id": "TS-28-33",
+      "kind": "integration",
+      "verifies": [
+        "28-REQ-7.1"
+      ],
+      "title": "The sandbox shutdown runs after Start returns and before the databases close, within 20 seconds",
+      "given": [
+        "hub's main wiring with a fake server whose Start returns immediately",
+        "audit and SQLite handles that record when they are closed"
+      ],
+      "when": "Start returns and the shutdown sequence runs",
+      "then": [
+        "the sandbox shutdown is invoked before audit database Close and SQLite Close",
+        "both databases answer queries while shutdown runs",
+        "the shutdown limit is 20 seconds"
+      ],
+      "pseudocode": "run_main(fake_server); assert order == ['shutdown_start','shutdown_end','auditDB.Close','database.Close']; assert shutdown_limit == 20s"
+    },
+    {
+      "id": "TS-28-34",
+      "kind": "integration",
+      "verifies": [
+        "28-REQ-7.2"
+      ],
+      "title": "In shutdown mode Create fails with Unavailable and every ending carries end_reason shutdown",
+      "given": [
+        "a leased lease and an active lease",
+        "hub in shutdown mode"
+      ],
+      "when": "a Create is sent for the leased lease and the active lease is closed through DELETE",
+      "then": [
+        "Create fails with gRPC Unavailable",
+        "provider Create count is unchanged",
+        "the lease ended in this mode reads end_reason shutdown"
+      ],
+      "pseudocode": "EnterShutdown(); assert code(client.Create()) == Unavailable; assert provider.creates == 0; delete(active); assert get(active).end_reason == 'shutdown'"
+    },
+    {
+      "id": "TS-28-35",
+      "kind": "integration",
+      "verifies": [
+        "28-REQ-7.3"
+      ],
+      "title": "Shutdown stops the reaper, destroys every active box, ends each lease as shutdown and stops the gateway",
+      "given": [
+        "a running reaper",
+        "three active leases",
+        "a gateway server double recording its stop"
+      ],
+      "when": "the sandbox shutdown runs",
+      "then": [
+        "each active lease reads destroyed with end_reason shutdown",
+        "provider Destroy was called for each box",
+        "one hub.sandbox.destroy event per lease with reason shutdown, ActorType system and empty ActorID",
+        "no sweep starts after shutdown begins",
+        "the gateway stop was called after the leases ended"
+      ],
+      "pseudocode": "Shutdown(ctx); for l in active: assert get(l).end_reason == 'shutdown'; assert reaper.stopped; assert gateway.stop_at > last_end_at; tick(); assert sweeps_after == sweeps_at_start"
+    },
+    {
+      "id": "TS-28-36",
+      "kind": "property",
+      "verifies": [
+        "28-REQ-7.4"
+      ],
+      "title": "Shutdown leaves every leased lease byte-identical",
+      "given": [
+        "a lease table with random leased rows beside active rows"
+      ],
+      "when": "for any set of leased leases, the sandbox shutdown runs",
+      "then": [
+        "each leased row, including token_hash and deadline columns, is identical before and after"
+      ],
+      "pseudocode": "for rows in gen_leased_rows(): before = dump(rows); Shutdown(ctx); assert dump(rows) == before"
+    },
+    {
+      "id": "TS-28-37",
+      "kind": "integration",
+      "verifies": [
+        "28-REQ-7.5"
+      ],
+      "title": "Shutdown returns at its limit when Destroy hangs and leaves unfinished leases active",
+      "given": [
+        "the shutdown limit configured to 100ms",
+        "a provider whose Destroy blocks forever for one lease's box and succeeds for another"
+      ],
+      "when": "the sandbox shutdown runs",
+      "then": [
+        "it returns within the limit plus a small margin",
+        "the lease whose Destroy hung reads active",
+        "the lease whose Destroy succeeded reads destroyed with end_reason shutdown"
+      ],
+      "pseudocode": "limit = 100ms; t0 = now(); Shutdown(); assert now()-t0 < 1s; assert get(hung).state == 'active'; assert get(ok).state == 'destroyed'"
+    },
+    {
+      "id": "TS-28-38",
+      "kind": "unit",
+      "verifies": [
+        "28-REQ-7.6"
+      ],
+      "title": "A second shutdown call, or shutdown with the feature disabled, does nothing",
+      "given": [
+        "a completed shutdown with a recording provider",
+        "a disabled-feature sandbox handle"
+      ],
+      "when": "shutdown is called a second time and on the disabled handle",
+      "then": [
+        "both return nil",
+        "provider call counts are unchanged",
+        "the lease table is unchanged"
+      ],
+      "pseudocode": "Shutdown(); n = provider.calls; snap = dump(); assert Shutdown() == nil; assert provider.calls == n; assert dump() == snap; assert disabled.Shutdown() == nil"
+    },
+    {
+      "id": "TS-28-39",
+      "kind": "unit",
+      "verifies": [
+        "28-REQ-8.1"
+      ],
+      "title": "EventSandboxExpire has the value hub.sandbox.expire",
+      "given": [],
+      "when": "audit.EventSandboxExpire is read",
+      "then": [
+        "it equals \"hub.sandbox.expire\""
+      ],
+      "pseudocode": "assert audit.EventSandboxExpire == 'hub.sandbox.expire'"
+    },
+    {
+      "id": "TS-28-40",
+      "kind": "unit",
+      "verifies": [
+        "28-REQ-8.2"
+      ],
+      "title": "The expiry path emits one hub.sandbox.expire event with the specified fields",
+      "given": [
+        "a recording emitter",
+        "a leased lease and an active lease with a box"
+      ],
+      "when": "each is ended through the expiry path",
+      "then": [
+        "each event has ResourceType sandbox, ResourceID the lease ID, Action expire, ActorType system, empty ActorID and Workspace the slug",
+        "metadata has lease_id and state expired for the leased lease",
+        "metadata has lease_id, state destroyed and sandbox_id for the active lease",
+        "the leased lease's metadata has no sandbox_id key"
+      ],
+      "pseudocode": "e1 = expire(leased); assert e1.metadata == {lease_id, state:'expired'}; e2 = expire(active); assert e2.metadata == {lease_id, state:'destroyed', sandbox_id}"
+    },
+    {
+      "id": "TS-28-41",
+      "kind": "integration",
+      "verifies": [
+        "28-REQ-8.3"
+      ],
+      "title": "Each ending emits exactly one of hub.sandbox.expire or hub.sandbox.destroy according to its cause",
+      "given": [
+        "leases ended by a late Create, a sweep, shutdown and restart recovery"
+      ],
+      "when": "each ending completes",
+      "then": [
+        "late Create and sweep endings emit one expire event and no destroy event",
+        "shutdown and restart endings emit one destroy event with reason shutdown or restart and ActorType system and no expire event"
+      ],
+      "pseudocode": "for cause in [late_create, sweep_lapse, sweep_overdue, shutdown, restart]: ev = events_for(lease); assert len(ev) == 1; assert ev[0].type == expected[cause]"
+    },
+    {
+      "id": "TS-28-42",
+      "kind": "integration",
+      "verifies": [
+        "28-REQ-8.4",
+        "28-REQ-9.2"
+      ],
+      "title": "An ending that loses the conditional update emits no event and records no metric",
+      "given": [
+        "an active lease that DELETE ended just before the sweep reaches it, the sweep holding a stale snapshot",
+        "gauge and histogram values recorded before the attempt"
+      ],
+      "when": "the sweep's ending attempt for that lease affects no row",
+      "then": [
+        "the event count is unchanged by the attempt",
+        "afhub_sandboxes_active is not decremented a second time",
+        "the lease histogram sample count is unchanged"
+      ],
+      "pseudocode": "snapshot = list_overdue(); delete(l); events0 = count(); g0 = gauge(); hist0 = hist_count(); sweep_with(snapshot); assert count() == events0; assert gauge() == g0; assert hist_count() == hist0"
+    },
+    {
+      "id": "TS-28-43",
+      "kind": "unit",
+      "verifies": [
+        "28-REQ-8.5"
+      ],
+      "title": "A nil emitter or a failing Emit does not prevent or alter the ending",
+      "given": [
+        "a lapsed leased lease in each of three setups: working emitter, nil emitter, emitter returning an error",
+        "a captured slog handler"
+      ],
+      "when": "the expiry path ends the lease",
+      "then": [
+        "the lease reads expired in all three",
+        "the returned result is the same in all three",
+        "the failing emitter produces one slog.Error record",
+        "the nil emitter produces no panic"
+      ],
+      "pseudocode": "for em in [ok, nil, failing]: r = expire(lease, em); assert r == baseline; assert get(id).state == 'expired'"
+    },
+    {
+      "id": "TS-28-44",
+      "kind": "property",
+      "verifies": [
+        "28-REQ-8.6"
+      ],
+      "title": "No event, log record or lease field written by the expiry flows contains a secret, env value, token or token hash",
+      "given": [
+        "leases created with random secret values, env values and tokens",
+        "captured events, slog output and database rows",
+        "a provider whose Destroy errors embed URL userinfo"
+      ],
+      "when": "for any lease, run late Create, sweeps, restart recovery and shutdown",
+      "then": [
+        "no captured event, log record or lease row contains any injected secret, env value, token or token hash",
+        "logged provider error text has URL userinfo removed"
+      ],
+      "pseudocode": "for l in gen_leases_with_secrets(): run_all_flows(l); blob = events + logs + rows; for s in l.secrets + l.env_values + [l.token, l.token_hash]: assert s not in blob; assert not re.search('://[^/@]+@', logs)"
+    },
+    {
+      "id": "TS-28-45",
+      "kind": "unit",
+      "verifies": [
+        "28-REQ-9.1"
+      ],
+      "title": "The three sandbox metrics are registered and listed on /metrics before any lease exists",
+      "given": [
+        "a fresh audit.NewMetrics()",
+        "the /metrics handler"
+      ],
+      "when": "GET /metrics is served",
+      "then": [
+        "the body lists afhub_sandboxes_active, afhub_sandbox_creates_total and afhub_sandbox_lease_seconds",
+        "afhub_sandbox_creates_total has result=\"created\" and result=\"failed\" at 0",
+        "afhub_sandboxes_active has the placeholder workspace=\"\" series",
+        "the histogram has bucket bounds 60,300,600,1200,1800,3600,7200,14400,28800"
+      ],
+      "pseudocode": "body = get('/metrics'); for n in names: assert n in body; assert 'afhub_sandbox_creates_total{result=\"created\"} 0' in body; assert 'le=\"28800\"' in body"
+    },
+    {
+      "id": "TS-28-46",
+      "kind": "integration",
+      "verifies": [
+        "28-REQ-9.2"
+      ],
+      "title": "afhub_sandboxes_active goes up on activation and down on an ending of an active lease",
+      "given": [
+        "a lease in workspace ws",
+        "a Metrics instance"
+      ],
+      "when": "the lease is activated by Create and then ended by DELETE",
+      "then": [
+        "the ws gauge value is 1 after activation",
+        "the ws gauge value is 0 after the ending"
+      ],
+      "pseudocode": "create(); assert gauge('ws') == 1; delete(); assert gauge('ws') == 0"
+    },
+    {
+      "id": "TS-28-47",
+      "kind": "integration",
+      "verifies": [
+        "28-REQ-9.3"
+      ],
+      "title": "The active gauge is recalibrated from the table after restart recovery and at the end of every sweep",
+      "given": [
+        "active leases in two workspaces",
+        "gauge values deliberately wrong, including a stale workspace label"
+      ],
+      "when": "restart recovery finishes and, separately, a sweep completes",
+      "then": [
+        "after each, the gauge has exactly one series per workspace with active rows set to the GROUP BY count",
+        "the stale label is gone"
+      ],
+      "pseudocode": "gauge.set('stale', 9); sweep(); assert gauge_series() == {ws1: n1, ws2: n2}"
+    },
+    {
+      "id": "TS-28-48",
+      "kind": "integration",
+      "verifies": [
+        "28-REQ-9.4"
+      ],
+      "title": "A Create accepted for a leased lease increments exactly one creates_total result series",
+      "given": [
+        "leases for a successful create, a provider error, a missing required secret, and a lease deleted during box creation"
+      ],
+      "when": "Create is sent for each",
+      "then": [
+        "the first increments result=created by 1",
+        "the other three each increment result=failed by 1",
+        "the other series is unchanged in each case"
+      ],
+      "pseudocode": "for scenario in [ok, provider_err, secret_missing, left_leased]: before = counters(); run(scenario); assert delta(counters()) == {expected[scenario]: 1}"
+    },
+    {
+      "id": "TS-28-49",
+      "kind": "integration",
+      "verifies": [
+        "28-REQ-9.5"
+      ],
+      "title": "A Create refused before acceptance leaves afhub_sandbox_creates_total unchanged",
+      "given": [
+        "an unknown token, an already active lease, a missed lease deadline and shutdown mode, one setup each"
+      ],
+      "when": "Create is sent in each setup",
+      "then": [
+        "each Create fails with its refusal code",
+        "both result series keep their values"
+      ],
+      "pseudocode": "for scenario in [unknown_token, second_create, late, shutdown]: before = counters(); err = create(); assert err; assert counters() == before"
+    },
+    {
+      "id": "TS-28-50",
+      "kind": "integration",
+      "verifies": [
+        "28-REQ-9.6"
+      ],
+      "title": "A lease that becomes destroyed observes ended_at minus created_at on afhub_sandbox_lease_seconds once",
+      "given": [
+        "active leases destroyed by DELETE, by a sweep, by shutdown and by restart recovery",
+        "one lease that lapses to expired"
+      ],
+      "when": "each ending completes",
+      "then": [
+        "the histogram sample count increases by 1 for each destroyed lease and not for the expired one",
+        "the sum increases by each lease's ended_at − created_at in seconds"
+      ],
+      "pseudocode": "for cause in causes: c0, s0 = hist(); end(cause); assert hist().count == c0+1; assert approx(hist().sum, s0 + duration)"
+    },
+    {
+      "id": "TS-28-51",
+      "kind": "unit",
+      "verifies": [
+        "28-REQ-9.7"
+      ],
+      "title": "A nil *audit.Metrics records nothing and the same results are produced",
+      "given": [
+        "sandbox code constructed with a nil *audit.Metrics"
+      ],
+      "when": "activation, endings and a sweep run",
+      "then": [
+        "no panic occurs",
+        "lease states and events equal those of a run with metrics"
+      ],
+      "pseudocode": "r_nil = scenario(metrics=None); r_met = scenario(metrics=m); assert r_nil == r_met"
+    },
+    {
+      "id": "TS-28-52",
+      "kind": "property",
+      "verifies": [
+        "28-REQ-9.8"
+      ],
+      "title": "afhub_sandboxes_active equals the per-workspace count of active leases after every step",
+      "given": [
+        "a lease service, gateway backend and sweeper over several workspaces with an injected clock"
+      ],
+      "when": "for any sequence of activations, endings, clock advances and sweeps run one at a time",
+      "then": [
+        "after each step the gauge for every workspace equals the number of active rows in the table"
+      ],
+      "pseudocode": "for ops in gen_ops(): for op in ops: apply(op); for ws in workspaces: assert gauge(ws) == count(active, ws)"
+    },
+    {
+      "id": "TS-28-53",
+      "kind": "smoke",
+      "verifies": [
+        "28-PATH-1"
+      ],
+      "title": "An unused lease lapses at its deadline, is expired by the reaper and its token stops working",
+      "given": [
+        "hub's lease REST API, sweeper, audit emitter and gateway authenticator over an in-memory database",
+        "an injected clock"
+      ],
+      "when": "a lease is posted, the clock advances past lease_expires_at, a sweep runs, the lease is read and its token is presented at the gateway",
+      "then": [
+        "POST returned 201 with lease_expires_at",
+        "GET reads state expired and end_reason expired",
+        "exactly one hub.sandbox.expire event with state expired",
+        "the token fails with Unauthenticated"
+      ],
+      "real_components": [
+        "lease REST handlers",
+        "lease store and schema migration",
+        "sweeper",
+        "audit emitter",
+        "gatewayd server and authenticator",
+        "recording provider double"
+      ]
+    },
+    {
+      "id": "TS-28-54",
+      "kind": "smoke",
+      "verifies": [
+        "28-PATH-2",
+        "28-REQ-9.2",
+        "28-REQ-9.6"
+      ],
+      "title": "A box past expires_at is destroyed by the sweep and the metrics follow",
+      "given": [
+        "lease API, gateway backend, sweeper, metrics registry and audit emitter wired together with AgentKit local or a provider double"
+      ],
+      "when": "a lease is created, Create is sent through the gateway, the clock advances past expires_at and a sweep runs",
+      "then": [
+        "provider Destroy was called for the sandbox_id",
+        "the lease reads destroyed with end_reason expired",
+        "one hub.sandbox.expire event with state destroyed and the sandbox_id",
+        "afhub_sandboxes_active is 0 for the workspace",
+        "afhub_sandbox_creates_total{result=created} is 1",
+        "afhub_sandbox_lease_seconds has one observation"
+      ],
+      "real_components": [
+        "lease REST handlers",
+        "lease store",
+        "gatewayd server and hub backend",
+        "sweeper",
+        "audit.Metrics",
+        "audit emitter",
+        "provider double or AgentKit local"
+      ]
+    },
+    {
+      "id": "TS-28-55",
+      "kind": "smoke",
+      "verifies": [
+        "28-PATH-3"
+      ],
+      "title": "A late Create through the gateway expires the lease on the spot without a sweep",
+      "given": [
+        "lease API, gatewayd server, hub backend and a recording provider"
+      ],
+      "when": "a lease is posted, the clock advances past lease_expires_at and Create is sent with the token",
+      "then": [
+        "Create fails with FailedPrecondition naming expired",
+        "provider Create count is 0",
+        "GET reads state expired"
+      ],
+      "real_components": [
+        "lease REST handlers",
+        "lease store",
+        "gatewayd server and hub backend",
+        "gateway client",
+        "audit emitter",
+        "recording provider double"
+      ]
+    },
+    {
+      "id": "TS-28-56",
+      "kind": "smoke",
+      "verifies": [
+        "28-PATH-4"
+      ],
+      "title": "Shutdown after Start returns destroys every active box before the databases close",
+      "given": [
+        "hub's main wiring with active leases, a reaper, a gateway server and open databases"
+      ],
+      "when": "server.Start() returns and the sandbox shutdown runs",
+      "then": [
+        "each active lease reads destroyed with end_reason shutdown",
+        "one hub.sandbox.destroy event with reason shutdown per lease",
+        "the gateway is stopped",
+        "shutdown returned within 20 seconds while both databases were still open"
+      ],
+      "real_components": [
+        "af-hub wiring",
+        "sandbox shutdown",
+        "reaper",
+        "lease store",
+        "gatewayd server",
+        "audit emitter",
+        "provider double or AgentKit local"
+      ]
+    },
+    {
+      "id": "TS-28-57",
+      "kind": "smoke",
+      "verifies": [
+        "28-PATH-5"
+      ],
+      "title": "Restart recovery ends crash-left active leases before the gateway accepts connections",
+      "given": [
+        "a database holding active lease rows left by a crashed process",
+        "a provider holding their boxes"
+      ],
+      "when": "hub's start-up wiring runs",
+      "then": [
+        "each lease reads destroyed with end_reason restart before the gateway listener accepts",
+        "afhub_sandboxes_active is recalibrated to 0",
+        "one sweep ran after recovery"
+      ],
+      "real_components": [
+        "af-hub wiring",
+        "sandboxes start-up",
+        "lease store",
+        "sweeper",
+        "audit.Metrics",
+        "gatewayd server",
+        "provider double or AgentKit local"
+      ]
+    },
+    {
+      "id": "TS-28-58",
+      "kind": "smoke",
+      "verifies": [
+        "28-PATH-6",
+        "28-REQ-6.1",
+        "28-REQ-6.2"
+      ],
+      "title": "A deleted lease is visible for 24 hours and then pruned by a sweep",
+      "given": [
+        "lease REST API, store and sweeper with an injected clock"
+      ],
+      "when": "a lease is deleted, read at 23 hours, the clock advances past 24 hours after ended_at, a sweep runs and the lease is read again",
+      "then": [
+        "GET one at 23 hours answers 200 and ?all=true lists the lease",
+        "GET one after the sweep answers 404"
+      ],
+      "real_components": [
+        "lease REST handlers",
+        "lease store",
+        "sweeper",
+        "provider double"
+      ]
+    }
+  ]
+}

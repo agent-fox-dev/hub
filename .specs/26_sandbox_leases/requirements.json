@@ -1,0 +1,486 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/requirements.v2.json",
+  "spec_id": "26",
+  "spec_name": "sandbox_leases",
+  "schema_version": 2,
+  "introduction": "Spec 26 gives hub a durable, auditable lease: a record of a caller's right to one sandbox, stored in a new sandbox_leases SQLite table in internal/sandboxes. It adds the REST endpoints POST/GET/GET-one/DELETE under /api/v1/workspaces/:slug/sandboxes, the admin-only GET /api/v1/sandboxes, and `afc sandbox create|list|get|destroy`. Issuing a lease snapshots a configured profile, confirms the profile's required secrets exist by name only, enforces [sandbox].max_sandboxes, and returns a bearer token shown exactly once and stored only as its SHA-256. No box is created in this spec.",
+  "glossary": {
+    "capacity count": "The number of leases in state leased or active whose expires_at is later than now, compared against [sandbox].max_sandboxes.",
+    "lease": "A row in sandbox_leases recording a caller's right to one sandbox in one workspace, with a snapshot of the profile taken at issue. Its id is sbx_ followed by 32 lowercase hex characters.",
+    "lease token": "The bearer credential for a lease: sbl_ followed by 44 base64 RawURL characters (33 random bytes), 48 characters in all. Returned only in the 201 body of the POST that issued it.",
+    "live lease": "A lease in state leased or active. Only live leases can be found by token lookup.",
+    "profile snapshot": "The profile's image, network, cpus, memory_mb, pids, disk_mb, require_landlock, required and optional secret names and fixed environment, copied onto the lease at issue so later configuration edits do not change it.",
+    "resolution chain": "The ordered secret scopes searched for a workspace: workspace (owner ID = slug), org (owner ID = the workspace's org_id, only when set and the workspace owner is a member of that org), then user (owner ID = the workspace owner's user ID).",
+    "sandboxes_disabled": "The error_type of the 404 that every sandbox route returns when the [sandbox] section is absent (feature off), as delivered by spec 25.",
+    "terminal state": "One of destroyed, expired or failed. Only destroyed is reachable in this spec.",
+    "token hash": "The lowercase-hex SHA-256 of a lease token, the only form of the token hub stores. Cleared when the lease is revoked."
+  },
+  "requirements": [
+    {
+      "id": "26-REQ-1",
+      "title": "The lease record",
+      "rationale": "Gateway, expiry and remote providers all build on one durable lease row whose shape is fixed at issue.",
+      "criteria": [
+        {
+          "id": "26-REQ-1.1",
+          "pattern": "event_driven",
+          "condition": "af-hub starts, whether the sandbox feature is on or off",
+          "system": "lease store",
+          "action": "create the sandbox_leases table with CREATE TABLE IF NOT EXISTS, so that running the schema initialisation twice on the same database succeeds and leaves existing rows unchanged",
+          "contract": "InitSchema(db) returns nil on a fresh database and again on a database that already holds the table and its rows"
+        },
+        {
+          "id": "26-REQ-1.2",
+          "pattern": "ubiquitous",
+          "system": "lease store",
+          "action": "constrain the state column with a CHECK that accepts exactly leased, active, destroyed, expired and failed, and declare the token hash column UNIQUE and nullable",
+          "contract": "an INSERT with state 'active', 'expired' or 'failed' succeeds; an INSERT with state 'bogus' fails; two rows with NULL token hash coexist; two rows with the same non-NULL hash are refused"
+        },
+        {
+          "id": "26-REQ-1.3",
+          "pattern": "ubiquitous",
+          "system": "lease store",
+          "action": "for any issued lease, assign an id made of sbx_ followed by the lowercase hex encoding of 16 bytes from crypto/rand",
+          "contract": "every id matches ^sbx_[0-9a-f]{32}$ and no two issued leases share an id"
+        },
+        {
+          "id": "26-REQ-1.4",
+          "pattern": "event_driven",
+          "condition": "a lease is issued",
+          "system": "lease store",
+          "action": "store the workspace slug, profile name, purpose, state leased, the profile snapshot (image, network, cpus, memory_mb, pids, disk_mb, require_landlock, required and optional secret names, fixed environment), the caller's labels exactly as given, the TTL in seconds, expires_at, created_by, created_at and updated_at, with sandbox_id, error, ended_at and end_reason NULL",
+          "contract": "the stored row holds these values; reading it back after the in-memory profile is changed still returns the values captured at issue"
+        },
+        {
+          "id": "26-REQ-1.5",
+          "pattern": "ubiquitous",
+          "system": "lease store",
+          "action": "set created_by to \"admin\" when the credential type is admin_token and to the credential's UserID otherwise",
+          "contract": "a lease issued with an admin token reads created_by \"admin\"; one issued with an API key for user u1 reads created_by \"u1\""
+        },
+        {
+          "id": "26-REQ-1.6",
+          "pattern": "ubiquitous",
+          "system": "lease store",
+          "action": "write every timestamp column with apikit.FormatUTC from the service's injected clock, and set expires_at to created_at plus the lease TTL",
+          "contract": "created_at, updated_at, expires_at and ended_at parse as RFC 3339 UTC; expires_at minus created_at equals ttl_seconds"
+        },
+        {
+          "id": "26-REQ-1.7",
+          "pattern": "ubiquitous",
+          "system": "lease store",
+          "action": "never store a secret value or a plaintext lease token in any column of sandbox_leases",
+          "contract": "after a lease is issued for a workspace whose required secret has a planted value, neither that value nor the issued token appears as a substring of any column of the row"
+        }
+      ]
+    },
+    {
+      "id": "26-REQ-2",
+      "title": "Access rules for every lease route",
+      "rationale": "The lease routes follow merge's ordering so a PAT's missing scope and a disabled feature are reported without revealing which workspaces exist.",
+      "criteria": [
+        {
+          "id": "26-REQ-2.1",
+          "pattern": "unwanted",
+          "condition": "a request to any lease route (POST, GET list, GET one, DELETE, or GET /api/v1/sandboxes) carries no credential",
+          "system": "lease handlers",
+          "action": "reject the request before any other check",
+          "contract": "HTTP 401 in apikit's error envelope; no lease row is created or changed"
+        },
+        {
+          "id": "26-REQ-2.2",
+          "pattern": "state_driven",
+          "condition": "the sandbox feature is off",
+          "system": "lease handlers",
+          "action": "answer every authenticated request to any lease route with error_type sandboxes_disabled, before checking scopes or the workspace",
+          "contract": "HTTP 404 with error_type \"sandboxes_disabled\" via apikit.WriteAPIErrorWithType"
+        },
+        {
+          "id": "26-REQ-2.3",
+          "pattern": "unwanted",
+          "condition": "the caller is a PAT without sandboxes:write on POST or DELETE, or without either sandboxes:read or sandboxes:write on a per-workspace GET",
+          "system": "lease handlers",
+          "action": "reject the request before looking up the workspace, including when the workspace does not exist",
+          "contract": "HTTP 403 via apikit.WriteAPIError; no lease row is created or changed"
+        },
+        {
+          "id": "26-REQ-2.4",
+          "pattern": "unwanted",
+          "condition": "wsaccess.AuthorizeWorkspace refuses the slug because the workspace does not exist or the caller does not own it",
+          "system": "lease handlers",
+          "action": "reject the request without revealing whether the workspace exists, while admin tokens pass for any existing workspace",
+          "contract": "HTTP 404 for a missing or unowned workspace; no lease row is created or changed"
+        },
+        {
+          "id": "26-REQ-2.5",
+          "pattern": "unwanted",
+          "condition": "POST targets a workspace whose status is not active",
+          "system": "lease handlers",
+          "action": "refuse to issue a lease",
+          "contract": "HTTP 400 with message \"workspace is not active\"; the sandbox_leases row count is unchanged"
+        },
+        {
+          "id": "26-REQ-2.6",
+          "pattern": "state_driven",
+          "condition": "the workspace is archived",
+          "system": "lease handlers",
+          "action": "serve GET list, GET one and DELETE for its leases with the same results as for an active workspace",
+          "contract": "GET answers 200 and DELETE answers 204 for an archived workspace's lease"
+        },
+        {
+          "id": "26-REQ-2.7",
+          "pattern": "unwanted",
+          "condition": "a credential other than admin_token, including an API key or a PAT holding both sandbox scopes, calls GET /api/v1/sandboxes",
+          "system": "lease handlers",
+          "action": "refuse the admin list",
+          "contract": "HTTP 403 via apikit.WriteAPIError"
+        }
+      ]
+    },
+    {
+      "id": "26-REQ-3",
+      "title": "Issuing a lease and validating the request body",
+      "rationale": "A caller says which profile; hub says what is in it, so every field outside the four allowed ones is refused rather than silently ignored.",
+      "criteria": [
+        {
+          "id": "26-REQ-3.1",
+          "pattern": "event_driven",
+          "condition": "an authorised caller sends POST /api/v1/workspaces/:slug/sandboxes with {\"profile\":\"tools\"} for an active workspace whose required secrets exist, below capacity",
+          "system": "lease handlers",
+          "action": "store a lease in state leased and return the lease representation of 26-REQ-7.6 plus the token",
+          "contract": "HTTP 201 with body containing state \"leased\", profile \"tools\", the profile's image, network, resources and secret names, expires_at equal to created_at plus the profile TTL, and token"
+        },
+        {
+          "id": "26-REQ-3.2",
+          "pattern": "event_driven",
+          "condition": "the POST body is empty, or is a JSON object without profile, ttl or purpose",
+          "system": "lease handlers",
+          "action": "treat an empty body as {}, use the profile spec 25 marks as default, the profile's TTL and an empty purpose",
+          "contract": "HTTP 201 with profile equal to the default profile's name, purpose \"\" and expires_at minus created_at equal to the profile TTL"
+        },
+        {
+          "id": "26-REQ-3.3",
+          "pattern": "unwanted",
+          "condition": "the POST body is not a JSON object, or contains a field other than profile, purpose, ttl and labels (for example image or env)",
+          "system": "lease handlers",
+          "action": "refuse the request, naming the unknown field when there is one",
+          "contract": "HTTP 400 whose message contains the unknown field name; no lease row is stored"
+        },
+        {
+          "id": "26-REQ-3.4",
+          "pattern": "unwanted",
+          "condition": "profile names no configured profile under exact, case-sensitive comparison, or profile is absent and no profile is marked default",
+          "system": "lease handlers",
+          "action": "refuse the request and list the known profile names in configuration order",
+          "contract": "HTTP 400 whose message contains every configured profile name in configuration order; no lease row is stored"
+        },
+        {
+          "id": "26-REQ-3.5",
+          "pattern": "complex_event",
+          "condition": "ttl is a Go duration string",
+          "guard": "its value is at least 1 minute and at most the chosen profile's TTL",
+          "system": "lease handlers",
+          "action": "issue the lease with that TTL",
+          "contract": "HTTP 201 with expires_at equal to created_at plus ttl; ttl \"1m\" and ttl equal to the profile TTL are both accepted"
+        },
+        {
+          "id": "26-REQ-3.6",
+          "pattern": "unwanted",
+          "condition": "ttl does not parse with time.ParseDuration, is shorter than 1 minute (including zero and negative values), or is longer than the chosen profile's TTL",
+          "system": "lease handlers",
+          "action": "refuse the request, and when the value is too long name the profile's TTL in the message",
+          "contract": "HTTP 400; for a too-long ttl the message contains the profile TTL; no lease row is stored"
+        },
+        {
+          "id": "26-REQ-3.7",
+          "pattern": "unwanted",
+          "condition": "purpose is longer than 64 runes or contains a control character",
+          "system": "lease handlers",
+          "action": "refuse the request, while accepting a purpose of exactly 64 runes",
+          "contract": "HTTP 400 for 65 runes or a control character; HTTP 201 for 64 runes; no lease row is stored on refusal"
+        },
+        {
+          "id": "26-REQ-3.8",
+          "pattern": "unwanted",
+          "condition": "labels has more than 16 pairs, a non-string value, a key that is not 1–63 characters of [A-Za-z0-9._-] starting and ending with a letter or digit, a key equal to lease or workspace in any case, or a value longer than 256 bytes or containing a control character",
+          "system": "lease handlers",
+          "action": "refuse the request, naming the offending label key",
+          "contract": "HTTP 400 whose message contains the label key; 16 pairs, a 63-character key and a 256-byte value are accepted; no lease row is stored on refusal"
+        }
+      ]
+    },
+    {
+      "id": "26-REQ-4",
+      "title": "Required-secret presence check",
+      "rationale": "A lease whose box could never start for want of a secret should fail at POST, and the check must not be able to leak what it never reads.",
+      "criteria": [
+        {
+          "id": "26-REQ-4.1",
+          "pattern": "event_driven",
+          "condition": "a POST passes request validation",
+          "system": "lease service",
+          "action": "before storing the lease, confirm that every name in the profile's required secrets exists in at least one scope of the workspace's resolution chain, reading key names only through secrets.Store.ListSecrets and never calling GetSecretValue",
+          "contract": "the lease is stored only when every required name is found; the check performs zero GetSecretValue calls"
+        },
+        {
+          "id": "26-REQ-4.2",
+          "pattern": "ubiquitous",
+          "system": "lease service",
+          "action": "match required secret names against stored key names case-insensitively, as GetSecretValue's UPPER(key) comparison does",
+          "contract": "a profile requiring GIT_PAT is satisfied by a workspace secret stored as git_pat"
+        },
+        {
+          "id": "26-REQ-4.3",
+          "pattern": "ubiquitous",
+          "system": "lease service",
+          "action": "compute the resolution chain in one exported helper that returns, in order, the workspace scope (owner ID = slug), the org scope (owner ID = the workspace's org_id) only when org_id is set and the workspace owner has a row in org_members for that org, and the user scope of the workspace owner, never of the caller",
+          "contract": "the helper returns [workspace, org, user] for an owner who is an org member, [workspace, user] when org_id is NULL or the owner is not a member, and the user entry always carries workspaces.owner_id even when an admin token calls"
+        },
+        {
+          "id": "26-REQ-4.4",
+          "pattern": "unwanted",
+          "condition": "one or more required secret names exist in no scope of the resolution chain",
+          "system": "lease handlers",
+          "action": "refuse the lease, naming every missing key in profile order and the scope types searched, without naming the owner's user ID or the org ID",
+          "contract": "HTTP 422 with error_type \"secret_missing\"; the message contains each missing key in profile order and the searched scope types (for example \"workspace, user\"); the sandbox_leases row count is unchanged"
+        },
+        {
+          "id": "26-REQ-4.5",
+          "pattern": "ubiquitous",
+          "system": "lease service",
+          "action": "issue the lease without checking the presence of names listed only in the profile's optional_secrets",
+          "contract": "HTTP 201 when every optional secret is absent and every required secret is present"
+        },
+        {
+          "id": "26-REQ-4.6",
+          "pattern": "unwanted",
+          "condition": "the secrets store or the workspace/org_members lookup returns an error during the check",
+          "system": "lease handlers",
+          "action": "refuse the lease",
+          "contract": "HTTP 500; the sandbox_leases row count is unchanged"
+        }
+      ]
+    },
+    {
+      "id": "26-REQ-5",
+      "title": "Capacity limit max_sandboxes",
+      "rationale": "A deployment must be able to bound how many sandboxes can be live at once, and concurrent issuance must not overshoot it.",
+      "criteria": [
+        {
+          "id": "26-REQ-5.1",
+          "pattern": "event_driven",
+          "condition": "the [sandbox] section is present and has no max_sandboxes key",
+          "system": "sandbox config loader",
+          "action": "use 16 as max_sandboxes and accept the key without an unknown-key failure when it is present",
+          "contract": "the effective limit is 16 when absent; a section with max_sandboxes = 3 loads with limit 3 and no unknown-key error"
+        },
+        {
+          "id": "26-REQ-5.2",
+          "pattern": "unwanted",
+          "condition": "[sandbox].max_sandboxes is present and is not an integer of at least 1",
+          "system": "sandbox config loader",
+          "action": "refuse start with a failure naming [sandbox].max_sandboxes",
+          "contract": "non-nil validation error containing \"max_sandboxes\" for 0, -1 or a non-integer; af-hub exits non-zero"
+        },
+        {
+          "id": "26-REQ-5.3",
+          "pattern": "ubiquitous",
+          "system": "lease service",
+          "action": "count against capacity only leases in state leased or active whose expires_at is later than the injected clock's now, across all workspaces",
+          "contract": "destroyed leases and leased rows whose expires_at is at or before now are excluded from the capacity count"
+        },
+        {
+          "id": "26-REQ-5.4",
+          "pattern": "unwanted",
+          "condition": "the capacity count has reached max_sandboxes when a POST would store a lease",
+          "system": "lease handlers",
+          "action": "refuse the lease, naming the limit",
+          "contract": "HTTP 409 with error_type \"sandbox_capacity\" and a message containing the max_sandboxes value; the sandbox_leases row count is unchanged"
+        },
+        {
+          "id": "26-REQ-5.5",
+          "pattern": "ubiquitous",
+          "system": "lease service",
+          "action": "for any number of concurrent POSTs against a limit M with K live leases, perform the capacity count and the insert under one in-process mutex and inside one database transaction, so that at most M minus K of them succeed",
+          "contract": "after N concurrent POSTs the capacity count never exceeds M; each refused POST answers 409 sandbox_capacity"
+        },
+        {
+          "id": "26-REQ-5.6",
+          "pattern": "unwanted",
+          "condition": "the database returns an error while counting or inserting",
+          "system": "lease handlers",
+          "action": "roll back the transaction, release the mutex and refuse the lease",
+          "contract": "HTTP 500; no partial lease row remains; a following POST is not blocked"
+        }
+      ]
+    },
+    {
+      "id": "26-REQ-6",
+      "title": "Lease token, lookup and revocation",
+      "rationale": "The token is the credential sandbox_gateway authenticates; it must be unguessable, unrecoverable from storage and dead after revocation.",
+      "criteria": [
+        {
+          "id": "26-REQ-6.1",
+          "pattern": "ubiquitous",
+          "system": "lease service",
+          "action": "for any issued lease, generate the token as sbl_ followed by base64.RawURLEncoding of 33 bytes from crypto/rand",
+          "contract": "every token is 48 characters and matches ^sbl_[A-Za-z0-9_-]{44}$"
+        },
+        {
+          "id": "26-REQ-6.2",
+          "pattern": "ubiquitous",
+          "system": "lease store",
+          "action": "store only the lowercase-hex SHA-256 of the token",
+          "contract": "the stored hash equals hex.EncodeToString(sha256.Sum256(token)) and matches ^[0-9a-f]{64}$"
+        },
+        {
+          "id": "26-REQ-6.3",
+          "pattern": "unwanted",
+          "condition": "reading random bytes for the lease id or the token fails",
+          "system": "lease handlers",
+          "action": "refuse the lease and store nothing",
+          "contract": "HTTP 500; the sandbox_leases row count is unchanged"
+        },
+        {
+          "id": "26-REQ-6.4",
+          "pattern": "event_driven",
+          "condition": "the lease store's token lookup is given a well-formed token whose hash matches a lease in state leased or active",
+          "system": "lease store",
+          "action": "return that lease",
+          "contract": "the lookup returns the lease with the matching id and a nil error"
+        },
+        {
+          "id": "26-REQ-6.5",
+          "pattern": "unwanted",
+          "condition": "the token given to the lookup is empty, lacks the sbl_ prefix, has the wrong length or alphabet, matches no stored hash, or belongs to a lease in a terminal state",
+          "system": "lease store",
+          "action": "report not found without distinguishing the cases",
+          "contract": "the lookup returns a nil lease and the same not-found sentinel error in every case"
+        },
+        {
+          "id": "26-REQ-6.6",
+          "pattern": "event_driven",
+          "condition": "a lease's token is revoked",
+          "system": "lease store",
+          "action": "move the lease to a terminal state and set its token hash to NULL in the same UPDATE statement",
+          "contract": "after revocation the row's token hash is NULL and every later lookup of that token returns not found"
+        }
+      ]
+    },
+    {
+      "id": "26-REQ-7",
+      "title": "Reading leases",
+      "rationale": "Callers and admins must be able to see what leases exist without ever seeing a token or an environment value.",
+      "criteria": [
+        {
+          "id": "26-REQ-7.1",
+          "pattern": "event_driven",
+          "condition": "an authorised caller sends GET /api/v1/workspaces/:slug/sandboxes",
+          "system": "lease handlers",
+          "action": "return the workspace's leases in state leased or active, newest created_at first, at most 200",
+          "contract": "HTTP 200 with a bare JSON array, [] (never null) when there are none, holding no lease of another workspace"
+        },
+        {
+          "id": "26-REQ-7.2",
+          "pattern": "event_driven",
+          "condition": "the list request carries an all query parameter that strconv.ParseBool reads as true",
+          "system": "lease handlers",
+          "action": "include leases in terminal states in the list",
+          "contract": "HTTP 200; a destroyed lease appears with ?all=true and not without it"
+        },
+        {
+          "id": "26-REQ-7.3",
+          "pattern": "unwanted",
+          "condition": "the all query parameter is present and strconv.ParseBool cannot parse it",
+          "system": "lease handlers",
+          "action": "refuse the request",
+          "contract": "HTTP 400 for ?all=maybe on the workspace list and on GET /api/v1/sandboxes"
+        },
+        {
+          "id": "26-REQ-7.4",
+          "pattern": "event_driven",
+          "condition": "an authorised caller sends GET /api/v1/workspaces/:slug/sandboxes/:id for a lease of that workspace",
+          "system": "lease handlers",
+          "action": "return that lease in any state",
+          "contract": "HTTP 200 with the lease representation"
+        },
+        {
+          "id": "26-REQ-7.5",
+          "pattern": "unwanted",
+          "condition": "the lease id in GET one is malformed, unknown, or belongs to another workspace",
+          "system": "lease handlers",
+          "action": "refuse the request without distinguishing the cases",
+          "contract": "HTTP 404 with message \"sandbox lease not found\""
+        },
+        {
+          "id": "26-REQ-7.6",
+          "pattern": "ubiquitous",
+          "system": "lease handlers",
+          "action": "render every lease with exactly the fields id, workspace, profile, purpose, state, expires_at, image, network, resources {cpus, memory_mb, pids, disk_mb}, require_landlock, secrets, optional_secrets, labels, created_by, created_at, updated_at, sandbox_id, error, ended_at and end_reason, where secrets and optional_secrets are always arrays, labels is always an object and the last four are null until set",
+          "contract": "no rendered lease from any GET contains token, the token hash or an environment value; secrets and optional_secrets render as [] when empty and labels as {}"
+        },
+        {
+          "id": "26-REQ-7.7",
+          "pattern": "event_driven",
+          "condition": "an admin token sends GET /api/v1/sandboxes while the feature is on",
+          "system": "lease handlers",
+          "action": "return every workspace's leases in the representation of 26-REQ-7.6, newest first, at most 200, live leases only unless ?all=true",
+          "contract": "HTTP 200 with a bare JSON array that includes leases of more than one workspace"
+        }
+      ]
+    },
+    {
+      "id": "26-REQ-8",
+      "title": "Ending a lease",
+      "rationale": "A caller must be able to give back a lease and revoke its token, and retries must be harmless.",
+      "criteria": [
+        {
+          "id": "26-REQ-8.1",
+          "pattern": "event_driven",
+          "condition": "an authorised caller sends DELETE /api/v1/workspaces/:slug/sandboxes/:id for a lease of that workspace in state leased or active",
+          "system": "lease handlers",
+          "action": "set state to destroyed, ended_at and updated_at to now, end_reason to api, and token hash to NULL in one UPDATE conditioned on the state being leased or active",
+          "contract": "HTTP 204 with empty body; GET one then reads state \"destroyed\" and end_reason \"api\"; token lookup returns not found"
+        },
+        {
+          "id": "26-REQ-8.2",
+          "pattern": "event_driven",
+          "condition": "DELETE targets a lease of that workspace already in a terminal state",
+          "system": "lease handlers",
+          "action": "change nothing",
+          "contract": "HTTP 204; ended_at, end_reason and updated_at keep their earlier values"
+        },
+        {
+          "id": "26-REQ-8.3",
+          "pattern": "unwanted",
+          "condition": "the DELETE lease id is malformed, unknown, or belongs to another workspace",
+          "system": "lease handlers",
+          "action": "refuse the request and change no lease",
+          "contract": "HTTP 404 with message \"sandbox lease not found\"; the other workspace's lease is unchanged"
+        },
+        {
+          "id": "26-REQ-8.4",
+          "pattern": "ubiquitous",
+          "system": "lease service",
+          "action": "route every lease ending through one end-lease function that takes the lease, the target terminal state and the end reason, which the DELETE handler calls"
+        }
+      ]
+    }
+  ],
+  "execution_paths": [
+    {
+      "id": "26-PATH-1",
+      "title": "x",
+      "steps": [
+        {
+          "actor": "a",
+          "action": "b"
+        },
+        {
+          "actor": "c",
+          "action": "d"
+        }
+      ]
+    }
+  ]
+}

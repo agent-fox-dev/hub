@@ -1,0 +1,1045 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/test_spec.v2.json",
+  "spec_id": "26",
+  "spec_name": "sandbox_leases",
+  "schema_version": 2,
+  "tests": [
+    {
+      "id": "TS-26-1",
+      "kind": "unit",
+      "verifies": [
+        "26-REQ-1.1"
+      ],
+      "title": "Lease schema initialisation is idempotent and preserves rows",
+      "given": [
+        "a fresh in-memory SQLite database"
+      ],
+      "when": "InitSchema(db) is called, a lease row is inserted, and InitSchema(db) is called again",
+      "then": [
+        "both calls return nil",
+        "the inserted row is still present and unchanged after the second call"
+      ],
+      "pseudocode": "assert InitSchema(db)==nil; insert(row); assert InitSchema(db)==nil; assert select(row.id)==row"
+    },
+    {
+      "id": "TS-26-2",
+      "kind": "unit",
+      "verifies": [
+        "26-REQ-1.2"
+      ],
+      "title": "State CHECK accepts exactly the five states and token hash is unique and nullable",
+      "given": [
+        "an initialised sandbox_leases table"
+      ],
+      "when": "rows are inserted with each of the five states, with state 'bogus', with two NULL token hashes and with two identical non-NULL hashes",
+      "then": [
+        "the five valid states succeed",
+        "state 'bogus' fails",
+        "two NULL hashes coexist",
+        "the second identical non-NULL hash is refused"
+      ],
+      "pseudocode": "for s in states: assert insert(state=s).err==nil; assert insert(state='bogus').err!=nil; assert insert(hash=nil) && insert(hash=nil); insert(hash='h'); assert insert(hash='h').err!=nil"
+    },
+    {
+      "id": "TS-26-3",
+      "kind": "property",
+      "verifies": [
+        "26-REQ-1.3"
+      ],
+      "title": "Every issued lease id is sbx_ plus 32 lowercase hex characters and ids are unique",
+      "given": [
+        "a lease service with a real in-memory database and capacity high enough"
+      ],
+      "when": "for any number N between 1 and 100 of leases issued",
+      "then": [
+        "every id matches ^sbx_[0-9a-f]{32}$",
+        "no two ids are equal"
+      ],
+      "pseudocode": "ids=[issue().id for _ in range(N)]; assert all(re.match('^sbx_[0-9a-f]{32}$',i)); assert len(set(ids))==N"
+    },
+    {
+      "id": "TS-26-4",
+      "kind": "integration",
+      "verifies": [
+        "26-REQ-1.4"
+      ],
+      "title": "Issued lease stores the full profile snapshot and is not affected by later profile edits",
+      "given": [
+        "a service whose profile 'tools' has image, network, cpus, memory, pids, disk, landlock, required and optional secrets and a fixed env",
+        "an active workspace with the required secrets present"
+      ],
+      "when": "a lease is issued with labels and purpose, the in-memory profile is then mutated, and the row is read back",
+      "then": [
+        "the row holds slug, profile, purpose, state leased, snapshot fields, fixed env, labels exactly as given, ttl seconds, expires_at, created_by, created_at, updated_at",
+        "sandbox_id, error, ended_at and end_reason are NULL",
+        "the read-back values still equal the values at issue after mutation"
+      ],
+      "pseudocode": "l=issue(...); profile.Image='changed'; row=read(l.id); assert row.image=='orig' && row.env==origEnv && row.sandbox_id==nil"
+    },
+    {
+      "id": "TS-26-5",
+      "kind": "unit",
+      "verifies": [
+        "26-REQ-1.5"
+      ],
+      "title": "created_by is 'admin' for admin tokens and the UserID otherwise",
+      "given": [
+        "a lease service and an active workspace"
+      ],
+      "when": "a lease is issued with an admin_token credential and another with an api_key credential for user u1",
+      "then": [
+        "the first lease reads created_by 'admin'",
+        "the second reads created_by 'u1'"
+      ],
+      "pseudocode": "assert issue(auth{admin_token}).created_by=='admin'; assert issue(auth{api_key,u1}).created_by=='u1'"
+    },
+    {
+      "id": "TS-26-6",
+      "kind": "unit",
+      "verifies": [
+        "26-REQ-1.6"
+      ],
+      "title": "Timestamps come from the injected clock in RFC 3339 UTC and expires_at equals created_at plus ttl",
+      "given": [
+        "a service with a fixed injected clock at 2030-01-02T03:04:05Z"
+      ],
+      "when": "a lease is issued with ttl 30m and then ended",
+      "then": [
+        "created_at, updated_at, expires_at and ended_at parse as RFC 3339 UTC",
+        "created_at equals apikit.FormatUTC of the injected clock",
+        "expires_at minus created_at equals ttl_seconds (1800)"
+      ],
+      "pseudocode": "l=issue(ttl='30m'); assert l.created_at==FormatUTC(clock()); assert parse(l.expires_at)-parse(l.created_at)==1800s"
+    },
+    {
+      "id": "TS-26-7",
+      "kind": "integration",
+      "verifies": [
+        "26-REQ-1.7"
+      ],
+      "title": "Neither a planted secret value nor the issued token is stored in any lease column",
+      "given": [
+        "a workspace secret with a planted value 'PLANTED-VALUE-123' that the profile requires"
+      ],
+      "when": "a lease is issued through POST and every column of its row is read",
+      "then": [
+        "no column contains the planted value as a substring",
+        "no column contains the plaintext token as a substring"
+      ],
+      "pseudocode": "resp=post(); row=selectAll(id); for col in row: assert 'PLANTED-VALUE-123' not in str(col) and resp.token not in str(col)"
+    },
+    {
+      "id": "TS-26-8",
+      "kind": "integration",
+      "verifies": [
+        "26-REQ-2.1"
+      ],
+      "title": "Unauthenticated requests to every lease route answer 401 and change nothing",
+      "given": [
+        "the sandbox feature on and an existing lease",
+        "no credential on the requests"
+      ],
+      "when": "POST, GET list, GET one, DELETE and GET /api/v1/sandboxes are each called without a credential",
+      "then": [
+        "each answers 401 in apikit's error envelope",
+        "the lease row is unchanged and no row is created"
+      ],
+      "pseudocode": "for route in routes: assert call(route, noauth).status==401; assert count==1 and state=='leased'"
+    },
+    {
+      "id": "TS-26-9",
+      "kind": "integration",
+      "verifies": [
+        "26-REQ-2.2"
+      ],
+      "title": "With the feature off every authenticated lease route answers 404 sandboxes_disabled before scope and workspace checks",
+      "given": [
+        "routes registered with a disabled (nil) service",
+        "a PAT with no scopes and a nonexistent workspace slug"
+      ],
+      "when": "each of the five lease routes is called with that PAT and with an admin token",
+      "then": [
+        "each answers 404 with error_type 'sandboxes_disabled'",
+        "the check precedes the scope check, so the scope-less PAT also gets 404 not 403"
+      ],
+      "pseudocode": "for route in routes: r=call(route,pat_noscope); assert r.status==404 && r.error_type=='sandboxes_disabled'"
+    },
+    {
+      "id": "TS-26-10",
+      "kind": "integration",
+      "verifies": [
+        "26-REQ-2.3"
+      ],
+      "title": "A PAT lacking the required scope gets 403 before the workspace lookup",
+      "given": [
+        "a PAT with only sandboxes:read, a PAT with no sandbox scope and a PAT with only sandboxes:write",
+        "a nonexistent workspace slug and an existing one"
+      ],
+      "when": "POST and DELETE are called with the read-only PAT; GET list and GET one with the no-scope PAT; GET list with read-only and write-only PATs",
+      "then": [
+        "POST and DELETE with read-only PAT answer 403 even for the nonexistent workspace",
+        "GET with the no-scope PAT answers 403",
+        "GET with either sandboxes:read or sandboxes:write succeeds with 200",
+        "no lease row is created or changed"
+      ],
+      "pseudocode": "assert post(pat_read,'nosuch').status==403; assert get(pat_none,ws).status==403; assert get(pat_write,ws).status==200"
+    },
+    {
+      "id": "TS-26-11",
+      "kind": "integration",
+      "verifies": [
+        "26-REQ-2.4"
+      ],
+      "title": "A missing or unowned workspace answers 404 while an admin token passes",
+      "given": [
+        "workspace 'widgets' owned by user u1",
+        "an API key for user u2 and an admin token"
+      ],
+      "when": "u2 calls POST on 'widgets' and on a nonexistent slug, and the admin calls POST on 'widgets'",
+      "then": [
+        "u2 gets 404 for both widgets and the nonexistent slug with indistinguishable behaviour",
+        "the admin gets 201",
+        "only the admin's lease row exists"
+      ],
+      "pseudocode": "assert post(u2,'widgets').status==404; assert post(u2,'nosuch').status==404; assert post(admin,'widgets').status==201; assert count==1"
+    },
+    {
+      "id": "TS-26-12",
+      "kind": "integration",
+      "verifies": [
+        "26-REQ-2.5"
+      ],
+      "title": "POST on a non-active workspace answers 400 'workspace is not active'",
+      "given": [
+        "a workspace with status 'archived' owned by the caller"
+      ],
+      "when": "POST /api/v1/workspaces/widgets/sandboxes is called with {\"profile\":\"tools\"}",
+      "then": [
+        "status is 400",
+        "message is 'workspace is not active'",
+        "sandbox_leases row count is unchanged"
+      ],
+      "pseudocode": "r=post(); assert r.status==400 && r.msg=='workspace is not active'; assert count==before"
+    },
+    {
+      "id": "TS-26-13",
+      "kind": "integration",
+      "verifies": [
+        "26-REQ-2.6"
+      ],
+      "title": "GET list, GET one and DELETE work on an archived workspace",
+      "given": [
+        "a lease issued while the workspace was active, then the workspace set to archived"
+      ],
+      "when": "GET list, GET one and DELETE are called by the owner",
+      "then": [
+        "GET list and GET one answer 200 and show the lease",
+        "DELETE answers 204"
+      ],
+      "pseudocode": "archive(ws); assert get_list().status==200; assert get_one(id).status==200; assert delete(id).status==204"
+    },
+    {
+      "id": "TS-26-14",
+      "kind": "integration",
+      "verifies": [
+        "26-REQ-2.7"
+      ],
+      "title": "Non-admin credentials get 403 on GET /api/v1/sandboxes",
+      "given": [
+        "an API key and a PAT holding both sandboxes:read and sandboxes:write"
+      ],
+      "when": "GET /api/v1/sandboxes is called with each",
+      "then": [
+        "both answer 403 in apikit's error envelope"
+      ],
+      "pseudocode": "assert get('/api/v1/sandboxes',apikey).status==403; assert get(..., pat_both).status==403"
+    },
+    {
+      "id": "TS-26-15",
+      "kind": "integration",
+      "verifies": [
+        "26-REQ-3.1"
+      ],
+      "title": "POST with a profile returns 201 and the full lease plus token",
+      "given": [
+        "an active workspace 'widgets' with the required secrets present, below capacity",
+        "profile 'tools' with a TTL of 1h"
+      ],
+      "when": "POST {\"profile\":\"tools\"} is called with an API key",
+      "then": [
+        "status is 201",
+        "state is 'leased' and profile is 'tools'",
+        "image, network, resources and secret names equal the profile's",
+        "expires_at equals created_at plus 1h",
+        "token is present"
+      ],
+      "pseudocode": "r=post({'profile':'tools'}); assert r.status==201 && r.json.state=='leased' && r.json.token!=''; assert parse(expires_at)-parse(created_at)==1h"
+    },
+    {
+      "id": "TS-26-16",
+      "kind": "integration",
+      "verifies": [
+        "26-REQ-3.2"
+      ],
+      "title": "An empty body or a body without profile, ttl or purpose uses defaults",
+      "given": [
+        "a configuration whose default profile is 'tools' with TTL 1h"
+      ],
+      "when": "POST is called with an empty body, and again with {}",
+      "then": [
+        "both answer 201",
+        "profile equals the default profile's name",
+        "purpose is ''",
+        "expires_at minus created_at equals the profile TTL"
+      ],
+      "pseudocode": "for body in ['', '{}']: r=post(body); assert r.status==201 && r.profile=='tools' && r.purpose==''"
+    },
+    {
+      "id": "TS-26-17",
+      "kind": "integration",
+      "verifies": [
+        "26-REQ-3.3"
+      ],
+      "title": "Unknown body fields and non-object bodies are refused with 400",
+      "given": [
+        "an active workspace and a lease table that is empty"
+      ],
+      "when": "POST is called with {\"image\":\"evil\"}, {\"env\":{}}, malformed JSON and a JSON array",
+      "then": [
+        "each answers 400",
+        "the message for image and env contains that field name",
+        "no lease row is stored"
+      ],
+      "pseudocode": "r=post({'image':'evil'}); assert r.status==400 && 'image' in r.msg; assert post('[1]').status==400; assert count==0"
+    },
+    {
+      "id": "TS-26-18",
+      "kind": "integration",
+      "verifies": [
+        "26-REQ-3.4"
+      ],
+      "title": "Unknown profile name or missing profile without default is refused listing known profiles",
+      "given": [
+        "profiles configured in order 'tools','data' with no default marked for the second scenario",
+        "an active workspace"
+      ],
+      "when": "POST is called with profile 'Tools' (wrong case), with profile 'nope', and with no profile when no default exists",
+      "then": [
+        "each answers 400",
+        "the message contains every configured profile name in configuration order",
+        "no lease row is stored"
+      ],
+      "pseudocode": "r=post({'profile':'Tools'}); assert r.status==400; assert idx(r.msg,'tools')<idx(r.msg,'data'); assert count==0"
+    },
+    {
+      "id": "TS-26-19",
+      "kind": "integration",
+      "verifies": [
+        "26-REQ-3.5"
+      ],
+      "title": "A ttl between 1m and the profile TTL is accepted, boundaries included",
+      "given": [
+        "profile 'tools' with a TTL of 1h"
+      ],
+      "when": "POST is called with ttl '90m' (no), '1m', '15m' and '1h'",
+      "then": [
+        "'1m', '15m' and '1h' answer 201 with expires_at equal to created_at plus that ttl"
+      ],
+      "pseudocode": "for t in ['1m','15m','1h']: r=post({'ttl':t}); assert r.status==201 && parse(r.expires_at)-parse(r.created_at)==dur(t)"
+    },
+    {
+      "id": "TS-26-20",
+      "kind": "integration",
+      "verifies": [
+        "26-REQ-3.6"
+      ],
+      "title": "Unparseable, too-short, non-positive or too-long ttl is refused with 400",
+      "given": [
+        "profile 'tools' with a TTL of 1h"
+      ],
+      "when": "POST is called with ttl 'soon', '59s', '0s', '-5m' and '2h'",
+      "then": [
+        "each answers 400",
+        "the message for '2h' contains the profile TTL '1h'",
+        "no lease row is stored"
+      ],
+      "pseudocode": "for t in bad: assert post({'ttl':t}).status==400; assert '1h' in post({'ttl':'2h'}).msg; assert count==0"
+    },
+    {
+      "id": "TS-26-21",
+      "kind": "integration",
+      "verifies": [
+        "26-REQ-3.7"
+      ],
+      "title": "Purpose is accepted at 64 runes and refused at 65 runes or with a control character",
+      "given": [
+        "an active workspace"
+      ],
+      "when": "POST is called with a 64-rune purpose (multi-byte runes), a 65-rune purpose and a purpose containing \\n",
+      "then": [
+        "the 64-rune purpose answers 201",
+        "the 65-rune and control-character purposes answer 400",
+        "no lease row is stored for refused requests"
+      ],
+      "pseudocode": "assert post({'purpose':'é'*64}).status==201; assert post({'purpose':'a'*65}).status==400; assert post({'purpose':'a\\nb'}).status==400"
+    },
+    {
+      "id": "TS-26-22",
+      "kind": "integration",
+      "verifies": [
+        "26-REQ-3.8"
+      ],
+      "title": "Invalid labels are refused with 400 naming the offending key",
+      "given": [
+        "an active workspace and an empty lease table"
+      ],
+      "when": "POST is called with 17 labels, a non-string value, keys '-bad', 'bad-', 'has space', 'Lease', 'WORKSPACE', a 64-character key, a 257-byte value and a value with a control character",
+      "then": [
+        "each answers 400",
+        "the message contains the offending label key",
+        "no lease row is stored"
+      ],
+      "pseudocode": "for labels in bad_cases: r=post({'labels':labels}); assert r.status==400 && badkey in r.msg; assert count==0"
+    },
+    {
+      "id": "TS-26-23",
+      "kind": "integration",
+      "verifies": [
+        "26-REQ-3.8",
+        "26-REQ-3.5"
+      ],
+      "title": "Labels at the limits (16 pairs, 63-character key, 256-byte value) are accepted and stored as given",
+      "given": [
+        "an active workspace"
+      ],
+      "when": "POST is called with 16 labels including a 63-character key and a 256-byte value",
+      "then": [
+        "status is 201",
+        "the response labels equal the labels sent"
+      ],
+      "pseudocode": "r=post({'labels':L}); assert r.status==201 && r.json.labels==L"
+    },
+    {
+      "id": "TS-26-24",
+      "kind": "unit",
+      "verifies": [
+        "26-REQ-4.1",
+        "26-REQ-4.5"
+      ],
+      "title": "The presence check only lists key names and ignores optional secrets",
+      "given": [
+        "a secrets lister test double that records calls and exposes only ListSecrets",
+        "a profile with required secret GIT_PAT and optional secret EXTRA that exists nowhere"
+      ],
+      "when": "a lease is issued while GIT_PAT exists in the workspace scope",
+      "then": [
+        "the lease is stored (201 through the handler)",
+        "ListSecrets was called and no GetSecretValue call is possible or recorded",
+        "the absent optional secret does not block issuance"
+      ],
+      "pseudocode": "fake.add('workspace',slug,'GIT_PAT'); r=post(); assert r.status==201; assert fake.getValueCalls==0"
+    },
+    {
+      "id": "TS-26-25",
+      "kind": "unit",
+      "verifies": [
+        "26-REQ-4.2"
+      ],
+      "title": "Required secret names match stored keys case-insensitively",
+      "given": [
+        "a profile requiring GIT_PAT",
+        "a workspace secret stored as git_pat"
+      ],
+      "when": "a lease is issued",
+      "then": [
+        "the check passes and the lease is stored"
+      ],
+      "pseudocode": "store('workspace',slug,'git_pat','v'); assert issue().err==nil"
+    },
+    {
+      "id": "TS-26-26",
+      "kind": "unit",
+      "verifies": [
+        "26-REQ-4.3"
+      ],
+      "title": "The resolution chain helper returns workspace, org and user scopes in order with the owner's user",
+      "given": [
+        "workspace A with org_id O whose owner u1 is in org_members",
+        "workspace B with org_id O whose owner is not a member",
+        "workspace C with NULL org_id"
+      ],
+      "when": "the chain helper is called for each workspace, with an admin token as the caller",
+      "then": [
+        "A yields [workspace(slug), org(O), user(u1)]",
+        "B yields [workspace(slug), user(owner)]",
+        "C yields [workspace(slug), user(owner)]",
+        "the user entry always carries workspaces.owner_id, never the caller's id"
+      ],
+      "pseudocode": "assert chain(A)==[('workspace',A),('org','O'),('user','u1')]; assert chain(B)==[('workspace',B),('user',ownerB)]"
+    },
+    {
+      "id": "TS-26-27",
+      "kind": "integration",
+      "verifies": [
+        "26-REQ-4.4"
+      ],
+      "title": "Missing required secrets answer 422 secret_missing naming every missing key and scope types only",
+      "given": [
+        "a profile requiring A_KEY, B_KEY, C_KEY where only B_KEY exists in the owner's user scope",
+        "a workspace owner u1 with no org"
+      ],
+      "when": "POST is called",
+      "then": [
+        "status is 422 with error_type 'secret_missing'",
+        "message contains A_KEY then C_KEY in profile order and the searched scopes 'workspace, user'",
+        "message contains neither the owner's user ID nor an org ID",
+        "sandbox_leases row count is unchanged"
+      ],
+      "pseudocode": "r=post(); assert r.status==422 && r.error_type=='secret_missing'; assert idx(A_KEY)<idx(C_KEY); assert 'u1' not in r.msg; assert count==0"
+    },
+    {
+      "id": "TS-26-28",
+      "kind": "integration",
+      "verifies": [
+        "26-REQ-4.6"
+      ],
+      "title": "A secrets store or membership lookup error answers 500 and stores nothing",
+      "given": [
+        "a secrets lister that returns an error, and separately a database whose org_members table is missing"
+      ],
+      "when": "POST is called in each situation",
+      "then": [
+        "each answers 500",
+        "sandbox_leases row count is unchanged"
+      ],
+      "pseudocode": "fake.err=errors.New('boom'); assert post().status==500; assert count==0; drop(org_members); assert post().status==500"
+    },
+    {
+      "id": "TS-26-29",
+      "kind": "unit",
+      "verifies": [
+        "26-REQ-5.1"
+      ],
+      "title": "max_sandboxes defaults to 16 and an explicit value loads without unknown-key error",
+      "given": [
+        "a TOML [sandbox] section with profiles and no max_sandboxes",
+        "a TOML [sandbox] section with max_sandboxes = 3"
+      ],
+      "when": "the sandbox configuration is loaded and validated",
+      "then": [
+        "the first yields limit 16",
+        "the second yields limit 3 with no unknown-key error"
+      ],
+      "pseudocode": "assert load(noKey).MaxSandboxes==16; c,err=load('max_sandboxes=3'); assert err==nil && c.MaxSandboxes==3"
+    },
+    {
+      "id": "TS-26-30",
+      "kind": "unit",
+      "verifies": [
+        "26-REQ-5.2"
+      ],
+      "title": "An invalid max_sandboxes value fails validation naming the key",
+      "given": [
+        "TOML sections with max_sandboxes = 0, -1 and 2.5"
+      ],
+      "when": "the sandbox configuration is loaded and validated",
+      "then": [
+        "each returns a non-nil error containing 'max_sandboxes'"
+      ],
+      "pseudocode": "for v in [0,-1,2.5]: err=load(v); assert err!=nil && 'max_sandboxes' in err.Error()"
+    },
+    {
+      "id": "TS-26-31",
+      "kind": "unit",
+      "verifies": [
+        "26-REQ-5.3"
+      ],
+      "title": "Capacity counts only leased or active leases that have not passed expires_at",
+      "given": [
+        "rows: leased future, active future, destroyed future, leased with expires_at equal to now, leased past, across two workspaces",
+        "a controllable clock"
+      ],
+      "when": "the capacity count is computed",
+      "then": [
+        "the count is 2 (leased future and active future, across both workspaces)",
+        "destroyed and expired-by-time rows are excluded"
+      ],
+      "pseudocode": "seed(rows); assert svc.countLive(now)==2"
+    },
+    {
+      "id": "TS-26-32",
+      "kind": "integration",
+      "verifies": [
+        "26-REQ-5.4"
+      ],
+      "title": "POST at capacity answers 409 sandbox_capacity naming the limit",
+      "given": [
+        "max_sandboxes = 2 and two live leases (in any workspaces)"
+      ],
+      "when": "a third POST is made",
+      "then": [
+        "status is 409 with error_type 'sandbox_capacity'",
+        "the message contains '2'",
+        "row count is unchanged",
+        "after one lease is destroyed, a POST succeeds with 201"
+      ],
+      "pseudocode": "r=post(); assert r.status==409 && r.error_type=='sandbox_capacity' && '2' in r.msg; delete(first); assert post().status==201"
+    },
+    {
+      "id": "TS-26-33",
+      "kind": "property",
+      "verifies": [
+        "26-REQ-5.5"
+      ],
+      "title": "Concurrent POSTs never exceed max_sandboxes",
+      "given": [
+        "a file-backed or shared SQLite database and a service with limit M and K existing live leases"
+      ],
+      "when": "for any M between 1 and 8, K between 0 and M, and N between 1 and 32 concurrent POSTs",
+      "then": [
+        "exactly min(N, M-K) succeed with 201",
+        "every other POST answers 409 sandbox_capacity",
+        "the capacity count is never greater than M"
+      ],
+      "pseudocode": "results=parallel(N, post); assert count(201)==min(N,M-K); assert all(r.status in (201,409)); assert countLive()<=M"
+    },
+    {
+      "id": "TS-26-34",
+      "kind": "integration",
+      "verifies": [
+        "26-REQ-5.6"
+      ],
+      "title": "A database error during count or insert yields 500, leaves no partial row and does not block the next POST",
+      "given": [
+        "a database where the insert fails once (for example a trigger or closed-then-reopened handle)"
+      ],
+      "when": "a POST hits the failure and a following POST is made after the fault is removed",
+      "then": [
+        "the first answers 500",
+        "no partial lease row remains",
+        "the second answers 201 within a short timeout, so the mutex was released"
+      ],
+      "pseudocode": "inject_fault(); assert post().status==500; assert count==0; clear_fault(); assert post(timeout=2s).status==201"
+    },
+    {
+      "id": "TS-26-35",
+      "kind": "property",
+      "verifies": [
+        "26-REQ-6.1"
+      ],
+      "title": "Every issued token is sbl_ plus 44 RawURL base64 characters",
+      "given": [
+        "a lease service with a real database"
+      ],
+      "when": "for any number N between 1 and 100 of issued tokens",
+      "then": [
+        "each token has length 48 and matches ^sbl_[A-Za-z0-9_-]{44}$",
+        "base64.RawURLEncoding decodes the 44-character part to 33 bytes"
+      ],
+      "pseudocode": "for t in tokens: assert len(t)==48 and re.match('^sbl_[A-Za-z0-9_-]{44}$',t); assert len(b64.decode(t[4:]))==33"
+    },
+    {
+      "id": "TS-26-36",
+      "kind": "unit",
+      "verifies": [
+        "26-REQ-6.2"
+      ],
+      "title": "Only the lowercase-hex SHA-256 of the token is stored",
+      "given": [
+        "an issued lease and its plaintext token"
+      ],
+      "when": "the stored token_hash column is read",
+      "then": [
+        "it equals hex(sha256(token))",
+        "it matches ^[0-9a-f]{64}$"
+      ],
+      "pseudocode": "assert row.token_hash==hex(sha256(token)) and re.match('^[0-9a-f]{64}$',row.token_hash)"
+    },
+    {
+      "id": "TS-26-37",
+      "kind": "integration",
+      "verifies": [
+        "26-REQ-6.3"
+      ],
+      "title": "A random-source failure answers 500 and stores nothing",
+      "given": [
+        "a service whose random reader returns an error"
+      ],
+      "when": "POST is called",
+      "then": [
+        "status is 500",
+        "sandbox_leases row count is unchanged"
+      ],
+      "pseudocode": "svc.rand=failingReader; assert post().status==500; assert count==0"
+    },
+    {
+      "id": "TS-26-38",
+      "kind": "unit",
+      "verifies": [
+        "26-REQ-6.4"
+      ],
+      "title": "Token lookup returns the lease for a live token",
+      "given": [
+        "one lease in state leased and another in state active with known tokens"
+      ],
+      "when": "the lease store's token lookup is called with each token",
+      "then": [
+        "each returns the lease with the matching id and a nil error"
+      ],
+      "pseudocode": "l,err=store.LookupByToken(tok); assert err==nil && l.ID==id"
+    },
+    {
+      "id": "TS-26-39",
+      "kind": "unit",
+      "verifies": [
+        "26-REQ-6.5"
+      ],
+      "title": "Token lookup returns the same not-found error for every unusable token",
+      "given": [
+        "a live lease, a destroyed lease whose hash was retained by direct SQL, and an expired/failed lease"
+      ],
+      "when": "lookup is called with '', 'abc', a token without the sbl_ prefix, a 47-character token, a token with an illegal character, an unknown well-formed token, and the terminal-state leases' tokens",
+      "then": [
+        "every call returns a nil lease",
+        "every call returns the identical not-found sentinel error"
+      ],
+      "pseudocode": "for t in cases: l,err=lookup(t); assert l==nil && err==ErrNotFound"
+    },
+    {
+      "id": "TS-26-40",
+      "kind": "unit",
+      "verifies": [
+        "26-REQ-6.6"
+      ],
+      "title": "Revocation ends the lease and clears the hash in one update",
+      "given": [
+        "a live lease with a known token"
+      ],
+      "when": "the token is revoked",
+      "then": [
+        "the row's state is terminal and token_hash is NULL",
+        "lookup of the token returns not found",
+        "a repeated lookup still returns not found"
+      ],
+      "pseudocode": "revoke(id); assert row.token_hash is NULL and row.state in terminal; assert lookup(tok).err==ErrNotFound"
+    },
+    {
+      "id": "TS-26-41",
+      "kind": "integration",
+      "verifies": [
+        "26-REQ-7.1"
+      ],
+      "title": "List returns the workspace's live leases newest first as a bare array",
+      "given": [
+        "workspace 'widgets' with three live leases at different created_at, one destroyed lease, and a lease in another workspace"
+      ],
+      "when": "GET /api/v1/workspaces/widgets/sandboxes is called, and again for a workspace with none",
+      "then": [
+        "status 200 with a bare JSON array of the three live leases ordered newest first",
+        "no lease of another workspace and no destroyed lease",
+        "the empty workspace returns [] not null"
+      ],
+      "pseudocode": "r=get(list); assert ids(r)==[newest..oldest]; assert get(empty).body=='[]'"
+    },
+    {
+      "id": "TS-26-42",
+      "kind": "integration",
+      "verifies": [
+        "26-REQ-7.1"
+      ],
+      "title": "List is capped at 200 rows",
+      "given": [
+        "205 live leases in one workspace inserted directly"
+      ],
+      "when": "GET list is called",
+      "then": [
+        "the array has exactly 200 entries",
+        "the newest lease is first"
+      ],
+      "pseudocode": "seed(205); assert len(get(list).json)==200"
+    },
+    {
+      "id": "TS-26-43",
+      "kind": "integration",
+      "verifies": [
+        "26-REQ-7.2"
+      ],
+      "title": "?all=true includes terminal leases",
+      "given": [
+        "a live lease and a destroyed lease in the workspace"
+      ],
+      "when": "GET list is called with and without ?all=true",
+      "then": [
+        "without it only the live lease is returned",
+        "with ?all=true both are returned with status 200"
+      ],
+      "pseudocode": "assert len(get(list).json)==1; assert len(get(list+'?all=true').json)==2"
+    },
+    {
+      "id": "TS-26-44",
+      "kind": "integration",
+      "verifies": [
+        "26-REQ-7.3"
+      ],
+      "title": "An unparseable all parameter answers 400 on both list routes",
+      "given": [
+        "an owner credential and an admin token"
+      ],
+      "when": "GET list is called with ?all=maybe, and GET /api/v1/sandboxes with ?all=maybe",
+      "then": [
+        "both answer 400"
+      ],
+      "pseudocode": "assert get(list+'?all=maybe').status==400; assert get_admin('/api/v1/sandboxes?all=maybe').status==400"
+    },
+    {
+      "id": "TS-26-45",
+      "kind": "integration",
+      "verifies": [
+        "26-REQ-7.4"
+      ],
+      "title": "GET one returns a lease in any state",
+      "given": [
+        "a leased lease and a destroyed lease in the workspace"
+      ],
+      "when": "GET /api/v1/workspaces/widgets/sandboxes/:id is called for each",
+      "then": [
+        "each answers 200 with the lease representation and its state"
+      ],
+      "pseudocode": "assert get(id1).json.state=='leased'; assert get(id2).json.state=='destroyed'"
+    },
+    {
+      "id": "TS-26-46",
+      "kind": "integration",
+      "verifies": [
+        "26-REQ-7.5"
+      ],
+      "title": "GET one with a malformed, unknown or foreign lease id answers 404 'sandbox lease not found'",
+      "given": [
+        "a lease in workspace 'other' and the caller owning 'widgets'"
+      ],
+      "when": "GET one is called with 'xyz', an unknown well-formed id and the other workspace's lease id",
+      "then": [
+        "each answers 404 with message 'sandbox lease not found'"
+      ],
+      "pseudocode": "for id in [bad, unknown, foreign]: r=get(id); assert r.status==404 && r.msg=='sandbox lease not found'"
+    },
+    {
+      "id": "TS-26-47",
+      "kind": "integration",
+      "verifies": [
+        "26-REQ-7.6"
+      ],
+      "title": "Rendered leases have exactly the specified fields and never leak token, hash or environment",
+      "given": [
+        "a lease from a profile with a fixed env {SECRET_ENV:'envval'}, no optional secrets and no labels",
+        "its token and token hash"
+      ],
+      "when": "the lease is fetched through GET one, GET list and GET /api/v1/sandboxes",
+      "then": [
+        "the JSON keys are exactly id, workspace, profile, purpose, state, expires_at, image, network, resources{cpus,memory_mb,pids,disk_mb}, require_landlock, secrets, optional_secrets, labels, created_by, created_at, updated_at, sandbox_id, error, ended_at, end_reason",
+        "secrets and optional_secrets are [] when empty and labels is {}",
+        "sandbox_id, error, ended_at and end_reason are null",
+        "the body contains no 'token' key, the token, the hash, or 'envval'"
+      ],
+      "pseudocode": "j=get(id).json; assert set(j.keys())==EXPECTED; assert j.optional_secrets==[] and j.labels=={}; assert token not in raw and hash not in raw and 'envval' not in raw"
+    },
+    {
+      "id": "TS-26-48",
+      "kind": "integration",
+      "verifies": [
+        "26-REQ-7.7"
+      ],
+      "title": "Admin list returns leases across workspaces newest first, live only unless all=true",
+      "given": [
+        "live leases in two workspaces and a destroyed lease"
+      ],
+      "when": "an admin token calls GET /api/v1/sandboxes, with and without ?all=true",
+      "then": [
+        "status 200 with a bare array that includes leases from both workspaces, newest first, at most 200",
+        "destroyed leases appear only with ?all=true"
+      ],
+      "pseudocode": "r=admin_get('/api/v1/sandboxes'); assert {l.workspace for l in r}=={'a','b'}; assert len(admin_get(...'?all=true'))==len(r)+1"
+    },
+    {
+      "id": "TS-26-49",
+      "kind": "integration",
+      "verifies": [
+        "26-REQ-8.1"
+      ],
+      "title": "DELETE ends a live lease, revokes its token and answers 204",
+      "given": [
+        "a live lease whose token is known"
+      ],
+      "when": "DELETE /api/v1/workspaces/widgets/sandboxes/:id is called, then GET one, then token lookup",
+      "then": [
+        "DELETE answers 204 with an empty body",
+        "GET one shows state 'destroyed' and end_reason 'api' with ended_at set",
+        "the token lookup returns not found and the stored hash is NULL"
+      ],
+      "pseudocode": "assert delete(id).status==204 && body==''; j=get(id).json; assert j.state=='destroyed' && j.end_reason=='api'; assert lookup(tok).err==ErrNotFound"
+    },
+    {
+      "id": "TS-26-50",
+      "kind": "integration",
+      "verifies": [
+        "26-REQ-8.2"
+      ],
+      "title": "DELETE on a terminal lease answers 204 and changes nothing",
+      "given": [
+        "a lease already destroyed at an earlier time with end_reason 'api'"
+      ],
+      "when": "DELETE is called again later with an advanced clock",
+      "then": [
+        "status is 204",
+        "ended_at, end_reason and updated_at keep their earlier values"
+      ],
+      "pseudocode": "before=row(id); advance(clock); assert delete(id).status==204; assert row(id)==before"
+    },
+    {
+      "id": "TS-26-51",
+      "kind": "integration",
+      "verifies": [
+        "26-REQ-8.3"
+      ],
+      "title": "DELETE with a malformed, unknown or foreign lease id answers 404 and changes nothing",
+      "given": [
+        "a live lease in another workspace owned by the same user"
+      ],
+      "when": "DELETE is called under 'widgets' with a malformed id, an unknown id and the other workspace's lease id",
+      "then": [
+        "each answers 404 'sandbox lease not found'",
+        "the other workspace's lease is still leased with its token valid"
+      ],
+      "pseudocode": "for id in cases: r=delete(id); assert r.status==404; assert row(foreign).state=='leased' and lookup(tok).err==nil"
+    },
+    {
+      "id": "TS-26-52",
+      "kind": "unit",
+      "verifies": [
+        "26-REQ-8.4"
+      ],
+      "title": "All lease endings go through one end-lease function that conditionally updates live leases",
+      "given": [
+        "a live lease and a destroyed lease"
+      ],
+      "when": "EndLease(lease, state destroyed, reason 'api') is called on each, and the DELETE handler is exercised",
+      "then": [
+        "the live lease becomes destroyed with reason and cleared hash",
+        "the already-ended lease is untouched (conditional update affects zero rows)",
+        "the DELETE handler's effect is identical to calling EndLease directly (the handler is a thin wrapper)"
+      ],
+      "pseudocode": "assert EndLease(live,'destroyed','api').changed==true; assert EndLease(done,'destroyed','api').changed==false"
+    },
+    {
+      "id": "TS-26-53",
+      "kind": "integration",
+      "verifies": [
+        "26-REQ-3.1"
+      ],
+      "title": "A successful POST emits exactly one hub.sandbox.lease audit event carrying the workspace and no secrets or token",
+      "given": [
+        "a recording audit emitter, a planted secret value, an active workspace",
+        "captured slog output"
+      ],
+      "when": "one POST succeeds, one POST is refused (400), and the issued lease is then deleted",
+      "then": [
+        "exactly one event with type hub.sandbox.lease, ResourceType 'sandbox', ResourceID the lease id, Action 'lease', Workspace the slug",
+        "ActorID and ActorType follow the credential",
+        "Metadata has lease_id, profile, purpose, ttl as a Go duration string, secret_names and optional_secret_names",
+        "DELETE emits no event",
+        "neither the token nor the planted secret appears in event or log output",
+        "a nil emitter or a failing emit does not change the 201"
+      ],
+      "pseudocode": "post(); assert len(rec.events)==1 and e.Workspace==slug and e.Action=='lease'; assert token not in json(e) and token not in logs; svc.emitter=nil; assert post().status==201"
+    },
+    {
+      "id": "TS-26-54",
+      "kind": "integration",
+      "verifies": [
+        "26-REQ-1.7",
+        "26-REQ-3.1"
+      ],
+      "title": "A planted secret value appears in no HTTP response and the token appears only in the issuing POST response",
+      "given": [
+        "a planted secret value, captured logs, and a lease issued and then listed, fetched and deleted"
+      ],
+      "when": "every response body and all captured log lines are scanned",
+      "then": [
+        "the secret value appears in none of them",
+        "the token appears in the POST 201 body only"
+      ],
+      "pseudocode": "bodies=[post,list,get,adminlist,delete,422case]; assert all(secret not in b); assert token in bodies[0] and all(token not in b for b in bodies[1:]) and token not in logs"
+    },
+    {
+      "id": "TS-26-55",
+      "kind": "integration",
+      "verifies": [
+        "26-REQ-3.1"
+      ],
+      "title": "afc sandbox create --token-file writes the token to a 0600 file and omits it from stdout",
+      "given": [
+        "a fake hub HTTP server returning a 201 lease with a token",
+        "a path in a temp directory"
+      ],
+      "when": "`afc sandbox create widgets --profile tools --label k=v --token-file PATH` runs",
+      "then": [
+        "the file exists with mode 0600 and holds the token with no trailing newline",
+        "stdout is one JSON document without a 'token' key",
+        "the POST body carries profile and labels"
+      ],
+      "pseudocode": "out,err,_=run('sandbox','create','widgets','--token-file',p); assert stat(p).perm==0o600 and read(p)==tok; assert 'token' not in json(out)"
+    },
+    {
+      "id": "TS-26-56",
+      "kind": "integration",
+      "verifies": [
+        "26-REQ-8.1"
+      ],
+      "title": "afc sandbox destroy sends DELETE and prints the synthetic status document",
+      "given": [
+        "a fake hub HTTP server answering 204 to DELETE"
+      ],
+      "when": "`afc sandbox destroy widgets sbx_x` runs",
+      "then": [
+        "a DELETE to /api/v1/workspaces/widgets/sandboxes/sbx_x is sent",
+        "stdout is {\"status\":\"destroyed\",\"id\":\"sbx_x\"}",
+        "a confirmation is written to stderr"
+      ],
+      "pseudocode": "out,errOut,err=run('sandbox','destroy','widgets','sbx_x'); assert out_json=={'status':'destroyed','id':'sbx_x'}"
+    },
+    {
+      "id": "TS-26-57",
+      "kind": "smoke",
+      "verifies": [
+        "26-PATH-1",
+        "26-REQ-3.1",
+        "26-REQ-8.1",
+        "26-REQ-6.4"
+      ],
+      "title": "A caller issues a lease through the running router, reads it and ends it, with the token revoked",
+      "given": [
+        "the full route set registered on an echo group with real handlers, lease service, SQLite database, secrets store, workspace tables and audit emitter",
+        "an active workspace 'widgets' with required secrets planted",
+        "sandboxes enabled with profile 'tools'"
+      ],
+      "when": "an API key POSTs {\"profile\":\"tools\"}, then GETs the list and the lease, looks up the token in the lease store, DELETEs the lease and GETs it again",
+      "then": [
+        "POST returns 201 with state leased, a 48-character sbl_ token and expires_at equal to created_at plus the profile TTL",
+        "the database holds only the token's SHA-256",
+        "GET list and GET one never include the token",
+        "exactly one hub.sandbox.lease event with Workspace 'widgets' was emitted",
+        "DELETE returns 204 and the lease then reads destroyed with end_reason api",
+        "token lookup finds the lease before DELETE and nothing after it"
+      ],
+      "pseudocode": "r=post(); assert 201; assert lookup(r.token).ID==r.id; assert r.token not in get(r.id).raw; delete(r.id); assert get(r.id).state=='destroyed'; assert lookup(r.token).err==ErrNotFound; assert len(events)==1",
+      "real_components": [
+        "echo router with lease handlers",
+        "sandboxes lease service and store",
+        "SQLite database (sandbox_leases, workspaces, org_members, secrets tables)",
+        "secrets.Store",
+        "wsaccess.AuthorizeWorkspace",
+        "audit emitter"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,467 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/tasks.v2.json",
+  "spec_id": "26",
+  "spec_name": "sandbox_leases",
+  "schema_version": 2,
+  "test_commands": {
+    "all_tests": "make test",
+    "linter": "make lint",
+    "spec_tests": "go test ./internal/sandboxes/... -count=1"
+  },
+  "dependencies": [
+    {
+      "spec": "25",
+      "reason": "uses its validated profile set and default profile, the disabled state (404 sandboxes_disabled), the sandboxes:read/sandboxes:write scopes, its [sandbox] config struct, its route registration in internal/sandboxes and the afc sandbox parent command"
+    },
+    {
+      "spec": "07",
+      "reason": "reads secret key names with secrets.Store.ListSecrets and mirrors the org-membership rule of handleResolvedWorkspaceVars"
+    },
+    {
+      "spec": "01",
+      "reason": "ownership through wsaccess.AuthorizeWorkspace and the workspaces status, owner_id and org_id columns"
+    },
+    {
+      "spec": "18",
+      "reason": "adds the hub.sandbox.lease event constant to internal/audit/types.go and emits it through audit.Emitter"
+    }
+  ],
+  "tasks": [
+    {
+      "id": 1,
+      "kind": "implement",
+      "title": "Lease table, Lease type and token-keyed store operations",
+      "criteria": [
+        "26-REQ-1.1",
+        "26-REQ-1.2",
+        "26-REQ-6.2",
+        "26-REQ-6.4",
+        "26-REQ-6.5",
+        "26-REQ-6.6",
+        "26-REQ-8.4"
+      ],
+      "tests": [
+        "TS-26-1",
+        "TS-26-2",
+        "TS-26-36",
+        "TS-26-38",
+        "TS-26-39",
+        "TS-26-40",
+        "TS-26-52"
+      ],
+      "steps": [
+        "Write TS-26-1, 2, 36, 38, 39, 40 and 52 in internal/sandboxes (package test files, in-memory modernc sqlite with SetMaxOpenConns(1)) and confirm they fail",
+        "Add internal/sandboxes/lease_schema.go: const leaseSchemaSQL with CREATE TABLE IF NOT EXISTS sandbox_leases (id PK, workspace, profile, purpose, state CHECK in leased/active/destroyed/expired/failed, token_hash TEXT UNIQUE nullable, snapshot columns image/network/cpus/memory_mb/pids/disk_mb/require_landlock, JSON TEXT columns for secrets, optional_secrets, env and labels, ttl_seconds, expires_at, created_by, created_at, updated_at, nullable sandbox_id/error/ended_at/end_reason) plus indexes on workspace, state and token_hash; func InitSchema(db *sql.DB) error in the style of secrets.InitSchema",
+        "Add internal/sandboxes/lease.go: Lease struct (JSON-decoded slices/maps, nullable fields as *string), ErrLeaseNotFound sentinel, LeaseStore wrapping *sql.DB with InsertLease(tx-capable), GetLease(id), and HashToken(token) = lowercase hex sha256",
+        "Implement LookupByToken(token): validate shape with regexp ^sbl_[A-Za-z0-9_-]{44}$, hash it, select by token_hash with state IN ('leased','active'); every failure returns nil, ErrLeaseNotFound",
+        "Implement EndLease(lease, targetState, reason) in one place: a single conditional UPDATE setting state, ended_at and updated_at from the injected clock (apikit.FormatUTC), end_reason, and token_hash=NULL WHERE id=? AND state IN ('leased','active'); returns changed bool from RowsAffected; reject non-terminal target states",
+        "Implement RevokeToken as a thin call to EndLease so revocation always clears the hash",
+        "Run the tests until they pass; run make test and make lint"
+      ],
+      "touches": [
+        "internal/sandboxes/lease_schema.go",
+        "internal/sandboxes/lease.go",
+        "internal/sandboxes/lease_store_test.go"
+      ],
+      "done_when": [
+        "InitSchema is idempotent and no production file in internal/sandboxes defines a second ending path"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 2,
+      "kind": "implement",
+      "title": "Decode and validate [sandbox].max_sandboxes",
+      "criteria": [
+        "26-REQ-5.1",
+        "26-REQ-5.2"
+      ],
+      "tests": [
+        "TS-26-29",
+        "TS-26-30"
+      ],
+      "steps": [
+        "Read the spec 25 config code in internal/sandboxes (Config, LoadConfig, undecoded-key detection) and confirm whether max_sandboxes is already decoded",
+        "Write TS-26-29 and TS-26-30 against the real loader and confirm they fail",
+        "Add MaxSandboxes to the [sandbox] config struct as a pointer or via toml metadata so an absent key defaults to 16, and an explicit non-integer, 0 or negative value is rejected with an error naming [sandbox].max_sandboxes",
+        "Make sure the unknown-key filter treats sandbox.max_sandboxes as known",
+        "Expose an effective-limit accessor used later by the lease service",
+        "Run the tests, make test and make lint"
+      ],
+      "touches": [
+        "internal/sandboxes/config.go",
+        "internal/sandboxes/config_test.go"
+      ],
+      "done_when": [
+        "a section with max_sandboxes = 3 loads with limit 3 and no unknown-key error"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 3,
+      "kind": "implement",
+      "title": "Resolution chain helper and required-secret presence check",
+      "criteria": [
+        "26-REQ-4.1",
+        "26-REQ-4.2",
+        "26-REQ-4.3",
+        "26-REQ-4.5"
+      ],
+      "tests": [
+        "TS-26-24",
+        "TS-26-25",
+        "TS-26-26"
+      ],
+      "steps": [
+        "Write TS-26-24, 25 and 26 (test double implementing a SecretLister interface with only ListSecrets(ownerType, ownerID) ([]secrets.SecretEntry, error); minimal workspaces, orgs and org_members tables) and confirm they fail",
+        "Add internal/sandboxes/secretcheck.go with exported ResolutionChain(db, slug) ([]Scope, error) where Scope{Type, OwnerID}: query SELECT owner_id, org_id FROM workspaces WHERE slug = ?, include the org scope only when org_id is non-empty and SELECT COUNT(*) FROM org_members WHERE org_id=? AND user_id=owner_id > 0, always end with the user scope of workspaces.owner_id",
+        "Add CheckRequiredSecrets(lister, db, slug, required []string) (missing []string, searched []string, err error): list names per scope with ListSecrets only (never GetSecretValue), compare with strings.ToUpper, return missing names in profile order and the searched scope types in chain order",
+        "Define MissingSecretsError carrying missing keys and searched scope types, with a message that names neither owner nor org identifiers",
+        "Optional secrets are never passed to the check",
+        "Run the tests, make test and make lint"
+      ],
+      "touches": [
+        "internal/sandboxes/secretcheck.go",
+        "internal/sandboxes/secretcheck_test.go"
+      ],
+      "done_when": [
+        "the only secrets API used by production code in internal/sandboxes is ListSecrets"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 4,
+      "kind": "implement",
+      "title": "Issue service and POST handler for the happy path",
+      "criteria": [
+        "26-REQ-1.3",
+        "26-REQ-1.4",
+        "26-REQ-1.5",
+        "26-REQ-1.6",
+        "26-REQ-1.7",
+        "26-REQ-2.4",
+        "26-REQ-2.5",
+        "26-REQ-3.1",
+        "26-REQ-3.2",
+        "26-REQ-6.1"
+      ],
+      "tests": [
+        "TS-26-3",
+        "TS-26-4",
+        "TS-26-5",
+        "TS-26-6",
+        "TS-26-7",
+        "TS-26-11",
+        "TS-26-12",
+        "TS-26-15",
+        "TS-26-16",
+        "TS-26-35"
+      ],
+      "steps": [
+        "Read internal/merge/api.go, internal/wsaccess/wsaccess.go and the spec 25 route/service code in internal/sandboxes; write the listed tests with a harness copied in style from internal/merge/api_test.go (echo group, X-Test-Auth middleware using apikit.SetAuthInfo, in-memory sqlite, workspaces/org_members tables, secrets.InitSchema, InitSchema of leases) and confirm they fail",
+        "Build a route/service config that needs no provider: profile set, default profile, max limit, *sql.DB, secrets lister, audit.Emitter (nil allowed), now func() time.Time, io.Reader for randomness (default crypto/rand.Reader)",
+        "Add generateLeaseID (sbx_ + hex of 16 random bytes) and generateToken (sbl_ + base64.RawURLEncoding of 33 random bytes) reading from the injected reader; any read error is returned",
+        "Implement Service.Issue: resolve profile (explicit or default), TTL default = profile TTL, run CheckRequiredSecrets, generate id and token, snapshot the profile including fixed env and copies of slices/maps, write timestamps with apikit.FormatUTC(now()), expires_at = created_at + ttl, created_by = \"admin\" for admin_token else UserID, store only HashToken(token), insert in one transaction",
+        "Add the lease JSON representation (fields exactly as in 26-REQ-7.6, secrets/optional_secrets always arrays, labels always object, last four null) as a function reused by every handler; it never includes the token, hash or env",
+        "Add local standalone isAdmin/isPAT/hasScope helpers taking *apikit.AuthInfo (pattern of internal/workspace/auth.go)",
+        "Implement POST /workspaces/:slug/sandboxes in the order auth(401), disabled(404 sandboxes_disabled), PAT sandboxes:write (403), wsaccess.AuthorizeWorkspace (404), status must be active (400 'workspace is not active'), decode body (empty = {}), Issue, respond 201 with the representation plus token; unexpected errors answer 500 via apikit.WriteAPIError",
+        "Register the route through the spec 25 RegisterRoutes seam",
+        "Run the tests, make test and make lint"
+      ],
+      "touches": [
+        "internal/sandboxes/service.go",
+        "internal/sandboxes/token.go",
+        "internal/sandboxes/render.go",
+        "internal/sandboxes/auth.go",
+        "internal/sandboxes/handlers.go",
+        "internal/sandboxes/routes.go",
+        "internal/sandboxes/testhelpers_test.go",
+        "internal/sandboxes/issue_test.go"
+      ],
+      "depends_on": [
+        1,
+        2,
+        3
+      ],
+      "done_when": [
+        "POST with {\"profile\":\"tools\"} returns 201 with a 48-character token and only its SHA-256 is stored"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 5,
+      "kind": "implement",
+      "title": "Validate the POST body: fields, profile, ttl, purpose, labels",
+      "criteria": [
+        "26-REQ-3.3",
+        "26-REQ-3.4",
+        "26-REQ-3.5",
+        "26-REQ-3.6",
+        "26-REQ-3.7",
+        "26-REQ-3.8"
+      ],
+      "tests": [
+        "TS-26-17",
+        "TS-26-18",
+        "TS-26-19",
+        "TS-26-20",
+        "TS-26-21",
+        "TS-26-22",
+        "TS-26-23"
+      ],
+      "steps": [
+        "Write TS-26-17 to TS-26-23 through the POST handler and confirm they fail",
+        "Decode the body with json.Decoder and DisallowUnknownFields into a struct with profile, purpose, ttl and labels; an empty body is {}; a non-object, malformed JSON or unknown field answers 400 whose message names the unknown field",
+        "Profile: exact case-sensitive lookup; unknown name or absent without default answers 400 listing every profile name in configuration order",
+        "ttl: time.ParseDuration, minimum 1 minute, at most the profile TTL; 400 otherwise, and the too-long message names the profile TTL",
+        "purpose: at most 64 runes (utf8.RuneCountInString) and no control characters (unicode.IsControl)",
+        "labels: at most 16 pairs, string values only (decode as map[string]any and check types), key regexp ^[A-Za-z0-9]([A-Za-z0-9._-]{0,61}[A-Za-z0-9])?$ or a single alphanumeric, reject lease/workspace case-insensitively, value at most 256 bytes without control characters; every violation names the label key",
+        "Validation runs after the workspace checks and before the secret check; nothing is stored on refusal",
+        "Run the tests, make test and make lint"
+      ],
+      "touches": [
+        "internal/sandboxes/validate.go",
+        "internal/sandboxes/handlers.go",
+        "internal/sandboxes/validate_test.go"
+      ],
+      "depends_on": [
+        4
+      ],
+      "done_when": [
+        "16 labels, a 63-character key, a 256-byte value, a 64-rune purpose and ttl 1m are accepted"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 6,
+      "kind": "implement",
+      "title": "Map missing secrets to 422 and enforce capacity under a lock and transaction",
+      "criteria": [
+        "26-REQ-4.4",
+        "26-REQ-4.6",
+        "26-REQ-5.3",
+        "26-REQ-5.4",
+        "26-REQ-5.5",
+        "26-REQ-5.6",
+        "26-REQ-6.3"
+      ],
+      "tests": [
+        "TS-26-27",
+        "TS-26-28",
+        "TS-26-31",
+        "TS-26-32",
+        "TS-26-33",
+        "TS-26-34",
+        "TS-26-37"
+      ],
+      "steps": [
+        "Write the listed tests (TS-26-33 on a file-backed sqlite database in t.TempDir with concurrent POSTs, using testing/quick or a loop over M, K, N) and confirm they fail",
+        "Map MissingSecretsError to apikit.WriteAPIErrorWithType 422 secret_missing with the message listing missing keys in profile order and the searched scope types; secrets-store and org_members lookup errors answer 500 and store nothing",
+        "Add countLive(tx, now): count of leases with state IN ('leased','active') AND expires_at > FormatUTC(now) across all workspaces",
+        "In Issue take a Service-level sync.Mutex (deferred unlock), begin a transaction, count, return a typed CapacityError when count >= max, otherwise insert and commit; roll back on any error",
+        "Map CapacityError to 409 sandbox_capacity with a message containing the max_sandboxes value; DB errors answer 500 with no partial row",
+        "Ensure id/token generation failures (injected failing reader) answer 500 before any insert",
+        "Run the tests, make test and make lint"
+      ],
+      "touches": [
+        "internal/sandboxes/service.go",
+        "internal/sandboxes/handlers.go",
+        "internal/sandboxes/capacity_test.go",
+        "internal/sandboxes/secretmissing_test.go"
+      ],
+      "depends_on": [
+        4
+      ],
+      "done_when": [
+        "N concurrent POSTs never leave more than max_sandboxes live leases"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 7,
+      "kind": "implement",
+      "title": "Read routes: workspace list, get one and admin list",
+      "criteria": [
+        "26-REQ-7",
+        "26-REQ-2.7"
+      ],
+      "tests": [
+        "TS-26-14",
+        "TS-26-41",
+        "TS-26-42",
+        "TS-26-43",
+        "TS-26-44",
+        "TS-26-45",
+        "TS-26-46",
+        "TS-26-47",
+        "TS-26-48"
+      ],
+      "steps": [
+        "Write the listed tests and confirm they fail",
+        "Add store queries: list by workspace and list all, each filtered to state IN ('leased','active') unless all=true, ORDER BY created_at DESC, id DESC, LIMIT 200",
+        "Implement GET /workspaces/:slug/sandboxes: auth, disabled, PAT needs sandboxes:read or sandboxes:write (403), AuthorizeWorkspace (404), parse ?all with strconv.ParseBool (400 on failure), return a bare non-nil JSON array via the shared representation",
+        "Implement GET /workspaces/:slug/sandboxes/:id: same checks, 404 'sandbox lease not found' for a malformed id (^sbx_[0-9a-f]{32}$), unknown id or another workspace's lease; works for any state and for archived workspaces",
+        "Implement GET /api/v1/sandboxes: 401 unauthenticated, 404 sandboxes_disabled when off, 403 for any credential other than admin_token, same all handling and cap",
+        "Register all three routes in RegisterRoutes alongside POST",
+        "Run the tests, make test and make lint"
+      ],
+      "touches": [
+        "internal/sandboxes/handlers_read.go",
+        "internal/sandboxes/store_query.go",
+        "internal/sandboxes/routes.go",
+        "internal/sandboxes/read_test.go"
+      ],
+      "depends_on": [
+        4
+      ],
+      "done_when": [
+        "no read response contains token, token hash or environment values"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 8,
+      "kind": "implement",
+      "title": "DELETE route and access rules across all lease routes",
+      "criteria": [
+        "26-REQ-2.1",
+        "26-REQ-2.2",
+        "26-REQ-2.3",
+        "26-REQ-2.6",
+        "26-REQ-8.1",
+        "26-REQ-8.2",
+        "26-REQ-8.3"
+      ],
+      "tests": [
+        "TS-26-8",
+        "TS-26-9",
+        "TS-26-10",
+        "TS-26-13",
+        "TS-26-49",
+        "TS-26-50",
+        "TS-26-51"
+      ],
+      "steps": [
+        "Write the listed tests (TS-26-9 registers routes with a nil/disabled service) and confirm they fail",
+        "Implement DELETE /workspaces/:slug/sandboxes/:id: auth, disabled, PAT sandboxes:write (403), AuthorizeWorkspace (404), no active-status check so archived workspaces work",
+        "Load the lease by id and workspace; malformed, unknown or foreign ids answer 404 'sandbox lease not found' and change nothing",
+        "Call the single EndLease function with state destroyed and reason api; answer 204 with an empty body whether or not the update changed a row (terminal leases keep earlier ended_at, end_reason and updated_at); emit no audit event",
+        "Verify the disabled-before-scope-before-workspace ordering and the 401 first rule on all five routes with table-driven tests",
+        "Run the tests, make test and make lint"
+      ],
+      "touches": [
+        "internal/sandboxes/handlers_delete.go",
+        "internal/sandboxes/routes.go",
+        "internal/sandboxes/delete_test.go",
+        "internal/sandboxes/access_test.go"
+      ],
+      "depends_on": [
+        7
+      ],
+      "done_when": [
+        "after DELETE the token lookup returns ErrLeaseNotFound and the stored hash is NULL"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 9,
+      "kind": "implement",
+      "title": "Audit event, confidentiality and af-hub wiring",
+      "criteria": [
+        "26-REQ-3.1"
+      ],
+      "tests": [
+        "TS-26-53",
+        "TS-26-54"
+      ],
+      "steps": [
+        "Write TS-26-53 (recording audit.Emitter, captured slog via slog.SetDefault with a buffer handler) and TS-26-54 (scan every response body and log output for the planted secret value and the token) and confirm they fail",
+        "Add EventSandboxLease = \"hub.sandbox.lease\" with a doc comment listing its metadata to internal/audit/types.go",
+        "After a successful insert emit audit.HubEvent{EventType, ResourceType \"sandbox\", ResourceID lease id, Action \"lease\", Workspace slug, ActorID and ActorType from the credential as merge events do (internal/merge/api.go), Metadata lease_id, profile, purpose, ttl (Duration.String()), secret_names, optional_secret_names}; skip when the emitter is nil; log a failed emit with slog.Error without changing the 201; never log the token, secret values or env",
+        "In cmd/af-hub/main.go call sandboxes.InitSchema(database.SqlDB) unconditionally right after secrets.InitSchema, and pass the existing secrets store, auditEmitter, database and max_sandboxes into the spec 25 route registration; the feature-off path still registers routes that answer 404 sandboxes_disabled",
+        "Run make doc, the tests, make test and make lint"
+      ],
+      "touches": [
+        "internal/audit/types.go",
+        "internal/sandboxes/handlers.go",
+        "internal/sandboxes/audit_test.go",
+        "cmd/af-hub/main.go",
+        "docs/generated"
+      ],
+      "depends_on": [
+        6,
+        8
+      ],
+      "done_when": [
+        "exactly one hub.sandbox.lease event is emitted per successful POST and none for DELETE"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 10,
+      "kind": "implement",
+      "title": "afc sandbox create, list, get and destroy",
+      "criteria": [
+        "26-REQ-3.1",
+        "26-REQ-8.1"
+      ],
+      "tests": [
+        "TS-26-55",
+        "TS-26-56"
+      ],
+      "steps": [
+        "Read internal/cli/rerere_cmd.go, merge_cmd.go, cli_helpers.go and the spec 25 SandboxCmd in internal/cli; do not import internal/sandboxes from internal/cli",
+        "Write TS-26-55 and TS-26-56 with an httptest fake hub using runRootCmd and setupTestEnv, plus checks that a bad --label (no '=' or repeated key) and an unopenable --token-file exit 2 with no request sent, and that a failing token write sends a best-effort DELETE and exits non-zero naming the file; confirm they fail",
+        "Add sandbox_cmd.go subcommands under the existing sandbox parent with SilenceErrors/SilenceUsage: create <slug> [--profile --purpose --ttl --label k=v... --token-file PATH], list <slug> [--all], get <slug> <id>, destroy <slug> <id>",
+        "create: parse labels with parseKeyValue and reject duplicates with apikit.NewCLIError(2, ...) before any request; pass --ttl unparsed; with --token-file open it first (O_CREATE|O_TRUNC|O_WRONLY), os.Chmod 0600, then POST, write the token without a trailing newline, delete the token key from the result map and print; without it print the whole lease and warn on stderr that the token will not be shown again",
+        "On a token-file write failure, issue a best-effort DELETE for the new lease and return an error naming the file",
+        "list appends ?all=true with --all; get prints the lease; destroy sends DELETE and prints {\"status\":\"destroyed\",\"id\":\"<id>\"} with json.MarshalIndent plus a stderr confirmation; all output goes through apikit.CLIPrintResult/CLIHandleError",
+        "Run the tests, make test and make lint"
+      ],
+      "touches": [
+        "internal/cli/sandbox_cmd.go",
+        "internal/cli/sandbox_cmd_test.go",
+        "internal/cli/workspace_cmd.go"
+      ],
+      "depends_on": [
+        1
+      ],
+      "done_when": [
+        "the --token-file output has mode 0600 and stdout never contains the token"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 11,
+      "kind": "integration",
+      "title": "Verify the issue, read and end-lease path end to end and update docs",
+      "tests": [
+        "TS-26-57"
+      ],
+      "steps": [
+        "Write TS-26-57 against the real echo router with the production route registration, real lease service and store, SQLite, secrets.Store, wsaccess and an audit emitter, and confirm it passes",
+        "Trace 26-PATH-1 from RegisterRoutes through the POST handler, Service.Issue, secret check, capacity transaction and insert, then GET list/GET one, LookupByToken, DELETE and EndLease; confirm each step calls the next and no stub remains",
+        "Confirm production code consumes each contract: LookupByToken and the ResolutionChain helper are exported for sandbox_gateway, EndLease is called by the DELETE handler, the audit emitter and secrets store are passed in cmd/af-hub/main.go, and sandboxes.InitSchema runs at every start",
+        "Grep every file in the tasks' touches for panic(\"not implemented\"), TODO, and bare return nil on non-trivial paths, and remove any that remain",
+        "Update docs/api.md (Sandbox Endpoints, error_type rows sandbox_capacity and secret_missing, hub.sandbox.lease audit row), docs/openapi.yaml, docs/permissions.md, docs/cli.md, docs/configuration.md (max_sandboxes) and docs/architecture.md (lease record); run make doc and make test and make lint"
+      ],
+      "touches": [
+        "internal/sandboxes/smoke_test.go",
+        "docs/api.md",
+        "docs/openapi.yaml",
+        "docs/permissions.md",
+        "docs/cli.md",
+        "docs/configuration.md",
+        "docs/architecture.md"
+      ],
+      "depends_on": [
+        9,
+        10
+      ],
+      "done_when": [
+        "`make test` passes offline with no container engine, provider or gateway"
+      ],
+      "state": "pending"
+    }
+  ]
+}

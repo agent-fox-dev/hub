@@ -1,0 +1,791 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/requirements.v2.json",
+  "spec_id": "27",
+  "spec_name": "sandbox_gateway",
+  "schema_version": 2,
+  "introduction": "Spec 27 makes a sandbox lease usable: af-hub serves an embedded AgentKit gatewayd on a second listener configured under [sandbox], authenticates every gateway RPC with a lease token against the sandbox_leases store, creates exactly one box per lease from the lease snapshot and profile (never from the caller's spec), injects the profile's secrets resolved from the workspace's scope chain, records create/fail/destroy outcomes on the lease with audit events, extends DELETE to destroy the box, and keeps every secret value, token and provider detail out of responses, logs and events. It extends internal/sandboxes from specs 25 and 26.",
+  "glossary": {
+    "Create claim": "An in-process set of lease ids with a Create in flight; a second concurrent Create for the same lease is refused while the id is in the set.",
+    "end_reason": "Spec 26's nullable lease column and field that records why a lease ended; it carries the PRD's destroy_reason values client and api in this spec, so no separate destroy_reason column is added.",
+    "gateway": "The gatewayd.Server hub runs in-process on the [sandbox].listen address; clients reach it with AgentKit's gateway.Dial(gateway_url, token).",
+    "gateway_url": "The URL a lease holder dials: [sandbox].external_url when set, otherwise http:// or https:// plus the listener's bound address.",
+    "lease authenticator": "The function hub passes as gatewayd.Config.Authenticate; it maps a presented lease token to the lease id (the principal) or refuses it.",
+    "principal": "The lease id the authenticator returned for the current RPC, read in the backend through an injected function defaulting to gatewayd.PrincipalFromContext.",
+    "provider not-found": "The error a sandbox.Provider returns from Destroy when the box does not exist, detected with errors.Is against AgentKit's not-found sentinel.",
+    "scrub": "Replace every non-empty resolved secret value and fixed env value with [redacted], remove URL userinfo with carrypatch's userinfoPattern, then truncate to 1024 bytes on a UTF-8 boundary.",
+    "wrapping backend": "Hub's sandbox.Provider implementation handed to gatewayd as Backend; it enforces lease rules and delegates to the provider from spec 25's Service.Provider()."
+  },
+  "requirements": [
+    {
+      "id": "27-REQ-1",
+      "title": "Gateway configuration keys",
+      "rationale": "A lease token in plaintext on the network would hand over a box full of secrets, so a bad gateway configuration must stop hub at start.",
+      "criteria": [
+        {
+          "id": "27-REQ-1.1",
+          "pattern": "event_driven",
+          "condition": "the [sandbox] section is loaded",
+          "system": "sandbox config loader",
+          "action": "recognise listen, tls_cert, tls_key and external_url as known keys, expand ${NAME} in them like every other string, default listen to \"127.0.0.1:8443\", and report their failures in the same errors.Join result as spec 25's other validation failures",
+          "contract": "a section without these keys validates with listen \"127.0.0.1:8443\"; a section with an invalid listen and an invalid profile returns one error naming both; none of the four keys is reported as unknown"
+        },
+        {
+          "id": "27-REQ-1.2",
+          "pattern": "unwanted",
+          "condition": "listen does not split with net.SplitHostPort, or its port is not numeric or lies outside 0 to 65535",
+          "system": "sandbox config loader",
+          "action": "refuse start, while accepting port 0 as a request for a free port",
+          "contract": "validation error containing \"sandbox.listen\" for \"127.0.0.1\", \"127.0.0.1:http\" and \"127.0.0.1:65536\"; \"127.0.0.1:0\" and \"127.0.0.1:65535\" validate"
+        },
+        {
+          "id": "27-REQ-1.3",
+          "pattern": "ubiquitous",
+          "system": "sandbox config loader",
+          "action": "treat listen as on loopback only when its host is localhost or a literal IP address whose IsLoopback() is true, without any DNS lookup",
+          "contract": "\"localhost:1\", \"127.0.0.1:1\", \"127.5.5.5:1\" and \"[::1]:1\" are loopback; \":1\", \"0.0.0.0:1\", \"[::]:1\", \"10.0.0.1:1\" and \"gw.example.com:1\" are not"
+        },
+        {
+          "id": "27-REQ-1.4",
+          "pattern": "unwanted",
+          "condition": "exactly one of tls_cert and tls_key is set",
+          "system": "sandbox config loader",
+          "action": "refuse start, naming the key that is missing",
+          "contract": "validation error containing \"sandbox.tls_key\" when only tls_cert is set, and \"sandbox.tls_cert\" when only tls_key is set"
+        },
+        {
+          "id": "27-REQ-1.5",
+          "pattern": "unwanted",
+          "condition": "listen is not on loopback and TLS is not configured",
+          "system": "sandbox config loader",
+          "action": "refuse start with a message stating that a plaintext gateway is allowed only on loopback",
+          "contract": "validation error containing \"sandbox.listen\" and \"loopback\""
+        },
+        {
+          "id": "27-REQ-1.6",
+          "pattern": "unwanted",
+          "condition": "listen is not on loopback and external_url is empty",
+          "system": "sandbox config loader",
+          "action": "refuse start",
+          "contract": "validation error containing \"sandbox.external_url\""
+        },
+        {
+          "id": "27-REQ-1.7",
+          "pattern": "unwanted",
+          "condition": "external_url is set and is not an absolute http or https URL with a host, or it has userinfo, a query, a fragment or a path other than empty or \"/\"",
+          "system": "sandbox config loader",
+          "action": "refuse start",
+          "contract": "validation error containing \"sandbox.external_url\" for \"gw.example.com\", \"ftp://gw\", \"https://u:p@gw\", \"https://gw?x=1\", \"https://gw#f\" and \"https://gw/api\"; \"https://gw.example.com/\" validates"
+        },
+        {
+          "id": "27-REQ-1.8",
+          "pattern": "unwanted",
+          "condition": "static validation passes, TLS is configured and tls.LoadX509KeyPair(tls_cert, tls_key) fails",
+          "system": "af-hub startup",
+          "action": "refuse start, including the loader's error text",
+          "contract": "startup error containing \"sandbox.tls_cert\", \"sandbox.tls_key\" and the LoadX509KeyPair error; af-hub exits non-zero"
+        }
+      ]
+    },
+    {
+      "id": "27-REQ-2",
+      "title": "Gateway lifecycle and gateway_url",
+      "rationale": "A lease is worthless unless a reachable gateway serves it for as long as hub issues leases.",
+      "criteria": [
+        {
+          "id": "27-REQ-2.1",
+          "pattern": "event_driven",
+          "condition": "af-hub starts with the sandbox feature on",
+          "system": "af-hub startup",
+          "action": "bind listen with net.Listen before the HTTP server starts serving, build a gatewayd.Server with Backend set to the wrapping backend, Authenticate set to the lease authenticator, no static Tokens, TLS set to the loaded key pair or nil, NetworkModes set to network_modes, MaxSandboxes to max_sandboxes and MaxTTL to max_ttl, and serve it on the bound listener for the life of the process",
+          "contract": "a gateway.Dial client connects to the bound address before the first HTTP request is served; the Config passed to gatewayd.New has the listed values"
+        },
+        {
+          "id": "27-REQ-2.2",
+          "pattern": "unwanted",
+          "condition": "binding listen fails",
+          "system": "af-hub startup",
+          "action": "refuse start",
+          "contract": "startup error containing \"sandbox.listen\" and the bind error; af-hub exits non-zero"
+        },
+        {
+          "id": "27-REQ-2.3",
+          "pattern": "unwanted",
+          "condition": "gatewayd.New returns an error",
+          "system": "af-hub startup",
+          "action": "refuse start and close the bound listener",
+          "contract": "startup error wrapping the gatewayd.New error; af-hub exits non-zero"
+        },
+        {
+          "id": "27-REQ-2.4",
+          "pattern": "unwanted",
+          "condition": "the gateway's Serve returns while the process is running",
+          "system": "af-hub",
+          "action": "log the returned error and exit the process",
+          "contract": "one slog error record carrying the Serve error; process exit code is non-zero"
+        },
+        {
+          "id": "27-REQ-2.5",
+          "pattern": "state_driven",
+          "condition": "the sandbox feature is off",
+          "system": "af-hub startup",
+          "action": "bind no gateway listener and build no gatewayd.Server",
+          "contract": "no TCP listener is opened on listen; startup succeeds"
+        },
+        {
+          "id": "27-REQ-2.6",
+          "pattern": "ubiquitous",
+          "system": "lease service",
+          "action": "compute gateway_url as external_url when set, otherwise as https:// when TLS is configured or http:// when it is not, followed by the listener's bound address",
+          "contract": "listen \"127.0.0.1:0\" without TLS yields \"http://127.0.0.1:<bound port>\" with a non-zero port; with TLS the scheme is https; with external_url \"https://gw.example.com\" the value is exactly that"
+        },
+        {
+          "id": "27-REQ-2.7",
+          "pattern": "ubiquitous",
+          "system": "lease handlers",
+          "action": "add gateway_url to the lease representation of 26-REQ-7.6 used by POST, GET one, the workspace list and the admin list",
+          "contract": "each of the four responses carries a gateway_url string equal to the value of 27-REQ-2.6 on every lease, in every state"
+        }
+      ]
+    },
+    {
+      "id": "27-REQ-3",
+      "title": "Authenticating lease tokens",
+      "rationale": "Revocation on DELETE and on failure has to take effect on the very next RPC, including relayed calls on an existing box.",
+      "criteria": [
+        {
+          "id": "27-REQ-3.1",
+          "pattern": "event_driven",
+          "condition": "gatewayd calls the lease authenticator with a presented token",
+          "system": "lease authenticator",
+          "action": "look the token up through spec 26's token lookup (SHA-256, live state) and accept it only when the lease exists, is leased or active, and has expires_at later than the injected clock's now, returning the lease id as the principal",
+          "contract": "returns (lease id, true) for a live unexpired lease's token"
+        },
+        {
+          "id": "27-REQ-3.2",
+          "pattern": "unwanted",
+          "condition": "the token is empty, malformed or unknown, or its lease is destroyed, expired or failed, or its lease's expires_at is at or before now",
+          "system": "lease authenticator",
+          "action": "refuse the token",
+          "contract": "returns (\"\", false); the RPC answers gRPC Unauthenticated"
+        },
+        {
+          "id": "27-REQ-3.3",
+          "pattern": "ubiquitous",
+          "system": "lease authenticator",
+          "action": "read the lease store on every call without caching, so that a lease moved to destroyed or failed is refused on the next RPC",
+          "contract": "after DELETE or a failed Create, the next Create, List or relayed Agent RPC with the same token answers Unauthenticated"
+        },
+        {
+          "id": "27-REQ-3.4",
+          "pattern": "unwanted",
+          "condition": "the lease store returns an error other than not found during lookup",
+          "system": "lease authenticator",
+          "action": "refuse the token and log the error with slog without the token or its hash",
+          "contract": "returns (\"\", false); the RPC answers Unauthenticated; the log record contains neither the token nor its hash"
+        },
+        {
+          "id": "27-REQ-3.5",
+          "pattern": "ubiquitous",
+          "system": "lease authenticator",
+          "action": "never log the presented token or its SHA-256 hash",
+          "contract": "captured slog output across accepted and refused calls contains neither string"
+        }
+      ]
+    },
+    {
+      "id": "27-REQ-4",
+      "title": "Create builds hub's spec",
+      "rationale": "A caller says which lease; hub says what is in the box, so the caller's image, env, network, resources and TTL never reach the provider.",
+      "criteria": [
+        {
+          "id": "27-REQ-4.1",
+          "pattern": "unwanted",
+          "condition": "the injected principal function (default gatewayd.PrincipalFromContext) reports no principal on Create's context",
+          "system": "wrapping backend",
+          "action": "refuse the call without loading a lease or calling the provider",
+          "contract": "Create returns a non-nil error; provider Create call count stays 0"
+        },
+        {
+          "id": "27-REQ-4.2",
+          "pattern": "unwanted",
+          "condition": "a Create for the same lease is already in flight",
+          "system": "wrapping backend",
+          "action": "refuse the second call without calling the provider, and release each claim when its call returns, whatever the outcome",
+          "contract": "the second Create returns FailedPrecondition; after the first returns, the claim set no longer holds the lease id"
+        },
+        {
+          "id": "27-REQ-4.3",
+          "pattern": "unwanted",
+          "condition": "the claimed lease's state is not leased",
+          "system": "wrapping backend",
+          "action": "refuse the call without changing the lease",
+          "contract": "FailedPrecondition whose message names the current state (for example \"active\")"
+        },
+        {
+          "id": "27-REQ-4.4",
+          "pattern": "unwanted",
+          "condition": "the leased lease's expires_at is at or before the injected clock's now",
+          "system": "wrapping backend",
+          "action": "refuse the call and leave the lease state unchanged",
+          "contract": "FailedPrecondition whose message contains \"expired\"; the lease still reads leased; provider Create call count stays 0"
+        },
+        {
+          "id": "27-REQ-4.5",
+          "pattern": "unwanted",
+          "condition": "the lease's profile is no longer among the validated in-memory profiles",
+          "system": "wrapping backend",
+          "action": "move the lease leased → failed with an error naming the profile and emit hub.sandbox.failed",
+          "contract": "FailedPrecondition with the same message; the lease reads failed with that error; exactly one hub.sandbox.failed event"
+        },
+        {
+          "id": "27-REQ-4.6",
+          "pattern": "ubiquitous",
+          "system": "wrapping backend",
+          "action": "build the provider spec with image, network, resources, require_landlock, required and optional secret names and fixed env from the lease's profile snapshot, any field the lease does not record from the in-memory profile, TTL equal to expires_at minus now truncated to whole seconds, Workdir from the caller, and ignore the caller's image, env, network, resources, TTL and landlock setting",
+          "contract": "for a caller spec with image \"evil\", env {\"X\":\"1\"}, network \"host\" and TTL 99h, the provider receives the lease's image, network and resources, the caller's Workdir, a whole-second TTL no greater than the remaining lease time, and no key X"
+        },
+        {
+          "id": "27-REQ-4.7",
+          "pattern": "ubiquitous",
+          "system": "wrapping backend",
+          "action": "set Labels to the caller's labels minus every key starting with \"hub.\", plus hub.<k>=<v> for each lease label, then hub.lease=<lease id> and hub.workspace=<slug> overriding any earlier value",
+          "contract": "caller labels {a:1, hub.lease:forged} and lease label {team:x} yield {a:1, hub.team:x, hub.lease:<lease id>, hub.workspace:<slug>}"
+        },
+        {
+          "id": "27-REQ-4.8",
+          "pattern": "ubiquitous",
+          "system": "wrapping backend",
+          "action": "for any caller-supplied sandbox.Spec, produce a provider spec whose Image, Network, Resources, RequireLandlock and Env are identical to those produced for sandbox.Spec{} on the same lease",
+          "contract": "property holds over generated caller specs"
+        }
+      ]
+    },
+    {
+      "id": "27-REQ-5",
+      "title": "Secret resolution at Create",
+      "rationale": "Resolving at Create lets a rotated value take effect, and using the POST check's chain keeps the 422 at POST and the injection in agreement.",
+      "criteria": [
+        {
+          "id": "27-REQ-5.1",
+          "pattern": "event_driven",
+          "condition": "Create has built the spec for a leased, unexpired lease",
+          "system": "wrapping backend",
+          "action": "resolve each required and optional secret name by calling secrets.Store.GetSecretValue tier by tier along spec 26's resolution chain helper, taking the first tier that has the name and moving to the next tier on *secrets.NotFoundError",
+          "contract": "a name present in workspace and user scopes resolves to the workspace value; a value changed after POST and before Create is the one injected"
+        },
+        {
+          "id": "27-REQ-5.2",
+          "pattern": "ubiquitous",
+          "system": "wrapping backend",
+          "action": "search the org tier (owner ID workspaces.org_id) only when org_id is set and the workspace owner is a member of that org, regardless of which credential issued the lease",
+          "contract": "a name stored only at the org scope is injected when the owner is a member and is treated as missing when the owner is not"
+        },
+        {
+          "id": "27-REQ-5.3",
+          "pattern": "unwanted",
+          "condition": "a required secret name is found in no tier",
+          "system": "wrapping backend",
+          "action": "move the lease leased → failed with error text starting \"secret_missing:\" followed by the key and the scope types searched, emit hub.sandbox.failed, and not call the provider",
+          "contract": "FailedPrecondition with the same text; the lease reads failed with that error; exactly one hub.sandbox.failed event; provider Create call count 0"
+        },
+        {
+          "id": "27-REQ-5.4",
+          "pattern": "event_driven",
+          "condition": "an optional secret name is found in no tier",
+          "system": "wrapping backend",
+          "action": "omit that name from Env and continue the Create",
+          "contract": "the provider receives an Env without the key; Create succeeds"
+        },
+        {
+          "id": "27-REQ-5.5",
+          "pattern": "unwanted",
+          "condition": "GetSecretValue or the chain lookup returns an error that is not *secrets.NotFoundError",
+          "system": "wrapping backend",
+          "action": "fail the call, leave the lease leased and release the claim so the caller can retry",
+          "contract": "gRPC Internal error; the lease reads leased with error null; a retried Create proceeds"
+        },
+        {
+          "id": "27-REQ-5.6",
+          "pattern": "ubiquitous",
+          "system": "wrapping backend",
+          "action": "set Env to the fixed env plus each resolved secret under the profile's spelling of its name",
+          "contract": "a profile secret GIT_PAT stored as git_pat appears in Env as GIT_PAT with the stored value, alongside every fixed env key"
+        },
+        {
+          "id": "27-REQ-5.7",
+          "pattern": "ubiquitous",
+          "system": "wrapping backend",
+          "action": "hold resolved secret values only in memory for the duration of the provider call and never write them to the database",
+          "contract": "after a successful Create, no column of any sandbox_leases row contains the planted secret value"
+        }
+      ]
+    },
+    {
+      "id": "27-REQ-6",
+      "title": "Create outcomes and races",
+      "rationale": "A box outliving its lease is a bug, and each lease must yield at most one box.",
+      "criteria": [
+        {
+          "id": "27-REQ-6.1",
+          "pattern": "event_driven",
+          "condition": "the provider's Create succeeds",
+          "system": "wrapping backend",
+          "action": "update the lease leased → active with sandbox_id set to the box's ID() in one UPDATE conditioned on state leased, emit one hub.sandbox.create event with metadata lease_id, sandbox_id, image and network, and return the wrapped sandbox",
+          "contract": "the gateway client receives a live sandbox; GET one reads state active and sandbox_id equal to the box id; exactly one hub.sandbox.create event"
+        },
+        {
+          "id": "27-REQ-6.2",
+          "pattern": "complex_event",
+          "condition": "the provider's Create succeeds",
+          "guard": "the conditional update finds the lease no longer leased because a DELETE ran during the provider call",
+          "system": "wrapping backend",
+          "action": "destroy the new box on the provider, log a warning with the lease id and sandbox id, and emit no create event",
+          "contract": "FailedPrecondition naming the current state; the provider's List no longer has the box; zero hub.sandbox.create events; the lease stays destroyed"
+        },
+        {
+          "id": "27-REQ-6.3",
+          "pattern": "unwanted",
+          "condition": "the provider's Create returns an error",
+          "system": "wrapping backend",
+          "action": "update the lease leased → failed recording the scrubbed provider message as error, and emit one hub.sandbox.failed event with metadata lease_id and the same error",
+          "contract": "the caller receives the scrubbed error text; the lease reads failed with that error; exactly one hub.sandbox.failed event"
+        },
+        {
+          "id": "27-REQ-6.4",
+          "pattern": "ubiquitous",
+          "system": "wrapping backend",
+          "action": "make every lease state change a conditional UPDATE on the state hub expects to find, set ended_at on entering failed or destroyed, clear the token hash on entering failed, and treat destroyed and failed as terminal",
+          "contract": "no update moves a lease out of destroyed or failed; a failed lease's token lookup returns not found"
+        },
+        {
+          "id": "27-REQ-6.5",
+          "pattern": "unwanted",
+          "condition": "a second Create arrives under a token whose first Create has completed",
+          "system": "gateway",
+          "action": "refuse the call without calling the provider",
+          "contract": "FailedPrecondition when the lease is active; Unauthenticated when the lease is failed or destroyed; provider Create call count stays 1"
+        },
+        {
+          "id": "27-REQ-6.6",
+          "pattern": "ubiquitous",
+          "system": "wrapping backend",
+          "action": "for any number of concurrent Create calls under one token, interleaved with at most one DELETE, call the provider's Create at most once and leave no box alive at the provider when the lease ends destroyed",
+          "contract": "property holds over generated interleavings: provider Create count ≤ 1; a destroyed lease has no live box in the provider's List"
+        }
+      ]
+    },
+    {
+      "id": "27-REQ-7",
+      "title": "The rest of the backend and the client destroy path",
+      "rationale": "A lease holder must see only its own box and be able to give it back, and no RPC response may carry the values that went in.",
+      "criteria": [
+        {
+          "id": "27-REQ-7.1",
+          "pattern": "ubiquitous",
+          "system": "wrapping backend",
+          "action": "return the provider's Capabilities() with NetworkModes narrowed to the intersection with network_modes",
+          "contract": "a provider offering [none, bridge, host] with network_modes [none, bridge] reports [none, bridge]"
+        },
+        {
+          "id": "27-REQ-7.2",
+          "pattern": "event_driven",
+          "condition": "List is called",
+          "system": "wrapping backend",
+          "action": "return at most the one box bound to the principal's lease when a principal is present, and the provider's full list otherwise",
+          "contract": "with a principal whose lease is active, List returns exactly that box even when the provider holds others; for a leased lease it returns an empty list"
+        },
+        {
+          "id": "27-REQ-7.3",
+          "pattern": "event_driven",
+          "condition": "Destroy(id) or Close on the sandbox handle Create returned is called",
+          "system": "wrapping backend",
+          "action": "call the provider's Destroy, then update the lease active → destroyed with end_reason client and emit one hub.sandbox.destroy event with metadata lease_id, sandbox_id and reason \"client\"",
+          "contract": "the call returns nil; the provider's List no longer has the box; GET one reads destroyed with end_reason \"client\"; exactly one hub.sandbox.destroy event"
+        },
+        {
+          "id": "27-REQ-7.4",
+          "pattern": "unwanted",
+          "condition": "a principal is present and its lease's sandbox_id differs from the id being destroyed",
+          "system": "wrapping backend",
+          "action": "refuse without calling the provider",
+          "contract": "a not-found error; provider Destroy call count 0; the lease is unchanged"
+        },
+        {
+          "id": "27-REQ-7.5",
+          "pattern": "event_driven",
+          "condition": "the provider's Destroy on the client path reports provider not-found",
+          "system": "wrapping backend",
+          "action": "treat the box as destroyed and complete the client destroy path",
+          "contract": "the call returns nil; the lease reads destroyed with end_reason \"client\"; one hub.sandbox.destroy event"
+        },
+        {
+          "id": "27-REQ-7.6",
+          "pattern": "unwanted",
+          "condition": "the provider's Destroy on the client path returns any other error",
+          "system": "wrapping backend",
+          "action": "return the scrubbed error and leave the lease active",
+          "contract": "the caller receives the scrubbed error text; the lease reads active; zero hub.sandbox.destroy events"
+        },
+        {
+          "id": "27-REQ-7.7",
+          "pattern": "ubiquitous",
+          "system": "wrapping backend",
+          "action": "pass Reap straight through to the provider and delegate every sandbox handle method other than Spec() and Close() to the provider's sandbox",
+          "contract": "provider Reap is called once per backend Reap; relayed handle calls reach the provider's sandbox with unchanged arguments"
+        },
+        {
+          "id": "27-REQ-7.8",
+          "pattern": "ubiquitous",
+          "system": "wrapping backend",
+          "action": "report from the handle's Spec() every Env key with its value replaced by \"[redacted]\", leaving other fields as built",
+          "contract": "Spec().Env has the same key set as the provider spec and every value equals \"[redacted]\""
+        }
+      ]
+    },
+    {
+      "id": "27-REQ-8",
+      "title": "DELETE destroys the box",
+      "rationale": "The lease must never read destroyed while its box still runs, and a failed DELETE must stay retryable.",
+      "criteria": [
+        {
+          "id": "27-REQ-8.1",
+          "pattern": "event_driven",
+          "condition": "an authorised DELETE /api/v1/workspaces/:slug/sandboxes/:id targets an active lease",
+          "system": "lease handlers",
+          "action": "call the provider's Destroy(sandbox_id) under a 30-second context deadline, then update the lease active → destroyed with end_reason api and clear its token hash",
+          "contract": "HTTP 204; the provider's List no longer has the box; GET one reads destroyed with end_reason \"api\"; a relayed RPC on the token answers Unauthenticated"
+        },
+        {
+          "id": "27-REQ-8.2",
+          "pattern": "event_driven",
+          "condition": "the provider's Destroy during DELETE reports provider not-found",
+          "system": "lease handlers",
+          "action": "treat the box as destroyed and complete the DELETE",
+          "contract": "HTTP 204; the lease reads destroyed with end_reason \"api\""
+        },
+        {
+          "id": "27-REQ-8.3",
+          "pattern": "unwanted",
+          "condition": "the provider's Destroy during DELETE returns any other error or exceeds the 30-second deadline",
+          "system": "lease handlers",
+          "action": "change nothing on the lease and emit no event",
+          "contract": "HTTP 502 with error_type \"sandbox_provider_error\" and the scrubbed message via apikit.WriteAPIErrorWithType; the lease reads active; the token still authenticates; a retried DELETE can succeed"
+        },
+        {
+          "id": "27-REQ-8.4",
+          "pattern": "event_driven",
+          "condition": "an authorised DELETE targets a leased lease",
+          "system": "lease handlers",
+          "action": "update the lease leased → destroyed with end_reason api in one UPDATE conditioned on state leased, without calling the provider",
+          "contract": "HTTP 204; GET one reads destroyed with end_reason \"api\"; a Create still in flight loses its race per 27-REQ-6.2"
+        },
+        {
+          "id": "27-REQ-8.5",
+          "pattern": "unwanted",
+          "condition": "the DELETE's conditional update finds the lease state changed since it was read",
+          "system": "lease handlers",
+          "action": "re-read the lease once and act on the new state, destroying the box first when it is now active",
+          "contract": "a lease that became active between read and update ends destroyed with its box gone and HTTP 204"
+        },
+        {
+          "id": "27-REQ-8.6",
+          "pattern": "ubiquitous",
+          "system": "lease handlers",
+          "action": "emit exactly one hub.sandbox.destroy event for each change into destroyed made by DELETE, with metadata lease_id, sandbox_id (null when no box existed) and reason \"api\", and ActorID and ActorType from the HTTP credential",
+          "contract": "DELETE of an active lease yields one event with the box id; DELETE of a leased lease yields one event with sandbox_id null"
+        },
+        {
+          "id": "27-REQ-8.7",
+          "pattern": "event_driven",
+          "condition": "DELETE targets a lease already in a terminal state",
+          "system": "lease handlers",
+          "action": "keep spec 26's behaviour without calling the provider or emitting an event",
+          "contract": "HTTP 204; provider Destroy call count 0; zero hub.sandbox.destroy events"
+        }
+      ]
+    },
+    {
+      "id": "27-REQ-9",
+      "title": "No secret or token leaves hub",
+      "rationale": "An engine can echo its command line, including -e KEY=VALUE, in an error, and that text must not reach a caller, a log or the audit stream.",
+      "criteria": [
+        {
+          "id": "27-REQ-9.1",
+          "pattern": "ubiquitous",
+          "system": "scrubber",
+          "action": "replace every non-empty resolved secret value and every non-empty fixed env value with \"[redacted]\", remove URL userinfo with the pattern (?i)([a-z][a-z0-9+.\\-]*://)[^/\\s?#]*@ replaced by ${1}, and only then truncate to at most 1024 bytes on a UTF-8 boundary",
+          "contract": "\"pull https://u:tok@reg failed: -e K=s3cret\" with secret s3cret becomes \"pull https://reg failed: -e K=[redacted]\""
+        },
+        {
+          "id": "27-REQ-9.2",
+          "pattern": "ubiquitous",
+          "system": "scrubber",
+          "action": "for any input text and any set of non-empty values, return valid UTF-8 of at most 1024 bytes that contains none of the values as a substring",
+          "contract": "property holds over generated texts, including values placed across the 1024-byte boundary and multi-byte runes at the cut"
+        },
+        {
+          "id": "27-REQ-9.3",
+          "pattern": "ubiquitous",
+          "system": "wrapping backend and lease handlers",
+          "action": "scrub provider error text before storing it as a lease error, putting it in an audit event, logging it or returning it to a gateway or HTTP caller",
+          "contract": "every stored lease error, event error field, log record and returned error derived from a provider error equals the scrubbed text"
+        },
+        {
+          "id": "27-REQ-9.4",
+          "pattern": "ubiquitous",
+          "system": "internal/sandboxes",
+          "action": "never log a secret value, a fixed env value, a lease token or a token hash",
+          "contract": "captured slog output across create, fail and destroy flows contains none of these strings"
+        },
+        {
+          "id": "27-REQ-9.5",
+          "pattern": "ubiquitous",
+          "system": "wrapping backend and lease handlers",
+          "action": "emit hub.sandbox.create, hub.sandbox.failed and hub.sandbox.destroy with Workspace set to the lease's slug, ResourceType \"sandbox\", ResourceID the lease id, secret names only, and for gateway-raised events ActorType \"lease\" and ActorID the lease's created_by",
+          "contract": "each recorded event has these fields; no metadata value equals a secret or env value"
+        },
+        {
+          "id": "27-REQ-9.6",
+          "pattern": "unwanted",
+          "condition": "the audit emitter is nil or its Emit returns an error",
+          "system": "wrapping backend and lease handlers",
+          "action": "skip emission when nil and log an Emit error with slog, without changing the operation's outcome",
+          "contract": "Create, Close and DELETE return the same result and leave the same lease state as with a working emitter"
+        },
+        {
+          "id": "27-REQ-9.7",
+          "pattern": "event_driven",
+          "condition": "a test plants a secret value and makes the provider return an error containing it",
+          "system": "af-hub",
+          "action": "keep the value out of every HTTP response body, audit event, log line, gateway error message, lease error field and handle Spec()",
+          "contract": "the planted value is a substring of none of the collected outputs"
+        }
+      ]
+    },
+    {
+      "id": "27-REQ-10",
+      "title": "Audit constants and import boundary",
+      "rationale": "The three events need stable names on the audit stream, and the gRPC stack gatewayd brings must not reach the static afc binary.",
+      "criteria": [
+        {
+          "id": "27-REQ-10.1",
+          "pattern": "ubiquitous",
+          "system": "internal/audit",
+          "action": "declare EventSandboxCreate, EventSandboxFailed and EventSandboxDestroy in types.go with doc comments listing their metadata keys",
+          "contract": "the constants equal \"hub.sandbox.create\", \"hub.sandbox.failed\" and \"hub.sandbox.destroy\""
+        },
+        {
+          "id": "27-REQ-10.2",
+          "pattern": "ubiquitous",
+          "system": "build",
+          "action": "require the agentkit-go module providing sandbox/gatewayd with Config.Authenticate and PrincipalFromContext, with a replace to ../agentkit-go when it is a separate module, and keep gatewayd, google.golang.org/grpc and internal/sandboxes out of the transitive imports of cmd/afc",
+          "contract": "`go build ./...` succeeds and `go list -deps ./cmd/afc` lists no agentkit-go, google.golang.org/grpc or internal/sandboxes package"
+        }
+      ]
+    }
+  ],
+  "execution_paths": [
+    {
+      "id": "27-PATH-1",
+      "title": "A lease holder creates a box through hub's gateway",
+      "steps": [
+        {
+          "actor": "API caller",
+          "action": "sends POST /api/v1/workspaces/widgets/sandboxes with an API key and reads token and gateway_url from the 201 body"
+        },
+        {
+          "actor": "API caller",
+          "action": "calls gateway.Dial(gateway_url, token) and Create(sandbox.Spec{})"
+        },
+        {
+          "actor": "lease authenticator",
+          "action": "hashes the token, finds the leased, unexpired lease and returns its id as principal"
+        },
+        {
+          "actor": "wrapping backend",
+          "action": "claims the lease, builds the spec from the lease snapshot and profile, and resolves the profile's secrets along the workspace scope chain"
+        },
+        {
+          "actor": "provider",
+          "action": "creates the box from hub's spec with the fixed env plus resolved secrets"
+        },
+        {
+          "actor": "wrapping backend",
+          "action": "moves the lease leased → active with sandbox_id, emits hub.sandbox.create and returns the wrapped sandbox"
+        },
+        {
+          "actor": "API caller",
+          "action": "reads GET one and sees state active and the sandbox_id"
+        }
+      ]
+    },
+    {
+      "id": "27-PATH-2",
+      "title": "A required secret deleted after POST fails the lease at Create",
+      "steps": [
+        {
+          "actor": "API caller",
+          "action": "obtains a lease whose profile requires a secret, then the secret is deleted from the workspace"
+        },
+        {
+          "actor": "API caller",
+          "action": "calls Create through the gateway with the lease token"
+        },
+        {
+          "actor": "wrapping backend",
+          "action": "finds the required name in no tier, moves the lease leased → failed with a secret_missing error and emits hub.sandbox.failed"
+        },
+        {
+          "actor": "API caller",
+          "action": "receives FailedPrecondition naming the key and scopes, and a further RPC on the token answers Unauthenticated"
+        }
+      ]
+    },
+    {
+      "id": "27-PATH-3",
+      "title": "DELETE on an active lease destroys the box",
+      "steps": [
+        {
+          "actor": "API caller",
+          "action": "sends DELETE /api/v1/workspaces/widgets/sandboxes/:id for an active lease"
+        },
+        {
+          "actor": "lease handlers",
+          "action": "call the provider's Destroy(sandbox_id) under a 30-second deadline"
+        },
+        {
+          "actor": "lease handlers",
+          "action": "move the lease active → destroyed with end_reason api, clear the token hash and emit hub.sandbox.destroy"
+        },
+        {
+          "actor": "API caller",
+          "action": "receives 204, the provider's List no longer has the box, and a relayed RPC on the token answers Unauthenticated"
+        }
+      ]
+    },
+    {
+      "id": "27-PATH-4",
+      "title": "The lease holder closes its box through the gateway",
+      "steps": [
+        {
+          "actor": "API caller",
+          "action": "calls Close on the sandbox returned by Create"
+        },
+        {
+          "actor": "wrapping backend",
+          "action": "checks the principal's lease owns the sandbox id and calls the provider's Destroy"
+        },
+        {
+          "actor": "wrapping backend",
+          "action": "moves the lease active → destroyed with end_reason client and emits hub.sandbox.destroy"
+        },
+        {
+          "actor": "API caller",
+          "action": "reads GET one and sees state destroyed with end_reason client"
+        }
+      ]
+    },
+    {
+      "id": "27-PATH-5",
+      "title": "Hub refuses to start with an unsafe gateway configuration",
+      "steps": [
+        {
+          "actor": "operator",
+          "action": "starts af-hub with [sandbox].listen = \"0.0.0.0:8443\" and no tls_cert, tls_key or external_url"
+        },
+        {
+          "actor": "sandbox config loader",
+          "action": "validates the section and collects failures naming sandbox.listen and sandbox.external_url"
+        },
+        {
+          "actor": "af-hub startup",
+          "action": "binds no listener and exits non-zero with the collected message"
+        }
+      ]
+    }
+  ],
+  "external_apis": [
+    {
+      "package": "github.com/agent-fox-dev/agentkit-go",
+      "version": "sibling checkout via replace => ../agentkit-go",
+      "verified": false,
+      "symbols": [
+        {
+          "name": "gatewayd.New",
+          "import_path": "github.com/agent-fox-dev/agentkit-go/sandbox/gatewayd",
+          "signature": "func New(cfg gatewayd.Config) (*gatewayd.Server, error)",
+          "notes": "Taken from the source PRD; not readable from this repository."
+        },
+        {
+          "name": "gatewayd.Config",
+          "import_path": "github.com/agent-fox-dev/agentkit-go/sandbox/gatewayd",
+          "signature": "type Config struct { Backend sandbox.Provider; Tokens …; Authenticate func(ctx context.Context, token string) (string, bool); TLS *tls.Config; NetworkModes []string; MaxSandboxes int; MaxTTL time.Duration }",
+          "notes": "Authenticate is pending in agentkit-go; used instead of Tokens when set."
+        },
+        {
+          "name": "gatewayd.PrincipalFromContext",
+          "import_path": "github.com/agent-fox-dev/agentkit-go/sandbox/gatewayd",
+          "signature": "func PrincipalFromContext(ctx context.Context) (string, bool)",
+          "notes": "Pending in agentkit-go; return shape assumed."
+        },
+        {
+          "name": "(*gatewayd.Server).Serve",
+          "import_path": "github.com/agent-fox-dev/agentkit-go/sandbox/gatewayd",
+          "signature": "func (s *Server) Serve(l net.Listener) error"
+        },
+        {
+          "name": "sandbox.Provider",
+          "import_path": "github.com/agent-fox-dev/agentkit-go/sandbox",
+          "signature": "interface { Create(ctx context.Context, s Spec) (Sandbox, error); List(ctx context.Context) ([]Sandbox, error); Destroy(ctx context.Context, id string) error; Capabilities() Capabilities; Reap(ctx context.Context) … }",
+          "notes": "Reap's return shape unverified."
+        },
+        {
+          "name": "sandbox.Sandbox",
+          "import_path": "github.com/agent-fox-dev/agentkit-go/sandbox",
+          "signature": "interface { ID() string; Spec() Spec; Close() error; … Agent-protocol methods }"
+        },
+        {
+          "name": "sandbox.Spec",
+          "import_path": "github.com/agent-fox-dev/agentkit-go/sandbox",
+          "signature": "type Spec struct { Image string; Env map[string]string; Network string; Resources Resources; TTL time.Duration; RequireLandlock bool; Labels map[string]string; Workdir string }"
+        },
+        {
+          "name": "sandbox.ErrNotFound",
+          "import_path": "github.com/agent-fox-dev/agentkit-go/sandbox",
+          "signature": "var ErrNotFound error",
+          "notes": "Assumed provider not-found sentinel, tested with errors.Is."
+        },
+        {
+          "name": "gateway.Dial",
+          "import_path": "github.com/agent-fox-dev/agentkit-go/sandbox/gateway",
+          "signature": "func Dial(url string, opts gateway.Options) (sandbox.Provider, error)",
+          "notes": "Tests only; Options{Token string}; http:// on loopback assumed accepted."
+        },
+        {
+          "name": "local.Unisolated",
+          "import_path": "github.com/agent-fox-dev/agentkit-go/sandbox/local",
+          "signature": "func Unisolated(…) sandbox.Provider",
+          "notes": "Tests only; constructor shape unverified."
+        }
+      ]
+    },
+    {
+      "package": "hub (this repository)",
+      "version": "workspace",
+      "verified": true,
+      "symbols": [
+        {
+          "name": "(*secrets.Store).GetSecretValue",
+          "import_path": "github.com/agent-fox-dev/hub/internal/secrets",
+          "signature": "func (s *Store) GetSecretValue(ownerType, ownerID, key string) (string, error)",
+          "notes": "Returns *secrets.NotFoundError{Key} when missing; key compared case-insensitively."
+        },
+        {
+          "name": "audit.Emitter",
+          "import_path": "github.com/agent-fox-dev/hub/internal/audit",
+          "signature": "type Emitter interface { Emit(ctx context.Context, event HubEvent) error }"
+        }
+      ]
+    }
+  ]
+}

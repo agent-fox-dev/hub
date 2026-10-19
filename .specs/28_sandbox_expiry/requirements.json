@@ -1,0 +1,721 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/requirements.v2.json",
+  "spec_id": "28",
+  "spec_name": "sandbox_expiry",
+  "schema_version": 2,
+  "introduction": "Sandbox expiry puts a time limit on every sandbox lease hub issues: an unused lease lapses at its lease deadline, a box past its lease's expires_at is destroyed by a periodic sweep, hub destroys active boxes at shutdown and recovers leases a crash left active at the next start, terminal leases are kept 24 hours and then pruned, and three Prometheus metrics report running boxes, Create outcomes and lease durations.",
+  "glossary": {
+    "expiry path": "The ending used for time-based endings (late Create and sweep steps 2 and 3). It sets end_reason expired, revokes the token and emits exactly one hub.sandbox.expire event.",
+    "feature enabled": "The [sandbox] section is present and sandboxes.Init returned a non-nil service.",
+    "lease deadline": "The lease_expires_at value of a lease: the earlier of created_at + lease_timeout and expires_at. A leased lease that gets no Create by this time lapses. For rows older than the column (NULL), expires_at is used instead.",
+    "lease principal": "The lease ID that gatewayd attaches to a request's context after the lease authenticator accepts its token; read with gatewayd.PrincipalFromContext.",
+    "orphaned box": "A box listed by the provider whose ID equals the sandbox_id of a terminal lease in this hub's table, or whose hub.lease label names such a lease.",
+    "restart recovery": "The start-up step that destroys the box of every lease left active by an earlier hub process and ends the lease as destroyed with end_reason restart.",
+    "shutdown mode": "The state hub enters when server.Start() returns; from then on Creates are refused with Unavailable and every lease ending carries end_reason shutdown.",
+    "sweep": "The single serialised function that runs provider reap, lapses unused leases, destroys overdue boxes, removes orphaned boxes, prunes old leases and recalibrates the active gauge, in that order.",
+    "terminal lease": "A lease in state destroyed, expired or failed."
+  },
+  "requirements": [
+    {
+      "id": "28-REQ-1",
+      "title": "lease_timeout and reap_interval configuration",
+      "rationale": "A bad deadline setting must stop hub at start rather than produce leases that never lapse or a reaper that spins.",
+      "criteria": [
+        {
+          "id": "28-REQ-1.1",
+          "pattern": "event_driven",
+          "condition": "the [sandbox] section is loaded without lease_timeout or reap_interval",
+          "system": "sandbox config validator",
+          "action": "set LeaseTimeout to 5 minutes and ReapInterval to 10 minutes on the validated configuration as time.Duration values",
+          "contract": "Validated.LeaseTimeout == 5*time.Minute and Validated.ReapInterval == 10*time.Minute"
+        },
+        {
+          "id": "28-REQ-1.2",
+          "pattern": "event_driven",
+          "condition": "the [sandbox] section sets lease_timeout and reap_interval to valid Go duration strings",
+          "system": "sandbox config validator",
+          "action": "decode both keys, treat them as recognised keys that are never reported as unknown, and store the parsed durations, accepting the boundary values lease_timeout = 1s, lease_timeout = max_ttl, reap_interval = 10s and reap_interval = 1h",
+          "contract": "Validate returns a nil error and the parsed durations"
+        },
+        {
+          "id": "28-REQ-1.3",
+          "pattern": "unwanted",
+          "condition": "lease_timeout cannot be parsed as a Go duration, is below 1s, or is above max_ttl",
+          "system": "sandbox config validator",
+          "action": "report a failure naming sandbox.lease_timeout, joined with every other [sandbox] validation failure, so hub refuses to start",
+          "contract": "Validate returns a non-nil error whose text contains \"sandbox.lease_timeout\" and every other collected failure"
+        },
+        {
+          "id": "28-REQ-1.4",
+          "pattern": "unwanted",
+          "condition": "reap_interval cannot be parsed as a Go duration, is below 10s, or is above 1h",
+          "system": "sandbox config validator",
+          "action": "report a failure naming sandbox.reap_interval, joined with every other [sandbox] validation failure, so hub refuses to start",
+          "contract": "Validate returns a non-nil error whose text contains \"sandbox.reap_interval\" and every other collected failure"
+        },
+        {
+          "id": "28-REQ-1.5",
+          "pattern": "event_driven",
+          "condition": "the configuration file has no [sandbox] section",
+          "system": "sandbox config loader",
+          "action": "read neither lease_timeout nor reap_interval and report no failure for them",
+          "contract": "sandboxes.Init returns a nil service and a nil error"
+        }
+      ]
+    },
+    {
+      "id": "28-REQ-2",
+      "title": "Lease deadline column, field and capacity",
+      "rationale": "A lease must carry a fixed deadline that callers can see and that capacity respects without waiting for a sweep.",
+      "criteria": [
+        {
+          "id": "28-REQ-2.1",
+          "pattern": "event_driven",
+          "condition": "POST /workspaces/:slug/sandboxes succeeds",
+          "system": "lease service",
+          "action": "store lease_expires_at as the earlier of created_at + lease_timeout and expires_at, written with apikit.FormatUTC",
+          "contract": "HTTP 201 body field lease_expires_at equals FormatUTC(min(created_at + lease_timeout, expires_at))"
+        },
+        {
+          "id": "28-REQ-2.2",
+          "pattern": "event_driven",
+          "condition": "hub starts, whether or not the feature is enabled",
+          "system": "lease schema migration",
+          "action": "add a nullable TEXT column lease_expires_at to sandbox_leases right after the lease schema is created, checking PRAGMA table_info first so that a second run changes nothing, leaving existing rows NULL, and doing nothing on a nil database",
+          "contract": "the migration returns nil on first and repeated runs; pre-existing rows read lease_expires_at NULL"
+        },
+        {
+          "id": "28-REQ-2.3",
+          "pattern": "ubiquitous",
+          "system": "lease renderer",
+          "action": "include a lease_expires_at key in every lease representation (POST 201 body, GET one, the workspace list, the all=true list and the admin list), holding an RFC 3339 string or null for a row with a NULL column",
+          "contract": "each lease JSON object has the key lease_expires_at with a string or null value; the exact-key-set test of spec 26 lists it"
+        },
+        {
+          "id": "28-REQ-2.4",
+          "pattern": "ubiquitous",
+          "system": "lease store",
+          "action": "for any lease and any sequence of transitions applied to it (Create, DELETE, Close, sweep, shutdown, restart recovery), keep lease_expires_at equal to the value written when the lease was issued"
+        },
+        {
+          "id": "28-REQ-2.5",
+          "pattern": "ubiquitous",
+          "system": "lease capacity count",
+          "action": "exclude from the live-lease count every leased lease whose lease_expires_at is at or before now, including a deadline exactly equal to now, in addition to the exclusions spec 26 already makes",
+          "contract": "a POST that would exceed max_sandboxes only because of such leases is accepted with HTTP 201"
+        }
+      ]
+    },
+    {
+      "id": "28-REQ-3",
+      "title": "Deadlines enforced at hub's gateway",
+      "rationale": "A token must never outlive its deadline because of how often the reaper runs.",
+      "criteria": [
+        {
+          "id": "28-REQ-3.1",
+          "pattern": "complex_event",
+          "condition": "a Create arrives at hub's gateway for a lease in state leased",
+          "guard": "the lease's lease_expires_at, or its expires_at when lease_expires_at is NULL, is at or before now",
+          "system": "gateway backend",
+          "action": "refuse the Create without calling the provider and, in the same call, end the lease through the expiry path as expired with end_reason expired",
+          "contract": "gRPC FailedPrecondition whose message contains \"expired\"; a GET of the lease immediately after reads state expired and end_reason expired; exactly one hub.sandbox.expire event with state expired; provider Create count unchanged"
+        },
+        {
+          "id": "28-REQ-3.2",
+          "pattern": "unwanted",
+          "condition": "a request presents the token of a lease whose expires_at is at or before now, in any lease state",
+          "system": "lease authenticator",
+          "action": "reject the token",
+          "contract": "the RPC fails with gRPC Unauthenticated"
+        },
+        {
+          "id": "28-REQ-3.3",
+          "pattern": "event_driven",
+          "condition": "a lease has been ended through the expiry path",
+          "system": "lease authenticator",
+          "action": "reject the lease's token because its hash was cleared by the ending",
+          "contract": "every later RPC with that token fails with gRPC Unauthenticated"
+        },
+        {
+          "id": "28-REQ-3.4",
+          "pattern": "unwanted",
+          "condition": "the lease leaves state leased (expired by a sweep or deleted) while the provider is creating its box",
+          "system": "gateway backend",
+          "action": "destroy the box it just created and keep the terminal state and end_reason the lease already has",
+          "contract": "gRPC FailedPrecondition naming the lease's current state; provider Destroy called once with the new box's ID; the lease's state and end_reason are unchanged by the Create"
+        },
+        {
+          "id": "28-REQ-3.5",
+          "pattern": "ubiquitous",
+          "system": "gateway backend",
+          "action": "for any interleaving of a late Create and a sweep on the same lapsed lease, end the lease exactly once",
+          "contract": "exactly one hub.sandbox.expire event for the lease and one state change to expired"
+        }
+      ]
+    },
+    {
+      "id": "28-REQ-4",
+      "title": "The sweep",
+      "rationale": "One idempotent, serialised function enforces every time-based ending and cleans up what other paths leave behind.",
+      "criteria": [
+        {
+          "id": "28-REQ-4.1",
+          "pattern": "event_driven",
+          "condition": "a sweep runs",
+          "system": "sweeper",
+          "action": "read the time from hub's injected clock and run, in order, provider Reap, the lapse of unused leases, the destruction of overdue boxes, the removal of orphaned boxes, the pruning of old leases and the recalibration of the active gauge",
+          "contract": "the recording provider observes Reap before List; pruning and recalibration happen after the endings of the same sweep"
+        },
+        {
+          "id": "28-REQ-4.2",
+          "pattern": "unwanted",
+          "condition": "a sweep step returns an error",
+          "system": "sweeper",
+          "action": "log the error with slog and still run every later step",
+          "contract": "the sweep function returns after all six steps; later steps' effects are observable"
+        },
+        {
+          "id": "28-REQ-4.3",
+          "pattern": "event_driven",
+          "condition": "a sweep finds a lease in state leased whose lease_expires_at, or expires_at when lease_expires_at is NULL, is at or before now",
+          "system": "sweeper",
+          "action": "end the lease through the expiry path as expired with end_reason expired, without calling the provider",
+          "contract": "the lease reads expired with end_reason expired; exactly one hub.sandbox.expire event with metadata state expired; its token fails with Unauthenticated"
+        },
+        {
+          "id": "28-REQ-4.4",
+          "pattern": "event_driven",
+          "condition": "a sweep finds a lease in state active whose expires_at is at or before now",
+          "system": "sweeper",
+          "action": "call provider Destroy for its sandbox_id and then end the lease through the expiry path as destroyed with end_reason expired",
+          "contract": "the provider's List no longer contains the box; the lease reads destroyed with end_reason expired; exactly one hub.sandbox.expire event with metadata state destroyed and the sandbox_id; no hub.sandbox.destroy event"
+        },
+        {
+          "id": "28-REQ-4.5",
+          "pattern": "unwanted",
+          "condition": "provider Destroy fails for an overdue active lease during a sweep",
+          "system": "sweeper",
+          "action": "still end the lease as destroyed with end_reason expired and clear its token hash, and log the lease ID, the sandbox ID and the error text after the internal/sandboxes URL-userinfo scrubber",
+          "contract": "the lease reads destroyed; its token fails with Unauthenticated; one log record carries lease_id, sandbox_id and the scrubbed error"
+        },
+        {
+          "id": "28-REQ-4.6",
+          "pattern": "event_driven",
+          "condition": "the sweep's orphan step lists the provider's boxes",
+          "system": "sweeper",
+          "action": "call Destroy for each listed box whose ID equals the sandbox_id of a terminal lease in this hub's table or, when the listing exposes labels, whose hub.lease label names such a lease, and never call Destroy for a box of a leased or active lease, a box without a hub.lease label, or a box whose lease ID this hub does not know",
+          "contract": "provider Destroy is called exactly for the matched box IDs"
+        },
+        {
+          "id": "28-REQ-4.7",
+          "pattern": "unwanted",
+          "condition": "a sweep is requested while another sweep is in progress",
+          "system": "sweeper",
+          "action": "serialise the sweeps so that no two sweeps run at the same time, and skip without emitting any event every lease that another path has already ended",
+          "contract": "the maximum number of concurrently running sweeps observed is 1; no lease receives a second ending event"
+        },
+        {
+          "id": "28-REQ-4.8",
+          "pattern": "unwanted",
+          "condition": "a provider call (Reap, List or Destroy) made by the sweep does not return within 30 seconds",
+          "system": "sweeper",
+          "action": "cancel that call's context at 30 seconds, log the timeout, and continue with the next item and step",
+          "contract": "the sweep returns within the per-call limit (configurable to a short value in tests) and the later steps still take effect"
+        }
+      ]
+    },
+    {
+      "id": "28-REQ-5",
+      "title": "Restart recovery and the reaper loop",
+      "rationale": "Boxes from an earlier process cannot be relayed to, and expiry must run without any caller.",
+      "criteria": [
+        {
+          "id": "28-REQ-5.1",
+          "pattern": "event_driven",
+          "condition": "hub starts with the feature enabled",
+          "system": "sandbox start-up",
+          "action": "after the lease schema and migration, the audit emitter and the metrics exist and before hub's gateway accepts a connection, call provider Destroy for the box of every lease in state active and end each such lease as destroyed with end_reason restart",
+          "contract": "each such lease reads destroyed with end_reason restart before the gateway listener accepts; one hub.sandbox.destroy event per lease with reason restart, ActorType system and empty ActorID"
+        },
+        {
+          "id": "28-REQ-5.2",
+          "pattern": "unwanted",
+          "condition": "provider Destroy fails during restart recovery",
+          "system": "sandbox start-up",
+          "action": "log the scrubbed error, still end the lease as destroyed with end_reason restart, and continue starting",
+          "contract": "the lease reads destroyed; hub start-up proceeds; a later sweep's orphan step calls Destroy for the box"
+        },
+        {
+          "id": "28-REQ-5.3",
+          "pattern": "event_driven",
+          "condition": "restart recovery has finished",
+          "system": "sandbox start-up",
+          "action": "run one sweep, then run a sweep every reap_interval until shutdown begins (the reaper context is cancelled)",
+          "contract": "with an injected ticker, one sweep per tick is observed and none after cancellation"
+        },
+        {
+          "id": "28-REQ-5.4",
+          "pattern": "unwanted",
+          "condition": "restart recovery or a sweep returns an error at start",
+          "system": "sandbox start-up",
+          "action": "log the error and return it to the caller instead of terminating the process",
+          "contract": "hub start-up continues; no os.Exit or log.Fatal is called from internal/sandboxes"
+        },
+        {
+          "id": "28-REQ-5.5",
+          "pattern": "event_driven",
+          "condition": "gatewayd calls Reap on hub's backend",
+          "system": "gateway backend",
+          "action": "run the sweep when the context carries no lease principal, and return nil without calling the provider or the sweep when it carries one",
+          "contract": "Reap returns nil in both cases; the sweep count increases only for the principal-less call"
+        },
+        {
+          "id": "28-REQ-5.6",
+          "pattern": "state_driven",
+          "condition": "the feature is disabled",
+          "system": "sandbox start-up",
+          "action": "run no restart recovery, no sweep and no reaper loop, and leave every sandbox_leases row unchanged",
+          "contract": "the lease table is identical before and after start"
+        }
+      ]
+    },
+    {
+      "id": "28-REQ-6",
+      "title": "Retention of terminal leases",
+      "rationale": "An ended lease must stay visible long enough to explain what happened to it, and no longer.",
+      "criteria": [
+        {
+          "id": "28-REQ-6.1",
+          "pattern": "state_driven",
+          "condition": "a terminal lease ended 24 hours or less before now, where ended means ended_at or updated_at when ended_at is NULL",
+          "system": "lease API",
+          "action": "keep the lease readable through GET one, GET /workspaces/:slug/sandboxes?all=true and the admin list, including after a sweep, and treat a lease that ended exactly 24 hours before now as still retained",
+          "contract": "GET one answers HTTP 200 with the lease; the all=true and admin lists contain it"
+        },
+        {
+          "id": "28-REQ-6.2",
+          "pattern": "event_driven",
+          "condition": "a sweep runs and a terminal lease ended more than 24 hours before now",
+          "system": "sweeper",
+          "action": "delete the lease row",
+          "contract": "GET one for the lease answers HTTP 404; the all=true and admin lists no longer contain it"
+        },
+        {
+          "id": "28-REQ-6.3",
+          "pattern": "ubiquitous",
+          "system": "sweeper",
+          "action": "for any lease in state leased or active, never delete its row, whatever its age"
+        }
+      ]
+    },
+    {
+      "id": "28-REQ-7",
+      "title": "Shutdown",
+      "rationale": "Nothing hub leased may keep running after hub stops, and a hung provider must not block termination.",
+      "criteria": [
+        {
+          "id": "28-REQ-7.1",
+          "pattern": "event_driven",
+          "condition": "server.Start() returns",
+          "system": "af-hub main",
+          "action": "run the sandbox shutdown before the audit database and the SQLite database close, bounded by a 20-second limit",
+          "contract": "the shutdown function returns within 20 seconds; both databases are still open while it runs"
+        },
+        {
+          "id": "28-REQ-7.2",
+          "pattern": "state_driven",
+          "condition": "hub is in shutdown mode",
+          "system": "gateway backend",
+          "action": "refuse every new Create without calling the provider, and end every lease ended for any reason with end_reason shutdown",
+          "contract": "Create fails with gRPC Unavailable; provider Create count unchanged; leases ended in this mode read end_reason shutdown"
+        },
+        {
+          "id": "28-REQ-7.3",
+          "pattern": "event_driven",
+          "condition": "the sandbox shutdown runs",
+          "system": "sandbox shutdown",
+          "action": "cancel the reaper loop and wait for any sweep in progress to return, then call provider Destroy (concurrently allowed) for the box of every active lease and end each as destroyed with end_reason shutdown, then stop hub's gateway through gatewayd.Server's stop",
+          "contract": "each active lease reads destroyed with end_reason shutdown; one hub.sandbox.destroy event per lease with reason shutdown, ActorType system and empty ActorID; no sweep starts after shutdown begins"
+        },
+        {
+          "id": "28-REQ-7.4",
+          "pattern": "ubiquitous",
+          "system": "sandbox shutdown",
+          "action": "leave every lease in state leased unchanged, including its token hash and deadlines",
+          "contract": "leased rows are byte-identical before and after shutdown"
+        },
+        {
+          "id": "28-REQ-7.5",
+          "pattern": "unwanted",
+          "condition": "provider Destroy hangs so the 20-second limit runs out",
+          "system": "sandbox shutdown",
+          "action": "return when the limit expires and leave the leases whose ending has not completed in state active for restart recovery",
+          "contract": "shutdown returns within the limit (configurable to a short value in tests); unfinished leases read active"
+        },
+        {
+          "id": "28-REQ-7.6",
+          "pattern": "unwanted",
+          "condition": "the sandbox shutdown is called a second time, or is called while the feature is disabled",
+          "system": "sandbox shutdown",
+          "action": "return without calling the provider and without changing any lease",
+          "contract": "shutdown returns nil; provider call counts and the lease table are unchanged"
+        }
+      ]
+    },
+    {
+      "id": "28-REQ-8",
+      "title": "Events and end reasons",
+      "rationale": "Each ending must produce exactly one audit event that says why it happened, and none may leak a secret.",
+      "criteria": [
+        {
+          "id": "28-REQ-8.1",
+          "pattern": "ubiquitous",
+          "system": "audit package",
+          "action": "define EventSandboxExpire = \"hub.sandbox.expire\" in internal/audit/types.go with a doc comment listing its metadata keys lease_id, state and sandbox_id",
+          "contract": "audit.EventSandboxExpire == \"hub.sandbox.expire\""
+        },
+        {
+          "id": "28-REQ-8.2",
+          "pattern": "event_driven",
+          "condition": "the expiry path ends a lease",
+          "system": "sandbox event emitter",
+          "action": "emit one hub.sandbox.expire event with ResourceType sandbox, ResourceID the lease ID, Action expire, ActorType system, empty ActorID, Workspace the slug, and Metadata lease_id, state (expired or destroyed) and sandbox_id only when a box was destroyed",
+          "contract": "one audit.HubEvent with these fields"
+        },
+        {
+          "id": "28-REQ-8.3",
+          "pattern": "ubiquitous",
+          "system": "sandbox event emitter",
+          "action": "emit no hub.sandbox.destroy for an expiry-path ending, and emit hub.sandbox.destroy with reason shutdown or restart and ActorType system for shutdown and restart endings",
+          "contract": "per ending exactly one of hub.sandbox.expire or hub.sandbox.destroy"
+        },
+        {
+          "id": "28-REQ-8.4",
+          "pattern": "unwanted",
+          "condition": "the conditional ending update affects no row because another path already ended the lease",
+          "system": "sandbox event emitter",
+          "action": "emit no event and record no metric for that attempt",
+          "contract": "event count and metric values are unchanged by the skipped attempt"
+        },
+        {
+          "id": "28-REQ-8.5",
+          "pattern": "unwanted",
+          "condition": "the emitter is nil or Emit returns an error",
+          "system": "sandbox event emitter",
+          "action": "skip emission when nil, log an Emit error with slog.Error, and still complete the ending",
+          "contract": "the lease reads its terminal state; the caller receives the same result as with a working emitter"
+        },
+        {
+          "id": "28-REQ-8.6",
+          "pattern": "ubiquitous",
+          "system": "sandbox expiry",
+          "action": "for any event, log line or lease field written by this spec, contain no secret value, environment value, lease token or token hash, and pass provider error text through the internal/sandboxes URL-userinfo scrubber before logging it",
+          "contract": "captured events, log records and lease rows contain none of the injected secret values, env values, tokens or token hashes; logged provider error text has URL userinfo removed"
+        }
+      ]
+    },
+    {
+      "id": "28-REQ-9",
+      "title": "Sandbox metrics",
+      "rationale": "Operators need to see how many boxes run, how Creates turn out and how long leases last.",
+      "criteria": [
+        {
+          "id": "28-REQ-9.1",
+          "pattern": "event_driven",
+          "condition": "audit.NewMetrics is called",
+          "system": "audit metrics",
+          "action": "register afhub_sandboxes_active (gauge, label workspace, pre-initialised with label \"\"), afhub_sandbox_creates_total (counter, label result, pre-initialised at zero for created and failed) and afhub_sandbox_lease_seconds (histogram, no labels, buckets 60, 300, 600, 1200, 1800, 3600, 7200, 14400, 28800) on the metrics registry",
+          "contract": "GET /metrics lists all three names before any lease exists"
+        },
+        {
+          "id": "28-REQ-9.2",
+          "pattern": "event_driven",
+          "condition": "a lease moves from leased to active, or an ending changes a lease that was active",
+          "system": "sandbox metrics recorder",
+          "action": "increment afhub_sandboxes_active for the lease's workspace by one on activation and decrement it by one on that ending",
+          "contract": "the workspace's gauge value changes by +1 or -1"
+        },
+        {
+          "id": "28-REQ-9.3",
+          "pattern": "event_driven",
+          "condition": "hub starts with the feature enabled and restart recovery has finished, or a sweep reaches its last step",
+          "system": "sandbox metrics recorder",
+          "action": "call Reset() on afhub_sandboxes_active and then Set one value per workspace from a GROUP BY count of active leases",
+          "contract": "the gauge equals the per-workspace count of active rows"
+        },
+        {
+          "id": "28-REQ-9.4",
+          "pattern": "event_driven",
+          "condition": "the gateway accepts a Create for a leased lease",
+          "system": "sandbox metrics recorder",
+          "action": "increment afhub_sandbox_creates_total once, with result created when the lease becomes active and result failed on a provider error, secret_missing, or a lease that left leased while its box was being created",
+          "contract": "exactly one of the two result series increases by 1"
+        },
+        {
+          "id": "28-REQ-9.5",
+          "pattern": "unwanted",
+          "condition": "a Create is refused before it is accepted (unknown token, second Create, missed deadline, shutdown mode)",
+          "system": "sandbox metrics recorder",
+          "action": "leave afhub_sandbox_creates_total unchanged",
+          "contract": "both result series keep their values"
+        },
+        {
+          "id": "28-REQ-9.6",
+          "pattern": "event_driven",
+          "condition": "a lease becomes destroyed for any reason",
+          "system": "sandbox metrics recorder",
+          "action": "observe ended_at minus created_at in seconds once on afhub_sandbox_lease_seconds",
+          "contract": "the histogram's sample count increases by 1 and its sum by the lease's duration"
+        },
+        {
+          "id": "28-REQ-9.7",
+          "pattern": "unwanted",
+          "condition": "the sandbox code is given a nil *audit.Metrics",
+          "system": "sandbox metrics recorder",
+          "action": "record nothing and continue without panicking",
+          "contract": "transitions and sweeps complete with the same results as with metrics"
+        },
+        {
+          "id": "28-REQ-9.8",
+          "pattern": "ubiquitous",
+          "system": "sandbox metrics recorder",
+          "action": "for any sequence of activations, endings and sweeps run one at a time, keep afhub_sandboxes_active equal to the per-workspace count of active leases after each step"
+        }
+      ]
+    }
+  ],
+  "execution_paths": [
+    {
+      "id": "28-PATH-1",
+      "title": "An unused lease lapses at its lease deadline",
+      "steps": [
+        {
+          "actor": "API client",
+          "action": "submits POST /workspaces/:slug/sandboxes and receives 201 with lease_expires_at"
+        },
+        {
+          "actor": "injected clock",
+          "action": "advances past lease_expires_at"
+        },
+        {
+          "actor": "reaper loop",
+          "action": "runs a sweep that ends the leased lease through the expiry path as expired"
+        },
+        {
+          "actor": "audit emitter",
+          "action": "records one hub.sandbox.expire event with state expired"
+        },
+        {
+          "actor": "API client",
+          "action": "reads GET the lease and sees state expired with end_reason expired; its token fails at the gateway with Unauthenticated"
+        }
+      ]
+    },
+    {
+      "id": "28-PATH-2",
+      "title": "A box past expires_at is destroyed by the sweep",
+      "steps": [
+        {
+          "actor": "API client",
+          "action": "leases a sandbox and sends Create through hub's gateway with the lease token"
+        },
+        {
+          "actor": "gateway backend",
+          "action": "creates the box, moves the lease to active, increments afhub_sandboxes_active and afhub_sandbox_creates_total{result=created}"
+        },
+        {
+          "actor": "injected clock",
+          "action": "advances past the lease's expires_at"
+        },
+        {
+          "actor": "sweeper",
+          "action": "calls provider Destroy for the sandbox_id and ends the lease as destroyed with end_reason expired"
+        },
+        {
+          "actor": "audit emitter",
+          "action": "records one hub.sandbox.expire event with state destroyed and the sandbox_id"
+        },
+        {
+          "actor": "metrics registry",
+          "action": "shows afhub_sandboxes_active at 0 for the workspace and one afhub_sandbox_lease_seconds observation"
+        }
+      ]
+    },
+    {
+      "id": "28-PATH-3",
+      "title": "A late Create expires the lease on the spot",
+      "steps": [
+        {
+          "actor": "API client",
+          "action": "leases a sandbox"
+        },
+        {
+          "actor": "injected clock",
+          "action": "advances past lease_expires_at with no sweep run"
+        },
+        {
+          "actor": "API client",
+          "action": "sends Create through hub's gateway with the lease token"
+        },
+        {
+          "actor": "gateway backend",
+          "action": "refuses with FailedPrecondition naming expired, without calling the provider, and ends the lease as expired"
+        },
+        {
+          "actor": "API client",
+          "action": "reads GET the lease and sees state expired"
+        }
+      ]
+    },
+    {
+      "id": "28-PATH-4",
+      "title": "Shutdown destroys every active box",
+      "steps": [
+        {
+          "actor": "af-hub main",
+          "action": "sees server.Start() return and calls the sandbox shutdown"
+        },
+        {
+          "actor": "sandbox shutdown",
+          "action": "enters shutdown mode, cancels the reaper and waits for the running sweep"
+        },
+        {
+          "actor": "sandbox shutdown",
+          "action": "calls provider Destroy for each active lease's box and ends each as destroyed with end_reason shutdown"
+        },
+        {
+          "actor": "audit emitter",
+          "action": "records hub.sandbox.destroy with reason shutdown per lease"
+        },
+        {
+          "actor": "sandbox shutdown",
+          "action": "stops hub's gateway and returns within 20 seconds before the databases close"
+        }
+      ]
+    },
+    {
+      "id": "28-PATH-5",
+      "title": "Restart recovery after a crash",
+      "steps": [
+        {
+          "actor": "af-hub main",
+          "action": "starts with lease rows left active by a crashed process"
+        },
+        {
+          "actor": "sandbox start-up",
+          "action": "calls provider Destroy for each active lease's box and ends each as destroyed with end_reason restart"
+        },
+        {
+          "actor": "sandbox start-up",
+          "action": "recalibrates afhub_sandboxes_active and runs one sweep"
+        },
+        {
+          "actor": "hub gateway",
+          "action": "starts accepting connections only after recovery has finished"
+        }
+      ]
+    },
+    {
+      "id": "28-PATH-6",
+      "title": "A terminal lease is retained for 24 hours and then pruned",
+      "steps": [
+        {
+          "actor": "API client",
+          "action": "deletes a lease so it reads destroyed"
+        },
+        {
+          "actor": "API client",
+          "action": "reads GET the lease and GET ?all=true 23 hours later and sees the lease"
+        },
+        {
+          "actor": "injected clock",
+          "action": "advances past 24 hours after ended_at"
+        },
+        {
+          "actor": "sweeper",
+          "action": "deletes the terminal lease row"
+        },
+        {
+          "actor": "API client",
+          "action": "reads GET the lease and receives HTTP 404"
+        }
+      ]
+    }
+  ],
+  "external_apis": [
+    {
+      "package": "github.com/agent-fox-dev/agentkit-go (sandbox, sandbox/gatewayd)",
+      "version": "unpinned (sibling checkout, not yet in go.mod)",
+      "verified": false,
+      "symbols": [
+        {
+          "name": "sandbox.Provider.Reap",
+          "import_path": "github.com/agent-fox-dev/agentkit-go/sandbox",
+          "signature": "Reap(ctx context.Context) error",
+          "notes": "Return shape unverified; destroys boxes past their TTL."
+        },
+        {
+          "name": "sandbox.Provider.List",
+          "import_path": "github.com/agent-fox-dev/agentkit-go/sandbox",
+          "signature": "List(ctx context.Context) ([]Sandbox, error)",
+          "notes": "Each element exposes ID() and, through Spec(), Labels map[string]string. If labels are not exposed, the orphan step matches by sandbox_id only."
+        },
+        {
+          "name": "sandbox.Provider.Destroy",
+          "import_path": "github.com/agent-fox-dev/agentkit-go/sandbox",
+          "signature": "Destroy(ctx context.Context, id string) error",
+          "notes": "errors.Is(err, sandbox.ErrNotFound) is treated as success, as in spec 27."
+        },
+        {
+          "name": "gatewayd.PrincipalFromContext",
+          "import_path": "github.com/agent-fox-dev/agentkit-go/sandbox/gatewayd",
+          "signature": "func PrincipalFromContext(ctx context.Context) (string, bool)",
+          "notes": "Pending upstream; spec 27 depends on it."
+        },
+        {
+          "name": "(*gatewayd.Server).Shutdown",
+          "import_path": "github.com/agent-fox-dev/agentkit-go/sandbox/gatewayd",
+          "signature": "func (s *Server) Shutdown(ctx context.Context) error",
+          "notes": "Assumed to stop serving and close boxes through the backend."
+        }
+      ]
+    },
+    {
+      "package": "github.com/agent-fox-dev/apikit",
+      "version": "sibling ../apikit",
+      "verified": false,
+      "symbols": [
+        {
+          "name": "(*Server).Start",
+          "import_path": "github.com/agent-fox-dev/apikit",
+          "signature": "func (s *Server) Start() error",
+          "notes": "Blocks while serving; whether it returns on SIGTERM is unverified."
+        },
+        {
+          "name": "FormatUTC",
+          "import_path": "github.com/agent-fox-dev/apikit",
+          "signature": "func FormatUTC(t time.Time) string",
+          "notes": "Call site internal/carrypatch/wire.go:250."
+        }
+      ]
+    },
+    {
+      "package": "github.com/prometheus/client_golang",
+      "version": "v1.25.0",
+      "verified": false,
+      "symbols": [
+        {
+          "name": "prometheus.NewHistogram",
+          "import_path": "github.com/prometheus/client_golang/prometheus",
+          "signature": "func NewHistogram(opts HistogramOpts) Histogram",
+          "notes": "Standard v1 API; not yet used in the repository. NewGaugeVec, NewCounterVec, Reset and WithLabelValues are used in internal/audit/metrics.go."
+        },
+        {
+          "name": "Histogram.Observe",
+          "import_path": "github.com/prometheus/client_golang/prometheus",
+          "signature": "Observe(float64)"
+        }
+      ]
+    }
+  ]
+}

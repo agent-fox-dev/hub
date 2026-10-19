@@ -1,0 +1,425 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/tasks.v2.json",
+  "spec_id": "29",
+  "spec_name": "sandbox_gateway_provider",
+  "schema_version": 2,
+  "test_commands": {
+    "all_tests": "make test",
+    "linter": "make lint",
+    "spec_tests": "go test ./internal/sandboxes/... -count=1"
+  },
+  "dependencies": [
+    {
+      "spec": "25_sandbox_profiles",
+      "reason": "Provides Config, Validate/Validated, the Podman-only ProviderFactory seam, the probe and capability checks (25-REQ-5.x) and the start-up log line that this spec modifies; 25-REQ-2.2 (gateway refused) is replaced here"
+    },
+    {
+      "spec": "26_sandbox_leases",
+      "reason": "Provides the lease store, lease API and lease representation that the no-leak and outage tests inspect"
+    },
+    {
+      "spec": "27_sandbox_gateway",
+      "reason": "Provides hub's gatewayd server, wrapping backend, scrubber, loopback rule and not-found handling that gain the remote-specific behaviour"
+    },
+    {
+      "spec": "28_sandbox_expiry",
+      "reason": "Provides the expiry sweep and shutdown destroy step that run through the remote client; the client is closed after that step"
+    }
+  ],
+  "tasks": [
+    {
+      "id": 1,
+      "kind": "implement",
+      "title": "Add gateway_url config key, URL validation and the redacting token type",
+      "criteria": [
+        "29-REQ-2.1",
+        "29-REQ-2.2",
+        "29-REQ-2.3",
+        "29-REQ-2.4",
+        "29-REQ-2.5",
+        "29-REQ-2.6",
+        "29-REQ-8.4"
+      ],
+      "tests": [
+        "TS-29-5",
+        "TS-29-6",
+        "TS-29-7",
+        "TS-29-8",
+        "TS-29-9",
+        "TS-29-10",
+        "TS-29-37"
+      ],
+      "steps": [
+        "Write TS-29-5..10 and TS-29-37 first and confirm they fail",
+        "In internal/sandboxes/config.go add GatewayURL (toml:\"gateway_url\") and GatewayToken (toml:\"gateway_token\") to Config; add both to the recognised sandbox.* keys so toml Undecoded() does not flag them; expand ${NAME} in both with the existing regexp expander",
+        "Add a RedactedString type (new file internal/sandboxes/redact.go) holding the token: implement fmt.Formatter (covers %v %+v %#v %s), fmt.GoStringer, slog.LogValuer, json.Marshaler and encoding.TextMarshaler, all rendering [redacted], with an unexported Reveal() method for the factory",
+        "In validate.go add validateGatewayURL: required (contains 'required') when provider==gateway and empty after expansion; url.Parse absolute; scheme https, or http only when u.Hostname() is loopback (reuse spec 27's isLoopback logic: localhost or net.ParseIP(...).IsLoopback(), no DNS); non-empty host; numeric port 1..65535; no userinfo, query, fragment; path empty or '/'",
+        "Every failure message names sandbox.gateway_url and the broken rule; any quoted URL is first stripped of userinfo (build a copy with User=nil, never print the raw string)",
+        "Append the failures to the same errors.Join collection as the other static checks; add GatewayURL and the RedactedString token to Validated"
+      ],
+      "touches": [
+        "internal/sandboxes/config.go",
+        "internal/sandboxes/validate.go",
+        "internal/sandboxes/redact.go",
+        "internal/sandboxes/validate_gateway_url_test.go",
+        "internal/sandboxes/redact_test.go"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 2,
+      "kind": "implement",
+      "title": "Validate provider value, gateway_token and other-provider keys",
+      "criteria": [
+        "29-REQ-1.2",
+        "29-REQ-3.1",
+        "29-REQ-3.2",
+        "29-REQ-3.3",
+        "29-REQ-3.4",
+        "29-REQ-4.1",
+        "29-REQ-4.2",
+        "29-REQ-4.3"
+      ],
+      "tests": [
+        "TS-29-1",
+        "TS-29-11",
+        "TS-29-12",
+        "TS-29-13",
+        "TS-29-14",
+        "TS-29-15",
+        "TS-29-16",
+        "TS-29-17"
+      ],
+      "steps": [
+        "Write TS-29-1, 11..17 first and confirm they fail",
+        "In validate.go replace the 'gateway not supported by this build' refusal (25-REQ-2.2): accept podman and gateway; any other value fails with a message naming sandbox.provider and listing both podman and gateway",
+        "Add validateGatewayToken: required (message contains 'required') when provider==gateway and empty after expansion; length >= 16 (message states 16); only bytes 0x21-0x7E (message states printable ASCII without spaces). Messages must never include the value or any part of it",
+        "Under provider gateway, each non-empty engine_binary, runtime, userns yields its own failure naming sandbox.<key> and saying it applies only to provider \"podman\"",
+        "Under provider podman, each non-empty gateway_url, gateway_token yields its own failure naming the key and saying it applies only to provider \"gateway\"; never echo the token",
+        "Collect all of these through the same errors.Join as the other static failures (no early return)",
+        "Write the TS-29-14 property test with a seeded random generator (valid, short, invalid-byte, empty tokens) checking no substring of length >= 8 appears in err.Error()"
+      ],
+      "touches": [
+        "internal/sandboxes/validate.go",
+        "internal/sandboxes/validate_gateway_token_test.go",
+        "internal/sandboxes/validate_provider_keys_test.go"
+      ],
+      "depends_on": [
+        1
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 3,
+      "kind": "implement",
+      "title": "Add the gateway factory seam, remote client build and single-List probe with scrubbed errors",
+      "criteria": [
+        "29-REQ-1.1",
+        "29-REQ-1.3",
+        "29-REQ-5.1",
+        "29-REQ-5.2",
+        "29-REQ-5.3",
+        "29-REQ-5.4",
+        "29-REQ-5.5"
+      ],
+      "tests": [
+        "TS-29-2",
+        "TS-29-3",
+        "TS-29-18",
+        "TS-29-19",
+        "TS-29-20",
+        "TS-29-21",
+        "TS-29-22"
+      ],
+      "steps": [
+        "Write TS-29-2, 3, 18..22 first and confirm they fail; build a shared test harness helper (internal/sandboxes/remote_harness_test.go) that starts an in-process gatewayd.New(Config{Backend: recording wrapper over local.Unisolated, Tokens: static token}) on 127.0.0.1:0 with Shutdown and restart-on-same-address support, counting List/Create/Destroy and recording the Spec and seen tokens, with injectable failing Create",
+        "In go.mod/go.sum make sure agentkit-go sandbox/gateway and gatewayd are required for non-test code under the existing ../agentkit-go replace (go mod tidy)",
+        "In provider.go define type GatewayFactory func(url string, opts gateway.Options) (sandbox.Provider, error) and DialGateway = gateway.Dial as the production value; thread the factory through Start and Init next to the existing Podman factory, without changing the Podman path",
+        "In service.go: after static validation passes, when provider==gateway call the factory exactly once with the validated gateway_url and the token revealed from the redacting value; never call the Podman factory or run any binary; when validation fails call no factory and issue no List",
+        "Run 25's probe unchanged: exactly one List under context.WithTimeout(10s), no Create/Destroy",
+        "On factory or probe error return an error beginning 'sandbox:' that names sandbox.provider, sandbox.gateway_url and sandbox.gateway_token, and includes the client error text with the token replaced by [redacted] and URL userinfo removed (reuse the scrubber from spec 27, or a minimal scrub helper in scrub.go if not yet present)",
+        "TS-29-3: put a sentinel `podman` script on PATH writing a marker file and assert the marker does not exist and the podman factory count is 0; TS-29-22 uses a stub whose List blocks until ctx cancel and asserts 10s <= elapsed <= 11s"
+      ],
+      "touches": [
+        "internal/sandboxes/provider.go",
+        "internal/sandboxes/service.go",
+        "internal/sandboxes/startup.go",
+        "internal/sandboxes/remote_harness_test.go",
+        "internal/sandboxes/provider_gateway_test.go",
+        "go.mod",
+        "go.sum"
+      ],
+      "depends_on": [
+        2
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 4,
+      "kind": "implement",
+      "title": "Snapshot remote capabilities once and keep profile rules identical across providers",
+      "criteria": [
+        "29-REQ-1.4",
+        "29-REQ-6.1",
+        "29-REQ-6.2",
+        "29-REQ-6.3",
+        "29-REQ-6.4"
+      ],
+      "tests": [
+        "TS-29-4",
+        "TS-29-23",
+        "TS-29-24",
+        "TS-29-25",
+        "TS-29-26"
+      ],
+      "steps": [
+        "Write TS-29-4, 23..26 first and confirm they fail",
+        "In service.go wrap the built provider in a small type (capsSnapshot) that reads Capabilities() exactly once after a successful probe and returns the cached value from Capabilities() thereafter, with no call to the remote",
+        "Run 25's network_modes check (25-REQ-5.4) and per-profile sandbox.CheckSpec checks (25-REQ-5.5..5.7) against the snapshot with messages unchanged; no gateway-specific wording in those errors",
+        "Make hub's wrapping backend (spec 27, backend.go) answer Capabilities() by narrowing the service's snapshot (network modes limited to hub's configured set) without calling the remote; verify it works while the remote is shut down",
+        "TS-29-4: table of profile sets run through Start with provider podman and provider gateway using injected factories returning the same stub; assert identical acceptance and identical profile-related message text",
+        "TS-29-23: counting stub proves Capabilities called once across Start and 20 backend Capabilities() calls"
+      ],
+      "touches": [
+        "internal/sandboxes/service.go",
+        "internal/sandboxes/backend.go",
+        "internal/sandboxes/capabilities_snapshot_test.go"
+      ],
+      "depends_on": [
+        3
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 5,
+      "kind": "implement",
+      "title": "Map remote not-found and refusal statuses and forbid Create retries",
+      "criteria": [
+        "29-REQ-7.5",
+        "29-REQ-7.6",
+        "29-REQ-7.7"
+      ],
+      "tests": [
+        "TS-29-31",
+        "TS-29-32",
+        "TS-29-33"
+      ],
+      "steps": [
+        "Write TS-29-31..33 first and confirm they fail",
+        "Add helper isNotFound(err) = errors.Is(err, sandbox.ErrNotFound) || status.Code(err)==codes.NotFound (google.golang.org/grpc/status) and use it in Backend.Destroy, the DELETE destroy path (delete_destroy.go) and the spec 28 expiry sweep / shutdown step, replacing the bare errors.Is checks",
+        "In backend.go add mapRemoteError: for errors from the remote client with status Unauthenticated or PermissionDenied return status.Error(codes.Unavailable, scrubbed message); apply it to Create, Destroy and the handle methods; spec 27's lease outcomes stay unchanged (Create -> failed, Destroy -> active, DELETE -> 502)",
+        "Each time a mapping happens log exactly one slog error record naming sandbox.gateway_token, never its value",
+        "Backend.Create calls the remote client exactly once; no retry loop or retry wrapper anywhere",
+        "TS-29-31 covers sentinel (wrapped) and gRPC NotFound against Backend.Destroy, DELETE and the sweep; TS-29-32 runs Unauthenticated and PermissionDenied from Create and Destroy and counts error records; TS-29-33 asserts the recording remote sees two Creates for two caller Creates, one of which fails"
+      ],
+      "touches": [
+        "internal/sandboxes/backend.go",
+        "internal/sandboxes/handle.go",
+        "internal/sandboxes/delete_destroy.go",
+        "internal/sandboxes/errors_remote.go",
+        "internal/sandboxes/remote_errors_test.go"
+      ],
+      "depends_on": [
+        3
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 6,
+      "kind": "implement",
+      "title": "Extend the scrub set with token, URL and host and prove nothing leaks",
+      "criteria": [
+        "29-REQ-8.1",
+        "29-REQ-8.2",
+        "29-REQ-8.3",
+        "29-REQ-8.5"
+      ],
+      "tests": [
+        "TS-29-34",
+        "TS-29-35",
+        "TS-29-36",
+        "TS-29-38"
+      ],
+      "steps": [
+        "Write TS-29-34..36 and 38 first and confirm they fail",
+        "Add Service.scrubValues(): for provider gateway append the revealed token, the configured gateway_url string and url.Host to the secret and env values spec 27 already scrubs; unchanged for podman; feed it to the single scrub call-site used for lease error, log, audit event and gateway/HTTP error text",
+        "Ensure the start-up info record still carries only attributes provider and profiles, and that no metric label or profile-listing/error body can contain the token",
+        "TS-29-35: remote Create returns an error containing the token and 127.0.0.1:<port>; capture slog.Default, audit emitter, gateway error, lease JSON, HTTP bodies and assert none contains the token or host",
+        "TS-29-36: fetch profile listing, an error body, a lease response and /metrics and assert no token; assert the single info record attribute keys are exactly {provider, profiles}",
+        "TS-29-38: property test over generated configs and probe failures whose text embeds token, userinfo and URL; assert Start's error never contains token or userinfo"
+      ],
+      "touches": [
+        "internal/sandboxes/service.go",
+        "internal/sandboxes/scrub.go",
+        "internal/sandboxes/startup.go",
+        "internal/sandboxes/no_leak_test.go"
+      ],
+      "depends_on": [
+        5
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 7,
+      "kind": "implement",
+      "title": "Serve leases over the remote provider under hub's single token",
+      "criteria": [
+        "29-REQ-7.1",
+        "29-REQ-7.2",
+        "29-REQ-7.3",
+        "29-REQ-7.4"
+      ],
+      "tests": [
+        "TS-29-27",
+        "TS-29-28",
+        "TS-29-29",
+        "TS-29-30"
+      ],
+      "steps": [
+        "Write TS-29-27..30 first and confirm they fail",
+        "Using the harness from task 3, build a test fixture: in-process remote, hub Service via Init with real gateway.Dial, in-memory SQLite lease store (sql.Open(\"sqlite\", \":memory:\"), SetMaxOpenConns(1)), echo lease API with apikit.SetAuthInfo test middleware, hub gatewayd on its own 127.0.0.1:0",
+        "Confirm Backend.Create passes the lease's image/TTL and Env = profile env merged with resolved secrets to the remote client and that only hub's token reaches the remote (record tokens in the remote authenticator); fix any gap in spec 27 wiring found",
+        "Confirm lease representation gateway_url equals hub's own gateway URL and differs from sandbox.gateway_url",
+        "Verify second Create under a lease token is FailedPrecondition and an unminted token is Unauthenticated with the remote's Create count unchanged",
+        "Verify DELETE and the caller's Close both destroy the remote box (remote List empty) and revoke the lease token (later dial is Unauthenticated)"
+      ],
+      "touches": [
+        "internal/sandboxes/backend.go",
+        "internal/sandboxes/gateway.go",
+        "internal/sandboxes/remote_lease_test.go"
+      ],
+      "depends_on": [
+        6
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 8,
+      "kind": "implement",
+      "title": "Report remote outages as recorded outcomes and recover on the same address",
+      "criteria": [
+        "29-REQ-9.1",
+        "29-REQ-9.2",
+        "29-REQ-9.3",
+        "29-REQ-9.4",
+        "29-REQ-9.5",
+        "29-REQ-9.6"
+      ],
+      "tests": [
+        "TS-29-39",
+        "TS-29-40",
+        "TS-29-41",
+        "TS-29-42",
+        "TS-29-43",
+        "TS-29-44"
+      ],
+      "steps": [
+        "Write TS-29-39..44 first and confirm they fail",
+        "Reuse the task 7 fixture; add a counting gateway factory wrapping the real gateway.Dial",
+        "Remote down: lease POST returns its success status and profile listing returns 200 (neither calls the provider)",
+        "A caller Create while the remote is down errors and leaves the lease failed with an error field free of token and host",
+        "DELETE of an active lease answers 502 sandbox_provider_error and leaves the lease active with its token still valid; Close returns a non-nil error and leaves the lease active",
+        "Expiry sweep (spec 28): while down, one warn/error log per failed destroy and lease stays active; after the remote restarts on the same port the next sweep destroys the box and ends the lease",
+        "Restart the remote on the same 127.0.0.1:<port> and assert the next Create succeeds with factory call count still 1; add no redial, monitor or circuit breaker code anywhere"
+      ],
+      "touches": [
+        "internal/sandboxes/remote_outage_test.go",
+        "internal/sandboxes/remote_harness_test.go",
+        "internal/sandboxes/backend.go"
+      ],
+      "depends_on": [
+        7
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 9,
+      "kind": "implement",
+      "title": "Close the remote client after the expiry shutdown step and wire main",
+      "criteria": [
+        "29-REQ-9.7"
+      ],
+      "tests": [
+        "TS-29-45"
+      ],
+      "steps": [
+        "Write TS-29-45 first and confirm it fails",
+        "Add Service.Close(): if the provider (the unwrapped remote client) implements io.Closer call Close once, otherwise return nil; make it idempotent",
+        "In cmd/af-hub/main.go (gitignored path, read and edit by path) call sandboxes.Init with the production DialGateway factory right after apikit.Bootstrap and defer the client close so it runs after spec 28's shutdown destroy step has returned",
+        "TS-29-45: stub client records Destroy/Close order with two active boxes and asserts [destroy, destroy, close]; a non-Closer stub shuts down with no error"
+      ],
+      "touches": [
+        "internal/sandboxes/service.go",
+        "internal/sandboxes/shutdown.go",
+        "cmd/af-hub/main.go",
+        "internal/sandboxes/shutdown_close_test.go"
+      ],
+      "depends_on": [
+        4
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 10,
+      "kind": "implement",
+      "title": "Keep afc free of sandbox dependencies and update documentation",
+      "criteria": [
+        "29-REQ-10.1"
+      ],
+      "tests": [
+        "TS-29-46"
+      ],
+      "steps": [
+        "Write TS-29-46 first: run `go list -deps ./cmd/afc` via os/exec and assert no agentkit-go, google.golang.org/grpc or internal/sandboxes path appears; it must pass with the gateway.Dial dependency in go.mod",
+        "Run `make doc` to refresh docs/generated",
+        "docs/configuration.md: document provider = \"gateway\", gateway_url and gateway_token with every R2/R3 rule, the recommended gateway_token = \"${AGENTKIT_GATEWAY_TOKEN}\", the host trust store used for https, that the remote's MaxSandboxes/MaxTTL appear as failed leases at Create, and that changing gateway_token leaves old boxes to the remote's TTL",
+        "docs/architecture.md: describe the gateway-over-gateway layout, the one shared token, the capability snapshot and where outages show up",
+        "docs/adr/03-hub-is-the-sandbox-gateway.md: if it does not cover the remote case add a short paragraph under Consequences",
+        "Do not write tests about the docs; run `make check`"
+      ],
+      "touches": [
+        "internal/sandboxes/build_isolation_test.go",
+        "docs/configuration.md",
+        "docs/architecture.md",
+        "docs/adr/03-hub-is-the-sandbox-gateway.md",
+        "docs/generated"
+      ],
+      "depends_on": [
+        9
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 11,
+      "kind": "integration",
+      "title": "Verify the remote-provider paths end to end",
+      "tests": [
+        "TS-29-47",
+        "TS-29-48",
+        "TS-29-49",
+        "TS-29-50",
+        "TS-29-51"
+      ],
+      "steps": [
+        "Write smoke tests TS-29-47..51 against the in-process remote gatewayd, real SQLite lease store, lease API, hub gatewayd and real gateway.Dial clients, and confirm they pass",
+        "Trace 29-PATH-1..5 through the real code (config load -> Validate -> gateway factory -> probe -> snapshot -> info log -> lease API -> backend -> remote -> DELETE/shutdown -> client Close); confirm each step calls the next and no stub remains",
+        "Confirm each contract producer is consumed in production code: scrubValues feeds the lease error/log/audit/gateway-error scrub call-site, isNotFound is used by Backend.Destroy, DELETE and the sweep, mapRemoteError is used by Backend methods, Service.Close is called from cmd/af-hub/main.go after spec 28's shutdown step, and the GatewayFactory is DialGateway in main",
+        "Confirm sandboxes.Init is called from main.go (entry point owned by specs 25/27/28) and the lease API, hub gateway and expiry sweep are mounted/started in production code",
+        "Grep every file in the tasks' touches for panic(\"not implemented\"), TODO, and bare return nil on non-trivial paths and remove any that remain",
+        "Run `go list -deps ./cmd/afc` and confirm TS-25-54 and TS-29-46 stay green; run make test and make lint"
+      ],
+      "touches": [
+        "internal/sandboxes/smoke_gateway_provider_test.go",
+        "cmd/af-hub/main.go"
+      ],
+      "depends_on": [
+        10
+      ],
+      "done_when": [
+        "`make test` passes offline with no container engine",
+        "`make lint` passes"
+      ],
+      "state": "pending"
+    }
+  ]
+}
