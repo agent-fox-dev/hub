@@ -317,7 +317,7 @@
       "done_when": [
         "no read response contains token, token hash or environment values"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 8,
