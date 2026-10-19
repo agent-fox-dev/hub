@@ -3634,7 +3634,8 @@ Issue a lease in a workspace.
 
 **Request body:** a JSON object, optional as a whole (an empty body counts as
 `{}`). A field other than these four is refused, so that a caller cannot believe
-it set an image or an environment.
+it set an image or an environment. Field names are matched exactly (`PROFILE` is
+not `profile`), and anything after the object is refused.
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -3696,11 +3697,12 @@ requests never exceed the limit.
 
 | Status | Condition |
 |--------|-----------|
-| 400 | Malformed JSON or a body that is not an object; an unknown field (the message names it); an unknown profile, or no profile when none is the default (the message lists the profiles in configuration order); a `ttl` that does not parse, is under `1m` or is over the profile's TTL (the message names that TTL); a bad `purpose`; bad `labels` (the message names the label key); a workspace that is not active |
+| 400 | Malformed JSON, a body that cannot be read, or a body that is not an object; an unknown field (the message names it); an unknown profile, or no profile when none is the default (the message lists the profiles in configuration order); a `ttl` that does not parse, is under `1m` or is over the profile's TTL (the message names that TTL); a bad `purpose`; bad `labels` (the message names the label key); a workspace that is not active |
 | 401 | Unauthenticated request |
 | 403 | PAT lacks `sandboxes:write` scope |
 | 404 | Sandboxes are not enabled (`error_type: sandboxes_disabled`); the workspace does not exist or is not owned by the caller |
 | 409 | `max_sandboxes` is reached (`error_type: sandbox_capacity`) |
+| 413 | The body is larger than the server accepts |
 | 422 | A required secret exists in no searched scope (`error_type: secret_missing`) |
 | 500 | A database or random-source failure; nothing is stored |
 

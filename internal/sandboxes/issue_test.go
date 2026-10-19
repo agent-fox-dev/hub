@@ -1,6 +1,7 @@
 package sandboxes
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -120,11 +121,52 @@ func TestIssue_StoresProfileSnapshot_TS_26_4(t *testing.T) {
 	if len(got.Labels) != 2 || got.Labels["team"] != "red" || got.Labels["Run.Id"] != "42" {
 		t.Errorf("labels = %v; want the labels exactly as given", got.Labels)
 	}
-	if got.TTLSeconds != 3600 || got.CreatedBy != leaseOwner || got.CreatedAt == "" || got.UpdatedAt != got.CreatedAt {
+	if got.TTLSeconds != 3600 || got.CreatedBy != leaseOwner || got.CreatedAt != "2030-01-02T03:04:05Z" || got.UpdatedAt != got.CreatedAt {
 		t.Errorf("ttl %d, created_by %q, created_at %q, updated_at %q", got.TTLSeconds, got.CreatedBy, got.CreatedAt, got.UpdatedAt)
+	}
+	if got.ExpiresAt != "2030-01-02T04:04:05Z" {
+		t.Errorf("expires_at = %q; want created_at plus the profile's 1h", got.ExpiresAt)
 	}
 	if got.SandboxID != nil || got.Error != nil || got.EndedAt != nil || got.EndReason != nil {
 		t.Errorf("sandbox_id, error, ended_at or end_reason is set on a new lease: %+v", got)
+	}
+}
+
+// The lease Issue returns owns its lists and maps: editing the profile the
+// service holds afterwards does not change it (the snapshot is a copy).
+// Requirement: 26-REQ-1.4
+func TestIssue_SnapshotIsACopy(t *testing.T) {
+	env := newLeaseEnv(t, leaseEnvOptions{})
+	params, err := env.svc.newIssueParams(issueRequest{})
+	if err != nil {
+		t.Fatalf("newIssueParams: %v", err)
+	}
+	lease, _, err := env.svc.Issue(context.Background(), "widgets", apiKeyAuth(), params)
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+
+	held := env.profile.profiles[0]
+	held.Env["SECRET_ENV"] = "changed"
+	held.Secrets[0] = "CHANGED"
+	held.OptionalSecrets[0] = "CHANGED"
+	if lease.Env["SECRET_ENV"] != "envval" || lease.Secrets[0] != "GIT_PAT" || lease.OptionalSecrets[0] != "EXTRA_TOKEN" {
+		t.Errorf("the lease follows the profile: env %v, secrets %v, optional %v", lease.Env, lease.Secrets, lease.OptionalSecrets)
+	}
+}
+
+// The clock and the ttl are cut to whole seconds, so that expires_at minus
+// created_at is exactly ttl_seconds whatever fraction the clock or the ttl has.
+// Requirement: 26-REQ-1.6
+func TestIssue_SubSecondClockAndTTL(t *testing.T) {
+	env := newLeaseEnv(t, leaseEnvOptions{start: time.Date(2030, 1, 2, 3, 4, 5, 900_000_000, time.UTC)})
+	got := env.mustIssueWith(`{"profile":"tools","ttl":"61.5s"}`)
+	if got["created_at"] != "2030-01-02T03:04:05Z" || got["expires_at"] != "2030-01-02T03:05:06Z" {
+		t.Errorf("created_at %v, expires_at %v; want 03:04:05Z and 03:05:06Z (61 whole seconds)", got["created_at"], got["expires_at"])
+	}
+	var seconds int
+	if err := env.db.QueryRow(`SELECT ttl_seconds FROM sandbox_leases WHERE id = ?`, got["id"]).Scan(&seconds); err != nil || seconds != 61 {
+		t.Errorf("ttl_seconds = %d (%v); want 61", seconds, err)
 	}
 }
 
@@ -168,6 +210,10 @@ func TestIssue_Timestamps_TS_26_6(t *testing.T) {
 	}
 	if body["updated_at"] != body["created_at"] {
 		t.Errorf("updated_at = %v; want created_at on a new lease", body["updated_at"])
+	}
+	var seconds int64
+	if err := env.db.QueryRow(`SELECT ttl_seconds FROM sandbox_leases WHERE id = ?`, id).Scan(&seconds); err != nil || seconds != 1800 || seconds != int64(expires.Sub(created)/time.Second) {
+		t.Errorf("ttl_seconds = %d (%v); want 1800, equal to expires_at - created_at", seconds, err)
 	}
 
 	env.clock.Advance(10 * time.Minute)

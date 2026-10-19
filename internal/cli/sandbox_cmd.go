@@ -129,13 +129,18 @@ func newSandboxCreateCmd() *cobra.Command {
 			token, _ := lease["token"].(string)
 			delete(lease, "token")
 			if err := storeToken(out, token); err != nil {
-				// No lease is left whose token the caller has lost, and the token
-				// never falls back to stdout.
+				// Try to give the lease back, so that none is left whose token the
+				// caller has lost, and say what became of it: the message never claims
+				// a release that did not happen. The token never falls back to stdout.
 				id, _ := lease["id"].(string)
+				outcome := "the hub returned no lease ID"
 				if id != "" {
-					_, _ = client.DoRequest(cmd.Context(), http.MethodDelete, apiPath("workspaces", slug, "sandboxes", id), nil)
+					outcome = fmt.Sprintf("the lease %s could not be released; end it with: afc sandbox destroy %s %s", id, slug, id)
+					if _, derr := client.DoRequest(cmd.Context(), http.MethodDelete, apiPath("workspaces", slug, "sandboxes", id), nil); derr == nil {
+						outcome = fmt.Sprintf("the lease %s was released", id)
+					}
 				}
-				return apikit.CLIHandleError(cmd, apikit.NewCLIError(1, fmt.Sprintf("cannot write the token to %s: %v; the lease %s was released", tokenFile, err, id)))
+				return apikit.CLIHandleError(cmd, apikit.NewCLIError(1, fmt.Sprintf("cannot write the token to %s: %v; %s", tokenFile, err, outcome)))
 			}
 			return apikit.CLIPrintResult(cmd, lease)
 		},

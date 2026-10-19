@@ -1997,8 +1997,11 @@ afc sandbox create <workspace-slug> [--profile <name>] [--purpose <text>] [--ttl
   no request. After the request it writes the token to the file with no trailing
   newline and prints the lease **without** the `token` key. If the write fails it
   sends a best-effort `DELETE` for the new lease and exits with code 1 with a
-  message naming the file; the token never falls back to stdout. If the hub
-  refuses the request, the file is left empty.
+  message naming the file. The message says `the lease <id> was released` only
+  when the hub confirmed the `DELETE`; otherwise it says the lease could not be
+  released and names the command to end it, `afc sandbox destroy <slug> <id>`.
+  The token never falls back to stdout. If the hub refuses the request, the file,
+  which was truncated before the request, is left empty.
 
 **Exit Codes:**
 

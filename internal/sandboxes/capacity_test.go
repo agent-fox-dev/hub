@@ -2,8 +2,8 @@ package sandboxes
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"math/rand/v2"
 	"net/http"
@@ -157,7 +157,15 @@ func TestIssue_ConcurrentPOSTsRespectTheLimit_Property_TS_26_33(t *testing.T) {
 						rec := env.post("widgets", `{"profile":"tools"}`, apiKeyAuth())
 						codes[i] = rec.Code
 						if rec.Code == http.StatusConflict {
-							types[i] = errorType(t, rec)
+							// Decoded here, not with errorType: that helper fails the
+							// test, which a goroutine must not do.
+							var body struct {
+								Error struct {
+									ErrorType string `json:"error_type"`
+								} `json:"error"`
+							}
+							_ = json.Unmarshal(rec.Body.Bytes(), &body)
+							types[i] = body.Error.ErrorType
 						}
 					}()
 				}
@@ -274,5 +282,4 @@ func TestIssue_RandomSourceFailure_TS_26_37(t *testing.T) {
 			t.Errorf("%s source: %d leases stored", name, n)
 		}
 	}
-	_ = fmt.Sprint
 }

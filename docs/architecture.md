@@ -90,11 +90,12 @@ and clears the token hash for a lease that is still `leased` or `active`. The
 `DELETE` route calls it, and a test pins that no other production code clears a
 token hash.
 
-Three exported pieces are the seams the sandbox gateway builds on and have no
-production caller yet: `LeaseStore.LookupByToken` (a presented token to its live
-lease, or `ErrLeaseNotFound` without saying why), `LeaseStore.RevokeToken` and
-`ResolutionChain`, which the gateway uses to resolve secret *values* in the order
-the presence check used for their names.
+Two exported pieces are seams for the sandbox gateway and have no production
+caller yet: `LeaseStore.LookupByToken` (a presented token to its live lease, or
+`ErrLeaseNotFound` without saying why) and `LeaseStore.RevokeToken`. A third,
+`ResolutionChain`, is used today by the presence check at issue and is the order
+the gateway will resolve secret *values* in, so that the check and the lookup at
+creation agree.
 
 ### AgentKit dependency
 

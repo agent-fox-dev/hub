@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
+	"net/http"
 	"regexp"
 	"slices"
 	"strings"
@@ -37,14 +39,20 @@ type issueRequest struct {
 	Labels  map[string]any `json:"labels"`
 }
 
-// requestError is a request the caller got wrong. It answers 400 with its
-// message.
-type requestError struct{ msg string }
+// issueFields are the only fields a POST body may have.
+var issueFields = []string{"profile", "purpose", "ttl", "labels"}
+
+// requestError is a request the caller got wrong. It answers with its status,
+// 400 unless the body is too large, and its message.
+type requestError struct {
+	msg    string
+	status int
+}
 
 func (e *requestError) Error() string { return e.msg }
 
 func badRequest(format string, args ...any) error {
-	return &requestError{msg: fmt.Sprintf(format, args...)}
+	return &requestError{msg: fmt.Sprintf(format, args...), status: http.StatusBadRequest}
 }
 
 // asRequestError reports whether err is a request the caller got wrong.
@@ -54,12 +62,19 @@ func asRequestError(err error) (*requestError, bool) {
 }
 
 // parseIssueRequest decodes the request body, which must be a JSON object with
-// no field but profile, purpose, ttl and labels. An empty body counts as {}.
+// no field but profile, purpose, ttl and labels, spelled exactly: encoding/json
+// would take PROFILE for profile, and a caller who sent a field hub does not know
+// by that name must be told. An empty body counts as {}. Anything after the
+// object, a stray closing bracket included, is refused.
 func parseIssueRequest(body io.Reader) (issueRequest, error) {
 	var req issueRequest
 	raw, err := io.ReadAll(body)
 	if err != nil {
-		return req, err
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			return req, &requestError{msg: "request body is too large", status: http.StatusRequestEntityTooLarge}
+		}
+		return req, badRequest("could not read the request body")
 	}
 	raw = bytes.TrimSpace(raw)
 	if len(raw) == 0 {
@@ -69,13 +84,17 @@ func parseIssueRequest(body io.Reader) (issueRequest, error) {
 		return req, badRequest("request body must be a JSON object")
 	}
 
-	dec := json.NewDecoder(bytes.NewReader(raw))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&req); err != nil {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
 		return req, decodeError(err)
 	}
-	if dec.More() {
-		return req, badRequest("request body must be a single JSON object")
+	for _, name := range slices.Sorted(maps.Keys(fields)) {
+		if !slices.Contains(issueFields, name) {
+			return req, badRequest("unknown field %q: only profile, purpose, ttl and labels are accepted", name)
+		}
+	}
+	if err := json.Unmarshal(raw, &req); err != nil {
+		return req, decodeError(err)
 	}
 	return req, nil
 }
@@ -85,24 +104,25 @@ func parseIssueRequest(body io.Reader) (issueRequest, error) {
 func decodeError(err error) error {
 	var typeErr *json.UnmarshalTypeError
 	if errors.As(err, &typeErr) {
-		return badRequest("field %q must be a %s, not a %s", typeErr.Field, jsonKind(typeErr.Type.String()), typeErr.Value)
-	}
-	if field, ok := strings.CutPrefix(err.Error(), "json: unknown field "); ok {
-		return badRequest("unknown field %s: only profile, purpose, ttl and labels are accepted", field)
+		return badRequest("field %q must be %s, not %s", typeErr.Field, jsonKind(typeErr.Type.String()), withArticle(typeErr.Value))
 	}
 	return badRequest("request body is not valid JSON")
 }
 
-// jsonKind names a Go type the way JSON does.
+// jsonKind names a Go type the way JSON does, with its article.
 func jsonKind(goType string) string {
-	switch {
-	case strings.HasPrefix(goType, "map["):
-		return "object"
-	case goType == "string":
-		return "string"
-	default:
-		return goType
+	if strings.HasPrefix(goType, "map[") {
+		return "an object"
 	}
+	return withArticle(goType)
+}
+
+// withArticle puts "a" or "an" before a JSON type name.
+func withArticle(name string) string {
+	if strings.ContainsRune("aeiou", rune(name[0])) {
+		return "an " + name
+	}
+	return "a " + name
 }
 
 // newIssueParams validates a request and resolves it into the profile, TTL,

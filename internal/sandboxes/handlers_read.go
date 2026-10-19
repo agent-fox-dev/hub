@@ -42,7 +42,7 @@ func respondLeases(c echo.Context, leases []*Lease) error {
 // goes to the log.
 func writeReadError(c echo.Context, what string, err error) error {
 	if re, ok := asRequestError(err); ok {
-		return apikit.WriteAPIError(c, http.StatusBadRequest, re.msg)
+		return apikit.WriteAPIError(c, re.status, re.msg)
 	}
 	if errors.Is(err, ErrLeaseNotFound) {
 		return apikit.WriteAPIError(c, http.StatusNotFound, leaseNotFound)

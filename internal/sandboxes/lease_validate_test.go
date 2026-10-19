@@ -3,7 +3,9 @@ package sandboxes
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -35,6 +37,12 @@ func TestIssue_UnknownFieldsAndNonObjects_TS_26_17(t *testing.T) {
 		{"null", `null`, ""},
 		{"number", `7`, ""},
 		{"trailing data", `{} {}`, ""},
+		{"stray closing brace", `{"profile":"tools"}}`, ""},
+		{"stray closing bracket", `{"profile":"tools"}]`, ""},
+		{"text after the object", `{"profile":"tools"} x`, ""},
+		{"a field name in capitals", `{"PROFILE":"tools"}`, "PROFILE"},
+		{"a field name in mixed case", `{"Profile":"tools","TTL":"1h"}`, "Profile"},
+		{"an unknown field in capitals", `{"Image":"x"}`, "Image"},
 		{"profile is not a string", `{"profile":7}`, "profile"},
 		{"purpose is not a string", `{"purpose":["x"]}`, "purpose"},
 		{"ttl is not a string", `{"ttl":3600}`, "ttl"},
@@ -51,6 +59,45 @@ func TestIssue_UnknownFieldsAndNonObjects_TS_26_17(t *testing.T) {
 	}
 	if n := env.countLeases(); n != 0 {
 		t.Errorf("%d leases stored for refused requests", n)
+	}
+
+	// The message for a field of the wrong type reads as a sentence.
+	if msg := message(t, env.post("widgets", `{"labels":"k=v"}`, apiKeyAuth())); !strings.Contains(msg, "must be an object, not a string") {
+		t.Errorf("message for labels as a string = %q; want 'must be an object, not a string'", msg)
+	}
+	if msg := message(t, env.post("widgets", `{"profile":7}`, apiKeyAuth())); !strings.Contains(msg, "must be a string, not a number") {
+		t.Errorf("message for profile as a number = %q; want 'must be a string, not a number'", msg)
+	}
+}
+
+// A body that cannot be read in full is a request the caller got wrong, not a
+// server failure: one over the server's limit is 413, any other read error 400.
+// Requirement: 26-REQ-3.3
+func TestIssue_UnreadableBody(t *testing.T) {
+	env := newLeaseEnv(t, leaseEnvOptions{})
+	auth, _ := json.Marshal(apiKeyAuth())
+
+	send := func(body io.Reader, limit int64) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/workspaces/widgets/sandboxes", nil)
+		req.Header.Set("X-Test-Auth", string(auth))
+		rec := httptest.NewRecorder()
+		req.Body = io.NopCloser(body)
+		if limit > 0 {
+			req.Body = http.MaxBytesReader(rec, req.Body, limit)
+		}
+		env.echo.ServeHTTP(rec, req)
+		return rec
+	}
+
+	big := strings.NewReader(`{"purpose":"` + strings.Repeat("x", 100) + `"}`)
+	if rec := send(big, 20); rec.Code != http.StatusRequestEntityTooLarge {
+		t.Errorf("a body over the limit: status %d; want 413: %s", rec.Code, rec.Body)
+	}
+	if rec := send(io.MultiReader(strings.NewReader(`{"purpose":`), failingReader{}), 0); rec.Code != http.StatusBadRequest {
+		t.Errorf("a body that fails while being read: status %d; want 400: %s", rec.Code, rec.Body)
+	}
+	if n := env.countLeases(); n != 0 {
+		t.Errorf("%d leases stored for unreadable bodies", n)
 	}
 }
 
@@ -196,6 +243,7 @@ func TestIssue_LabelsRefused_TS_26_22(t *testing.T) {
 		{"reserved workspace", map[string]any{"WORKSPACE": "v"}, "WORKSPACE"},
 		{"64-character key", map[string]any{strings.Repeat("k", 64): "v"}, strings.Repeat("k", 64)},
 		{"257-byte value", map[string]any{"bigval": strings.Repeat("v", 257)}, "bigval"},
+		{"129 two-byte runes are 258 bytes", map[string]any{"mbval": strings.Repeat("é", 129)}, "mbval"},
 		{"control character in value", map[string]any{"ctlval": "a\x01b"}, "ctlval"},
 		{"newline in value", map[string]any{"nlval": "a\nb"}, "nlval"},
 	} {
@@ -224,6 +272,7 @@ func TestIssue_LabelsAtLimits_TS_26_23(t *testing.T) {
 		strings.Repeat("k", 63): strings.Repeat("v", 256),
 		"a":                     "",
 		"A.b_c-D":               "mixed Case ünï",
+		"multibyte":             strings.Repeat("é", 128), // 256 bytes: the limit counts bytes
 	}
 	for i := 0; len(labels) < 16; i++ {
 		labels[fmt.Sprintf("k%d", i)] = "v"

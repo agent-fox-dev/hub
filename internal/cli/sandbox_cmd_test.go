@@ -169,10 +169,10 @@ func TestSandboxProfilesCmd_ReportsHubErrors_TS_25_51(t *testing.T) {
 	}
 }
 
-// TS-25-52: BuildRootCommand registers the sandbox group with the profiles
-// subcommand. Spec 26 adds the lease subcommands, so the group's subcommands are
-// now create, destroy, get, list and profiles; TestSandboxGroup_LeaseCommands_
-// TS_26_55 checks that they and nothing else are there.
+// TS-25-52: BuildRootCommand registers the sandbox group. It had one
+// subcommand, profiles, when spec 25 was implemented; spec 26 adds create,
+// destroy, get and list (26-REQ-10), so the group's subcommands are now exactly
+// these five.
 // Requirement: 25-REQ-9.4
 func TestBuildRootCommand_SandboxGroup_TS_25_52(t *testing.T) {
 	sandbox, _, err := BuildRootCommand().Find([]string{"sandbox"})
@@ -183,8 +183,9 @@ func TestBuildRootCommand_SandboxGroup_TS_25_52(t *testing.T) {
 	for _, sub := range sandbox.Commands() {
 		names = append(names, sub.Name())
 	}
-	if !slices.Contains(names, "profiles") {
-		t.Errorf("sandbox subcommands = %v; want profiles among them", names)
+	slices.Sort(names)
+	if want := []string{"create", "destroy", "get", "list", "profiles"}; !slices.Equal(names, want) {
+		t.Errorf("sandbox subcommands = %v; want %v", names, want)
 	}
 }
 
@@ -387,29 +388,56 @@ func TestSandboxCreate_RefusedBeforeAnyRequest(t *testing.T) {
 
 // If the token cannot be written after the lease was issued, afc releases the
 // lease with a best-effort DELETE and exits non-zero naming the file. The token
-// never falls back to stdout.
+// never falls back to stdout, and the message claims a release only when the hub
+// confirmed it.
 // Requirement: 26-REQ-10 (the create command)
 func TestSandboxCreate_FailedTokenWriteRollsBack(t *testing.T) {
 	prev := writeTokenFile
 	writeTokenFile = func(*os.File, string) error { return errors.New("disk full") }
 	t.Cleanup(func() { writeTokenFile = prev })
 
-	hub := createdHub(t)
-	path := filepath.Join(t.TempDir(), "token")
-	stdout, stderr, err := runLease(t, hub, "sandbox", "create", "widgets", "--token-file", path)
-	if err == nil || ExitCode(err) == 0 {
-		t.Fatalf("afc sandbox create succeeded although the token could not be written (exit %d)", ExitCode(err))
-	}
+	for name, tc := range map[string]struct {
+		deleteStatus int
+		want, reject string
+	}{
+		"the release succeeds": {http.StatusNoContent, "was released", "could not be released"},
+		"the release fails":    {http.StatusInternalServerError, "could not be released; end it with: afc sandbox destroy widgets " + leaseIDText, "was released"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			hub := newLeaseHub(t, func(w http.ResponseWriter, r leaseHubRequest) {
+				if r.Method == http.MethodDelete {
+					if tc.deleteStatus == http.StatusNoContent {
+						w.WriteHeader(tc.deleteStatus)
+					} else {
+						respond(w, tc.deleteStatus, `{"error":{"code":500,"message":"boom"}}`)
+					}
+					return
+				}
+				respond(w, http.StatusCreated, strings.TrimSuffix(leaseBodyText, "}")+`,"token":"`+leaseTokenText+`"}`)
+			})
+			path := filepath.Join(t.TempDir(), "token")
+			stdout, stderr, err := runLease(t, hub, "sandbox", "create", "widgets", "--token-file", path)
+			if err == nil || ExitCode(err) == 0 {
+				t.Fatalf("afc sandbox create succeeded although the token could not be written (exit %d)", ExitCode(err))
+			}
 
-	reqs := hub.requests()
-	if len(reqs) != 2 || reqs[1].Method != http.MethodDelete || reqs[1].Path != "/api/v1/workspaces/widgets/sandboxes/"+leaseIDText {
-		t.Fatalf("requests = %+v; want the POST and then a DELETE of the new lease", reqs)
-	}
-	if out := stdout + stderr + err.Error(); !strings.Contains(out, path) {
-		t.Errorf("output does not name the token file %s:\n%s", path, out)
-	}
-	if strings.Contains(stdout+stderr, leaseTokenText) {
-		t.Errorf("the token reached stdout or stderr after the failed write:\n%s\n%s", stdout, stderr)
+			reqs := hub.requests()
+			if len(reqs) != 2 || reqs[1].Method != http.MethodDelete || reqs[1].Path != "/api/v1/workspaces/widgets/sandboxes/"+leaseIDText {
+				t.Fatalf("requests = %+v; want the POST and then a DELETE of the new lease", reqs)
+			}
+			out := stdout + stderr + err.Error()
+			for _, want := range []string{path, tc.want} {
+				if !strings.Contains(out, want) {
+					t.Errorf("output does not contain %q:\n%s", want, out)
+				}
+			}
+			if strings.Contains(out, tc.reject) {
+				t.Errorf("output contains %q although that did not happen:\n%s", tc.reject, out)
+			}
+			if strings.Contains(stdout+stderr, leaseTokenText) {
+				t.Errorf("the token reached stdout or stderr after the failed write:\n%s\n%s", stdout, stderr)
+			}
+		})
 	}
 }
 
@@ -430,23 +458,6 @@ func TestSandboxCreate_HubRefusal(t *testing.T) {
 	}
 	if got, _ := os.ReadFile(path); len(got) != 0 {
 		t.Errorf("the token file holds %q after a refused create", got)
-	}
-}
-
-// The group has the lease subcommands and nothing unexpected.
-// Requirement: 26-REQ-10
-func TestSandboxGroup_LeaseCommands_TS_26_55(t *testing.T) {
-	sandbox, _, err := BuildRootCommand().Find([]string{"sandbox"})
-	if err != nil {
-		t.Fatalf("no sandbox command: %v", err)
-	}
-	var names []string
-	for _, sub := range sandbox.Commands() {
-		names = append(names, sub.Name())
-	}
-	slices.Sort(names)
-	if want := []string{"create", "destroy", "get", "list", "profiles"}; !slices.Equal(names, want) {
-		t.Errorf("sandbox subcommands = %v; want %v", names, want)
 	}
 }
 

@@ -137,3 +137,35 @@ func TestAfHubBinary_LeasesDisabled(t *testing.T) {
 		}
 	}
 }
+
+// A max_sandboxes that is not a whole number of at least 1 stops af-hub at start
+// with a message naming the key, before any queue or listener.
+// Requirement: 26-REQ-5.2
+func TestAfHubBinary_InvalidMaxSandboxes(t *testing.T) {
+	bin := buildAfHub(t)
+	for _, value := range []string{"0", "-1", "2.5"} {
+		t.Run(value, func(t *testing.T) {
+			env := newAfHubEnv(t, fmt.Sprintf(`[sandbox]
+provider      = "podman"
+max_sandboxes = %s
+
+[[sandbox.profiles]]
+name  = "tools"
+image = "registry.example/tools:1"
+ttl   = "30m"
+`, value))
+			bootstrapAfHub(t, bin, env)
+
+			output, exit := env.run(t, bin, 30*time.Second)
+			if exit <= 0 {
+				t.Fatalf("af-hub exited with status %d; want a refusal\n%s", exit, output)
+			}
+			if !strings.Contains(output, "sandbox.max_sandboxes") {
+				t.Errorf("output does not name sandbox.max_sandboxes:\n%s", output)
+			}
+			if strings.Contains(output, "queue started") || env.listening() {
+				t.Errorf("af-hub started a queue or a listener before refusing:\n%s", output)
+			}
+		})
+	}
+}

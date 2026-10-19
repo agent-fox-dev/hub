@@ -68,22 +68,38 @@ func TestInitSchema_Idempotent_TS_26_1(t *testing.T) {
 		t.Fatalf("first InitSchema returned error: %v", err)
 	}
 	insertRawLease(t, db, leaseID(1), "widgets", "leased", testToken(1))
-	var before string
-	if err := db.QueryRow(`SELECT id || workspace || state || token_hash || updated_at FROM sandbox_leases`).Scan(&before); err != nil {
-		t.Fatalf("reading the row: %v", err)
-	}
+	before := wholeRows(t, db)
 
 	if err := InitSchema(db); err != nil {
 		t.Fatalf("second InitSchema returned error: %v", err)
 	}
-	var after string
-	var rows int
-	if err := db.QueryRow(`SELECT COUNT(*), MAX(id || workspace || state || token_hash || updated_at) FROM sandbox_leases`).Scan(&rows, &after); err != nil {
-		t.Fatalf("reading the row again: %v", err)
+	if after := wholeRows(t, db); after != before {
+		t.Errorf("after the second InitSchema the rows are\n%s\nwant the unchanged\n%s", after, before)
 	}
-	if rows != 1 || after != before {
-		t.Errorf("after the second InitSchema: %d rows, %q; want the one unchanged row %q", rows, after, before)
+}
+
+// wholeRows returns every column of every lease row as one string.
+func wholeRows(t *testing.T, db *sql.DB) string {
+	t.Helper()
+	rows, err := db.Query(`SELECT * FROM sandbox_leases ORDER BY id`)
+	if err != nil {
+		t.Fatalf("reading the rows: %v", err)
 	}
+	defer rows.Close()
+	cols, _ := rows.Columns()
+	var out strings.Builder
+	for rows.Next() {
+		values := make([]any, len(cols))
+		ptrs := make([]any, len(cols))
+		for i := range values {
+			ptrs[i] = &values[i]
+		}
+		if err := rows.Scan(ptrs...); err != nil {
+			t.Fatalf("scanning a row: %v", err)
+		}
+		fmt.Fprintln(&out, values...)
+	}
+	return out.String()
 }
 
 // TS-26-2: The state CHECK accepts exactly the five states, and the token hash

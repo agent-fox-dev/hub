@@ -51,7 +51,7 @@ func writeIssueError(c echo.Context, slug string, err error) error {
 	var full *CapacityError
 	switch re, isRequestError := asRequestError(err); {
 	case isRequestError:
-		return apikit.WriteAPIError(c, http.StatusBadRequest, re.msg)
+		return apikit.WriteAPIError(c, re.status, re.msg)
 	case errors.As(err, &missing):
 		return apikit.WriteAPIErrorWithType(c, http.StatusUnprocessableEntity, missing.Error(), "secret_missing")
 	case errors.As(err, &full):

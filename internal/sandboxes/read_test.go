@@ -2,7 +2,6 @@ package sandboxes
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -304,6 +303,16 @@ func TestRender_ExactFields_TS_26_47(t *testing.T) {
 		t.Errorf("GET /sandboxes: status %d, body %s; want a list holding the lease", admin.Code, admin.Body)
 	}
 
+	// A profile with no secrets renders them as [], not null.
+	bare := env.mustIssueWith(`{"profile":"data"}`)
+	if secretsList, ok := bare["secrets"].([]any); !ok || len(secretsList) != 0 {
+		t.Errorf("secrets of a profile without any = %v (%T); want []", bare["secrets"], bare["secrets"])
+	}
+	one = env.get("/api/v1/workspaces/widgets/sandboxes/"+bare["id"].(string), apiKeyAuth())
+	if secretsList, ok := jsonObject(t, one)["secrets"].([]any); !ok || len(secretsList) != 0 {
+		t.Errorf("GET one: secrets = %v; want []", jsonObject(t, one)["secrets"])
+	}
+
 	// The issuing POST has the same fields plus the token.
 	posted := append(slices.Clone(wantFields), "token")
 	slices.Sort(posted)
@@ -368,5 +377,4 @@ func TestAdminList_NonAdmin_TS_26_14(t *testing.T) {
 	if rec := env.get("/api/v1/sandboxes", adminAuth()); rec.Code != http.StatusOK {
 		t.Errorf("admin token: status %d; want 200", rec.Code)
 	}
-	_ = fmt.Sprint
 }
