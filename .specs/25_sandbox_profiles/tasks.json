@@ -192,7 +192,7 @@
       "done_when": [
         "`go test ./internal/sandboxes/ -run TestValidate -count=1` passes"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     },
     {
