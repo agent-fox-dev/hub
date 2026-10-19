@@ -186,7 +186,7 @@
       "done_when": [
         "POST with {\"profile\":\"tools\"} returns 201 with a 48-character token and only its SHA-256 is stored"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 5,

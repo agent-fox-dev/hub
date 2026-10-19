@@ -17,14 +17,7 @@ import (
 func newChainDB(t *testing.T) *sql.DB {
 	t.Helper()
 	db := openLeaseDB(t)
-	for _, stmt := range []string{
-		`CREATE TABLE workspaces (slug TEXT PRIMARY KEY, owner_id TEXT NOT NULL, org_id TEXT, status TEXT NOT NULL DEFAULT 'active', clone_status TEXT NOT NULL DEFAULT 'ready')`,
-		`CREATE TABLE org_members (org_id TEXT NOT NULL, user_id TEXT NOT NULL, PRIMARY KEY (org_id, user_id))`,
-	} {
-		if _, err := db.Exec(stmt); err != nil {
-			t.Fatalf("creating a table: %v", err)
-		}
-	}
+	createWorkspaceTables(t, db)
 	return db
 }
 
