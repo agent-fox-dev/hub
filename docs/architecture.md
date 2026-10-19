@@ -2,6 +2,64 @@
 
 This document describes the high-level architecture of af-hub.
 
+## Sandboxes
+
+`internal/sandboxes` owns the deployment's sandbox definition: where sandboxes
+run and what shape they take. It builds one AgentKit sandbox provider from the
+`[sandbox]` section of `config.toml`, checks every profile against what that
+provider can honour, and publishes the profiles read-only. It creates no
+sandbox; later specs build leases, the gateway and expiry on top of it.
+
+| File | Responsibility |
+|------|----------------|
+| `config.go` | `LoadConfig`: reads the `[sandbox]` table from the file apikit loads, expands `${NAME}` in the section only, refuses unknown keys with their full path. |
+| `validate.go` | `Validate`: every static rule for the deployment keys and profiles, collected into one joined error. Uses `secrets.ValidateKey` for secret and env names. |
+| `provider.go` | `ProviderFactory` (the shape of `podman.New`), `PodmanFactory`, `BuildProvider`. |
+| `service.go` | `Service`, `Start`, `New`: probes the provider once, checks `network_modes` and turns each profile into a `sandbox.Spec` that `sandbox.CheckSpec` must accept. Keeps the provider and the validated profiles in memory. |
+| `startup.go` | `Init`: the one call `cmd/af-hub` makes. Loads, validates, starts and logs. |
+| `permissions.go`, `auth.go` | The `sandboxes:read` and `sandboxes:write` scopes and the standalone auth helpers. |
+| `handlers.go` | `RegisterRoutes` and `GET /api/v1/sandbox-profiles`, built from the in-memory profiles. |
+
+### Start-up order
+
+`cmd/af-hub` calls `sandboxes.Init` immediately after `apikit.Bootstrap` and
+before the workspace root, the job queues, the workers and the routes are set
+up:
+
+1. `Bootstrap` runs first, so generating the first-boot admin token never
+   depends on the sandbox configuration or on a container engine.
+2. `Init` loads the section from `apikit.ConfigPath()`. No section means the
+   feature is off: `Init` returns a nil service after one info log line.
+3. Otherwise `Start` validates the section; static failures are returned
+   before the provider is built or the engine is contacted. Then
+   `BuildProvider` builds the Podman provider, `New` probes it, and each
+   profile is checked against its capabilities.
+4. Any failure is fatal: the process exits before a queue, a worker or a
+   listener exists.
+5. `sandboxes.Permissions()` is appended to the scopes registered with apikit
+   on every start, and `RegisterRoutes` mounts the listing with the service,
+   or with a nil service when the feature is off. A nil service answers
+   `404 sandboxes_disabled`.
+
+The service holds no database handle and no secrets store, and the listing
+reads nothing but the profiles in memory, so it keeps answering when the
+engine becomes unreachable after start.
+
+### AgentKit dependency
+
+The provider comes from the sibling checkout `../agentkit-go`. Its sandbox
+packages are a separate Go module, `github.com/agent-fox-dev/agentkit-go/sandbox`,
+that requires the root module, so `go.mod` replaces both with the sibling
+(`replace` lines in a dependency's `go.mod` are ignored). The hub image build
+and both CI workflows supply the checkout next to the repository the same way
+they supply `../apikit`. `afc` stays a static `CGO_ENABLED=0` binary: neither
+`cmd/afc` nor `internal/cli` imports `internal/sandboxes` or any AgentKit
+package.
+
+`sandbox.Provider` has no `List` or `Destroy`; the start-up probe is therefore
+one `Reap` call under a 10-second timeout. See
+`docs/errata/25_sandbox_profiles_divergences.md`.
+
 ## Git Server
 
 The git server (`internal/gitserver`) provides smart HTTP git endpoints for

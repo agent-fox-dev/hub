@@ -394,7 +394,7 @@
       "done_when": [
         "With an invalid sandbox section `af-hub --admin-email` still exits 0 and writes the token"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     },
     {
