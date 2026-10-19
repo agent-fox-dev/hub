@@ -461,7 +461,7 @@
       "done_when": [
         "`make test` passes offline with no container engine, provider or gateway"
       ],
-      "state": "pending"
+      "state": "done"
     }
   ]
 }

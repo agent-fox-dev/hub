@@ -8,7 +8,8 @@ This document describes the high-level architecture of af-hub.
 run and what shape they take. It builds one AgentKit sandbox provider from the
 `[sandbox]` section of `config.toml`, checks every profile against what that
 provider can honour, and publishes the profiles read-only. It creates no
-sandbox; later specs build leases, the gateway and expiry on top of it.
+sandbox. The lease record (below) is built on top of it; the gateway, expiry and
+a remote provider are later specs.
 
 | File | Responsibility |
 |------|----------------|
@@ -19,6 +20,10 @@ sandbox; later specs build leases, the gateway and expiry on top of it.
 | `startup.go` | `Init`: the one call `cmd/af-hub` makes. Loads, validates, starts and logs. |
 | `permissions.go`, `auth.go` | The `sandboxes:read` and `sandboxes:write` scopes and the standalone auth helpers. |
 | `handlers.go` | `RegisterRoutes` and `GET /api/v1/sandbox-profiles`, built from the in-memory profiles. |
+| `lease_schema.go`, `lease.go`, `store_query.go` | The `sandbox_leases` table (`InitSchema`), the `Lease` type and the `LeaseStore`: insert, read, list, `LookupByToken`, `EndLease`, `RevokeToken`. |
+| `lease_service.go`, `lease_validate.go`, `token.go` | `LeaseService.Issue`: request validation, the required-secret check, id and token generation, the capacity count and the insert. |
+| `secretcheck.go` | `ResolutionChain` and `CheckRequiredSecrets`: which scopes a workspace's secrets are searched in, and a check that lists names only. |
+| `routes.go`, `handlers_issue.go`, `handlers_read.go`, `handlers_delete.go`, `render.go` | `RegisterLeaseRoutes`: the five lease routes, the checks they share (`begin`, `authorize`) and the lease representation. |
 
 ### Start-up order
 
@@ -44,6 +49,52 @@ up:
 The service holds no database handle and no secrets store, and the listing
 reads nothing but the profiles in memory, so it keeps answering when the
 engine becomes unreachable after start.
+
+### The lease record
+
+A **lease** is a row of the `sandbox_leases` table: a caller's right to one
+sandbox in one workspace, with a snapshot of the profile taken when it was
+issued (image, network, resources, landlock, the required and optional secret
+names and the fixed environment). The table is created by `sandboxes.InitSchema`
+at every start, right after `secrets.InitSchema`, whether or not sandboxes are
+enabled, so switching them off and on again keeps the history. Its `state`
+column allows all five states (`leased`, `active`, `destroyed`, `expired`,
+`failed`) because SQLite cannot alter a `CHECK`; only `leased` and `destroyed`
+are reachable in this release.
+
+`cmd/af-hub` builds a `LeaseService` from the validated profiles, the database,
+the secrets store and the audit emitter when sandboxes are enabled, and passes
+`nil` otherwise; `RegisterLeaseRoutes` mounts the routes either way, and a `nil`
+service answers `404 sandboxes_disabled`. Issuing a lease, in `Issue`:
+
+1. The body is validated (`lease_validate.go`) and resolved to a profile, a TTL, a
+   purpose and labels. Nothing is stored on a refusal.
+2. `CheckRequiredSecrets` lists the key names of the workspace's resolution chain
+   (`ResolutionChain`: the workspace, the org only while the workspace owner is a
+   member of it, the owner's user scope) through a `SecretLister`, an interface
+   with the single method `ListSecrets`. It cannot read a value.
+3. The id (`sbx_` and 16 random bytes in hex) and the token (`sbl_` and 33 random
+   bytes in base64url) are drawn from the injected random source. Only the token's
+   SHA-256 is stored.
+4. Under one lock in the process and in one transaction, the live leases are
+   counted (`leased` or `active` with `expires_at` in the future, across
+   workspaces) and the lease is inserted unless `max_sandboxes` is reached. The
+   secret check runs before the transaction: reading secrets inside it would need
+   a second connection. `apikit.OpenDatabase` begins transactions `IMMEDIATE`;
+   the lock keeps the limit with a handle whose transactions are deferred.
+5. One `hub.sandbox.lease` audit event is emitted after the commit.
+
+Every ending of a lease goes through `LeaseStore.EndLease`: one conditional
+`UPDATE` that sets the terminal state, `ended_at`, `updated_at` and `end_reason`
+and clears the token hash for a lease that is still `leased` or `active`. The
+`DELETE` route calls it, and a test pins that no other production code clears a
+token hash.
+
+Three exported pieces are the seams the sandbox gateway builds on and have no
+production caller yet: `LeaseStore.LookupByToken` (a presented token to its live
+lease, or `ErrLeaseNotFound` without saying why), `LeaseStore.RevokeToken` and
+`ResolutionChain`, which the gateway uses to resolve secret *values* in the order
+the presence check used for their names.
 
 ### AgentKit dependency
 

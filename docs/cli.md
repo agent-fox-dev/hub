@@ -1886,8 +1886,11 @@ rebuild was enqueued).
 
 The `sandbox` command group works with the sandboxes of a hub. A hub offers
 sandboxes only when its `config.toml` has a `[sandbox]` section (see
-[Server Configuration](configuration.md#sandbox)). The group has one
-subcommand in this release.
+[Server Configuration](configuration.md#sandbox)). `afc sandbox profiles` shows
+what the hub offers; `create`, `list`, `get` and `destroy` work with the leases
+a caller holds (see [Sandbox Lease Endpoints](api.md#sandbox-lease-endpoints)).
+A lease is a right to one sandbox: this release records it and revokes its token,
+and creates no sandbox.
 
 ### afc sandbox profiles
 
@@ -1955,6 +1958,119 @@ $ afc sandbox profiles
 | 0 | Profiles listed |
 | 1 | The hub answered with an error: not authenticated (401), PAT without `sandboxes:read` or `sandboxes:write` (403), sandboxes not enabled on the hub (404), or a server error |
 | 2 | Usage error such as a positional argument, no API key configured (run `afc login`), or the hub could not be reached |
+
+---
+
+### afc sandbox create
+
+Issue a sandbox lease in a workspace.
+
+**Usage:**
+
+```
+afc sandbox create <workspace-slug> [--profile <name>] [--purpose <text>] [--ttl <duration>]
+                    [--label <key=value>]... [--token-file <path>]
+```
+
+**Flags:**
+
+| Flag | Description |
+|------|-------------|
+| `--profile` | Profile name; the hub's default profile when omitted |
+| `--purpose` | What the sandbox is for, at most 64 characters |
+| `--ttl` | Lifetime of the lease, such as `30m`; at least `1m` and at most the profile's TTL. Passed to the hub unparsed; the profile's TTL when omitted |
+| `--label` | A label as `key=value`; repeatable. The value may contain `=` |
+| `--token-file` | Write the lease token to this file instead of printing it |
+
+**Behavior:**
+
+- Sends `POST /api/v1/workspaces/<slug>/sandboxes` with only the fields that were
+  set.
+- A `--label` without `=`, or the same label key twice, exits with code 2 before
+  any request is sent.
+- Without `--token-file` it prints the whole lease, token included, to stdout and
+  warns on stderr that the token will not be shown again. The hub returns the
+  token only in this response.
+- With `--token-file` it opens the file before the request: it is created or
+  truncated and set to mode `0600` (an explicit chmod, which the umask does not
+  narrow). If the file cannot be opened the command exits with code 2 and sends
+  no request. After the request it writes the token to the file with no trailing
+  newline and prints the lease **without** the `token` key. If the write fails it
+  sends a best-effort `DELETE` for the new lease and exits with code 1 with a
+  message naming the file; the token never falls back to stdout. If the hub
+  refuses the request, the file is left empty.
+
+**Exit Codes:**
+
+| Code | Condition |
+|------|-----------|
+| 0 | Lease issued |
+| 1 | The hub refused the request (bad profile or `ttl`, missing secrets, capacity reached, sandboxes not enabled, no such workspace, not authenticated), or the token could not be written |
+| 2 | Usage error, a bad `--label`, a `--token-file` that cannot be opened, no API key configured, or the hub could not be reached |
+
+---
+
+### afc sandbox list
+
+List the leases of a workspace.
+
+**Usage:**
+
+```
+afc sandbox list <workspace-slug> [--all]
+```
+
+**Behavior:**
+
+- Sends `GET /api/v1/workspaces/<slug>/sandboxes`, with `?all=true` for `--all`.
+- Prints the leases as one JSON array, newest first, at most 200. Without `--all`
+  only live leases are listed; `--all` includes the ones that have ended.
+- The admin-only list of every workspace's leases (`GET /api/v1/sandboxes`) has
+  no `afc` command.
+
+**Exit Codes:** as for `afc sandbox create`, without the token-file cases.
+
+---
+
+### afc sandbox get
+
+Show one lease.
+
+**Usage:**
+
+```
+afc sandbox get <workspace-slug> <lease-id>
+```
+
+**Behavior:**
+
+- Sends `GET /api/v1/workspaces/<slug>/sandboxes/<lease-id>` and prints the lease
+  as one JSON document. The lease never includes its token.
+- A malformed, unknown or foreign lease ID exits with code 1 and the hub's message
+  `sandbox lease not found`.
+
+**Exit Codes:** as for `afc sandbox list`.
+
+---
+
+### afc sandbox destroy
+
+End a lease and revoke its token.
+
+**Usage:**
+
+```
+afc sandbox destroy <workspace-slug> <lease-id>
+```
+
+**Behavior:**
+
+- Sends `DELETE /api/v1/workspaces/<slug>/sandboxes/<lease-id>`. The hub answers
+  `204` with no body, also for a lease that has ended already.
+- Prints `{"id": "<lease-id>", "status": "destroyed"}` to stdout and a
+  confirmation to stderr.
+
+**Exit Codes:** as for `afc sandbox list`.
 
 ---
 
