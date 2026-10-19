@@ -195,6 +195,11 @@ func (e *leaseEnv) plantSecret(ownerType, ownerID, key, value string) {
 // do sends a request to the mounted routes. auth nil means unauthenticated.
 func (e *leaseEnv) do(method, path, body string, auth *apikit.AuthInfo) *httptest.ResponseRecorder {
 	e.t.Helper()
+	return e.serve(method, path, body, auth)
+}
+
+// serve sends a request to the environment's router.
+func (e *leaseEnv) serve(method, path, body string, auth *apikit.AuthInfo) *httptest.ResponseRecorder {
 	var reader io.Reader
 	if body != "" {
 		reader = strings.NewReader(body)
@@ -206,7 +211,7 @@ func (e *leaseEnv) do(method, path, body string, auth *apikit.AuthInfo) *httptes
 	if auth != nil {
 		header, err := json.Marshal(auth)
 		if err != nil {
-			e.t.Fatalf("marshalling auth info: %v", err)
+			panic(fmt.Sprintf("marshalling auth info: %v", err))
 		}
 		req.Header.Set("X-Test-Auth", string(header))
 	}

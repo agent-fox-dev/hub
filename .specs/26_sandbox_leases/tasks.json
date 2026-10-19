@@ -361,7 +361,7 @@
       "done_when": [
         "after DELETE the token lookup returns ErrLeaseNotFound and the stored hash is NULL"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 9,

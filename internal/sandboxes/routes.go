@@ -16,6 +16,7 @@ func RegisterLeaseRoutes(api *echo.Group, s *LeaseService) {
 	api.POST("/workspaces/:slug/sandboxes", handleIssueLease(s))
 	api.GET("/workspaces/:slug/sandboxes", handleListLeases(s))
 	api.GET("/workspaces/:slug/sandboxes/:id", handleGetLease(s))
+	api.DELETE("/workspaces/:slug/sandboxes/:id", handleDeleteLease(s))
 	api.GET("/sandboxes", handleAdminListLeases(s))
 }
 
