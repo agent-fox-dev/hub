@@ -441,14 +441,18 @@ it sends nothing.
    (the variable's, else the hub's statement for the host), so that the requests of
    issuex and the ones the hub sends itself go to one API root. The forge is told
    (`issuex.DetectForge`); a forge that cannot be told is 422 here.
-3. The route's text fields are measured against the forge's limit (413).
+3. The route may refuse what this forge cannot take (`writePlan.refuse`: an update that
+   sets only assignees on GitLab is 400), and its text fields are measured against the
+   forge's limit (413).
 4. The route's `send` runs, calling the forge through `writeRun.call`: each call has
    the request's context with the cancellation detached, so that a write the caller
    leaves is finished and recorded, and a deadline of its own, so that a write with
    several requests gives each the whole 30 seconds. There is no retry.
 5. `emit` records the event, whether the write succeeded or failed, before the answer is
    written; a failure goes through `mapCall` first, so that the event can say the
-   `error_type` the hub answers with. A request refused before step 4 records nothing.
+   `error_type` the hub answers with. A request refused before step 4 records nothing,
+   and neither does a write whose calls issuex refused with `ErrNoToken` (the workspace
+   has no credential) before sending anything.
 
 ### What the writes do themselves
 

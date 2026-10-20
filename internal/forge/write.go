@@ -7,6 +7,7 @@ import (
 	"io"
 	"strings"
 
+	"github.com/agent-fox-dev/aflib/issuex"
 	"github.com/labstack/echo/v4"
 )
 
@@ -42,6 +43,10 @@ type writePlan struct {
 	texts []textField
 	// extra is the metadata of the event besides the common ones.
 	extra map[string]any
+	// refuse, when set, is called once the forge is known, for a request that this forge
+	// cannot take. It may adjust the plan, extra included, and returns the refusal to
+	// answer, or nil.
+	refuse func(forge issuex.ForgeType) *refusal
 	// send sends the write to the forge, through w.call, and returns the answer.
 	send func(w *writeRun) (*writeAnswer, error)
 }
@@ -79,20 +84,28 @@ type writeRun struct {
 // cancellation detached, so that a write which has left hub finishes and is recorded
 // when the caller goes away, and has a deadline of its own: every request of a write
 // that takes several gets the whole of it.
+//
+// issuex refuses a write with ErrNoToken, before it sends anything, when the workspace has
+// no credential: such a call has sent nothing, and a write whose calls all were such has
+// nothing to record.
 func (w *writeRun) call(f func(ctx context.Context) error) error {
-	w.sent = true
 	ctx := withCredential(context.WithoutCancel(w.c.Request().Context()), w.fc.token)
 	ctx, cancel := context.WithTimeout(ctx, callDeadline)
 	defer cancel()
-	return f(ctx)
+	err := f(ctx)
+	if !issuex.IsNoToken(err) {
+		w.sent = true
+	}
+	return err
 }
 
 // write is the handler of a write route. It applies the checks that come first on every
 // write route, in this order: no credential is 401, a credential without forge:write is
 // 403, a workspace that does not exist or is not the caller's is 404, a workspace that
 // is not active is 400. Then the request itself is read and checked (400), the client is
-// resolved (422 and the like), the body-like fields are measured against the forge's
-// limit (413), and only then is the write sent to the forge and recorded.
+// resolved (422 and the like), the route may refuse what this forge cannot take (400), the
+// body-like fields are measured against the forge's limit (413), and only then is the write
+// sent to the forge and recorded.
 func (h *handlers) write(rt writeRoute) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		req, err := h.authorize(c, writeAccess)
@@ -114,6 +127,11 @@ func (h *handlers) write(rt writeRoute) echo.HandlerFunc {
 		fc, err := h.buildClient(req, tgt, true)
 		if err != nil {
 			return writeForgeError(c, err)
+		}
+		if plan.refuse != nil {
+			if ref := plan.refuse(fc.forge); ref != nil {
+				return writeRefusal(c, ref)
+			}
 		}
 		if ref := checkBodyLimits(fc.forge, plan.texts); ref != nil {
 			return writeRefusal(c, ref)

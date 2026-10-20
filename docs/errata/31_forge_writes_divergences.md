@@ -23,7 +23,7 @@ the calls of `issuex`.
    `github_issues.go` and `gitlab_issues.go`), so `body: ""`, `labels: []` and
    `assignees: []` (31-REQ-2.3) cannot be sent. The hub sends the update itself:
    `forgeWriter.ChangeIssue` (`write_raw.go:57`) calls `rawForge.updateIssue`
-   (`write_raw.go:193`) with an `issueUpdate` whose fields are pointers, so that a field that
+   (`write_raw.go:206`) with an `issueUpdate` whose fields are pointers, so that a field that
    is set but empty is sent. It goes through the shared HTTP client (user agent, token rules,
    redirect policy, deadline) and fails as the `*issuex.HTTPError` that `mapForgeError`
    maps. GitLab's names are `description`, `state_event` (`close` and `reopen`) and a
@@ -61,7 +61,7 @@ the calls of `issuex`.
    issue, and no URL for the comment it posts. A close is `AddComment`, which returns the
    URL for the event, when the comment is not blank, and then the update with the state
    `closed`, which returns the issue as the forge reports it (`prepareCloseIssue`,
-   `write_issues.go:165`) (`TestCloseIssue_CommentBeforeClose_TS_31_16`,
+   `write_issues.go:179`) (`TestCloseIssue_CommentBeforeClose_TS_31_16`,
    `TestCloseIssue_FailedCloseKeepsTheCommentURL_TS_31_18`, `TestCloseIssue_GitLab`).
 
 6. **A comment on a pull request is `AddComment`, not `PostReviewComment`.** In issuex
@@ -70,14 +70,17 @@ the calls of `issuex`.
    comment's URL on the pull request's conversation. `AddComment` with `IsPullRequest` posts
    on the issue comments of the number on GitHub and the merge request's notes on GitLab,
    and returns the URL (`commentOnPullRequest`, `write_pulls.go:78`, which is
-   `prepareComment(true)`, `write_issues.go:231`)
+   `prepareComment(true)`, `write_issues.go:245`)
    (`TestCommentOnPullRequest_TS_31_37`, `TestPullRequests_GitLab`).
 
 7. **GitLab assignees are accepted and not sent.** GitLab takes assignees as user ids. issuex
    sends none on create or update; the hub's own update has no names to ids lookup, which
    would be requests the spec does not ask for. The assignees are validated (at most 100,
-   none blank) and left out of the request on GitLab, on create and on update
-   (`gitlabPayload`, `write_raw.go:154`; `TestGitLabAssigneesAreAcceptedAndNotSent`). A
+   none blank) and left out of the request on GitLab, on create and on update; an update
+   that sets nothing else is `400 nothing to update`, since it would change nothing, and
+   the `fields` of the event of an update name only what was sent (`writePlan.refuse`
+   in `prepareUpdateIssue`, `write_issues.go:132`; `gitlabPayload`, `write_raw.go:154`;
+   `TestGitLabAssigneesAreAcceptedAndNotSent`, `TestGitLabUpdateWithOnlyAssignees`). A
    caller who needs them on GitLab has to set them there.
 
 8. **A write goes to the API root the hub states, not the one issuex would find.** A write
@@ -91,7 +94,7 @@ the calls of `issuex`.
 
 9. **The requests the hub sends are not retried at all.** issuex retries a rate-limited
    request once, after the forge's `Retry-After` plus a second (`forgeHTTP.do`,
-   `transport.go`). The hub's own requests (`rawForge.do`, `write_raw.go:235`) are single
+   `transport.go`). The hub's own requests (`rawForge.do`, `write_raw.go:248`) are single
    attempts: a 429 on an issue update is answered at once, `Retry-After` passed through
    (`TestUpdateIssue_ForgeFailures/429`). 31-REQ-8.2 asks for no hub-side retry, so this is
    within it, but the two kinds of request differ.
@@ -109,7 +112,10 @@ the calls of `issuex`.
     path with a `%2F` and decoded for one without, so decoding it once would sometimes be a
     second decoding of a name that holds a `%`. `lastSegment` (`write_labels.go:64`) reads the
     last segment of `URL.EscapedPath()` and decodes it once
-    (`TestRemoveLabel_NameIsDecodedOnce_TS_31_23`, with `%2F`, `:`, `%2525` and `%20`).
+    (`TestRemoveLabel_NameIsDecodedOnce_TS_31_23`, with `%2F`, `:`, `%2525` and `%20`). A name of `.`
+    or `..` is sent as `%2E` or `%2E%2E`: `pathSegment` (`write_raw.go:195`), because a forge or
+    a proxy resolves a dot segment and the removal of a label named `.` would remove every
+    label (`TestDotSegmentLabelNamesAreEncoded`).
 
 13. **The forge is told before the client is built.** The body limit depends on the forge,
     and an unknown forge must be 422 before 413, so `buildClient` runs `issuex.DetectForge`
@@ -135,11 +141,33 @@ the calls of `issuex`.
     width on GitHub and, on GitLab, where a field is a megabyte of code points, with the
     1-byte and the 4-byte character. TS-31-43 expects `Retry-After: 31` (entry 10).
 
+17. **A write for a workspace with no credential sends nothing and records nothing.** issuex
+    refuses `CreateIssue`, `AddComment`, `AddLabels`, `CreatePullRequest` and (on GitLab)
+    `RemoveLabel` with `ErrNoToken` before it sends a request, when the client has no token.
+    31-REQ-9.1 records a write "that has sent at least one request to the forge", so
+    `writeRun.call` does not count such a call (`write.go:91`); the answer is the mapped
+    error, `502 forge_error` with `no authentication token configured`. The requests the hub
+    sends itself (an update, a lookup, a GitHub removal) have no such refusal: they go out
+    without a token header, the forge answers 401, and that is `forge_unauthenticated` and a
+    recorded event (`TestWriteWithoutACredentialSendsNothingAndRecordsNothing`).
+
+18. **Limits that are not handled.** (a) GitLab takes `labels`, `add_labels` and
+    `remove_labels` as comma-separated lists, so a label name with a comma is split there,
+    by issuex's `AddLabels` and by the hub's update. (b) GitLab reads a numeric name in
+    `GET .../labels/:name` as the id of a label. (c) A redirect of a write that the forge
+    answers with 301 or 302 is followed by Go's client as a GET (the policy of spec 30's
+    client only pins host, port and scheme). (d) A forge on a port, such as
+    `https://git.example:8443/o/r`, is reached on the default port when `FORGE_API_URL` does
+    not say otherwise, as for the reads (`defaultAPIURL` takes the host without its port).
+    (e) The success answer of a write is the forge's data as issuex encodes it; a URL in it
+    is not scrubbed, only the URLs the hub records in an event are (`url`, `comment_url`).
+
 ## Impact
 
 The routes, statuses, `error_type`s and events are those of the spec. The differences that a
 caller can see are entries 7 (GitLab assignees are not sent), 8 (a write looks at
-`FORGE_API_URL` or the host, not the hub's environment), 9 and 10 (rate limits). Nothing in
+`FORGE_API_URL` or the host, not the hub's environment), 9 and 10 (rate limits), 17 (a
+write for a workspace with no credential) and 18 (the limits that are not handled). Nothing in
 `aflib` was changed. The findings for aflib are: a label lookup and a create that returns
 the label; an update that can send an empty field; a label removal that does not hide a
 missing issue; a close and a pull-request comment that return the issue and the URL; and

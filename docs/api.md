@@ -214,7 +214,7 @@ The `error_type` field is omitted when not applicable. Known error types:
 | `forge_forbidden` | every forge route | The forge answered 403 that is not a rate limit. 502 |
 | `forge_rate_limited` | every forge route | A rate limit issuex could not wait out. 429, with `Retry-After` in whole seconds when known |
 | `forge_rejected` | every forge route | The forge answered another 4xx. 422 |
-| `forge_error` | every forge route | The forge answered 5xx, a response that could not be read, or a redirect to another host. 502 |
+| `forge_error` | every forge route | The forge answered 5xx, a response that could not be read, or a redirect to another host. 502. A write that issuex refuses because the workspace has no credential (`no authentication token configured`) is this too; it sends nothing and records no event |
 | `forge_unreachable` | every forge route | The connection to the forge failed at DNS, TCP or TLS level. 502 |
 | `forge_timeout` | every forge route | The 30-second deadline passed. 504 |
 
@@ -3910,10 +3910,11 @@ A workspace's repository lives on a forge, GitHub or GitLab. These endpoints let
 a caller read the repository, its issues and its pull requests through the hub,
 using the credential the hub already holds for the workspace and never one of
 the caller's own. For every request the hub builds a fresh client for the
-workspace itself, from the workspace's own record; the only input it takes from
-the request is which remote to read (`target`). Neither the request's
-`Authorization` header nor its body reaches the forge, and no response shows the
-credential, only its kind.
+workspace itself, from the workspace's own record. A read takes nothing from the
+request but which remote to read (`target`) and its own parameters; a write sends
+the fields of its body (a title, a comment, labels) and nothing else. Neither the
+request's `Authorization` header nor the body as it came reaches the forge, and no
+response shows the credential, only its kind.
 
 The ten read endpoints need `forge:read`. They work on `active` and `archived`
 workspaces alike, take no workspace lock, need no clone (`clone_status` does not
@@ -3995,7 +3996,9 @@ A write route checks, in this order, and answers with the first that fails:
    `workspace_mode_mismatch`), a number in the path that is not a positive integer,
    a body that is not JSON of the shape the route takes, and the field rules of the
    route.
-6. Building the client: 422 or 500, as for a read.
+6. Building the client: 422 or 500, as for a read. A request this forge cannot take
+   is refused here: an update that sets only `assignees` on GitLab is
+   `400 nothing to update`.
 7. A body-like field over the forge's limit: 413 `body_too_large`. The limit depends
    on the forge, so this check follows the client: a forge the hub cannot tell is
    422 even for an oversized body.
@@ -4164,7 +4167,9 @@ number, on GitLab the project's `iid`.
   absent or `null` is left alone; `title` must not be blank; `body: ""` clears the
   body; `state` is `open` or `closed`; `labels` and `assignees` replace the issue's
   whole set, and `[]` removes every entry. A body that sets none of them is
-  `400 nothing to update`. The answer is the issue as the forge returns it.
+  `400 nothing to update`, and so, on GitLab, is one that sets only `assignees`, which
+  the hub does not send there (an update that sets other fields records only those
+  as changed). The answer is the issue as the forge returns it.
 - **`POST .../issues/:n/close`.** An empty body, `{}` or a comment that is blank
   closes the issue. A comment that is not blank is posted first, and the issue is
   closed only when that succeeded: a comment the forge refuses leaves the issue open
@@ -4180,7 +4185,9 @@ number, on GitLab the project's `iid`.
   for the forge to deal with, and its answer is passed through.
 - **`DELETE .../issues/:n/labels/:name`.** `:name` is the last path segment,
   percent-decoded exactly once: `type%2Fbug` removes `type/bug`, `af:fix` is
-  unchanged. The answer is 204 also when the issue never had the label. GitHub
+  unchanged; a label named `.` or `..` is sent to the forge as `%2E` or `%2E%2E`, so that
+  no dot segment is left in the path. The answer is 204 also when the issue never had
+  the label. GitHub
   answers not found to such a removal and GitLab does not, so after a not found from
   the forge the hub reads the issue once: if it is there the answer is 204, and if
   not it is 404 `forge_not_found`.

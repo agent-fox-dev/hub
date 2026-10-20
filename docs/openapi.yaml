@@ -2978,7 +2978,7 @@ paths:
       operationId: updateForgeIssue
       summary: Change an issue on the workspace's forge
       description: |
-        Changes only the fields the request sets. A field that is absent or `null` is left as it is; `body: ""` clears the body; `labels` and `assignees` replace the issue's whole set, `[]` removing every entry. `title` must not be blank, `state` is `open` or `closed`. A body that sets none of the fields is `400` (`nothing to update`). The answer is the issue as the forge returns it. On GitLab `n` is the project's `iid`, and assignees are accepted and not sent.
+        Changes only the fields the request sets. A field that is absent or `null` is left as it is; `body: ""` clears the body; `labels` and `assignees` replace the issue's whole set, `[]` removing every entry. `title` must not be blank, `state` is `open` or `closed`. A body that sets none of the fields is `400` (`nothing to update`). The answer is the issue as the forge returns it. On GitLab `n` is the project's `iid`, and assignees are not sent: an update that sets only assignees is `400` (`nothing to update`), and an update with other fields records only those as changed.
 
         Records `hub.forge.issue.update`, with the metadata described in `docs/api.md`.
 
@@ -3480,9 +3480,7 @@ paths:
         `404`; a workspace that is not `active` is `400` (`workspace is not
         active`); then the request (`target`, the number in the path, the JSON
         body) is read and checked (`400`); then the client is built (`422`, `500`);
-        then a body-like field over the forge's limit is `413`
-        (`error_type: body_too_large`; 65,536 characters on GitHub, 1,000,000 on
-        GitLab, counted in Unicode code points). Only then is the forge called. A
+        and only then is the forge called. A
         request refused at any step sends nothing to the forge and records no audit
         event. API keys and admin tokens are not scope-checked. The route needs no
         clone and takes no workspace lock. Hub never retries a write, and a caller
@@ -3540,9 +3538,7 @@ paths:
         `404`; a workspace that is not `active` is `400` (`workspace is not
         active`); then the request (`target`, the number in the path, the JSON
         body) is read and checked (`400`); then the client is built (`422`, `500`);
-        then a body-like field over the forge's limit is `413`
-        (`error_type: body_too_large`; 65,536 characters on GitHub, 1,000,000 on
-        GitLab, counted in Unicode code points). Only then is the forge called. A
+        and only then is the forge called. A
         request refused at any step sends nothing to the forge and records no audit
         event. API keys and admin tokens are not scope-checked. The route needs no
         clone and takes no workspace lock. Hub never retries a write, and a caller
@@ -3592,9 +3588,7 @@ paths:
         `404`; a workspace that is not `active` is `400` (`workspace is not
         active`); then the request (`target`, the number in the path, the JSON
         body) is read and checked (`400`); then the client is built (`422`, `500`);
-        then a body-like field over the forge's limit is `413`
-        (`error_type: body_too_large`; 65,536 characters on GitHub, 1,000,000 on
-        GitLab, counted in Unicode code points). Only then is the forge called. A
+        and only then is the forge called. A
         request refused at any step sends nothing to the forge and records no audit
         event. API keys and admin tokens are not scope-checked. The route needs no
         clone and takes no workspace lock. Hub never retries a write, and a caller

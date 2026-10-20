@@ -66,7 +66,7 @@ func (f forgeWriter) DropLabel(ctx context.Context, ref issuex.IssueRef, label s
 	if f.raw.forge == issuex.ForgeTypeGitLab {
 		return f.Client.RemoveLabel(ctx, ref, label)
 	}
-	return f.raw.do(ctx, http.MethodDelete, f.raw.issuePath(ref)+"/labels/"+url.PathEscape(label), nil, nil)
+	return f.raw.do(ctx, http.MethodDelete, f.raw.issuePath(ref)+"/labels/"+pathSegment(label), nil, nil)
 }
 
 // CheckIssue returns nil when the issue is there, and the forge's error when it is not or
@@ -80,7 +80,7 @@ func (f forgeWriter) CheckIssue(ctx context.Context, ref issuex.IssueRef) error 
 // GetLabel looks a repository label up by name. issuex has no lookup of a label.
 func (f forgeWriter) GetLabel(ctx context.Context, repo issuex.Repo, name string) (issuex.Label, error) {
 	var raw wireLabel
-	if err := f.raw.do(ctx, http.MethodGet, f.raw.labelsPath(repo)+"/"+url.PathEscape(name), nil, &raw); err != nil {
+	if err := f.raw.do(ctx, http.MethodGet, f.raw.labelsPath(repo)+"/"+pathSegment(name), nil, &raw); err != nil {
 		return issuex.Label{}, err
 	}
 	return raw.label(), nil
@@ -186,7 +186,20 @@ func (r rawForge) issuePath(ref issuex.IssueRef) string {
 	if r.forge == issuex.ForgeTypeGitLab {
 		return fmt.Sprintf("/projects/%s/issues/%d", gitlabProject(ref.Repo), ref.Number)
 	}
-	return fmt.Sprintf("/repos/%s/%s/issues/%d", url.PathEscape(ref.Repo.Owner), url.PathEscape(ref.Repo.Name), ref.Number)
+	return fmt.Sprintf("/repos/%s/%s/issues/%d", pathSegment(ref.Repo.Owner), pathSegment(ref.Repo.Name), ref.Number)
+}
+
+// pathSegment is s as one segment of a request path. url.PathEscape leaves "." and ".." as
+// they are, and a dot segment is resolved by a forge or a proxy: a label named "." would
+// remove a path segment and, with it, every label of the issue. They are sent as %2E.
+func pathSegment(s string) string {
+	switch s {
+	case ".":
+		return "%2E"
+	case "..":
+		return "%2E%2E"
+	}
+	return url.PathEscape(s)
 }
 
 // updateIssue is PATCH on GitHub's issue and PUT on GitLab's.
@@ -210,7 +223,7 @@ func (r rawForge) labelsPath(repo issuex.Repo) string {
 	if r.forge == issuex.ForgeTypeGitLab {
 		return "/projects/" + gitlabProject(repo) + "/labels"
 	}
-	return fmt.Sprintf("/repos/%s/%s/labels", url.PathEscape(repo.Owner), url.PathEscape(repo.Name))
+	return fmt.Sprintf("/repos/%s/%s/labels", pathSegment(repo.Owner), pathSegment(repo.Name))
 }
 
 // wireLabel is a label as GitHub and GitLab answer it; a missing description is null.

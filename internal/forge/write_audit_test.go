@@ -123,28 +123,7 @@ func TestWrites_EmitFailureIsLogged_TS_31_54(t *testing.T) {
 // the SSE stream of its workspace.
 // Requirement: 31-REQ-9.8
 func TestWrites_AuditConstantsAndQuery_TS_31_55(t *testing.T) {
-	want := map[string]string{
-		"EventForgeIssueCreate":        "hub.forge.issue.create",
-		"EventForgeIssueUpdate":        "hub.forge.issue.update",
-		"EventForgeIssueClose":         "hub.forge.issue.close",
-		"EventForgeCommentCreate":      "hub.forge.comment.create",
-		"EventForgeLabelAdd":           "hub.forge.label.add",
-		"EventForgeLabelRemove":        "hub.forge.label.remove",
-		"EventForgeLabelCreate":        "hub.forge.label.create",
-		"EventForgePullRequestCreate":  "hub.forge.pull_request.create",
-		"EventForgePullRequestComment": "hub.forge.pull_request.comment",
-	}
-	got := map[string]string{
-		"EventForgeIssueCreate":        audit.EventForgeIssueCreate,
-		"EventForgeIssueUpdate":        audit.EventForgeIssueUpdate,
-		"EventForgeIssueClose":         audit.EventForgeIssueClose,
-		"EventForgeCommentCreate":      audit.EventForgeCommentCreate,
-		"EventForgeLabelAdd":           audit.EventForgeLabelAdd,
-		"EventForgeLabelRemove":        audit.EventForgeLabelRemove,
-		"EventForgeLabelCreate":        audit.EventForgeLabelCreate,
-		"EventForgePullRequestCreate":  audit.EventForgePullRequestCreate,
-		"EventForgePullRequestComment": audit.EventForgePullRequestComment,
-	}
+	want, got := forgeEventConstants()
 	for name, value := range want {
 		if got[name] != value {
 			t.Errorf("audit.%s = %q; want %q", name, got[name], value)
@@ -178,38 +157,9 @@ func TestWrites_AuditConstantsAndQuery_TS_31_55(t *testing.T) {
 	hub := httptest.NewServer(e.echo)
 	t.Cleanup(hub.Close)
 
-	// An SSE client of the workspace, connected before the write.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	stream, err := http.NewRequestWithContext(ctx, http.MethodGet, hub.URL+"/api/v1/events?workspace=widgets", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	stream.Header.Set("X-Test-Auth", authHeader(t, adminAuth()))
-	sse, err := http.DefaultClient.Do(stream)
-	if err != nil || sse.StatusCode != http.StatusOK {
-		t.Fatalf("SSE connect: %v %v", sse, err)
-	}
-	defer sse.Body.Close()
-	frames := make(chan [2]string, 8)
-	go func() {
-		scanner := bufio.NewScanner(sse.Body)
-		var event, data string
-		for scanner.Scan() {
-			switch line := scanner.Text(); {
-			case strings.HasPrefix(line, "event: "):
-				event = strings.TrimPrefix(line, "event: ")
-			case strings.HasPrefix(line, "data: "):
-				data = strings.TrimPrefix(line, "data: ")
-			case line == "":
-				frames <- [2]string{event, data}
-				event, data = "", ""
-			}
-		}
-	}()
-	if first := <-frames; first[0] != "heartbeat" {
-		t.Fatalf("first SSE frame = %q; want the heartbeat", first[0])
-	}
+	frames := connectSSE(t, ctx, hub.URL+"/api/v1/events?workspace=widgets") // before the write
 
 	post, err := http.NewRequest(http.MethodPost, hub.URL+"/api/v1/workspaces/widgets/issues", strings.NewReader(`{"title":"t","body":"b","labels":["af:triage"]}`))
 	if err != nil {
@@ -223,34 +173,14 @@ func TestWrites_AuditConstantsAndQuery_TS_31_55(t *testing.T) {
 	resp.Body.Close()
 
 	// The audit query returns the event, already: it is recorded before the answer.
-	q, err := http.NewRequest(http.MethodGet, hub.URL+"/api/v1/audit?workspace=widgets", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	q.Header.Set("X-Test-Auth", authHeader(t, adminAuth()))
-	qr, err := http.DefaultClient.Do(q)
-	if err != nil || qr.StatusCode != http.StatusOK {
-		t.Fatalf("GET /audit: %v %v", qr, err)
-	}
-	defer qr.Body.Close()
-	var result struct {
-		Events []struct {
-			EventType  string `json:"event_type"`
-			Workspace  string `json:"workspace"`
-			ResourceID string `json:"resource_id"`
-		} `json:"events"`
-	}
-	if err := json.NewDecoder(qr.Body).Decode(&result); err != nil {
-		t.Fatal(err)
-	}
 	var found int
-	for _, ev := range result.Events {
+	for _, ev := range queryAudit(t, hub.URL+"/api/v1/audit?workspace=widgets") {
 		if ev.EventType == audit.EventForgeIssueCreate && ev.Workspace == "widgets" && ev.ResourceID == "7" {
 			found++
 		}
 	}
 	if found != 1 {
-		t.Errorf("the audit query returned %d hub.forge.issue.create events for issue 7; want 1\n%+v", found, result.Events)
+		t.Errorf("the audit query returned %d hub.forge.issue.create events for issue 7; want 1", found)
 	}
 
 	// The stream carries it.
@@ -272,6 +202,99 @@ func TestWrites_AuditConstantsAndQuery_TS_31_55(t *testing.T) {
 			t.Fatal("the SSE stream of the workspace did not receive the event")
 		}
 	}
+}
+
+// forgeEventConstants returns the documented values of the nine event types by constant
+// name, and the values of the constants in internal/audit.
+func forgeEventConstants() (want, got map[string]string) {
+	want = map[string]string{
+		"EventForgeIssueCreate":        "hub.forge.issue.create",
+		"EventForgeIssueUpdate":        "hub.forge.issue.update",
+		"EventForgeIssueClose":         "hub.forge.issue.close",
+		"EventForgeCommentCreate":      "hub.forge.comment.create",
+		"EventForgeLabelAdd":           "hub.forge.label.add",
+		"EventForgeLabelRemove":        "hub.forge.label.remove",
+		"EventForgeLabelCreate":        "hub.forge.label.create",
+		"EventForgePullRequestCreate":  "hub.forge.pull_request.create",
+		"EventForgePullRequestComment": "hub.forge.pull_request.comment",
+	}
+	got = map[string]string{
+		"EventForgeIssueCreate":        audit.EventForgeIssueCreate,
+		"EventForgeIssueUpdate":        audit.EventForgeIssueUpdate,
+		"EventForgeIssueClose":         audit.EventForgeIssueClose,
+		"EventForgeCommentCreate":      audit.EventForgeCommentCreate,
+		"EventForgeLabelAdd":           audit.EventForgeLabelAdd,
+		"EventForgeLabelRemove":        audit.EventForgeLabelRemove,
+		"EventForgeLabelCreate":        audit.EventForgeLabelCreate,
+		"EventForgePullRequestCreate":  audit.EventForgePullRequestCreate,
+		"EventForgePullRequestComment": audit.EventForgePullRequestComment,
+	}
+	return want, got
+}
+
+// connectSSE connects an admin to the event stream at url and returns its frames, as
+// {event, data}, once the first one, the heartbeat, has arrived.
+func connectSSE(t *testing.T, ctx context.Context, url string) <-chan [2]string {
+	t.Helper()
+	stream, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream.Header.Set("X-Test-Auth", authHeader(t, adminAuth()))
+	sse, err := http.DefaultClient.Do(stream)
+	if err != nil || sse.StatusCode != http.StatusOK {
+		t.Fatalf("SSE connect: %v %v", sse, err)
+	}
+	t.Cleanup(func() { sse.Body.Close() })
+	frames := make(chan [2]string, 8)
+	go func() {
+		scanner := bufio.NewScanner(sse.Body)
+		var event, data string
+		for scanner.Scan() {
+			switch line := scanner.Text(); {
+			case strings.HasPrefix(line, "event: "):
+				event = strings.TrimPrefix(line, "event: ")
+			case strings.HasPrefix(line, "data: "):
+				data = strings.TrimPrefix(line, "data: ")
+			case line == "":
+				frames <- [2]string{event, data}
+				event, data = "", ""
+			}
+		}
+	}()
+	if first := <-frames; first[0] != "heartbeat" {
+		t.Fatalf("first SSE frame = %q; want the heartbeat", first[0])
+	}
+	return frames
+}
+
+// auditEventRow is an event of the unified audit query.
+type auditEventRow struct {
+	EventType  string `json:"event_type"`
+	Workspace  string `json:"workspace"`
+	ResourceID string `json:"resource_id"`
+}
+
+// queryAudit calls GET url as an admin and returns the events.
+func queryAudit(t *testing.T, url string) []auditEventRow {
+	t.Helper()
+	q, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	q.Header.Set("X-Test-Auth", authHeader(t, adminAuth()))
+	qr, err := http.DefaultClient.Do(q)
+	if err != nil || qr.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s: %v %v", url, qr, err)
+	}
+	defer qr.Body.Close()
+	var result struct {
+		Events []auditEventRow `json:"events"`
+	}
+	if err := json.NewDecoder(qr.Body).Decode(&result); err != nil {
+		t.Fatal(err)
+	}
+	return result.Events
 }
 
 // assertDocumented checks that each constant of want is declared in file with a doc

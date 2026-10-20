@@ -2340,7 +2340,8 @@ afc issue update <workspace-slug> <number> [--title <title>] [--body <text> | --
 - `--label` and `--assignee` **replace** the issue's whole set of labels or assignees,
   they do not add to it. To remove every label, use the hub's API with `"labels": []`;
   to add a label and keep the others, use `afc issue label`.
-- On GitLab `<number>` is the project's `iid`.
+- On GitLab `<number>` is the project's `iid`, and `--assignee` is not sent (the hub
+  answers `400`, `nothing to update`, when it is the only change).
 
 ### afc issue close
 

@@ -23,12 +23,12 @@ func usageError(cmd *cobra.Command, format string, args ...any) error {
 
 // positiveNumber reads the number of an issue or pull request. The writes check it here, so
 // that a mistyped number does not reach the hub.
-func positiveNumber(arg string) (string, bool) {
+func positiveNumber(arg string) (int, bool) {
 	n, err := strconv.Atoi(arg)
 	if err != nil || n <= 0 {
-		return "", false
+		return 0, false
 	}
-	return strconv.Itoa(n), true
+	return n, true
 }
 
 // bodyFlags are --body and --body-file of a command that takes a text.
@@ -180,7 +180,7 @@ func newIssueUpdateCmd() *cobra.Command {
 			if len(payload) == 0 {
 				return usageError(cmd, "nothing to update: set at least one of --title, --body, --body-file, --state, --label and --assignee")
 			}
-			return forgeSend(cmd, http.MethodPatch, withTarget(cmd, apiPath("workspaces", args[0], "issues", n), target), payload, nil)
+			return forgeSend(cmd, http.MethodPatch, withTarget(cmd, apiPath("workspaces", args[0], "issues", strconv.Itoa(n)), target), payload, nil)
 		},
 	}
 	cmd.Flags().StringVar(&title, "title", "", "New title")
@@ -213,7 +213,7 @@ func newIssueCloseCmd() *cobra.Command {
 			if cmd.Flags().Changed("comment") {
 				payload = map[string]any{"comment": comment}
 			}
-			return forgeSend(cmd, http.MethodPost, withTarget(cmd, apiPath("workspaces", args[0], "issues", n, "close"), target), payload, nil)
+			return forgeSend(cmd, http.MethodPost, withTarget(cmd, apiPath("workspaces", args[0], "issues", strconv.Itoa(n), "close"), target), payload, nil)
 		},
 	}
 	cmd.Flags().StringVar(&comment, "comment", "", "Comment to post on the issue before it is closed")
@@ -251,7 +251,7 @@ func newCommentCmd(kind, collection, short string) *cobra.Command {
 			if err != nil {
 				return usageError(cmd, "%v", err)
 			}
-			path := withTarget(cmd, apiPath("workspaces", args[0], collection, n, "comments"), target)
+			path := withTarget(cmd, apiPath("workspaces", args[0], collection, strconv.Itoa(n), "comments"), target)
 			return forgeSend(cmd, http.MethodPost, path, map[string]any{"body": text}, nil)
 		},
 	}
@@ -292,9 +292,8 @@ func newIssueLabelCmd() *cobra.Command {
 				return usageError(cmd, "the issue number must be a positive integer")
 			}
 			labels := args[2:]
-			number, _ := strconv.Atoi(n)
-			return forgeSend(cmd, http.MethodPost, withTarget(cmd, apiPath("workspaces", args[0], "issues", n, "labels"), target), labels,
-				func() any { return labeledIssue{Status: "labeled", Number: number, Labels: labels} })
+			return forgeSend(cmd, http.MethodPost, withTarget(cmd, apiPath("workspaces", args[0], "issues", strconv.Itoa(n), "labels"), target), labels,
+				func() any { return labeledIssue{Status: "labeled", Number: n, Labels: labels} })
 		},
 	}
 	cmd.Flags().StringVar(&target, "target", "", targetWriteUsage)
@@ -319,10 +318,9 @@ func newIssueUnlabelCmd() *cobra.Command {
 			if !ok {
 				return usageError(cmd, "the issue number must be a positive integer")
 			}
-			number, _ := strconv.Atoi(n)
-			path := withTarget(cmd, apiPath("workspaces", args[0], "issues", n, "labels", args[2]), target)
+			path := withTarget(cmd, apiPath("workspaces", args[0], "issues", strconv.Itoa(n), "labels", args[2]), target)
 			return forgeSend(cmd, http.MethodDelete, path, nil,
-				func() any { return unlabeledIssue{Status: "unlabeled", Number: number, Label: args[2]} })
+				func() any { return unlabeledIssue{Status: "unlabeled", Number: n, Label: args[2]} })
 		},
 	}
 	cmd.Flags().StringVar(&target, "target", "", targetWriteUsage)

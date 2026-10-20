@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -128,6 +129,19 @@ func prepareUpdateIssue(c echo.Context, data []byte) (*writePlan, *refusal) {
 	if update.Body != nil {
 		plan.texts = []textField{{"body", *update.Body}}
 	}
+	plan.refuse = func(forge issuex.ForgeType) *refusal {
+		if forge != issuex.ForgeTypeGitLab {
+			return nil
+		}
+		// GitLab takes assignees as user ids and the hub sends none, so they change nothing:
+		// an update of nothing else has nothing to update, and the event does not claim them.
+		changed := slices.DeleteFunc(slices.Clone(fields), func(name string) bool { return name == "assignees" })
+		if len(changed) == 0 {
+			return badRequest("nothing to update: GitLab takes assignees as user ids, which the hub does not send")
+		}
+		plan.extra["fields"] = changed
+		return nil
+	}
 	plan.send = func(w *writeRun) (*writeAnswer, error) {
 		issue, err := w.changeIssue(n, update)
 		if err != nil {
@@ -189,7 +203,7 @@ func prepareCloseIssue(c echo.Context, data []byte) (*writePlan, *refusal) {
 			if err != nil {
 				return nil, err
 			}
-			w.set("comment_url", url)
+			w.set("comment_url", scrub(url, w.fc.token))
 		}
 		closed := "closed"
 		issue, err := w.changeIssue(n, issueUpdate{State: &closed})
