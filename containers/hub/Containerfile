@@ -20,9 +20,10 @@ RUN dnf install -y --setopt=tsflags=nodocs gcc gcc-c++ && \
 # Supply the sibling tree via: podman build --build-context apikit=../apikit
 COPY --from=apikit . /build/apikit
 
-# Local replaces github.com/agent-fox-dev/agentkit-go => ../agentkit-go and
-# github.com/agent-fox-dev/agentkit-go/sandbox => ../agentkit-go/sandbox (see
-# go.mod). Supply the sibling tree via:
+# Local replaces github.com/agent-fox-dev/agentkit-go => ../agentkit-go,
+# github.com/agent-fox-dev/agentkit-go/sandbox => ../agentkit-go/sandbox and
+# github.com/agent-fox-dev/agentkit-go/sandbox/gatewayd =>
+# ../agentkit-go/sandbox/gatewayd (see go.mod). Supply the sibling tree via:
 #   podman build --build-context agentkit=../agentkit-go
 COPY --from=agentkit . /build/agentkit-go
 WORKDIR /build/hub

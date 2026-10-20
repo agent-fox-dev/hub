@@ -54,7 +54,7 @@
       "done_when": [
         "`go build ./...` succeeds"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 2,

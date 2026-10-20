@@ -13,6 +13,32 @@ import "errors"
 // lease emits no event of this kind.
 const EventSandboxLease = "hub.sandbox.lease"
 
+// EventSandboxCreate is the hub audit event emitted when the sandbox gateway
+// creates the box of a lease (the lease goes leased to active). ResourceType is
+// "sandbox", ResourceID the lease ID and Action "create". The actor is the lease
+// itself: ActorType "lease" and ActorID the lease's created_by. Metadata:
+// lease_id, sandbox_id, image and network, never a secret value or an
+// environment value.
+const EventSandboxCreate = "hub.sandbox.create"
+
+// EventSandboxFailed is the hub audit event emitted when the sandbox gateway
+// fails a lease (the lease goes leased to failed): the profile is gone, a
+// required secret exists in no scope, or the provider could not create the box.
+// ResourceType is "sandbox", ResourceID the lease ID and Action "fail". The
+// actor is the lease: ActorType "lease" and ActorID the lease's created_by.
+// Metadata: lease_id and error, the message stored on the lease, with secret
+// values, environment values and URL userinfo removed.
+const EventSandboxFailed = "hub.sandbox.failed"
+
+// EventSandboxDestroy is the hub audit event emitted once for every change of a
+// lease into destroyed made by the gateway or by DELETE. ResourceType is
+// "sandbox", ResourceID the lease ID and Action "destroy". Metadata: lease_id,
+// sandbox_id (null when no box existed) and reason, "client" when the lease
+// holder closed the box through the gateway and "api" when DELETE ended the
+// lease. A gateway event has ActorType "lease" and ActorID the lease's
+// created_by; a DELETE event has the actor of the HTTP credential.
+const EventSandboxDestroy = "hub.sandbox.destroy"
+
 // EventRebuildFollowup is the hub audit event emitted when a carry-patch
 // rebuild enqueues a follow-up rebuild because a patch tip or the upstream
 // base moved during the run. Metadata: stale_patches ([]string),
