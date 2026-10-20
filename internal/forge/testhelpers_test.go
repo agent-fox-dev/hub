@@ -480,6 +480,9 @@ func githubFixture(w http.ResponseWriter, r *http.Request) {
 type recordingClient struct {
 	issuex.Client
 
+	// err, when set, is what every method returns with its empty result.
+	err error
+
 	mu     sync.Mutex
 	calls  []string
 	repo   issuex.Repo
@@ -504,7 +507,7 @@ func (r *recordingClient) GetRepository(_ context.Context, repo issuex.Repo) (is
 	r.mu.Lock()
 	r.repo = repo
 	r.mu.Unlock()
-	return issuex.Repository{}, nil
+	return issuex.Repository{}, r.err
 }
 
 func (r *recordingClient) ListIssues(_ context.Context, repo issuex.Repo, f issuex.IssueFilter) (issuex.IssueList, error) {
@@ -512,7 +515,7 @@ func (r *recordingClient) ListIssues(_ context.Context, repo issuex.Repo, f issu
 	r.mu.Lock()
 	r.repo, r.filter = repo, f
 	r.mu.Unlock()
-	return issuex.IssueList{}, nil
+	return issuex.IssueList{}, r.err
 }
 
 func (r *recordingClient) ReadIssue(_ context.Context, ref issuex.IssueRef) (issuex.IssueThread, error) {
@@ -520,7 +523,7 @@ func (r *recordingClient) ReadIssue(_ context.Context, ref issuex.IssueRef) (iss
 	r.mu.Lock()
 	r.ref = ref
 	r.mu.Unlock()
-	return issuex.IssueThread{}, nil
+	return issuex.IssueThread{}, r.err
 }
 
 func (r *recordingClient) ListComments(_ context.Context, ref issuex.IssueRef) (issuex.CommentList, error) {
@@ -528,7 +531,7 @@ func (r *recordingClient) ListComments(_ context.Context, ref issuex.IssueRef) (
 	r.mu.Lock()
 	r.ref = ref
 	r.mu.Unlock()
-	return issuex.CommentList{}, nil
+	return issuex.CommentList{}, r.err
 }
 
 func (r *recordingClient) ReadPullRequest(_ context.Context, ref issuex.IssueRef) (issuex.PullRequest, error) {
@@ -536,7 +539,7 @@ func (r *recordingClient) ReadPullRequest(_ context.Context, ref issuex.IssueRef
 	r.mu.Lock()
 	r.ref = ref
 	r.mu.Unlock()
-	return issuex.PullRequest{}, nil
+	return issuex.PullRequest{}, r.err
 }
 
 func (r *recordingClient) GetPRState(_ context.Context, ref issuex.IssueRef) (issuex.PRState, error) {
@@ -544,7 +547,7 @@ func (r *recordingClient) GetPRState(_ context.Context, ref issuex.IssueRef) (is
 	r.mu.Lock()
 	r.ref = ref
 	r.mu.Unlock()
-	return issuex.PRState{}, nil
+	return issuex.PRState{}, r.err
 }
 
 func (r *recordingClient) ReadChangedFiles(_ context.Context, ref issuex.IssueRef) ([]issuex.ChangedFile, error) {
@@ -552,7 +555,7 @@ func (r *recordingClient) ReadChangedFiles(_ context.Context, ref issuex.IssueRe
 	r.mu.Lock()
 	r.ref = ref
 	r.mu.Unlock()
-	return nil, nil
+	return nil, r.err
 }
 
 func (r *recordingClient) GetCIChecks(_ context.Context, ref issuex.IssueRef) ([]issuex.CheckRun, error) {
@@ -560,7 +563,7 @@ func (r *recordingClient) GetCIChecks(_ context.Context, ref issuex.IssueRef) ([
 	r.mu.Lock()
 	r.ref = ref
 	r.mu.Unlock()
-	return nil, nil
+	return nil, r.err
 }
 
 func (r *recordingClient) GetPRReviews(_ context.Context, ref issuex.IssueRef) ([]issuex.Review, error) {
@@ -568,7 +571,7 @@ func (r *recordingClient) GetPRReviews(_ context.Context, ref issuex.IssueRef) (
 	r.mu.Lock()
 	r.ref = ref
 	r.mu.Unlock()
-	return nil, nil
+	return nil, r.err
 }
 
 // useClient makes the routes use rc, and counts the clients built in *built.

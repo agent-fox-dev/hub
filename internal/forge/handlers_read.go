@@ -2,6 +2,7 @@ package forge
 
 import (
 	"context"
+	"errors"
 	"net/http"
 
 	"github.com/agent-fox-dev/aflib/issuex"
@@ -17,10 +18,10 @@ type readOp func(ctx context.Context, fc *forgeClient) (any, error)
 // a client is built. It returns the call to make, or the refusal to answer.
 type prepareFunc func(c echo.Context) (readOp, *refusal)
 
-// serve is the handler of a read route. It applies the checks every forge route
-// shares, then the target, then the route's own parameters, and only then builds the
-// client and calls the forge.
-func (h *handlers) serve(prepare prepareFunc) echo.HandlerFunc {
+// serve is the handler of a read route; operation names the issuex method it calls. It
+// applies the checks every forge route shares, then the target, then the route's own
+// parameters, and only then builds the client and calls the forge.
+func (h *handlers) serve(operation string, prepare prepareFunc) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		req, err := h.authorize(c)
 		if req == nil {
@@ -40,7 +41,7 @@ func (h *handlers) serve(prepare prepareFunc) echo.HandlerFunc {
 		}
 		result, err := op(c.Request().Context(), fc)
 		if err != nil {
-			return writeForgeError(c, err)
+			return h.failCall(c, req, fc, operation, err)
 		}
 		return c.JSON(http.StatusOK, result)
 	}
@@ -75,7 +76,7 @@ func prepareIssues(c echo.Context) (readOp, *refusal) {
 }
 
 // numberedCall is a call to the forge about one issue or pull request.
-type numberedCall func(ctx context.Context, api issuex.Client, ref issuex.IssueRef) (any, error)
+type numberedCall func(ctx context.Context, fc *forgeClient, ref issuex.IssueRef) (any, error)
 
 // numbered prepares a route on /issues/:n or /pulls/:n: the number is read before a
 // client is built, and the call gets a reference to the issue or the pull request.
@@ -86,23 +87,23 @@ func numbered(pull bool, call numberedCall) prepareFunc {
 			return nil, ref
 		}
 		return func(ctx context.Context, fc *forgeClient) (any, error) {
-			return call(ctx, fc.api, issuex.IssueRef{Repo: fc.repo, Number: n, IsPullRequest: pull})
+			return call(ctx, fc, issuex.IssueRef{Repo: fc.repo, Number: n, IsPullRequest: pull})
 		}, nil
 	}
 }
 
 // valueOf adapts an issuex method that returns one value.
 func valueOf[T any](method func(issuex.Client, context.Context, issuex.IssueRef) (T, error)) numberedCall {
-	return func(ctx context.Context, api issuex.Client, ref issuex.IssueRef) (any, error) {
-		return method(api, ctx, ref)
+	return func(ctx context.Context, fc *forgeClient, ref issuex.IssueRef) (any, error) {
+		return method(fc.api, ctx, ref)
 	}
 }
 
 // listOf adapts an issuex method that returns a list, which is answered as a bare
 // array, empty as [].
 func listOf[T any](method func(issuex.Client, context.Context, issuex.IssueRef) ([]T, error)) numberedCall {
-	return func(ctx context.Context, api issuex.Client, ref issuex.IssueRef) (any, error) {
-		items, err := method(api, ctx, ref)
+	return func(ctx context.Context, fc *forgeClient, ref issuex.IssueRef) (any, error) {
+		items, err := method(fc.api, ctx, ref)
 		if err != nil {
 			return nil, err
 		}
@@ -111,19 +112,36 @@ func listOf[T any](method func(issuex.Client, context.Context, issuex.IssueRef) 
 }
 
 // readIssue is GET /workspaces/:slug/issues/:n: the issue with its comments and issuex's
-// truncation flag.
-func readIssue(ctx context.Context, api issuex.Client, ref issuex.IssueRef) (any, error) {
-	thread, err := api.ReadIssue(ctx, ref)
+// truncation flag. When only the comments could not be read, issuex returns the issue
+// with the error; the answer carries it as issuex has it, but with the token and the
+// URL userinfo taken out of its text.
+func readIssue(ctx context.Context, fc *forgeClient, ref issuex.IssueRef) (any, error) {
+	thread, err := fc.api.ReadIssue(ctx, ref)
 	if err != nil {
 		return nil, err
 	}
 	thread.Comments = nonNil(thread.Comments)
+	if thread.CommentsErr != nil {
+		thread.CommentsErr = scrubbedCommentsErr(thread.CommentsErr, fc.token)
+	}
 	return thread, nil
 }
 
+// scrubbedCommentsErr returns err for the answer. An *issuex.HTTPError keeps its fields
+// and its message is scrubbed; any other error, which encodes as {}, is replaced with
+// one made of its scrubbed text.
+func scrubbedCommentsErr(err error, token string) error {
+	if he, ok := err.(*issuex.HTTPError); ok {
+		clean := *he
+		clean.Message = scrub(he.Message, token)
+		return &clean
+	}
+	return errors.New(scrub(err.Error(), token))
+}
+
 // readComments is GET /workspaces/:slug/issues/:n/comments: the comments as a bare array.
-func readComments(ctx context.Context, api issuex.Client, ref issuex.IssueRef) (any, error) {
-	list, err := api.ListComments(ctx, ref)
+func readComments(ctx context.Context, fc *forgeClient, ref issuex.IssueRef) (any, error) {
+	list, err := fc.api.ListComments(ctx, ref)
 	if err != nil {
 		return nil, err
 	}

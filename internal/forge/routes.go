@@ -29,15 +29,15 @@ func RegisterRoutes(api *echo.Group, cfg Config) {
 	h := &handlers{cfg: cfg, httpClient: newHTTPClient(cfg.Transport)}
 
 	api.GET("/workspaces/:slug/forge", h.diagnostic)
-	api.GET("/workspaces/:slug/forge/repository", h.serve(prepareRepository))
-	api.GET("/workspaces/:slug/issues", h.serve(prepareIssues))
-	api.GET("/workspaces/:slug/issues/:n", h.serve(numbered(false, readIssue)))
-	api.GET("/workspaces/:slug/issues/:n/comments", h.serve(numbered(false, readComments)))
-	api.GET("/workspaces/:slug/pulls/:n", h.serve(numbered(true, valueOf(issuex.Client.ReadPullRequest))))
-	api.GET("/workspaces/:slug/pulls/:n/state", h.serve(numbered(true, valueOf(issuex.Client.GetPRState))))
-	api.GET("/workspaces/:slug/pulls/:n/files", h.serve(numbered(true, listOf(issuex.Client.ReadChangedFiles))))
-	api.GET("/workspaces/:slug/pulls/:n/checks", h.serve(numbered(true, listOf(issuex.Client.GetCIChecks))))
-	api.GET("/workspaces/:slug/pulls/:n/reviews", h.serve(numbered(true, listOf(issuex.Client.GetPRReviews))))
+	api.GET("/workspaces/:slug/forge/repository", h.serve("GetRepository", prepareRepository))
+	api.GET("/workspaces/:slug/issues", h.serve("ListIssues", prepareIssues))
+	api.GET("/workspaces/:slug/issues/:n", h.serve("ReadIssue", numbered(false, readIssue)))
+	api.GET("/workspaces/:slug/issues/:n/comments", h.serve("ListComments", numbered(false, readComments)))
+	api.GET("/workspaces/:slug/pulls/:n", h.serve("ReadPullRequest", numbered(true, valueOf(issuex.Client.ReadPullRequest))))
+	api.GET("/workspaces/:slug/pulls/:n/state", h.serve("GetPRState", numbered(true, valueOf(issuex.Client.GetPRState))))
+	api.GET("/workspaces/:slug/pulls/:n/files", h.serve("ReadChangedFiles", numbered(true, listOf(issuex.Client.ReadChangedFiles))))
+	api.GET("/workspaces/:slug/pulls/:n/checks", h.serve("GetCIChecks", numbered(true, listOf(issuex.Client.GetCIChecks))))
+	api.GET("/workspaces/:slug/pulls/:n/reviews", h.serve("GetPRReviews", numbered(true, listOf(issuex.Client.GetPRReviews))))
 }
 
 // request is what the checks every forge route shares establish about a request.
