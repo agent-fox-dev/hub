@@ -3503,7 +3503,7 @@ behavior and how the hub reaches a workspace's forge. They can be set via the
 | `PUSH_PATCHES_TO_ORIGIN` | `"true"` | (disabled) | Enables forwarding or mirroring of hub pushes to registered patch branches. Only the exact string `"true"` enables it. In `origin` mode (`PATCH_BRANCH_SOURCE=origin`): when enabled, a push to a registered patch branch is forwarded to the fork before the hub writes its ref; when disabled, the push is rejected. In `hub` mode: when enabled, accepted pushes to registered patch branches are mirrored (force-pushed) to the fork after the push is accepted. |
 | `SQUASH_MERGE_DETECTION` | `"ancestry_only"`, `"content_based"`, `"both"` | `"both"` | Controls which strategies are used to detect upstream merges during carry-patch sync. `"ancestry_only"` uses only `git merge-base --is-ancestor`. `"content_based"` uses only `git cherry` and PR-number scanning. `"both"` (default) uses all strategies. |
 | `CHECK_COMMAND` | any string | (unset) | Shell command executed via `sh -c` after a merge rebase to validate the result. If it exits non-zero, the rebase is rolled back. |
-| `FORGE_API_URL` | an absolute `https://` URL with a host, without userinfo, query or fragment | (unset) | The API URL of the forge behind the workspace's `git_url`, for the [forge read routes](#forge-endpoints). Unset, the API is found from the host (`api.github.com` for `github.com`, `<host>/api/v3` or `<host>/api/v4` for another). A value that contains `github` or `gitlab` also tells which forge it is. Any other value answers `422 forge_api_url_invalid`. |
+| `FORGE_API_URL` | an absolute `https://` URL with a host, without userinfo, query or fragment | (unset) | The API URL of the forge behind the workspace's `git_url`, for the [forge read routes](#forge-endpoints). Unset, the API is found from the host (`api.github.com` for `github.com`, `<host>/api/v3` or `<host>/api/v4` for another). A value that contains exactly one of `github` and `gitlab` also tells which forge it is, and a GitLab value gets `/api/v4` appended when it does not end with it. Any other value answers `422 forge_api_url_invalid`. |
 | `UPSTREAM_FORGE_API_URL` | as `FORGE_API_URL` | (unset) | The same for the `upstream_url` of a `carry_patch` workspace (`?target=upstream`). It does not fall back to `FORGE_API_URL`: an upstream on another host must not inherit the fork's API URL. |
 
 ---
@@ -3943,7 +3943,8 @@ emit no audit event.
   A value that is set must be an absolute `https://` URL with a host and without
   userinfo, query or fragment; any other is `422 forge_api_url_invalid`, with a
   message that names the variable and the rule and not the value. Surrounding
-  white space is ignored.
+  white space and trailing slashes are ignored. For GitLab, issuex puts `/api/v4`
+  after a value that does not end with it, and the diagnostic shows the URL with it.
 - **Credential kind.** `pat` when the resolver returns the username `x-token-auth`
   (a `GIT_PAT`); `basic` for any other username, in which case the password is sent
   to the forge as the token; `none` when there is no credential, in which case the
@@ -4010,7 +4011,7 @@ runs it when the other routes answer `forge_unknown`.
 | Field | Type | Description |
 |-------|------|-------------|
 | `forge` | string | `github`, `gitlab` or `unknown` |
-| `api_url` | string or null | The API the hub would use; `null` when the forge is `unknown` |
+| `api_url` | string or null | The API URL the hub sends its requests under (for GitLab, with `/api/v4`); `null` when the forge is `unknown`. It is the variable's value or the default for the host, so a `GITHUB_API_URL` or `GITLAB_API_URL` in the hub's own environment, which issuex would honour, is not shown |
 | `repository` | object or null | `host`, `owner` (the full namespace path) and `name`; `null` when the remote URL names no repository |
 | `credential` | string | `pat`, `basic` or `none`: the kind, never a value |
 | `upstream` | object or null | The same four fields for the `upstream_url`, computed with the upstream resolver and `UPSTREAM_FORGE_API_URL`; `null` unless the workspace is `carry_patch` with a non-empty `upstream_url` |

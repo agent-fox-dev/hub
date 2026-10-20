@@ -118,31 +118,28 @@ func TestMissingOrForeignWorkspaceGets404_TS_30_9(t *testing.T) {
 	}
 }
 
-// The scope helpers: forge:write implies forge:read, API keys and admin tokens hold
-// both, and a credential type hub does not know holds neither.
+// The scope helper: forge:write implies forge:read, API keys and admin tokens hold it
+// implicitly, and a credential type hub does not know holds nothing.
 // Requirement: 30-REQ-2.3, 30-REQ-2.4, 30-REQ-2.5
-func TestForgeScopeHelpers(t *testing.T) {
+func TestCanReadForge(t *testing.T) {
 	cases := []struct {
-		name        string
-		auth        *apikit.AuthInfo
-		read, write bool
+		name string
+		auth *apikit.AuthInfo
+		read bool
 	}{
-		{"api key", apiKeyAuth(), true, true},
-		{"admin token", adminAuth(), true, true},
-		{"pat with forge:read", patAuth("forge:read"), true, false},
-		{"pat with forge:write", patAuth("forge:write"), true, true},
-		{"pat with both", patAuth("forge:read", "forge:write"), true, true},
-		{"pat with another scope", patAuth("sandboxes:write"), false, false},
-		{"pat with no scope", patAuth(), false, false},
-		{"unknown type with the scopes", &apikit.AuthInfo{CredentialType: "mystery", Permissions: []string{"forge:read", "forge:write"}}, false, false},
+		{"api key", apiKeyAuth(), true},
+		{"admin token", adminAuth(), true},
+		{"pat with forge:read", patAuth("forge:read"), true},
+		{"pat with forge:write", patAuth("forge:write"), true},
+		{"pat with both", patAuth("forge:read", "forge:write"), true},
+		{"pat with another scope", patAuth("sandboxes:write"), false},
+		{"pat with no scope", patAuth(), false},
+		{"unknown type with the scopes", &apikit.AuthInfo{CredentialType: "mystery", Permissions: []string{"forge:read", "forge:write"}}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := canReadForge(tc.auth); got != tc.read {
 				t.Errorf("canReadForge = %v; want %v", got, tc.read)
-			}
-			if got := canWriteForge(tc.auth); got != tc.write {
-				t.Errorf("canWriteForge = %v; want %v", got, tc.write)
 			}
 		})
 	}

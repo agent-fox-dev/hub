@@ -166,6 +166,12 @@ func TestDiagnosticUpstreamBlock_TS_30_29(t *testing.T) {
 	if d.Upstream != nil || !strings.HasSuffix(body, `"upstream":null}`) {
 		t.Errorf("standard: upstream = %+v, body %s; want null", d.Upstream, body)
 	}
+
+	// A standard workspace that has an upstream_url left over is not a fork.
+	addWorkspace(t, e.db, "leftover", func(r *workspaceRow) { r.upstream = ptr("https://github.com/up/widgets") })
+	if d, _ := getDiagnostic(t, e, "leftover"); d.Upstream != nil {
+		t.Errorf("leftover: upstream = %+v; want null", d.Upstream)
+	}
 	if n := counting.n.Load(); n != 0 {
 		t.Errorf("the transport saw %d requests; want none", n)
 	}

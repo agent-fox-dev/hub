@@ -6963,7 +6963,12 @@ components:
           enum: [github, gitlab, unknown]
         api_url:
           type: [string, "null"]
-          description: The API the hub would use; null when the forge is `unknown`.
+          description: >-
+            The API URL the hub sends its requests under (for GitLab with
+            `/api/v4`, which issuex appends to a value that lacks it); null when
+            the forge is `unknown`. The variable's value or the default for the
+            host: a `GITHUB_API_URL` or `GITLAB_API_URL` in the hub's own
+            environment is not shown.
           example: https://api.github.com
         repository:
           oneOf:

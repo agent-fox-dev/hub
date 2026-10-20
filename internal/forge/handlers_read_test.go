@@ -318,6 +318,7 @@ func TestListQueryReachesIssuex_TS_30_36(t *testing.T) {
 		{"labels=a&labels=b,c&limit=1", issuex.IssueFilter{Labels: []string{"a", "b", "c"}, Limit: 1}},
 		{"labels=,&limit=5", issuex.IssueFilter{Limit: 5}},
 		{"assignee=some one", issuex.IssueFilter{Assignee: "some one", Limit: 30}},
+		{"assignee=Bob-Smith_2", issuex.IssueFilter{Assignee: "Bob-Smith_2", Limit: 30}},
 		{"target=origin&unknown=1", issuex.IssueFilter{Limit: 30}},
 	}
 	for _, tc := range cases {

@@ -77,7 +77,7 @@ func (h *handlers) buildClient(req *request, tgt target) (*forgeClient, error) {
 		return nil, &forgeError{
 			status:    http.StatusUnprocessableEntity,
 			errorType: "forge_unknown",
-			message:   fmt.Sprintf("cannot read a forge repository from the remote URL %q (expected https://<host>/<owner>/<name>)", redactRemote(remote)),
+			message:   fmt.Sprintf("cannot read a forge repository from the remote URL %q (expected https://<host>/<owner>/<name>)", shownRemote(remote)),
 		}
 	}
 
@@ -145,7 +145,7 @@ func storeFailure(what, slug string, tgt target, err error) *forgeError {
 func ambiguousForge(host, variable string, apiURLSet bool) *forgeError {
 	msg := fmt.Sprintf("cannot tell which forge serves %s; set %s to its API URL, an https URL that contains github or gitlab", host, variable)
 	if apiURLSet {
-		msg = fmt.Sprintf("cannot tell which forge serves %s: neither the host nor the API URL in %s contains github or gitlab", host, variable)
+		msg = fmt.Sprintf("cannot tell which forge serves %s: neither the host nor the API URL in %s names exactly one of github and gitlab", host, variable)
 	}
 	return &forgeError{status: http.StatusUnprocessableEntity, errorType: "forge_unknown", message: msg}
 }
@@ -230,6 +230,18 @@ func redactRemote(remote string) string {
 	return remote
 }
 
+// shownRemote is a remote URL for a message. It is redactRemote's and, when a @ is left in
+// it, only what follows the last one: a password may hold a character that ends the
+// authority of a URL (/, ? or #), and then the pattern of redactRemote does not reach the
+// @ that closes the user information.
+func shownRemote(remote string) string {
+	shown := redactRemote(remote)
+	if at := strings.LastIndexByte(shown, '@'); at >= 0 {
+		return shown[at+1:]
+	}
+	return shown
+}
+
 // remoteInfo describes how hub reaches the forge of one remote, without contacting it.
 type remoteInfo struct {
 	// Forge is github, gitlab or unknown.
@@ -283,8 +295,12 @@ func (h *handlers) describeRemote(req *request, tgt target) (*remoteInfo, error)
 	}
 	info.Forge = string(forge)
 	apiURL := strings.TrimRight(baseURL, "/")
-	if apiURL == "" {
+	switch {
+	case apiURL == "":
 		apiURL = defaultAPIURL(forge, repo.Host)
+	case forge == issuex.ForgeTypeGitLab && !strings.HasSuffix(apiURL, "/api/v4"):
+		// issuex puts /api/v4 after a GitLab API URL that does not end with it.
+		apiURL += "/api/v4"
 	}
 	info.APIURL = &apiURL
 	return info, nil

@@ -13,7 +13,7 @@ import (
 func TestUpstreamTargetWithoutUpstreamIsRefused_TS_30_13(t *testing.T) {
 	e := newEnv(t)
 	addWorkspace(t, e.db, "standard")
-	addWorkspace(t, e.db, "nullmode", func(r *workspaceRow) { r.mode = nil })
+	addWorkspace(t, e.db, "nullmode", func(r *workspaceRow) { r.mode = nil; r.upstream = ptr("https://github.com/up/widgets") })
 	addWorkspace(t, e.db, "noupstream", func(r *workspaceRow) { r.mode = ptr("carry_patch") })
 	addWorkspace(t, e.db, "emptyupstream", carryPatch(""))
 	// A standard workspace that has an upstream_url left over is still not a fork.

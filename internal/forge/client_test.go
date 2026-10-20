@@ -95,7 +95,9 @@ func TestUpstreamTargetUsesUpstreamOnly_TS_30_12(t *testing.T) {
 	addWorkspace(t, e.db, "fork2", func(r *workspaceRow) {
 		carryPatch("https://git.other.example/up/widgets")(r)
 	})
-	e.setVar("fork2", "FORGE_API_URL", stubA.URL)
+	// FORGE_API_URL names GitHub, so that the origin could classify the host: the upstream
+	// has no variable of its own and must not borrow it.
+	e.setVar("fork2", "FORGE_API_URL", stubA.URL+"/github")
 	rec := e.get("/workspaces/fork2/forge/repository?target=upstream", apiKeyAuth())
 	if rec.Code != http.StatusUnprocessableEntity || decodeError(t, rec).ErrorType != "forge_unknown" {
 		t.Errorf("status = %d, body %s; want 422 forge_unknown", rec.Code, rec.Body)
@@ -157,6 +159,11 @@ func TestUnparseableRemoteIsForgeUnknown_TS_30_16(t *testing.T) {
 		"https://user:s3cret@host/onlyone",
 		"git@host",
 		"user:s3cret@host",
+		// A password that holds a character that ends the authority of a URL.
+		"https://user:s3cret#x@host/foo/bar",
+		"https://user:s3cr?et@host/foo/bar",
+		"https://user:s3cret/x@host/foo/bar",
+		"https://user#s3cret@github.com/acme/widgets",
 	} {
 		t.Run(gitURL, func(t *testing.T) {
 			e := newEnv(t)
@@ -456,4 +463,52 @@ func TestAmbiguousHostNeverAsksTheWorkingDirectory(t *testing.T) {
 		t.Errorf("diagnostic: forge, api_url = %q, %v; want unknown and null", d.Forge, d.APIURL)
 	}
 	assertNothingSent(t, e)
+}
+
+// An API URL that holds both words does not say which forge it is, and the message does not
+// claim it holds neither.
+// Requirement: 30-REQ-4.4
+func TestAPIURLWithBothForgeNamesIsAmbiguous(t *testing.T) {
+	e := newEnv(t)
+	addWorkspace(t, e.db, "widgets", func(r *workspaceRow) { r.gitURL = "https://git.internal.example/acme/widgets" })
+	e.setVar("widgets", "FORGE_API_URL", e.stub.URL+"/github-gitlab")
+
+	rec := e.get("/workspaces/widgets/forge/repository", apiKeyAuth())
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d; want 422\n%s", rec.Code, rec.Body)
+	}
+	if msg := decodeError(t, rec).Message; strings.Contains(msg, "contains github or gitlab") || !strings.Contains(msg, "exactly one") {
+		t.Errorf("message %q; want it to say the API URL must name exactly one forge", msg)
+	}
+	assertNothingSent(t, e)
+}
+
+// issuex puts /api/v4 after a GitLab API URL that does not end with it, so the diagnostic
+// shows the URL a read is sent to.
+// Requirement: 30-REQ-6.1
+func TestDiagnosticShowsTheGitLabAPIURLTheReadUses(t *testing.T) {
+	e := newEnv(t)
+	addWorkspace(t, e.db, "widgets", func(r *workspaceRow) { r.gitURL = "https://gitlab.example.com/group/widgets" })
+	e.setVar("widgets", "FORGE_API_URL", e.stub.URL+"/gitlab")
+
+	d, _ := getDiagnostic(t, e, "widgets")
+	if d.Forge != "gitlab" || d.APIURL == nil || *d.APIURL != e.stub.URL+"/gitlab/api/v4" {
+		t.Fatalf("forge, api_url = %q, %v; want gitlab at %s/gitlab/api/v4", d.Forge, d.APIURL, e.stub.URL)
+	}
+	if e.stub.count() != 0 {
+		t.Fatalf("the diagnostic sent %d requests", e.stub.count())
+	}
+	e.get("/workspaces/widgets/forge/repository", apiKeyAuth())
+	reqs := e.stub.received()
+	if len(reqs) != 1 || !strings.HasPrefix(e.stub.URL+reqs[0].Path, *d.APIURL+"/") {
+		t.Errorf("the read sent %+v; want a request under the URL the diagnostic showed", reqs)
+	}
+
+	// A value that ends with it is shown as it is.
+	e.setVar("widgets", "FORGE_API_URL", "")
+	addWorkspace(t, e.db, "ends", func(r *workspaceRow) { r.gitURL = "https://gitlab.example.com/group/widgets" })
+	e.setVar("ends", "FORGE_API_URL", "https://gitlab.example.com/api/v4/")
+	if d, _ := getDiagnostic(t, e, "ends"); d.APIURL == nil || *d.APIURL != "https://gitlab.example.com/api/v4" {
+		t.Errorf("api_url = %v; want https://gitlab.example.com/api/v4", d.APIURL)
+	}
 }

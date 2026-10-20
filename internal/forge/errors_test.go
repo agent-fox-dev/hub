@@ -257,7 +257,7 @@ func TestFailureLogLine_TS_30_46(t *testing.T) {
 	}{
 		{"500", answer(500, "boom "+token+" BODYTEXT"), "500"},
 		{"429", answer(429, "slow down "+token+" BODYTEXT"), "429"},
-		{"503 on a pull request", answer(503, "later "+token+" BODYTEXT"), "503"},
+		{"503", answer(503, "later "+token+" BODYTEXT"), "503"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			log := captureLog(t)

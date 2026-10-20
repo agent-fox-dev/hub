@@ -302,3 +302,24 @@ func TestForgeCmdsAreRegistered(t *testing.T) {
 		}
 	}
 }
+
+// The slug is escaped like every path segment in the commands that take no number.
+// Requirement: 30-REQ-10.1, 30-REQ-10.2
+func TestForgeStatusAndIssueListEscapeTheSlug(t *testing.T) {
+	const slug = "needs/escaping ?#"
+	for _, tc := range []struct {
+		args   []string
+		suffix string
+	}{
+		{[]string{"forge", "status", slug}, "/forge"},
+		{[]string{"issue", "list", slug}, "/issues"},
+	} {
+		hub := newForgeHub(t, http.StatusOK, `[]`)
+		if _, err := hub.runAfc(t, tc.args...); err != nil {
+			t.Fatalf("afc %v: %v", tc.args, err)
+		}
+		if want := "/api/v1" + apiPath("workspaces", slug) + tc.suffix; hub.onlyRequest(t).Path != want {
+			t.Errorf("afc %v: path = %s; want %s", tc.args, hub.onlyRequest(t).Path, want)
+		}
+	}
+}

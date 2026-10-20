@@ -41,8 +41,8 @@ are limits of `issuex` that aflib would have to lift.
    it, is a non-goal of the spec; an accessor or an option in issuex is the aflib change.
 
 4. **issuex has no accessor for the forge or the API URL of a client.** `describeRemote`
-   (`client.go:257`) takes the forge from the exported `issuex.DetectForge`, given the same
-   options a read gets, and the API URL from the variable or from `defaultAPIURL` (`client.go:296`), which
+   (`client.go:269`) takes the forge from the exported `issuex.DetectForge`, given the same
+   options a read gets, and the API URL from the variable or from `defaultAPIURL` (`client.go:312`), which
    states issuex's default for the host (`api.github.com`, `<host>/api/v3`,
    `<host>/api/v4`) and does not see the `GITHUB_API_URL` or `GITLAB_API_URL` of the hub's
    environment that issuex would use (`TestDefaultAPIURL`,
@@ -94,7 +94,24 @@ are limits of `issuex` that aflib would have to lift.
     white space before the check (`validAPIURL`, `client.go:155`), and a variable that is set to nothing answers
     `forge_api_url_invalid` (`TestInvalidAPIURLIsRefused_TS_30_17`).
 
-12. **Tests that differ from the plan.**
+12. **GitLab's API URL gets `/api/v4`.** `issuex.NewGitLab` appends `/api/v4` to a base URL
+    that does not end with it, so a read under `FORGE_API_URL=https://git.example/gitlab` goes
+    to `https://git.example/gitlab/api/v4/...`. `describeRemote` does the same for the
+    `api_url` it shows (`client.go:301`), so that the diagnostic names
+    the URL a read uses (`TestDiagnosticShowsTheGitLabAPIURLTheReadUses`).
+
+13. **The message for an unreadable remote shows what follows the last `@`.** A password in a
+    `git_url` that holds `/`, `?` or `#` ends the authority of the URL before its `@`, where
+    `redactRemote`'s pattern stops; `validateGitURL` accepts such a URL, and it does not parse.
+    `shownRemote` (`client.go:237`) cuts what is left up to the last `@`, so that `forge_unknown`
+    never shows a password (`TestUnparseableRemoteIsForgeUnknown_TS_30_16`).
+
+14. **No `canWriteForge`.** Task 2 lists `canReadForge` and `canWriteForge` among the auth helpers.
+    No route of this spec needs the write check, and a function only a test calls is dead code,
+    so `canWriteForge` is left for the spec that adds the first forge write. `forge:write` is
+    registered and implies `forge:read` (`auth.go`, `TestCanReadForge`).
+
+15. **Tests that differ from the plan.**
     - TS-30-12 runs on `GET /forge/repository` in task 3 and also on `/pulls/1/state`
       from task 4.
     - TS-30-7, 10, 21, 22, 43 and the checks that the transport and the scopes keep their

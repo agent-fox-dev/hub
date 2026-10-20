@@ -36,13 +36,3 @@ func canReadForge(auth *apikit.AuthInfo) bool {
 	}
 	return isAPIKey(auth) || isAdmin(auth)
 }
-
-// canWriteForge reports whether the credential may change a workspace's forge. API
-// keys and admin tokens are not scope-checked. A PAT needs forge:write, which
-// forge:read does not imply. A credential type hub does not know gets no access.
-func canWriteForge(auth *apikit.AuthInfo) bool {
-	if isPAT(auth) {
-		return hasScope(auth, "forge:write")
-	}
-	return isAPIKey(auth) || isAdmin(auth)
-}
