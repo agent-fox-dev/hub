@@ -29,10 +29,10 @@ func parseAll(c echo.Context) (bool, error) {
 }
 
 // respondLeases answers a list request with a bare JSON array of leases.
-func respondLeases(c echo.Context, leases []*Lease) error {
+func (s *LeaseService) respondLeases(c echo.Context, leases []*Lease) error {
 	out := make([]leaseResponse, 0, len(leases))
 	for _, l := range leases {
-		out = append(out, renderLease(l))
+		out = append(out, s.render(l))
 	}
 	return c.JSON(http.StatusOK, out)
 }
@@ -68,7 +68,7 @@ func handleListLeases(s *LeaseService) echo.HandlerFunc {
 		if err != nil {
 			return writeReadError(c, "listing", err)
 		}
-		return respondLeases(c, leases)
+		return s.respondLeases(c, leases)
 	}
 }
 
@@ -84,7 +84,7 @@ func handleGetLease(s *LeaseService) echo.HandlerFunc {
 		if err != nil {
 			return writeReadError(c, "reading", err)
 		}
-		return c.JSON(http.StatusOK, renderLease(lease))
+		return c.JSON(http.StatusOK, s.render(lease))
 	}
 }
 
@@ -107,6 +107,6 @@ func handleAdminListLeases(s *LeaseService) echo.HandlerFunc {
 		if err != nil {
 			return writeReadError(c, "listing", err)
 		}
-		return respondLeases(c, leases)
+		return s.respondLeases(c, leases)
 	}
 }

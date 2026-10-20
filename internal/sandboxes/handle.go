@@ -8,6 +8,7 @@ import (
 	"github.com/txsvc/apikit"
 
 	"github.com/agent-fox-dev/agentkit-go/sandbox"
+	"github.com/agent-fox-dev/agentkit-go/sandbox/gatewayd"
 	"github.com/agent-fox-dev/hub/internal/audit"
 )
 
@@ -63,13 +64,70 @@ func (h *handle) Close(ctx context.Context) error { return h.backend.closeBox(ct
 
 // closeBox destroys the provider's box. If the provider cannot, it returns the
 // error with every secret and environment value removed, and the lease stays
-// active. If it can, the lease is ended as the client's doing.
+// active. If it can, the lease is ended as the client's doing, unless a DELETE is
+// ending it: that DELETE records the end itself.
 func (b *Backend) closeBox(ctx context.Context, h *handle) error {
+	if err := b.closeProviderBox(ctx, h); err != nil {
+		return err
+	}
+	if !b.isEnding(h.lease.ID) {
+		b.endByClient(ctx, h)
+	}
+	return nil
+}
+
+// closeProviderBox destroys the provider's box and forgets the handle once it
+// has. The error of a provider that cannot is scrubbed.
+func (b *Backend) closeProviderBox(ctx context.Context, h *handle) error {
 	if err := h.Sandbox.Close(ctx); err != nil {
 		return errors.New(scrub(err.Error(), h.values))
 	}
-	b.endByClient(ctx, h)
+	b.mu.Lock()
+	if b.boxes[h.lease.ID] == h {
+		delete(b.boxes, h.lease.ID)
+	}
+	b.mu.Unlock()
 	return nil
+}
+
+// isEnding reports whether a DELETE is ending the lease.
+func (b *Backend) isEnding(id string) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	_, ending := b.ending[id]
+	return ending
+}
+
+// endBox destroys the box of a lease for a DELETE and records nothing about the
+// lease: the DELETE does that, with its own actor and its own reason.
+//
+// The box is ended through the gateway, the embedder's way, which also frees its
+// place in the gateway. A box the gateway does not hold is either gone or one
+// hub still holds the handle of: the gateway forgets a box whose destruction
+// failed, and it does not hold one whose Create has not returned yet. Hub closes
+// the handle it holds, and when it holds none the box is gone and there is
+// nothing to destroy.
+func (b *Backend) endBox(ctx context.Context, server *gatewayd.Server, lease *Lease) error {
+	b.mu.Lock()
+	b.ending[lease.ID] = struct{}{}
+	b.mu.Unlock()
+	defer func() {
+		b.mu.Lock()
+		delete(b.ending, lease.ID)
+		b.mu.Unlock()
+	}()
+
+	err := server.Destroy(ctx, *lease.SandboxID)
+	if !errors.Is(err, gatewayd.ErrNotHeld) {
+		return err
+	}
+	b.mu.Lock()
+	h := b.boxes[lease.ID]
+	b.mu.Unlock()
+	if h == nil {
+		return nil
+	}
+	return b.closeProviderBox(ctx, h)
 }
 
 // endByClient moves the lease from active to destroyed with the reason client

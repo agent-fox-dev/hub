@@ -1,6 +1,7 @@
 package sandboxes
 
 import (
+	"context"
 	"crypto/tls"
 	"database/sql"
 	"fmt"
@@ -185,4 +186,14 @@ func gatewayURL(external string, useTLS bool, addr net.Addr) string {
 		scheme = "https"
 	}
 	return scheme + "://" + addr.String()
+}
+
+// DestroyBox destroys the box of an active lease. A lease with no box has nothing
+// to destroy. A box that is already gone counts as destroyed; any other failure
+// of the provider is returned, scrubbed, and the box may still be there.
+func (g *Gateway) DestroyBox(ctx context.Context, lease *Lease) error {
+	if lease.SandboxID == nil {
+		return nil
+	}
+	return g.backend.endBox(ctx, g.server, lease)
 }

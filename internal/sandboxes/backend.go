@@ -85,6 +85,13 @@ type Backend struct {
 	mu sync.Mutex
 	// claims are the leases with a Create in flight.
 	claims map[string]struct{}
+	// boxes are the boxes made and not yet closed, by lease id. gatewayd holds
+	// them too, but forgets a box whose Close failed; hub keeps the handle, so
+	// that a DELETE can try again.
+	boxes map[string]*handle
+	// ending are the leases a DELETE is ending. A Close of their boxes only
+	// closes: the DELETE records the end.
+	ending map[string]struct{}
 }
 
 func newBackend(cfg backendConfig) *Backend {
@@ -98,6 +105,8 @@ func newBackend(cfg backendConfig) *Backend {
 		now:       cfg.Now,
 		principal: cfg.Principal,
 		claims:    map[string]struct{}{},
+		boxes:     map[string]*handle{},
+		ending:    map[string]struct{}{},
 	}
 	if b.now == nil {
 		b.now = time.Now
@@ -267,7 +276,11 @@ func (b *Backend) createBox(ctx context.Context, lease *Lease, spec sandbox.Spec
 		"image":      lease.Image,
 		"network":    lease.Network,
 	})
-	return newHandle(b, lease, box, values), nil
+	h := newHandle(b, lease, box, values)
+	b.mu.Lock()
+	b.boxes[lease.ID] = h
+	b.mu.Unlock()
+	return h, nil
 }
 
 // discard destroys a box nobody will use, whatever has become of the call that

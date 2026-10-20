@@ -2,13 +2,16 @@ package sandboxes
 
 // leaseResponse is a lease as callers see it. It has no token, no token hash
 // and no environment values: the fixed environment is stored for the sandbox
-// gateway and no response returns it. The last four fields are null until set.
+// gateway and no response returns it. gateway_url is where the lease holder
+// dials the gateway, the same on every lease in every state. The last four fields
+// are null until set.
 type leaseResponse struct {
 	ID              string            `json:"id"`
 	Workspace       string            `json:"workspace"`
 	Profile         string            `json:"profile"`
 	Purpose         string            `json:"purpose"`
 	State           string            `json:"state"`
+	GatewayURL      string            `json:"gateway_url"`
 	ExpiresAt       string            `json:"expires_at"`
 	Image           string            `json:"image"`
 	Network         string            `json:"network"`
@@ -33,8 +36,15 @@ type issuedLeaseResponse struct {
 	Token string `json:"token"`
 }
 
-// renderLease turns a lease into its response. Lists and maps are never nil,
-// so they render as [] and {}.
+// render turns a lease into its response, with the address of the gateway.
+func (s *LeaseService) render(l *Lease) leaseResponse {
+	r := renderLease(l)
+	r.GatewayURL = s.gatewayURL
+	return r
+}
+
+// renderLease turns a lease into its response without the gateway's address.
+// Lists and maps are never nil, so they render as [] and {}.
 func renderLease(l *Lease) leaseResponse {
 	return leaseResponse{
 		ID:              l.ID,

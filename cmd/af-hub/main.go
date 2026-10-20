@@ -338,6 +338,7 @@ func main() {
 			Secrets:    store,
 			Audit:      auditEmitter,
 			GatewayURL: gateway.URL(),
+			Boxes:      gateway,
 		})
 	}
 	sandboxes.RegisterLeaseRoutes(server.APIGroup(), leaseSvc)

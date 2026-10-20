@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"maps"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -21,7 +20,6 @@ import (
 
 	"github.com/agent-fox-dev/agentkit-go/sandbox"
 	"github.com/agent-fox-dev/agentkit-go/sandbox/gateway"
-	"github.com/agent-fox-dev/agentkit-go/sandbox/gatewayd"
 	"github.com/agent-fox-dev/agentkit-go/sandbox/local"
 	"github.com/agent-fox-dev/hub/internal/audit"
 	"github.com/agent-fox-dev/hub/internal/secrets"
@@ -346,8 +344,11 @@ type recordingProvider struct {
 	createErr error
 	// closeErr, when set, is what every box's Close returns, without closing.
 	closeErr error
-	block    chan struct{}
-	reaps    int
+	// closeBlock, when set, makes every box's Close wait until it is closed or
+	// the context of the Close ends.
+	closeBlock chan struct{}
+	block      chan struct{}
+	reaps      int
 	// entered receives one value for each Create that waits on block.
 	entered chan struct{}
 }
@@ -490,8 +491,15 @@ func (b *recordedBox) Close(ctx context.Context) error {
 	b.p.mu.Lock()
 	b.closes++
 	b.deadlines = append(b.deadlines, left)
-	failure := b.p.closeErr
+	failure, wait := b.p.closeErr, b.p.closeBlock
 	b.p.mu.Unlock()
+	if wait != nil {
+		select {
+		case <-wait:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 	if failure != nil {
 		return failure
 	}
@@ -509,6 +517,14 @@ func (p *recordingProvider) setCloseErr(err error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.closeErr = err
+}
+
+// setCloseBlock makes every box's Close wait for ch, or for its context to end;
+// nil lets Close through again.
+func (p *recordingProvider) setCloseBlock(ch chan struct{}) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.closeBlock = ch
 }
 
 // reapCount is the number of Reap calls.
@@ -567,6 +583,10 @@ func newBackendEnv(t *testing.T, opts leaseEnvOptions) *backendEnv {
 		Principal: testPrincipal,
 	})
 	t.Cleanup(func() {
+		// A test may leave the provider failing or blocked; the boxes are closed
+		// all the same.
+		env.prov.setCloseErr(nil)
+		env.prov.setCloseBlock(nil)
 		env.prov.mu.Lock()
 		boxes := slices.Clone(env.prov.boxes)
 		env.prov.mu.Unlock()
@@ -626,48 +646,30 @@ func (e *backendEnv) issueToken(body string) (id, token string) {
 	return obj["id"].(string), obj["token"].(string)
 }
 
-// testGateway is a gatewayd.Server over a wrapping backend, authenticating with
-// the lease tokens of the environment and serving on a free loopback port.
-type testGateway struct {
-	srv     *gatewayd.Server
-	backend *Backend
-	url     string
-}
+// testGateway is the gateway hub starts, serving on a free loopback port.
+type testGateway struct{ *Gateway }
 
-// startGateway serves the environment's leases over a real gateway for the
-// length of the test. Its backend reads the principal the way production does,
-// from gatewayd's own context value.
+// startGateway starts the gateway over the environment's database, secrets and
+// emitter the way hub does, hands it to the lease service, which then shows its
+// address and destroys boxes through it, and shuts it down when the test ends.
+// Its backend reads the principal the way production does, from gatewayd's own
+// context value.
 func (e *backendEnv) startGateway() *testGateway {
 	e.t.Helper()
-	backend := newBackend(backendConfig{
-		Service: e.profile, Store: e.store, Secrets: e.secrets, DB: e.db, Audit: e.emitter, Now: e.clock.Now,
-	})
-	modes := []sandbox.NetworkMode{sandbox.NetworkNone}
-	srv, err := gatewayd.New(gatewayd.Config{
-		Backend:      backend,
-		Authenticate: NewLeaseAuthenticator(e.store, e.clock.Now),
-		NetworkModes: modes,
-	})
+	gw, err := StartGateway(e.profile, GatewayDeps{DB: e.db, Secrets: e.secrets, Audit: e.emitter, Now: e.clock.Now})
 	if err != nil {
-		e.t.Fatalf("gatewayd.New: %v", err)
+		e.t.Fatalf("StartGateway: %v", err)
 	}
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		e.t.Fatalf("listening: %v", err)
-	}
-	go func() { _ = srv.Serve(listener) }()
-	e.t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		_ = srv.Shutdown(ctx)
-	})
-	return &testGateway{srv: srv, backend: backend, url: "http://" + listener.Addr().String()}
+	stopAfter(e.t, gw)
+	e.svc.gatewayURL = gw.URL()
+	e.svc.boxes = gw
+	return &testGateway{gw}
 }
 
 // dial connects the real gateway client with a lease token.
 func (g *testGateway) dial(t *testing.T, token string) *gateway.Provider {
 	t.Helper()
-	p, err := gateway.Dial(context.Background(), g.url, gateway.Options{Token: token})
+	p, err := gateway.Dial(context.Background(), g.URL(), gateway.Options{Token: token})
 	if err != nil {
 		t.Fatalf("gateway.Dial: %v", err)
 	}
