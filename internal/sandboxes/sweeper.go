@@ -161,7 +161,8 @@ func (s *Sweeper) reap(ctx context.Context) error {
 		slog.Info("sandbox expiry: the provider removed boxes past their time", "sandbox_ids", ids)
 	}
 	if err != nil {
-		return errors.New(callFailure("reap", s.callTimeout, err, s.service.scrubValues()))
+		// A remote that refused hub's token is logged as at a Create or a destroy.
+		return s.service.remoteFailure("reap", err, callFailure("reap", s.callTimeout, err, s.service.scrubValues()))
 	}
 	return nil
 }

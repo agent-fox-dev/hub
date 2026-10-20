@@ -147,7 +147,8 @@ func TestShutdown_TheClosesErrorAndLimit(t *testing.T) {
 	env := newClosingEnv(t, func(rec *recordingProvider) RemoteClient {
 		return orderedRemote{scriptedRemote: scriptedRemote{rec}, log: &callLog{}, closeErr: boom}
 	})
-	if err := env.gw.Shutdown(context.Background()); !errors.Is(err, boom) {
+	// The error is scrubbed text, so it carries the message and not the chain.
+	if err := env.gw.Shutdown(context.Background()); err == nil || !strings.Contains(err.Error(), boom.Error()) {
 		t.Errorf("Shutdown returned %v; want the error of Close", err)
 	}
 

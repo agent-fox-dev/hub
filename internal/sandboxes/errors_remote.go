@@ -34,7 +34,7 @@ func isRemoteRefusal(err error) bool {
 }
 
 // isRemote reports whether the provider is a remote gateway.
-func (s *Service) isRemote() bool { return s.remote != nil }
+func (s *Service) isRemote() bool { return s != nil && s.remote != nil }
 
 // remoteFailure returns the error a caller gets for a call to the provider that
 // failed with err, whose scrubbed text is msg. A remote that refused hub's token

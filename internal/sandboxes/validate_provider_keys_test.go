@@ -48,8 +48,7 @@ func TestValidate_PodmanKeysUnderGateway_TS_29_15(t *testing.T) {
 		cfg := remoteConfig("https://gw.example")
 		set(cfg)
 		_, err := Validate(cfg)
-		requireFailure(t, err, key, "podman")
-		requireFailure(t, err, key, "applies only to")
+		requireFailure(t, err, key, `applies only to sandbox.provider "podman"`)
 		if n := len(failures(err)); n != 1 {
 			t.Errorf("%s alone gave %d failures, want 1:\n%v", key, n, err)
 		}
@@ -61,7 +60,7 @@ func TestValidate_PodmanKeysUnderGateway_TS_29_15(t *testing.T) {
 	}
 	_, err := Validate(cfg)
 	for key := range keys {
-		requireFailure(t, err, key, "podman")
+		requireFailure(t, err, key, `applies only to sandbox.provider "podman"`)
 	}
 	if n := len(failures(err)); n != 3 {
 		t.Errorf("the three keys gave %d failures, want 3:\n%v", n, err)
@@ -91,8 +90,8 @@ func TestValidate_GatewayKeysUnderPodman_TS_29_16(t *testing.T) {
 	if err == nil {
 		t.Fatal("provider podman with gateway_url and gateway_token was accepted")
 	}
-	requireFailure(t, err, "sandbox.gateway_url", "gateway", "applies only to")
-	requireFailure(t, err, "sandbox.gateway_token", "gateway", "applies only to")
+	requireFailure(t, err, "sandbox.gateway_url", `applies only to sandbox.provider "gateway"`)
+	requireFailure(t, err, "sandbox.gateway_token", `applies only to sandbox.provider "gateway"`)
 	if n := len(failures(err)); n != 2 {
 		t.Errorf("the two keys gave %d failures, want 2:\n%v", n, err)
 	}

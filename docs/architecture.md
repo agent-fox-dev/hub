@@ -266,7 +266,7 @@ lease holder ──lease token──▶ hub's gatewayd ──▶ Backend ──h
 - **Where the remote's failures show up.** At start, as a refused start. At a
   `Create`, as a `failed` lease with the scrubbed message; a remote that refuses the
   hub's token is answered `Unavailable` and logs one error naming
-  `sandbox.gateway_token` (`remoteFailure`). At a destroy, in the one place a box
+  `sandbox.gateway_token` (`remoteFailure`, also for the sweep's `Reap`). At a destroy, in the one place a box
   is destroyed for the caller's `Close`, `DELETE`, the sweep and the shutdown
   (`closeProviderBox`): a remote not-found, as gatewayd's `ErrNotHeld` or a gRPC
   `NotFound`, counts as destroyed; any other failure is the usual 502, or a lease
@@ -276,14 +276,21 @@ lease holder ──lease token──▶ hub's gatewayd ──▶ Backend ──h
   (`closeFailed`), and a later try destroys the box by id through the client's
   `Destroy`, which can be repeated and which the remote answers OK for a box it does
   not have. The sweep, `DELETE` and the shutdown all go through it.
-- **Scrubbing.** `Service.scrubValues` gives the token, the `gateway_url` string and
-  its host to every site that turns provider text into output, besides a lease's
-  secrets and fixed environment: the failure of a `Create`, the error of a box's
-  `Close`, `DELETE`'s 502, the expiry path's log and the sweep's `Reap`, listing and
-  orphan destroy.
-- **No redial, no retry.** The client reconnects by itself; the hub adds no redial,
-  monitor or circuit breaker, and calls the remote's `Create` once per caller
-  `Create`.
+- **Scrubbing.** `Service.scrubValues` gives the token, the `gateway_url` string, its
+  host with the port and its host name alone to every site that turns provider text
+  into output, besides a lease's secrets and fixed environment: the failure of a
+  `Create`, the error of a box's `Close`, `DELETE`'s 502, the expiry path's log, the
+  sweep's `Reap`, listing and orphan destroy, and the error of `Service.Close`. The
+  capability snapshot has its notes scrubbed once, since the gateway client writes
+  the remote's host and limits into them and hub's gateway serves them to every
+  holder. gatewayd relays the status of a call to a sandbox's agent as it is, which
+  hub cannot scrub, so `DialGateway` gives the client a dialer (`dialWithoutAddress`)
+  whose failures say why and not where; what is left is a TLS failure on `https`,
+  which names the host.
+- **No redial, no retry.** The client reconnects by itself, with gRPC's backoff (from
+  about a second up to two minutes between attempts, during which a call fails at
+  once); the hub adds no redial, monitor or circuit breaker, and calls the remote's
+  `Create` once per caller `Create`.
 - **Closing.** `Gateway.Shutdown` closes the client last, through `Service.Close`,
   after it has destroyed the box of every active lease through it, within the
   shutdown limit.

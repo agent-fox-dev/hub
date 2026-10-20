@@ -62,24 +62,45 @@ the hub could and could not do about them.
    (`handle.go:88`), which is where it is applied; `delete_destroy.go` and the
    sweeper needed no change (`TestRemoteNotFoundCountsAsDestroyed_TS_29_31`).
 
-6. **A refused token is already `Unavailable` at the client; the hub says so
-   itself.** The real client reports an `Unauthenticated` status as an error that
-   matches `gateway.ErrUnauthenticated`, and wraps `PermissionDenied` as a status;
-   `isRemoteRefusal` (`errors_remote.go:25`) takes both. gatewayd hands any backend
-   error that is no refusal to the caller as `Unavailable`, so `Service.remoteFailure`
-   (`errors_remote.go:45`) makes the code hold for the backend itself and logs the one
-   error that names `sandbox.gateway_token`. For the same reason a second `Create`
-   is `FailedPrecondition` at the backend and `Unavailable` with the message through
+6. **A refused token reaches the caller as `Unavailable`; the hub makes it so itself.**
+   The real client reports an `Unauthenticated` status as an error that matches
+   `gateway.ErrUnauthenticated` (not as a status), and wraps `PermissionDenied` as a
+   status; `isRemoteRefusal` (`errors_remote.go:25`) takes both. gatewayd hands any
+   backend error that is no refusal to the caller as `Unavailable`, so
+   `Service.remoteFailure` (`errors_remote.go:45`) makes the code hold for the backend
+   itself and logs the one error that names `sandbox.gateway_token`, for a `Create`,
+   a destroy and the sweep's `Reap`. For the same reason a second `Create` is
+   `FailedPrecondition` at the backend and `Unavailable` with the message through
    the client, and a token hub never minted fails at `gateway.Dial` already
    (`TestRemoteRefusalReachesTheCallerAsUnavailable_TS_29_32`,
+   `TestReapRefusalIsLoggedNamingTheToken`,
    `TestRemoteLease_RefusalsDoNotReachTheRemote_TS_29_29`).
 
-7. **There is no single scrub call-site.** Nine sites turn provider text into
-   output; each takes `Service.scrubValues` (`service.go:337`): the token, the
-   `gateway_url` string and its host. `TestRemoteTextIsScrubbedAtEverySite` and
-   `TestSweepAndDeleteScrubTheRemoteValuesThemselves` put a token-bearing error
-   through all of them. A `Reap` failure belongs to no lease, so only the remote's
-   values are scrubbed from it.
+7. **There is no single scrub call-site, and the spec's scrub set does not keep the
+   remote from a holder.** Nine sites turn provider text into output, and the error of
+   `Service.Close` is a tenth; each takes `Service.scrubValues` (`service.go:337`)
+   (`TestRemoteTextIsScrubbedAtEverySite`,
+   `TestSweepAndDeleteScrubTheRemoteValuesThemselves`, `TestServiceClose_ErrorIsScrubbed`).
+   A `Reap` failure belongs to no lease, so only the remote's values are scrubbed from
+   it. Three things were added to what 29-REQ-8.1 lists, because its purpose is that a
+   caller never sees the remote:
+   - The set also holds the bare host name when it differs from `url.Host`: DNS and TLS
+     errors name the host without the port (`TestScrubSetHoldsTheBareHostName`).
+   - The capability snapshot's notes are scrubbed once at start. The gateway client
+     writes "Sandboxes run on the gateway at <host>, which accepts a TTL of at most ..."
+     into them, and hub's gateway serves the capabilities to every holder
+     (`TestRemoteCapabilitiesNoteDoesNotNameTheRemote`).
+   - `DialGateway` gives the client a dialer, `dialWithoutAddress` (`provider.go`), whose
+     failures say why and not where. gRPC puts the text of a failed dial in the status
+     of every call that fails because of it, and gatewayd relays the status of a call to
+     a sandbox's agent to the holder unchanged, so `box.Tools` after the remote went away
+     named `dial tcp <address>: connect: connection refused`
+     (`TestDialErrorsDoNotNameTheAddress`).
+
+   What is left is a TLS failure on `https` in a relayed call (a certificate that is not
+   valid for the host name names the host): the relay is AgentKit's, and a hub that
+   re-implemented certificate verification to hide a host name would be worse. The
+   documents say so.
 
 8. **While the remote is down, the sweep ends the lease and retries the box.**
    29-REQ-9.5 and TS-29-43 say the lease stays `active` until the remote is back.

@@ -2,7 +2,9 @@ package sandboxes
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net"
 
 	"github.com/agent-fox-dev/agentkit-go/sandbox"
 	"github.com/agent-fox-dev/agentkit-go/sandbox/gateway"
@@ -51,8 +53,12 @@ type GatewayFactory func(ctx context.Context, url string, opts gateway.Options) 
 
 // DialGateway is the factory production uses: gateway.Dial, which connects to the
 // gateway under ctx, reads its capabilities and refuses a URL or a token that
-// breaks its rules before it connects.
+// breaks its rules before it connects. Unless opts brings a Dialer, the client dials
+// with dialWithoutAddress.
 func DialGateway(ctx context.Context, url string, opts gateway.Options) (RemoteClient, error) {
+	if opts.Dialer == nil {
+		opts.Dialer = dialWithoutAddress
+	}
 	client, err := gateway.Dial(ctx, url, opts)
 	if err != nil {
 		return nil, err
@@ -78,4 +84,39 @@ func newStartOptions(opts []StartOption) startOptions {
 // gateway, for provider "gateway". The default is DialGateway.
 func WithGatewayFactory(f GatewayFactory) StartOption {
 	return func(o *startOptions) { o.gateway = f }
+}
+
+// dialWithoutAddress dials the remote gateway as the client does by default, over
+// TCP, and returns a failure that says why and not where. gRPC puts the text of a
+// failed dial into the status of every call that fails because of it, and gatewayd
+// relays the status of a call to the sandbox's agent to the lease holder as it is,
+// which hub cannot scrub: "dial tcp 10.0.0.5:8443: connect: connection refused"
+// would hand the remote's address to the holder.
+func dialWithoutAddress(ctx context.Context, addr string) (net.Conn, error) {
+	var d net.Dialer
+	conn, err := d.DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return nil, errors.New("cannot connect to the remote gateway: " + dialReason(err))
+	}
+	return conn, nil
+}
+
+// dialReason is the part of a failed dial that does not name an address: "connection
+// refused", "no such host", "i/o timeout".
+func dialReason(err error) string {
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return dnsErr.Err
+	}
+	var opErr *net.OpError
+	if errors.As(err, &opErr) && opErr.Err != nil {
+		return opErr.Err.Error()
+	}
+	if errors.Is(err, context.Canceled) {
+		return "canceled"
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "timed out"
+	}
+	return "failed"
 }

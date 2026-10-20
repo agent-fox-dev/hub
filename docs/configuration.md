@@ -170,8 +170,9 @@ With `provider = "gateway"` the sandboxes run on an `agentkit-gateway` elsewhere
 not on a container engine on the hub's host. The hub holds one token for that
 gateway, checks at start that it answers and accepts the token, and then puts its
 own gateway (see [The sandbox gateway](#the-sandbox-gateway)) in front of it, so a
-caller keeps the same API, the same leases and the same guarantees and never sees
-the remote gateway, its address or its token. Every other rule of the section
+caller keeps the same API, the same leases and the same guarantees, and the hub
+works to keep the remote gateway, its address and its token from the caller (see
+[below](#the-remote-gateway-provider) for the one place it cannot). Every other rule of the section
 (profiles, `max_ttl`, `network_modes`, the scopes, the listing, the disabled state)
 applies to both providers unchanged.
 
@@ -230,10 +231,18 @@ What to know when you run it:
   `MaxSandboxes` or `MaxTTL` at start. When a `Create` exceeds one, the remote
   refuses it and the lease is `failed`, with the remote's message, scrubbed.
 - **The token and the address stay in the hub.** The token, the `gateway_url`
-  string and its host are removed from every text produced from the remote's
-  errors: the lease's `error`, the audit events, the log, and the errors returned
-  by the gateway and the API. The token is in no response, metric or log line. A
-  lease's `gateway_url` is always the hub's own gateway, never the remote's.
+  string, its host with the port and its host name alone are removed from every
+  text produced from the remote's errors: the lease's `error`, the audit events,
+  the log, and the errors returned by the gateway and the API. The same goes for
+  the capabilities the hub's gateway reports, whose notes carry the remote's host
+  and limits. The token is in no response, metric or log line. A lease's
+  `gateway_url` is always the hub's own gateway, never the remote's. The hub dials
+  the remote itself, so that the error of a call that fails because the remote
+  cannot be reached (including a call relayed to a sandbox) says why
+  (`connect: connection refused`, `no such host`) and not where. One thing is out
+  of the hub's hands: gatewayd hands the error of a relayed call to the holder as it
+  is, and a TLS failure on `https` (for example a certificate that is not valid for
+  the host name) names the host.
 - **A remote that refuses the hub's token after start** (it was revoked or
   rotated) is answered to the caller as `Unavailable` and not as the remote's
   `Unauthenticated`, so that nobody takes it for the hub refusing the caller's own
@@ -248,8 +257,9 @@ What to know when you run it:
   `Close` fails and leaves the lease `active`, and a sweep logs what it could not
   do. A destroy that failed is tried again by id through the same client, by the
   next `DELETE` or the next sweep. When the remote is back at the same address the
-  next call works without a restart, though the client may need a second or more to
-  reconnect after a failed attempt.
+  next call works without a restart, though the client may need time to reconnect:
+  after each failed attempt gRPC waits longer before the next, from about a second up
+  to two minutes, and a call made in between fails at once.
 - **The sweep's `Reap` is a call to the remote.** The first step of every sweep
   (see [Lease lifetime](#lease-lifetime)) is the provider's `Reap`; for a remote
   gateway that is a `Reap` call on it, which has its backend remove the sandboxes

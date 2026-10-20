@@ -99,6 +99,9 @@ func startRemote(v *Validated, factory GatewayFactory) (*Service, error) {
 	// process: a remote that is down must not make hub's gateway wait or report no
 	// modes, and a change on the remote takes effect when hub restarts.
 	caps := client.Capabilities()
+	// The gateway client writes the remote's host and limits into the notes, and
+	// hub's gateway serves the capabilities to every lease holder.
+	caps.Notes = scrub(caps.Notes, remoteScrubValues(v))
 	svc, err := assemble(v, client, caps, sandbox.CheckSpec)
 	if err != nil {
 		closeRemote(client)
@@ -346,6 +349,10 @@ func remoteScrubValues(v *Validated) []string {
 	values := []string{v.GatewayToken.reveal(), v.GatewayURL}
 	if u, err := url.Parse(v.GatewayURL); err == nil && u.Host != "" {
 		values = append(values, u.Host)
+		// A DNS or TLS error names the host without its port.
+		if u.Hostname() != u.Host {
+			values = append(values, u.Hostname())
+		}
 	}
 	return values
 }
@@ -361,7 +368,10 @@ func (s *Service) Close() error {
 	}
 	s.closeOnce.Do(func() {
 		if closer, ok := s.remote.(io.Closer); ok {
-			s.closeErr = closer.Close()
+			if err := closer.Close(); err != nil {
+				// The client's text names the remote like any other of its errors.
+				s.closeErr = errors.New(scrub(err.Error(), s.scrubValues()))
+			}
 		}
 	})
 	return s.closeErr

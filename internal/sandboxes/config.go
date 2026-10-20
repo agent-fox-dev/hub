@@ -20,7 +20,7 @@ import (
 // Keys whose absence must be told apart from a zero value are pointers or
 // slices that stay nil when the key is absent.
 type Config struct {
-	// Provider selects the provider; "podman" is the only accepted value.
+	// Provider selects the provider: "podman" or "gateway".
 	Provider string `toml:"provider"`
 	// EngineBinary, Runtime and UserNS are passed to the Podman provider.
 	EngineBinary string `toml:"engine_binary"`
