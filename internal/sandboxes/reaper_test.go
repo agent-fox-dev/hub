@@ -52,10 +52,9 @@ func (f *fakeTickers) stoppedCount() int {
 
 // withTickers makes the environment's sweeper reap on the given tickers.
 func (e *sweepEnv) withTickers(tickers *fakeTickers) {
-	e.sweeper = NewSweeper(SweeperConfig{
-		DB: e.db, Provider: e.prov, Boxes: e.boxes, Audit: e.sink, Metrics: e.metrics,
-		Now: e.clock.Now, CallTimeout: time.Second, Interval: time.Minute, Tickers: tickers.make,
-	})
+	cfg := e.sweeperConfig()
+	cfg.Interval, cfg.Tickers = time.Minute, tickers.make
+	e.sweeper = NewSweeper(cfg)
 }
 
 // waitFor polls until cond holds, and fails the test when it does not within ten

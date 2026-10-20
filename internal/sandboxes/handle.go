@@ -172,8 +172,8 @@ func (b *Backend) leaseOfBox(boxID string) string {
 const expiryMargin = 2 * time.Second
 
 // endByClient moves the lease from active to destroyed with the reason client
-// and emits one destroy event, the first time it is called for the lease. A lease
-// that has ended already is not touched.
+// (shutdown, while hub is shutting down) and emits one destroy event, the first
+// time it is called for the lease. A lease that has ended already is not touched.
 //
 // gatewayd also closes a box when its TTL passes, and a lease that has run out is
 // not the client's doing: marking it is for the sweep that owns expiry, so a Close
@@ -187,7 +187,8 @@ func (b *Backend) endByClient(ctx context.Context, h *handle) {
 	if !expires.After(b.now().Add(expiryMargin)) {
 		return
 	}
-	changed, err := b.store.DestroyLease(h.lease.ID, leaseActive, leaseEndReasonClient)
+	reason := b.service.endReason(leaseEndReasonClient)
+	changed, err := b.store.DestroyLease(h.lease.ID, leaseActive, reason)
 	switch {
 	case err != nil:
 		slog.Error("sandbox gateway: ending a lease failed", "lease_id", h.lease.ID, "error", err)
@@ -195,7 +196,7 @@ func (b *Backend) endByClient(ctx context.Context, h *handle) {
 		b.emit(ctx, h.lease, audit.EventSandboxDestroy, "destroy", map[string]any{
 			"lease_id":   h.lease.ID,
 			"sandbox_id": h.ID(),
-			"reason":     leaseEndReasonClient,
+			"reason":     reason,
 		})
 	}
 }

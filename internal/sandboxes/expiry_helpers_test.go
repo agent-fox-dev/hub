@@ -50,6 +50,9 @@ type fakeBoxes struct {
 	// their context to end.
 	listHang    bool
 	destroyHang map[string]bool
+	// destroyBlock makes the Destroy of those box ids wait for the channel to be
+	// closed, whatever its context says.
+	destroyBlock map[string]chan struct{}
 	// calls, when set, records every List and Destroy call; before is called
 	// first by each of them.
 	calls  *callLog
@@ -85,11 +88,14 @@ func (f *fakeBoxes) List(ctx context.Context) ([]Box, error) {
 func (f *fakeBoxes) Destroy(ctx context.Context, id string) error {
 	f.mu.Lock()
 	f.destroyed = append(f.destroyed, id)
-	hang, calls, before := f.destroyHang[id], f.calls, f.before
+	hang, block, calls, before := f.destroyHang[id], f.destroyBlock[id], f.calls, f.before
 	f.mu.Unlock()
 	calls.add("Destroy " + id)
 	if before != nil {
 		before("Destroy " + id)
+	}
+	if block != nil {
+		<-block
 	}
 	if hang {
 		<-ctx.Done()

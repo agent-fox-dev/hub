@@ -28,12 +28,19 @@ func newSweepEnv(t *testing.T) *sweepEnv {
 	t.Helper()
 	m := audit.NewMetrics()
 	env := newBackendEnv(t, leaseEnvOptions{metrics: m, config: bigLeaseConfig()})
-	boxes := &fakeBoxes{}
-	sweeper := NewSweeper(SweeperConfig{
-		DB: env.db, Provider: env.prov, Boxes: boxes, Audit: env.sink, Metrics: m,
-		Now: env.clock.Now, CallTimeout: time.Second,
-	})
-	return &sweepEnv{backendEnv: env, metrics: m, boxes: boxes, sweeper: sweeper}
+	e := &sweepEnv{backendEnv: env, metrics: m, boxes: &fakeBoxes{}}
+	e.sweeper = NewSweeper(e.sweeperConfig())
+	return e
+}
+
+// sweeperConfig is the configuration of the environment's sweeper: the sandbox
+// service, the provider and the fake boxes, the audit emitter and the metrics, the
+// clock, and a call limit of a second.
+func (e *sweepEnv) sweeperConfig() SweeperConfig {
+	return SweeperConfig{
+		DB: e.db, Provider: e.prov, Boxes: e.boxes, Audit: e.sink, Metrics: e.metrics,
+		Now: e.clock.Now, CallTimeout: time.Second, Service: e.profile,
+	}
 }
 
 // seedFields are the times and the box of a lease the sweep tests seed.

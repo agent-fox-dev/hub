@@ -16,6 +16,8 @@ func (e *providerError) Error() string { return e.msg }
 
 // destroyLease ends a lease for DELETE, together with its box.
 //
+// While hub is shutting down the reason is shutdown, not api.
+//
 // A leased lease has no box: it is moved to destroyed, and a Create still in
 // flight finds the lease ended when its box arrives and destroys it. An active
 // lease has its box destroyed first, under a deadline, and only when that worked,
@@ -43,12 +45,13 @@ func (s *LeaseService) destroyLease(ctx context.Context, auth *apikit.AuthInfo, 
 		default:
 			return nil
 		}
-		changed, err := s.store.DestroyLease(lease.ID, lease.State, leaseEndReasonAPI)
+		reason := s.profiles.endReason(leaseEndReasonAPI)
+		changed, err := s.store.DestroyLease(lease.ID, lease.State, reason)
 		if err != nil {
 			return err
 		}
 		if changed {
-			s.emitDestroyed(ctx, auth, lease)
+			s.emitDestroyed(ctx, auth, lease, reason)
 			return nil
 		}
 		if lease, err = s.store.GetLease(lease.ID); err != nil {
@@ -77,8 +80,8 @@ func (s *LeaseService) destroyBox(ctx context.Context, lease *Lease) error {
 }
 
 // emitDestroyed records that DELETE ended the lease, with the box it destroyed or
-// null when the lease had none.
-func (s *LeaseService) emitDestroyed(ctx context.Context, auth *apikit.AuthInfo, lease *Lease) {
+// null when the lease had none, and the reason it ended with.
+func (s *LeaseService) emitDestroyed(ctx context.Context, auth *apikit.AuthInfo, lease *Lease, reason string) {
 	var box any
 	if lease.SandboxID != nil {
 		box = *lease.SandboxID
@@ -94,7 +97,7 @@ func (s *LeaseService) emitDestroyed(ctx context.Context, auth *apikit.AuthInfo,
 		Metadata: map[string]any{
 			"lease_id":   lease.ID,
 			"sandbox_id": box,
-			"reason":     leaseEndReasonAPI,
+			"reason":     reason,
 		},
 	})
 }

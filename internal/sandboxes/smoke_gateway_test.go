@@ -498,7 +498,7 @@ func TestAfHubMain_WiresTheGateway(t *testing.T) {
 	src := readRepoFile(t, "cmd/af-hub/main.go")
 	positions := map[string]int{}
 	for _, token := range []string{
-		"sandboxes.InitSchema(", "sandboxes.NewGateway(", "gateway.Run(ctx)", "GatewayURL: ", "Boxes:", "sandboxes.RegisterLeaseRoutes(", "server.Start()",
+		"sandboxes.InitSchema(", "sandboxes.NewGateway(", "gateway.Run(ctx)", "GatewayURL: ", "Boxes:", "sandboxes.RegisterLeaseRoutes(", "runServer(server.Start,",
 	} {
 		i := strings.Index(src, token)
 		if i < 0 {
@@ -506,7 +506,7 @@ func TestAfHubMain_WiresTheGateway(t *testing.T) {
 		}
 		positions[token] = i
 	}
-	order := []string{"sandboxes.InitSchema(", "sandboxes.NewGateway(", "gateway.Run(ctx)", "GatewayURL: ", "sandboxes.RegisterLeaseRoutes(", "server.Start()"}
+	order := []string{"sandboxes.InitSchema(", "sandboxes.NewGateway(", "gateway.Run(ctx)", "GatewayURL: ", "sandboxes.RegisterLeaseRoutes(", "runServer(server.Start,"}
 	for i := 1; i < len(order); i++ {
 		if positions[order[i-1]] >= positions[order[i]] {
 			t.Errorf("main.go has %q before %q; want the gateway started after the lease table and before the server serves", order[i], order[i-1])

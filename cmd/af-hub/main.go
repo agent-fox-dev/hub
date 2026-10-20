@@ -334,8 +334,9 @@ func main() {
 	// metrics, which all exist by now. What fails in it is logged and never stops
 	// hub from starting.
 	var leaseSvc *sandboxes.LeaseService
+	var gateway *sandboxes.Gateway // nil when sandboxes are not configured
 	if sandboxSvc != nil {
-		gateway, err := sandboxes.NewGateway(sandboxSvc, sandboxes.GatewayDeps{
+		gateway, err = sandboxes.NewGateway(sandboxSvc, sandboxes.GatewayDeps{
 			DB:      database.SqlDB,
 			Secrets: store,
 			Audit:   auditEmitter,
@@ -501,9 +502,26 @@ func main() {
 	server.Echo().Use(metrics.PrometheusMiddleware())
 	server.Echo().GET("/metrics", echo.WrapHandler(metrics.MetricsHandler()))
 
-	if err := server.Start(); err != nil {
+	// When Start returns, the sandbox shutdown runs while both databases are still
+	// open: they close in the deferred calls above, which run after this. A hub
+	// without sandboxes has no gateway, and the shutdown does nothing.
+	if err := runServer(server.Start, func() {
+		if err := gateway.Shutdown(context.Background()); err != nil {
+			slog.Error("the sandbox shutdown did not finish; the leases still active are ended at the next start", "error", err)
+		}
+	}); err != nil {
 		log.Fatal(err)
 	}
+}
+
+// runServer runs the HTTP server until its start function returns, then the
+// sandbox shutdown, and returns what the server returned. The shutdown runs when
+// the server failed as well, since a log.Fatal after it would skip the deferred
+// closes of the databases and the shutdown with them.
+func runServer(start func() error, shutdown func()) error {
+	err := start()
+	shutdown()
+	return err
 }
 
 // ===========================================================================

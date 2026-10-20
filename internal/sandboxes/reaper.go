@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 )
 
@@ -34,6 +35,15 @@ type Reaper struct {
 func (r *Reaper) Stop() {
 	r.cancel()
 	<-r.done
+}
+
+// stop is Stop with a limit: it returns when the loop has ended or ctx has.
+func (r *Reaper) stop(ctx context.Context) {
+	r.cancel()
+	select {
+	case <-r.done:
+	case <-ctx.Done():
+	}
 }
 
 // RecoverActive ends the leases an earlier process left active. Their boxes
@@ -123,5 +133,64 @@ func (s *Sweeper) StopReaper() {
 	s.reaperMu.Unlock()
 	if r != nil {
 		r.Stop()
+	}
+}
+
+// Shutdown is the sandbox part of hub's shutdown. It puts hub in shutdown mode,
+// stops the reaper and waits for a sweep in progress, then destroys the box of
+// every active lease, all at once, and ends each lease as destroyed with the
+// reason shutdown and one hub.sandbox.destroy event by the system. A lease in
+// state leased is not touched. ctx carries the time limit: when it runs out
+// Shutdown returns, and a lease whose ending has not completed stays active, for
+// the recovery at the next start. A second call, and a call on a hub that has
+// shut down already, do nothing.
+func (s *Sweeper) Shutdown(ctx context.Context) error {
+	if !s.shuttingDown.CompareAndSwap(false, true) {
+		return nil
+	}
+	s.service.EnterShutdown()
+
+	s.reaperMu.Lock()
+	reaper := s.reaper
+	s.reaperMu.Unlock()
+	if reaper != nil {
+		reaper.stop(ctx)
+	}
+	// A sweep that gatewayd started is not the reaper's. Sweeps never overlap, so
+	// holding the lock for a moment waits for it, and none starts after.
+	select {
+	case s.running <- struct{}{}:
+		<-s.running
+	case <-ctx.Done():
+		return fmt.Errorf("shutdown: waiting for a sweep: %w", ctx.Err())
+	}
+
+	leases, err := s.store.selectLeases(`state = 'active'`)
+	if err != nil {
+		slog.Error("sandbox expiry: reading the active leases for shutdown failed", "error", err)
+		return fmt.Errorf("shutdown: %w", err)
+	}
+	var ending sync.WaitGroup
+	for _, lease := range leases {
+		ending.Go(func() {
+			if _, err := s.ender.endDestroyed(ctx, lease, leaseEndReasonShutdown); err != nil && ctx.Err() == nil {
+				slog.Error("sandbox expiry: ending a lease for shutdown failed", "lease_id", lease.ID, "error", err)
+			}
+		})
+	}
+	done := make(chan struct{})
+	go func() {
+		ending.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		if len(leases) > 0 {
+			slog.Info("sandbox expiry: ended the active leases for shutdown", "leases", len(leases))
+		}
+		return nil
+	case <-ctx.Done():
+		slog.Warn("sandbox expiry: the shutdown limit ran out; the leases still active are ended at the next start")
+		return fmt.Errorf("shutdown: %w", ctx.Err())
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/txsvc/apikit"
@@ -43,6 +44,9 @@ type SweeperConfig struct {
 	Interval time.Duration
 	// Tickers makes the ticks of the reaper; a time.Ticker when nil.
 	Tickers tickerFactory
+	// Service is the sandbox service, whose shutdown mode the sweeper reads and
+	// sets; nil means the sweeper is never in shutdown mode.
+	Service *Service
 }
 
 // Sweeper enforces the time limits of leases. One sweep reaps the provider,
@@ -67,6 +71,9 @@ type Sweeper struct {
 	tickers  tickerFactory
 	reaperMu sync.Mutex
 	reaper   *Reaper
+	// service holds the shutdown mode; shuttingDown is set by the first Shutdown.
+	service      *Service
+	shuttingDown atomic.Bool
 }
 
 // NewSweeper returns a sweeper built from cfg.
@@ -100,6 +107,7 @@ func NewSweeper(cfg SweeperConfig) *Sweeper {
 		running:     make(chan struct{}, 1),
 		interval:    interval,
 		tickers:     tickers,
+		service:     cfg.Service,
 	}
 }
 
@@ -120,6 +128,10 @@ func (s *Sweeper) Sweep(ctx context.Context) error {
 		defer func() { <-s.running }()
 	case <-ctx.Done():
 		return ctx.Err()
+	}
+	// A hub that is shutting down ends its leases itself, and starts no sweep.
+	if s.service.InShutdown() {
+		return nil
 	}
 
 	var errs []error

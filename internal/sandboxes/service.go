@@ -7,6 +7,7 @@ import (
 	"maps"
 	"math"
 	"slices"
+	"sync/atomic"
 	"time"
 
 	"github.com/agent-fox-dev/agentkit-go/sandbox"
@@ -23,7 +24,8 @@ const bytesPerMB = 1 << 20
 type specChecker func(sandbox.Capabilities, sandbox.Spec) (sandbox.Spec, error)
 
 // Service is the validated sandbox definition and the provider it was checked
-// against. It is built once at start and read-only afterwards.
+// against. It is built once at start and read-only afterwards, except for the
+// shutdown mode (see EnterShutdown).
 type Service struct {
 	provider     sandbox.Provider
 	profiles     []ValidatedProfile
@@ -33,6 +35,8 @@ type Service struct {
 	leaseTimeout time.Duration
 	reapInterval time.Duration
 	gateway      gatewaySettings
+	// shutdown is set when hub starts to shut down.
+	shutdown atomic.Bool
 }
 
 // Start validates cfg, builds the provider through factory and checks it. A
@@ -199,6 +203,25 @@ func megabytesToBytes(mb int64) (int64, bool) {
 
 // MaxSandboxes returns the effective limit on live leases.
 func (s *Service) MaxSandboxes() int { return s.maxSandboxes }
+
+// EnterShutdown puts hub in shutdown mode, for good: from then on the gateway
+// refuses every Create with Unavailable, no sweep starts, and every lease that
+// ends does so with the end reason shutdown. It is the one thing about a Service
+// that changes after start, and it changes once.
+func (s *Service) EnterShutdown() { s.shutdown.Store(true) }
+
+// InShutdown reports whether hub is in shutdown mode. A nil Service, the feature
+// turned off, never is.
+func (s *Service) InShutdown() bool { return s != nil && s.shutdown.Load() }
+
+// endReason is the reason a lease ends with: the given one, or shutdown while hub
+// is in shutdown mode.
+func (s *Service) endReason(reason string) string {
+	if s.InShutdown() {
+		return leaseEndReasonShutdown
+	}
+	return reason
+}
 
 // ReapInterval returns how often the reaper sweeps.
 func (s *Service) ReapInterval() time.Duration { return s.reapInterval }

@@ -180,6 +180,9 @@ const discardTimeout = 30 * time.Second
 // leased, so the caller can try again. If the provider fails, the lease fails with
 // the provider's message, scrubbed.
 //
+// While hub is shutting down every Create is refused with Unavailable, before
+// anything is read or counted.
+//
 // Every Create that gets as far as making a box is counted once, as created when
 // the lease becomes active and as failed when it does not. A refusal before that
 // is not counted.
@@ -187,6 +190,9 @@ func (b *Backend) Create(ctx context.Context, caller sandbox.Spec) (sandbox.Sand
 	id, ok := b.principal(ctx)
 	if !ok {
 		return nil, &statusError{code: codes.Unauthenticated, msg: "the call carries no principal"}
+	}
+	if b.service.InShutdown() {
+		return nil, &statusError{code: codes.Unavailable, msg: "hub is shutting down and creates no more sandboxes"}
 	}
 	if !b.claim(id) {
 		return nil, failedPrecondition("a Create for lease %s is already in progress", id)

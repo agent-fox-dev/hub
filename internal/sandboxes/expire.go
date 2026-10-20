@@ -12,7 +12,8 @@ import (
 
 // The end reasons of the endings time, shutdown and restart cause.
 const (
-	leaseEndReasonExpired = "expired"
+	leaseEndReasonExpired  = "expired"
+	leaseEndReasonShutdown = "shutdown"
 )
 
 // Box is a box as a listing shows it.
@@ -59,9 +60,11 @@ func newEnder(store leaseEnder, emitter audit.Emitter, boxes Boxes, callTimeout 
 // event is emitted, but no hub.sandbox.destroy.
 //
 // A box that cannot be destroyed does not keep the lease: revoking access must not
-// depend on a provider call, and the failure is logged. lease is the state the
-// caller read, and the ending is conditioned on it, so a lease that has moved on
-// is left alone and the result is (false, nil).
+// depend on a provider call, and the failure is logged. A context that has ended
+// does: hub is stopping, the box may be there still, and the lease stays active for
+// the next start to recover. lease is the state the caller read, and the ending is
+// conditioned on it, so a lease that has moved on is left alone and the result is
+// (false, nil).
 func (e *ender) endExpired(ctx context.Context, lease *Lease) (bool, error) {
 	switch lease.State {
 	case leaseLeased:
@@ -72,6 +75,9 @@ func (e *ender) endExpired(ctx context.Context, lease *Lease) (bool, error) {
 		e.emitExpired(ctx, lease, leaseExpired)
 	case leaseActive:
 		e.destroyBox(ctx, lease)
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
 		changed, err := e.store.DestroyLease(lease.ID, leaseActive, leaseEndReasonExpired)
 		if err != nil || !changed {
 			return false, err
@@ -86,10 +92,13 @@ func (e *ender) endExpired(ctx context.Context, lease *Lease) (bool, error) {
 // endDestroyed ends an active lease as destroyed with the given end reason,
 // shutdown or restart, after destroying its box, and emits one
 // hub.sandbox.destroy event by the system. As with endExpired, a box that cannot
-// be destroyed does not keep the lease, and a lease that has moved on is left
-// alone.
+// be destroyed does not keep the lease, an ended context does, and a lease that has
+// moved on is left alone.
 func (e *ender) endDestroyed(ctx context.Context, lease *Lease, reason string) (bool, error) {
 	e.destroyBox(ctx, lease)
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
 	changed, err := e.store.DestroyLease(lease.ID, leaseActive, reason)
 	if err != nil || !changed {
 		return false, err

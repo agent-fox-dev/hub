@@ -34,7 +34,7 @@ func newExpiryBackendEnv(t *testing.T) *expiryBackendEnv {
 	env := newBackendEnv(t, leaseEnvOptions{config: gatewayLeaseConfig(), metrics: m})
 	sweeper := NewSweeper(SweeperConfig{
 		DB: env.db, Provider: env.prov, Boxes: &fakeBoxes{}, Audit: env.sink, Metrics: m,
-		Now: env.clock.Now, CallTimeout: time.Second,
+		Now: env.clock.Now, CallTimeout: time.Second, Service: env.profile,
 	})
 	return &expiryBackendEnv{backendEnv: env, metrics: m, sweeper: sweeper}
 }

@@ -15,10 +15,9 @@ import (
 
 // withCallTimeout makes the environment's sweeper limit every provider call to d.
 func (e *sweepEnv) withCallTimeout(d time.Duration) {
-	e.sweeper = NewSweeper(SweeperConfig{
-		DB: e.db, Provider: e.prov, Boxes: e.boxes, Audit: e.sink, Metrics: e.metrics,
-		Now: e.clock.Now, CallTimeout: d,
-	})
+	cfg := e.sweeperConfig()
+	cfg.CallTimeout = d
+	e.sweeper = NewSweeper(cfg)
 }
 
 // rowExists reports whether the lease has a row.

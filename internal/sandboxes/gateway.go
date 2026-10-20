@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -49,6 +50,8 @@ type Gateway struct {
 	listener  net.Listener
 	seams     gatewaySeams
 	serveOnce sync.Once
+	// shutdownLimit is the time Shutdown has; tests shorten it.
+	shutdownLimit time.Duration
 }
 
 // URL is the address a lease holder dials with the lease's token. A nil gateway,
@@ -140,10 +143,10 @@ func newGateway(svc *Service, deps GatewayDeps, seams gatewaySeams) (*Gateway, e
 	}
 	store := NewLeaseStore(deps.DB, now).WithMetrics(deps.Metrics)
 	// The gateway is the sweeper's Boxes, so it exists before its server does.
-	g := &Gateway{}
+	g := &Gateway{shutdownLimit: ShutdownLimit}
 	sweeper := NewSweeper(SweeperConfig{
 		DB: deps.DB, Provider: svc.Provider(), Boxes: g, Audit: deps.Audit, Metrics: deps.Metrics, Now: now,
-		Interval: svc.ReapInterval(),
+		Interval: svc.ReapInterval(), Service: svc,
 	})
 	backend := newBackend(backendConfig{
 		Service: svc, Store: store, Secrets: deps.Secrets, DB: deps.DB, Audit: deps.Audit, Now: now,
@@ -258,3 +261,24 @@ func (g *Gateway) Destroy(ctx context.Context, id string) error {
 }
 
 var _ Boxes = (*Gateway)(nil)
+
+// ShutdownLimit is how long Shutdown may take in all.
+const ShutdownLimit = 20 * time.Second
+
+// Shutdown is the sandbox part of hub's shutdown, run when the HTTP server's Start
+// returns, while the databases are still open. Within ShutdownLimit it puts hub in
+// shutdown mode, stops the reaper, destroys the box of every active lease and ends
+// the lease with the reason shutdown, and only then stops the gatewayd server,
+// which closes any box it still holds. When the limit runs out the leases still
+// active stay so, for the recovery at the next start. Leases in state leased are
+// not changed. A second call does nothing, and neither does a call on a nil
+// Gateway, the feature turned off.
+func (g *Gateway) Shutdown(ctx context.Context) error {
+	if g == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, g.shutdownLimit)
+	defer cancel()
+	err := g.sweeper.Shutdown(ctx)
+	return errors.Join(err, g.server.Shutdown(ctx))
+}
