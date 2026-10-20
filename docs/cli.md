@@ -2099,20 +2099,31 @@ afc sandbox destroy <workspace-slug> <lease-id>
 
 ## Forge Commands
 
-The `forge`, `issue` and `pr` command groups read a workspace's repository on its
-forge (GitHub or GitLab) through the hub: `afc forge status` shows how the hub
-reaches the forge, `afc issue` reads issues and their comments, `afc pr` reads pull
-requests. The hub uses the credential it holds for the workspace, never the
-caller's own, and nothing the commands print contains it (see
-[Forge Endpoints](api.md#forge-endpoints)). The commands only read; they work on
-active and archived workspaces alike, and each prints the hub's answer as one JSON
-document.
+The `forge`, `issue`, `pr` and `label` command groups work with a workspace's repository
+on its forge (GitHub or GitLab) through the hub. `afc forge status` shows how the hub
+reaches the forge, `afc issue` and `afc pr` read and write issues and pull requests, and
+`afc label` makes sure a label exists. The hub uses the credential it holds for the
+workspace, never the caller's own, and nothing the commands print contains it (see
+[Forge Endpoints](api.md#forge-endpoints)). Each command prints the hub's answer as one
+JSON document.
 
-Every value is sent to the hub as given, and the hub validates it: a bad `--state`
-or `--limit`, or a number that is not a positive integer, is answered `400` with a
-message naming the parameter, and the command exits 1. A flag that is not set is
-left out of the request. A command given the wrong number of arguments fails with
-exit code 2 and sends no request.
+- **The reads** (`forge status`, `issue list|get`, `pr get|state|files|checks|reviews`)
+  work with an API key, an admin token, or a PAT holding `forge:read` or `forge:write`,
+  and on active and archived workspaces alike. Every value is sent to the hub as given,
+  and the hub validates it: a bad `--state` or `--limit`, or a number that is not a
+  positive integer, is answered `400` with a message naming the parameter, and the
+  command exits 1. A flag that is not set is left out of the request.
+- **The writes** (`issue create|update|close|comment|label|unlabel`, `label create`,
+  `pr create|comment`) change the forge. They need an API key, an admin token, or a PAT
+  holding `forge:write` (`forge:read` is not enough: 403), and an active workspace
+  (`400 workspace is not active`). The hub records each write that reaches the forge as
+  an audit event. The command itself checks what it can see before it sends anything:
+  a missing required flag, `--body` together with `--body-file`, a body file that
+  cannot be read, an issue or pull-request number that is not a positive integer and
+  `issue update` with nothing to change are usage errors, exit code 2, with no request.
+
+A command given the wrong number of arguments fails with exit code 2 and sends no
+request.
 
 ### afc forge status
 
@@ -2258,13 +2269,207 @@ $ afc pr state fork 42 --target upstream
 }
 ```
 
+### Body input and flags of the write commands
+
+- `--body <text>` gives the text on the command line; `--body-file <path>` reads it
+  from a file, or from stdin when the path is `-`. The content is sent exactly as it
+  is, with no trimming and the trailing newline kept (unlike a secret read from stdin,
+  a body is a document). `--body` and `--body-file` together are a usage error.
+- `--label` and `--assignee` are repeatable and take one name each: a comma is part of
+  the name, so `--label a,b` is the one label `a,b`.
+- A flag that is not set is not sent. `afc issue update w 3 --body ""` sends
+  `{"body":""}`, which clears the body.
+- `--target origin|upstream` is sent as `?target=` only when it is given; `upstream`
+  works on a `carry_patch` workspace with an `upstream_url` (on any other the hub
+  answers `400` with `error_type: workspace_mode_mismatch`) and writes to the
+  upstream repository with the upstream credential.
+- A body-like field over the forge's limit (65,536 characters on GitHub, 1,000,000 on
+  GitLab, counted in Unicode code points) is refused by the hub with
+  `413` and `error_type: body_too_large`, and nothing is sent to the forge.
+
+### afc issue create
+
+Create an issue on the workspace's forge.
+
+**Usage:**
+
+```
+afc issue create <workspace-slug> --title <title> [--body <text> | --body-file <path>]
+                 [--label <name>]... [--assignee <user>]... [--target origin|upstream]
+```
+
+**Behavior:**
+
+- Sends `POST /api/v1/workspaces/<slug>/issues` with the flags that are set and prints
+  the created issue (201). `--title` is required.
+- On GitLab the assignees are accepted and checked and not sent: the client library
+  sends none (GitLab takes user ids, not names).
+
+**Example:**
+
+```
+$ afc issue create widgets --title "Widgets break" --body-file report.md --label af:triage
+{
+  "author": {"login": "agent-fox"},
+  "html_url": "https://github.com/acme/widgets/issues/13",
+  "labels": ["af:triage"],
+  "number": 13,
+  "state": "open",
+  "title": "Widgets break"
+}
+```
+
+### afc issue update
+
+Change an issue. Only the fields given change.
+
+**Usage:**
+
+```
+afc issue update <workspace-slug> <number> [--title <title>] [--body <text> | --body-file <path>]
+                 [--state open|closed] [--label <name>]... [--assignee <user>]...
+                 [--target origin|upstream]
+```
+
+**Behavior:**
+
+- Sends `PATCH /api/v1/workspaces/<slug>/issues/<number>` with the flags that are set and
+  prints the issue as the forge returns it. At least one of `--title`, `--body`,
+  `--body-file`, `--state`, `--label` and `--assignee` is required: without one the
+  command exits 2 (`nothing to update`).
+- `--label` and `--assignee` **replace** the issue's whole set of labels or assignees,
+  they do not add to it. To remove every label, use the hub's API with `"labels": []`;
+  to add a label and keep the others, use `afc issue label`.
+- On GitLab `<number>` is the project's `iid`.
+
+### afc issue close
+
+Close an issue, with a comment if given.
+
+**Usage:**
+
+```
+afc issue close <workspace-slug> <number> [--comment <text>] [--target origin|upstream]
+```
+
+**Behavior:**
+
+- Sends `POST /api/v1/workspaces/<slug>/issues/<number>/close`, with
+  `{"comment": ...}` when `--comment` is given, and prints the closed issue.
+- With a comment that is not blank, the hub posts the comment first and closes the
+  issue only if that succeeded; a comment the forge refuses leaves the issue open. The
+  hub records one `hub.forge.issue.close` event, which holds the comment's URL.
+- Closing an issue that is closed already succeeds.
+
+### afc issue comment
+
+Comment on an issue.
+
+**Usage:**
+
+```
+afc issue comment <workspace-slug> <number> (--body <text> | --body-file <path>)
+                  [--target origin|upstream]
+```
+
+**Behavior:**
+
+- Sends `POST /api/v1/workspaces/<slug>/issues/<number>/comments` and prints
+  `{"url": "<the comment's URL>"}` (201). The comment text is required.
+
+### afc issue label, unlabel
+
+Add labels to an issue, or remove one.
+
+**Usage:**
+
+```
+afc issue label   <workspace-slug> <number> <label>... [--target origin|upstream]
+afc issue unlabel <workspace-slug> <number> <label>    [--target origin|upstream]
+```
+
+**Behavior:**
+
+- `label` sends `POST /api/v1/workspaces/<slug>/issues/<number>/labels` with the labels
+  as a bare JSON array, one to 100 of them. The issue keeps its other labels. A label
+  the repository does not have is for the forge to deal with (GitHub creates it).
+- `unlabel` sends `DELETE /api/v1/workspaces/<slug>/issues/<number>/labels/<label>`, the
+  label percent-encoded as one path segment (`type/bug` is `type%2Fbug`). It succeeds
+  also when the issue never had the label, on GitHub and on GitLab; when the issue is
+  not there it fails with `404` and `error_type: forge_not_found`.
+- The hub answers 204 with no body, so the commands print a status document:
+
+```
+$ afc issue label widgets 3 af:ready af:fix
+{"status": "labeled", "number": 3, "labels": ["af:ready", "af:fix"]}
+$ afc issue unlabel widgets 3 type/bug
+{"status": "unlabeled", "number": 3, "label": "type/bug"}
+```
+
+### afc label create
+
+Make sure a label exists in the workspace's repository.
+
+**Usage:**
+
+```
+afc label create <workspace-slug> <name> [--color <hex>] [--description <text>]
+                 [--target origin|upstream]
+```
+
+**Behavior:**
+
+- Sends `POST /api/v1/workspaces/<slug>/labels` with the name and the flags that are
+  set, and prints the label. A label that exists is printed as the forge holds it (the
+  hub answered 200) and is **never changed**, whatever `--color` and `--description`
+  say; a label that did not exist is created and printed (201). Both exit 0, so the
+  command is safe to repeat.
+- `--color` is six hex digits, with or without a leading `#`; the default is `ededed`.
+
+### afc pr create
+
+Open a pull request (a merge request on GitLab).
+
+**Usage:**
+
+```
+afc pr create <workspace-slug> --title <title> --head <branch> --base <branch>
+              [--body <text> | --body-file <path>] [--draft] [--target origin|upstream]
+```
+
+**Behavior:**
+
+- Sends `POST /api/v1/workspaces/<slug>/pulls` and prints the pull request (201).
+  `--title`, `--head` and `--base` are required.
+- `--head` is sent as given, so GitHub's `owner:branch` opens a pull request from a
+  fork. With `--target upstream` on a `carry_patch` workspace, the pull request is
+  opened on the upstream repository.
+- A pull request that exists already for the head and the base is refused by the
+  forge: exit 1, `error_type: forge_rejected`. The hub does not check for duplicates.
+
+### afc pr comment
+
+Comment on the conversation of a pull request.
+
+**Usage:**
+
+```
+afc pr comment <workspace-slug> <number> (--body <text> | --body-file <path>)
+               [--target origin|upstream]
+```
+
+**Behavior:**
+
+- Sends `POST /api/v1/workspaces/<slug>/pulls/<number>/comments` and prints
+  `{"url": "<the comment's URL>"}` (201).
+
 **Exit Codes (all forge commands):**
 
 | Code | Condition |
 |------|-----------|
 | 0 | The answer was printed |
-| 1 | The hub answered with an error: not authenticated (401), a PAT without `forge:read` (403), a workspace that is missing or not the caller's, or something the forge does not have (404, the latter with `error_type: forge_not_found`), a bad parameter (400), a forge that cannot be told or an invalid API URL variable (422), a forge failure (429, 502, 504) or a server error. The error envelope on stdout carries the hub's message, in which the workspace's token is replaced with `[redacted]` |
-| 2 | Usage error such as a wrong number of arguments, no API key configured (run `afc login`), or the hub could not be reached |
+| 1 | The hub answered with an error: not authenticated (401), a PAT without the scope (`forge:read` for a read, `forge:write` for a write: 403), a workspace that is missing or not the caller's, or something the forge does not have (404, the latter with `error_type: forge_not_found`), a workspace that is not active or a bad parameter or body (400), a body over the forge's limit (413, `error_type: body_too_large`), a forge that cannot be told or an invalid API URL variable (422), a forge failure (429, 502, 504) or a server error. The error envelope on stdout carries the hub's message, in which the workspace's token is replaced with `[redacted]` |
+| 2 | Usage error such as a wrong number of arguments, a missing required flag, `--body` with `--body-file`, an unreadable body file, a number that is not a positive integer, an `issue update` with nothing to change, no API key configured (run `afc login`), or the hub could not be reached |
 
 ---
 

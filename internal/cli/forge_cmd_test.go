@@ -3,6 +3,7 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -27,14 +28,16 @@ type forgeRequest struct {
 	Path       string // escaped
 	RawQuery   string
 	RequestURI string
+	Body       string
 }
 
 func newForgeHub(t *testing.T, status int, body string) *forgeHub {
 	t.Helper()
 	hub := &forgeHub{}
 	hub.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sent, _ := io.ReadAll(r.Body)
 		hub.mu.Lock()
-		hub.requests = append(hub.requests, forgeRequest{r.Method, r.URL.EscapedPath(), r.URL.RawQuery, r.RequestURI})
+		hub.requests = append(hub.requests, forgeRequest{r.Method, r.URL.EscapedPath(), r.URL.RawQuery, r.RequestURI, string(sent)})
 		hub.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)

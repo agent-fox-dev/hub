@@ -29,25 +29,29 @@ func ForgeCmd() *cobra.Command {
 	return cmd
 }
 
-// IssueCmd returns the 'issue' parent cobra.Command, with the subcommands that read the
-// issues of a workspace's repository on its forge.
+// IssueCmd returns the 'issue' parent cobra.Command, with the subcommands that read and
+// write the issues of a workspace's repository on its forge.
 func IssueCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:           "issue",
-		Short:         "Read the issues of a workspace's forge",
+		Short:         "Read and write the issues of a workspace's forge",
 		SilenceErrors: true,
 		SilenceUsage:  true,
 	}
-	cmd.AddCommand(newIssueListCmd(), newIssueGetCmd())
+	cmd.AddCommand(
+		newIssueListCmd(), newIssueGetCmd(),
+		newIssueCreateCmd(), newIssueUpdateCmd(), newIssueCloseCmd(), newIssueCommentCmd(),
+		newIssueLabelCmd(), newIssueUnlabelCmd(),
+	)
 	return cmd
 }
 
-// PRCmd returns the 'pr' parent cobra.Command, with the subcommands that read the pull
-// requests of a workspace's repository on its forge.
+// PRCmd returns the 'pr' parent cobra.Command, with the subcommands that read and write the
+// pull requests of a workspace's repository on its forge.
 func PRCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:           "pr",
-		Short:         "Read the pull requests of a workspace's forge",
+		Short:         "Read and write the pull requests of a workspace's forge",
 		SilenceErrors: true,
 		SilenceUsage:  true,
 	}
@@ -57,6 +61,7 @@ func PRCmd() *cobra.Command {
 		newPRReadCmd("files", "List the files a pull request changes", "files"),
 		newPRReadCmd("checks", "List the CI checks of a pull request", "checks"),
 		newPRReadCmd("reviews", "List the reviews of a pull request", "reviews"),
+		newPRCreateCmd(), newPRCommentCmd(),
 	)
 	return cmd
 }
