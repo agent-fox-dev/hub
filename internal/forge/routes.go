@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/agent-fox-dev/aflib/issuex"
 	"github.com/labstack/echo/v4"
 	"github.com/txsvc/apikit"
 
@@ -15,16 +16,20 @@ import (
 
 // handlers holds what the forge routes share.
 type handlers struct {
-	cfg Config
+	cfg        Config
+	httpClient *http.Client
 }
 
 // RegisterRoutes mounts the forge routes on api, under /workspaces/:slug. They are
 // read-only and need forge:read.
 func RegisterRoutes(api *echo.Group, cfg Config) {
-	h := &handlers{cfg: cfg}
+	if cfg.NewClient == nil {
+		cfg.NewClient = issuex.NewWithOptions
+	}
+	h := &handlers{cfg: cfg, httpClient: newHTTPClient(cfg.Transport)}
 
 	api.GET("/workspaces/:slug/forge", h.route(false))
-	api.GET("/workspaces/:slug/forge/repository", h.route(true))
+	api.GET("/workspaces/:slug/forge/repository", h.serve(prepareRepository))
 	api.GET("/workspaces/:slug/issues", h.route(true))
 	api.GET("/workspaces/:slug/issues/:n", h.route(true))
 	api.GET("/workspaces/:slug/issues/:n/comments", h.route(true))

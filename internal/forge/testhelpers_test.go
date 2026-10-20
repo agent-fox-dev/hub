@@ -1,9 +1,12 @@
 package forge
 
 import (
+	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,6 +14,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/agent-fox-dev/aflib/issuex"
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	githttp "github.com/go-git/go-git/v5/plumbing/transport/http"
 	"github.com/labstack/echo/v4"
@@ -226,6 +230,7 @@ func testAuthMiddleware() echo.MiddlewareFunc {
 // newEnv mounts the forge routes. The modifiers change the Config before it is used.
 func newEnv(t *testing.T, mods ...func(*Config)) *env {
 	t.Helper()
+	isolateForgeEnv(t)
 	e := &env{t: t, db: openTestDB(t), stub: newForgeStub(t), vars: map[string]string{}}
 	createWorkspacesTable(t, e.db)
 	e.originAuth = &githttp.BasicAuth{Username: "x-token-auth", Password: "origin-token"}
@@ -333,4 +338,100 @@ var forgeRoutes = []forgeRoute{
 
 func (r forgeRoute) url(slug string) string {
 	return strings.Replace(r.path, "%s", slug, 1)
+}
+
+// isolateForgeEnv clears the environment variables issuex reads for a token and for
+// the API URL of a forge, so that the machine a test runs on does not change what
+// the client sends or which forge it picks.
+func isolateForgeEnv(t *testing.T) {
+	t.Helper()
+	for _, name := range []string{"GITHUB_TOKEN", "GH_TOKEN", "GITLAB_TOKEN", "GITHUB_API_URL", "GITLAB_API_URL"} {
+		t.Setenv(name, "")
+	}
+}
+
+// bearer returns the token a request carried: the GitHub bearer token or the GitLab
+// private token.
+func bearer(r recordedRequest) string {
+	if v := r.Header.Get("Authorization"); v != "" {
+		return strings.TrimPrefix(v, "Bearer ")
+	}
+	return r.Header.Get("PRIVATE-TOKEN")
+}
+
+// githubRepositoryBody is what GitHub answers to a repository request.
+const githubRepositoryBody = `{"full_name":"acme/widgets","default_branch":"main","private":false,"archived":false,"permissions":{"push":true,"pull":true,"admin":false}}`
+
+// answerRepository makes the stub answer every request with a GitHub repository.
+func (s *forgeStub) answerRepository() {
+	s.setHandler(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, githubRepositoryBody)
+	})
+}
+
+// fakeClient is an issuex client that answers GetRepository with a fixed value and
+// panics on every method the test did not give it.
+type fakeClient struct {
+	issuex.Client
+	repository func(ctx context.Context, repo issuex.Repo) (issuex.Repository, error)
+}
+
+func (f *fakeClient) GetRepository(ctx context.Context, repo issuex.Repo) (issuex.Repository, error) {
+	return f.repository(ctx, repo)
+}
+
+// optionsRecorder returns a Config modifier that makes NewClient record the Options
+// it is called with and build a fake client that answers GetRepository.
+func optionsRecorder(got *[]issuex.Options) func(*Config) {
+	return func(cfg *Config) {
+		var mu sync.Mutex
+		cfg.NewClient = func(o issuex.Options) (issuex.Client, error) {
+			mu.Lock()
+			*got = append(*got, o)
+			mu.Unlock()
+			return &fakeClient{repository: func(context.Context, issuex.Repo) (issuex.Repository, error) {
+				return issuex.Repository{FullName: "acme/widgets"}, nil
+			}}, nil
+		}
+	}
+}
+
+// captureLog sends everything logged through slog and the log package to the
+// returned buffer for the rest of the test.
+func captureLog(t *testing.T) *syncBuffer {
+	t.Helper()
+	buf := &syncBuffer{}
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return buf
+}
+
+// syncBuffer is a bytes.Buffer that can be written to from several goroutines.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// countingTransport counts the requests that pass through it and fails them.
+type countingTransport struct {
+	n atomic.Int64
+}
+
+func (c *countingTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	c.n.Add(1)
+	return nil, io.ErrUnexpectedEOF
 }
