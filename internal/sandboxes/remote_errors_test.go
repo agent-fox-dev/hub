@@ -24,6 +24,17 @@ type scriptedRemote struct{ *recordingProvider }
 
 func (scriptedRemote) List(context.Context) ([]gateway.Info, error) { return nil, nil }
 
+// Destroy closes the live box with the id, as the remote does, and answers OK for
+// one it does not have.
+func (r scriptedRemote) Destroy(ctx context.Context, id string) error {
+	for _, box := range r.liveBoxes() {
+		if box.ID() == id {
+			return box.Close(ctx)
+		}
+	}
+	return nil
+}
+
 // scriptedEnv is hub over a scriptedRemote, with hub's gateway serving.
 type scriptedEnv struct {
 	*backendEnv

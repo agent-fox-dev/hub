@@ -37,10 +37,12 @@ func BuildProvider(v *Validated, factory ProviderFactory) (sandbox.Provider, err
 
 // RemoteClient is the client of a remote agentkit-gateway: a sandbox.Provider
 // that also lists the sandboxes its token holds, which is what the start-up probe
-// calls. *gateway.Provider is one.
+// calls, and destroys one by id, which answers OK for a sandbox the remote does
+// not have and so can be repeated. *gateway.Provider is one.
 type RemoteClient interface {
 	sandbox.Provider
 	List(ctx context.Context) ([]gateway.Info, error)
+	Destroy(ctx context.Context, id string) error
 }
 
 // GatewayFactory builds the client of the remote gateway at url under opts. It

@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"maps"
+	"sync/atomic"
 	"time"
 
 	"github.com/txsvc/apikit"
@@ -35,6 +36,9 @@ type handle struct {
 	backend *Backend
 	lease   *Lease
 	values  []string
+	// closeFailed is set when closing the provider's box has failed, and tells
+	// the next try to destroy the box another way (see destroyProviderBox).
+	closeFailed atomic.Bool
 }
 
 func newHandle(b *Backend, lease *Lease, box sandbox.Sandbox, values []string) *handle {
@@ -82,7 +86,7 @@ func (b *Backend) closeBox(ctx context.Context, h *handle) error {
 // provider that cannot is scrubbed, and is Unavailable when the remote gateway
 // refused hub's token (see Service.remoteFailure).
 func (b *Backend) closeProviderBox(ctx context.Context, h *handle) error {
-	if err := h.Sandbox.Close(ctx); err != nil && !isNotFound(err) {
+	if err := b.destroyProviderBox(ctx, h); err != nil && !isNotFound(err) {
 		return b.service.remoteFailure("destroy", err, scrub(err.Error(), h.values))
 	}
 	b.mu.Lock()
@@ -91,6 +95,24 @@ func (b *Backend) closeProviderBox(ctx context.Context, h *handle) error {
 	}
 	b.mu.Unlock()
 	return nil
+}
+
+// destroyProviderBox destroys the provider's box. A sandbox AgentKit attached
+// tears down once: its Close answers nil from then on, whatever became of the
+// box, so a Close tried again after a failure would report a box destroyed that is
+// still there. The first try is therefore the Close of the box, and after a failure
+// the remote gateway's box is destroyed by id through the client, which can be
+// repeated, and which the remote answers OK for a box it no longer has. A box of
+// another provider is closed again, as it always was.
+func (b *Backend) destroyProviderBox(ctx context.Context, h *handle) error {
+	if h.closeFailed.Load() && b.service.isRemote() {
+		return b.service.remote.Destroy(ctx, h.ID())
+	}
+	err := h.Sandbox.Close(ctx)
+	if err != nil && !isNotFound(err) {
+		h.closeFailed.Store(true)
+	}
+	return err
 }
 
 // isEnding reports whether a caller that records the end itself is destroying the

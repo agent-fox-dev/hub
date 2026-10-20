@@ -135,6 +135,9 @@ func (r *remoteGateway) restart() {
 // returns counts the Lists made on it.
 type remoteFactory struct {
 	delegate GatewayFactory
+	// dialer, when set, is the Dialer of the gateway.Options the client is built
+	// with, so that a test controls the network between hub and the remote.
+	dialer func(context.Context, string) (net.Conn, error)
 
 	mu      sync.Mutex
 	calls   int
@@ -153,6 +156,9 @@ func (f *remoteFactory) dial(ctx context.Context, url string, opts gateway.Optio
 	f.mu.Unlock()
 	if delegate == nil {
 		delegate = DialGateway
+	}
+	if f.dialer != nil {
+		opts.Dialer = f.dialer
 	}
 	client, err := delegate(ctx, url, opts)
 	if err != nil || client == nil {
@@ -223,6 +229,8 @@ func (s *stubRemote) List(ctx context.Context) ([]gateway.Info, error) {
 	return nil, err
 }
 
+func (s *stubRemote) Destroy(context.Context, string) error { return nil }
+
 func (s *stubRemote) listCount() int {
 	s.lmu.Lock()
 	defer s.lmu.Unlock()
@@ -288,10 +296,17 @@ type remoteEnv struct {
 // profiles of gatewayLeaseConfig.
 func newRemoteEnv(t *testing.T, opts leaseEnvOptions) *remoteEnv {
 	t.Helper()
+	return newRemoteEnvVia(t, opts, nil)
+}
+
+// newRemoteEnvVia is newRemoteEnv with the connection of hub's client to the
+// remote made by dialer, when it is not nil.
+func newRemoteEnvVia(t *testing.T, opts leaseEnvOptions, dialer func(context.Context, string) (net.Conn, error)) *remoteEnv {
+	t.Helper()
 	logs := captureDefaultLog(t)
 	prov := newRecordingProvider()
 	remote := startRemoteGateway(t, prov)
-	factory := &remoteFactory{}
+	factory := &remoteFactory{dialer: dialer}
 	svc, err := Start(remoteLeaseConfig(remote.url()), noPodman(t), WithGatewayFactory(factory.dial))
 	if err != nil {
 		t.Fatalf("Start against the remote gateway: %v", err)
@@ -303,4 +318,51 @@ func newRemoteEnv(t *testing.T, opts leaseEnvOptions) *remoteEnv {
 	})
 	opts.service, opts.recording = svc, prov
 	return &remoteEnv{backendEnv: newBackendEnv(t, opts), remote: remote, factory: factory, logs: logs}
+}
+
+// flakyNet is a network between hub and the remote that can be cut, which closes
+// every connection open and refuses new ones, and healed. Unlike a remote that is
+// shut down, a remote behind a cut network keeps its boxes.
+type flakyNet struct {
+	mu    sync.Mutex
+	down  bool
+	conns []net.Conn
+}
+
+func (n *flakyNet) dial(ctx context.Context, addr string) (net.Conn, error) {
+	n.mu.Lock()
+	down := n.down
+	n.mu.Unlock()
+	if down {
+		return nil, errors.New("the network is down")
+	}
+	var d net.Dialer
+	conn, err := d.DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return nil, err
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.down {
+		_ = conn.Close()
+		return nil, errors.New("the network is down")
+	}
+	n.conns = append(n.conns, conn)
+	return conn, nil
+}
+
+func (n *flakyNet) cut() {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.down = true
+	for _, conn := range n.conns {
+		_ = conn.Close()
+	}
+	n.conns = nil
+}
+
+func (n *flakyNet) heal() {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.down = false
 }
