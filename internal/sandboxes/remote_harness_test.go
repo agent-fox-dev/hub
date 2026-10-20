@@ -58,7 +58,7 @@ func (r *remoteGateway) serve(l net.Listener) {
 	srv, err := gatewayd.New(gatewayd.Config{
 		Backend:      r.backend,
 		Authenticate: r.authenticate,
-		NetworkModes: []sandbox.NetworkMode{sandbox.NetworkNone},
+		NetworkModes: []sandbox.NetworkMode{sandbox.NetworkNone, sandbox.NetworkUnrestricted},
 	})
 	if err != nil {
 		r.t.Fatalf("gatewayd.New: %v", err)

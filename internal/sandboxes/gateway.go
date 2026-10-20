@@ -214,7 +214,7 @@ func loadGatewayTLS(s gatewaySettings) (*tls.Config, error) {
 // gatewayNetworkModes turns the names in network_modes into the modes gatewayd
 // takes, through the provider's own list.
 func gatewayNetworkModes(svc *Service) ([]sandbox.NetworkMode, error) {
-	caps := svc.Provider().Capabilities()
+	caps := svc.Capabilities()
 	names := svc.NetworkModes()
 	modes := make([]sandbox.NetworkMode, 0, len(names))
 	for _, name := range names {

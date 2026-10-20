@@ -219,7 +219,7 @@ func (b *Backend) makeBox(ctx context.Context, lease *Lease, caller sandbox.Spec
 		msg := fmt.Sprintf("profile %q is no longer configured", lease.Profile)
 		return nil, b.failLease(ctx, lease, msg, failedPrecondition("%s", msg))
 	}
-	spec, err := buildSpec(lease, caller, b.provider.Capabilities(), remaining)
+	spec, err := buildSpec(lease, caller, b.service.Capabilities(), remaining)
 	if err != nil {
 		return nil, b.failLease(ctx, lease, err.Error(), failedPrecondition("%s", err.Error()))
 	}
@@ -391,9 +391,10 @@ func (b *Backend) staleLease(id string) error {
 
 // Capabilities is the provider's, with the network modes cut down to those
 // network_modes allows, in the provider's order. The provider's own capabilities
-// are not changed.
+// are not changed. For the remote gateway they are the snapshot taken at start,
+// so this makes no call to it.
 func (b *Backend) Capabilities() sandbox.Capabilities {
-	caps := b.provider.Capabilities()
+	caps := b.service.Capabilities()
 	allowed := b.service.NetworkModes()
 	caps.Network = slices.DeleteFunc(slices.Clone(caps.Network), func(mode sandbox.NetworkMode) bool {
 		return !slices.Contains(allowed, mode.String())

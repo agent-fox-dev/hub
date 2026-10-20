@@ -29,7 +29,10 @@ type specChecker func(sandbox.Capabilities, sandbox.Spec) (sandbox.Spec, error)
 // against. It is built once at start and read-only afterwards, except for the
 // shutdown mode (see EnterShutdown).
 type Service struct {
-	provider     sandbox.Provider
+	provider sandbox.Provider
+	// caps is the snapshot of the remote gateway's capabilities, read once at
+	// start; nil for a provider that is not remote, which is asked every time.
+	caps         *sandbox.Capabilities
 	profiles     []ValidatedProfile
 	maxSandboxes int
 	networkModes []string
@@ -82,11 +85,16 @@ func startRemote(v *Validated, factory GatewayFactory) (*Service, error) {
 		closeRemote(client)
 		return nil, remoteStartFailure(ctx, v, err)
 	}
-	svc, err := assemble(v, client, sandbox.CheckSpec)
+	// The remote's capabilities are read here, once, and kept for the life of the
+	// process: a remote that is down must not make hub's gateway wait or report no
+	// modes, and a change on the remote takes effect when hub restarts.
+	caps := client.Capabilities()
+	svc, err := assemble(v, client, caps, sandbox.CheckSpec)
 	if err != nil {
 		closeRemote(client)
 		return nil, err
 	}
+	svc.caps = &caps
 	return svc, nil
 }
 
@@ -124,13 +132,12 @@ func newService(v *Validated, p sandbox.Provider, check specChecker) (*Service, 
 	if err := probe(v, p); err != nil {
 		return nil, err
 	}
-	return assemble(v, p, check)
+	return assemble(v, p, p.Capabilities(), check)
 }
 
-// assemble reads the capabilities of a provider that has passed its probe, checks
-// the network modes and the profiles against them, and builds the service.
-func assemble(v *Validated, p sandbox.Provider, check specChecker) (*Service, error) {
-	caps := p.Capabilities()
+// assemble checks the network modes and the profiles against the capabilities of
+// a provider that has passed its probe, and builds the service.
+func assemble(v *Validated, p sandbox.Provider, caps sandbox.Capabilities, check specChecker) (*Service, error) {
 	errs := checkNetworkModes(v, caps)
 	for _, profile := range v.Profiles {
 		if err := checkProfile(profile, caps, check); err != nil {
@@ -298,6 +305,18 @@ func (s *Service) LeaseTimeout() time.Duration { return s.leaseTimeout }
 // NetworkModes returns the names of the network modes the deployment allows. The
 // slice is a copy.
 func (s *Service) NetworkModes() []string { return slices.Clone(s.networkModes) }
+
+// Capabilities returns what the provider honours. For the remote gateway that is
+// the snapshot taken at start, a copy the caller may change, and the remote is
+// not asked; for any other provider it is the provider's own answer.
+func (s *Service) Capabilities() sandbox.Capabilities {
+	if s.caps == nil {
+		return s.provider.Capabilities()
+	}
+	caps := *s.caps
+	caps.Network = slices.Clone(caps.Network)
+	return caps
+}
 
 // Provider returns the provider the service was built with.
 func (s *Service) Provider() sandbox.Provider { return s.provider }
