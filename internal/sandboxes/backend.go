@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sync"
 	"time"
 
@@ -266,7 +267,7 @@ func (b *Backend) createBox(ctx context.Context, lease *Lease, spec sandbox.Spec
 		"image":      lease.Image,
 		"network":    lease.Network,
 	})
-	return box, nil
+	return newHandle(b, lease, box, values), nil
 }
 
 // discard destroys a box nobody will use, whatever has become of the call that
@@ -305,3 +306,21 @@ func (b *Backend) staleLease(id string) error {
 	}
 	return failedPrecondition("lease %s is %s", id, lease.State)
 }
+
+// Capabilities is the provider's, with the network modes cut down to those
+// network_modes allows, in the provider's order. The provider's own capabilities
+// are not changed.
+func (b *Backend) Capabilities() sandbox.Capabilities {
+	caps := b.provider.Capabilities()
+	allowed := b.service.NetworkModes()
+	caps.Network = slices.DeleteFunc(slices.Clone(caps.Network), func(mode sandbox.NetworkMode) bool {
+		return !slices.Contains(allowed, mode.String())
+	})
+	return caps
+}
+
+// Reap passes straight through to the provider. The sweep of leases whose boxes
+// are gone is not the backend's.
+func (b *Backend) Reap(ctx context.Context) ([]string, error) { return b.provider.Reap(ctx) }
+
+var _ sandbox.Provider = (*Backend)(nil)

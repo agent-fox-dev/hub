@@ -28,6 +28,7 @@ type Service struct {
 	provider     sandbox.Provider
 	profiles     []ValidatedProfile
 	maxSandboxes int
+	networkModes []string
 }
 
 // Start validates cfg, builds the provider through factory and checks it. A
@@ -69,7 +70,7 @@ func newService(v *Validated, p sandbox.Provider, check specChecker) (*Service, 
 	if len(errs) > 0 {
 		return nil, errors.Join(errs...)
 	}
-	return &Service{provider: p, profiles: slices.Clone(v.Profiles), maxSandboxes: v.MaxSandboxes}, nil
+	return &Service{provider: p, profiles: slices.Clone(v.Profiles), maxSandboxes: v.MaxSandboxes, networkModes: slices.Clone(v.NetworkModes)}, nil
 }
 
 // probe shows that the provider reaches its engine.
@@ -185,6 +186,10 @@ func megabytesToBytes(mb int64) (int64, bool) {
 
 // MaxSandboxes returns the effective limit on live leases.
 func (s *Service) MaxSandboxes() int { return s.maxSandboxes }
+
+// NetworkModes returns the names of the network modes the deployment allows. The
+// slice is a copy.
+func (s *Service) NetworkModes() []string { return slices.Clone(s.networkModes) }
 
 // Provider returns the provider the service was built with.
 func (s *Service) Provider() sandbox.Provider { return s.provider }

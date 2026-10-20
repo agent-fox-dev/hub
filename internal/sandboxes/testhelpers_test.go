@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -19,6 +20,8 @@ import (
 	"github.com/txsvc/apikit"
 
 	"github.com/agent-fox-dev/agentkit-go/sandbox"
+	"github.com/agent-fox-dev/agentkit-go/sandbox/gateway"
+	"github.com/agent-fox-dev/agentkit-go/sandbox/gatewayd"
 	"github.com/agent-fox-dev/agentkit-go/sandbox/local"
 	"github.com/agent-fox-dev/hub/internal/audit"
 	"github.com/agent-fox-dev/hub/internal/secrets"
@@ -114,6 +117,15 @@ func defaultLeaseConfig() *Config {
 			{Name: "data", Image: "registry.example/data:1", TTL: "30m"},
 		},
 	}
+}
+
+// gatewayLeaseConfig is defaultLeaseConfig without require_landlock. The real
+// client checks the Landlock report of the agent against the spec it gets back,
+// and the in-process agent of AgentKit's local provider confines nothing.
+func gatewayLeaseConfig() *Config {
+	cfg := defaultLeaseConfig()
+	cfg.Profiles[0].RequireLandlock = false
+	return cfg
 }
 
 // leaseEnv is a lease service over a real database with the routes mounted
@@ -330,8 +342,10 @@ type recordingProvider struct {
 	specs     []sandbox.Spec
 	boxes     []*recordedBox
 	createErr error
-	block     chan struct{}
-	reaps     int
+	// closeErr, when set, is what every box's Close returns, without closing.
+	closeErr error
+	block    chan struct{}
+	reaps    int
 	// entered receives one value for each Create that waits on block.
 	entered chan struct{}
 }
@@ -431,20 +445,54 @@ func (p *recordingProvider) live() []string {
 }
 
 // recordedBox is a box of the recordingProvider: the local box underneath, the
-// spec hub asked for, and a record of the Close calls.
+// spec hub asked for, and a record of the calls that reach it.
 type recordedBox struct {
 	sandbox.Sandbox
 	p      *recordingProvider
 	spec   sandbox.Spec
 	closed bool
+	// closes counts the Close calls, and deadlines is the time each of them had
+	// left on its context, or -1 for a context without a deadline.
+	closes    int
+	deadlines []time.Duration
+	syncs     []sandbox.Source
+	exports   []string
 }
 
 // Unwrap lets the gateway reach the agent of the local box.
 func (b *recordedBox) Unwrap() sandbox.Sandbox { return b.Sandbox }
 
-func (b *recordedBox) Spec() sandbox.Spec { return cloneSpec(b.spec) }
+// Spec returns the box's spec as a provider's box does, with the maps it holds
+// and not copies of them, so that a caller that changes them in place is seen.
+func (b *recordedBox) Spec() sandbox.Spec { return b.spec }
+
+func (b *recordedBox) Sync(ctx context.Context, src sandbox.Source) (sandbox.SyncResult, error) {
+	b.p.mu.Lock()
+	b.syncs = append(b.syncs, src)
+	b.p.mu.Unlock()
+	return b.Sandbox.Sync(ctx, src)
+}
+
+func (b *recordedBox) Export(ctx context.Context, path string, dst sandbox.Destination) error {
+	b.p.mu.Lock()
+	b.exports = append(b.exports, path)
+	b.p.mu.Unlock()
+	return b.Sandbox.Export(ctx, path, dst)
+}
 
 func (b *recordedBox) Close(ctx context.Context) error {
+	left := time.Duration(-1)
+	if deadline, ok := ctx.Deadline(); ok {
+		left = time.Until(deadline)
+	}
+	b.p.mu.Lock()
+	b.closes++
+	b.deadlines = append(b.deadlines, left)
+	failure := b.p.closeErr
+	b.p.mu.Unlock()
+	if failure != nil {
+		return failure
+	}
 	err := b.Sandbox.Close(ctx)
 	if err == nil {
 		b.p.mu.Lock()
@@ -452,6 +500,20 @@ func (b *recordedBox) Close(ctx context.Context) error {
 		b.p.mu.Unlock()
 	}
 	return err
+}
+
+// setCloseErr makes every box's Close fail with err, or work again for nil.
+func (p *recordingProvider) setCloseErr(err error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.closeErr = err
+}
+
+// reapCount is the number of Reap calls.
+func (p *recordingProvider) reapCount() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.reaps
 }
 
 // cloneSpec copies the maps and slices of spec.
@@ -548,4 +610,78 @@ func (e *backendEnv) eventsOf(eventType string) []audit.HubEvent {
 		}
 	}
 	return out
+}
+
+// issueToken posts a lease of the body's profile in "widgets" and returns its id
+// and its token.
+func (e *backendEnv) issueToken(body string) (id, token string) {
+	e.t.Helper()
+	rec := e.post("widgets", body, apiKeyAuth())
+	if rec.Code != http.StatusCreated {
+		e.t.Fatalf("POST answered %d: %s", rec.Code, rec.Body)
+	}
+	obj := jsonObject(e.t, rec)
+	return obj["id"].(string), obj["token"].(string)
+}
+
+// testGateway is a gatewayd.Server over a wrapping backend, authenticating with
+// the lease tokens of the environment and serving on a free loopback port.
+type testGateway struct {
+	srv     *gatewayd.Server
+	backend *Backend
+	url     string
+}
+
+// startGateway serves the environment's leases over a real gateway for the
+// length of the test. Its backend reads the principal the way production does,
+// from gatewayd's own context value.
+func (e *backendEnv) startGateway() *testGateway {
+	e.t.Helper()
+	backend := newBackend(backendConfig{
+		Service: e.profile, Store: e.store, Secrets: e.secrets, DB: e.db, Audit: e.emitter, Now: e.clock.Now,
+	})
+	modes := []sandbox.NetworkMode{sandbox.NetworkNone}
+	srv, err := gatewayd.New(gatewayd.Config{
+		Backend:      backend,
+		Authenticate: NewLeaseAuthenticator(e.store, e.clock.Now),
+		NetworkModes: modes,
+	})
+	if err != nil {
+		e.t.Fatalf("gatewayd.New: %v", err)
+	}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		e.t.Fatalf("listening: %v", err)
+	}
+	go func() { _ = srv.Serve(listener) }()
+	e.t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(ctx)
+	})
+	return &testGateway{srv: srv, backend: backend, url: "http://" + listener.Addr().String()}
+}
+
+// dial connects the real gateway client with a lease token.
+func (g *testGateway) dial(t *testing.T, token string) *gateway.Provider {
+	t.Helper()
+	p, err := gateway.Dial(context.Background(), g.url, gateway.Options{Token: token})
+	if err != nil {
+		t.Fatalf("gateway.Dial: %v", err)
+	}
+	t.Cleanup(func() { _ = p.Close() })
+	return p
+}
+
+// createVia creates the box of a lease through the real client. The image is the
+// client's to give: the client fills in an empty one with the image published
+// for its own version, which a development build has none of, and hub ignores
+// whatever it is.
+func createVia(t *testing.T, p *gateway.Provider) sandbox.Sandbox {
+	t.Helper()
+	sb, err := p.Create(context.Background(), sandbox.Spec{Image: "ignored"})
+	if err != nil {
+		t.Fatalf("Create through the gateway: %v", err)
+	}
+	return sb
 }
