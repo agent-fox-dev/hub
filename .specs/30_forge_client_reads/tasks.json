@@ -346,7 +346,7 @@
       "done_when": [
         "`CGO_ENABLED=0 go build ./cmd/afc` succeeds"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     },
     {
