@@ -26,6 +26,11 @@ COPY --from=apikit . /build/apikit
 # ../agentkit-go/sandbox/gatewayd (see go.mod). Supply the sibling tree via:
 #   podman build --build-context agentkit=../agentkit-go
 COPY --from=agentkit . /build/agentkit-go
+
+# Local replace github.com/agent-fox-dev/aflib => ../aflib (see go.mod).
+# Supply the sibling tree via: podman build --build-context aflib=../aflib
+COPY --from=aflib . /build/aflib
+
 WORKDIR /build/hub
 COPY go.mod go.sum ./
 RUN go mod download

@@ -2097,6 +2097,177 @@ afc sandbox destroy <workspace-slug> <lease-id>
 
 ---
 
+## Forge Commands
+
+The `forge`, `issue` and `pr` command groups read a workspace's repository on its
+forge (GitHub or GitLab) through the hub: `afc forge status` shows how the hub
+reaches the forge, `afc issue` reads issues and their comments, `afc pr` reads pull
+requests. The hub uses the credential it holds for the workspace, never the
+caller's own, and nothing the commands print contains it (see
+[Forge Endpoints](api.md#forge-endpoints)). The commands only read; they work on
+active and archived workspaces alike, and each prints the hub's answer as one JSON
+document.
+
+Every value is sent to the hub as given, and the hub validates it: a bad `--state`
+or `--limit`, or a number that is not a positive integer, is answered `400` with a
+message naming the parameter, and the command exits 1. A flag that is not set is
+left out of the request. A command given the wrong number of arguments fails with
+exit code 2 and sends no request.
+
+### afc forge status
+
+Show how the hub reaches the forge of a workspace, without any request to the forge.
+
+**Usage:**
+
+```
+afc forge status <workspace-slug>
+```
+
+**Behavior:**
+
+- Sends `GET /api/v1/workspaces/<slug>/forge` and prints the response: `forge`
+  (`github`, `gitlab` or `unknown`), `api_url`, `repository` (`host`, `owner`,
+  `name`), `credential` (`pat`, `basic` or `none`, never a value) and `upstream`
+  (the same four fields for a `carry_patch` workspace, else `null`). See
+  [`GET /api/v1/workspaces/:slug/forge`](api.md#get-apiv1workspacesslugforge).
+- Run it when another forge command answers `forge_unknown`: it shows which host the
+  hub found and whether an API URL variable is needed.
+- Works with an API key, an admin token, or a PAT holding `forge:read` or
+  `forge:write`.
+
+**Example:**
+
+```
+$ afc forge status widgets
+{
+  "api_url": "https://api.github.com",
+  "credential": "pat",
+  "forge": "github",
+  "repository": {
+    "host": "github.com",
+    "name": "widgets",
+    "owner": "acme"
+  },
+  "upstream": null
+}
+```
+
+### afc issue list
+
+List the issues of a workspace's repository.
+
+**Usage:**
+
+```
+afc issue list <workspace-slug> [flags]
+```
+
+**Flags:**
+
+| Flag | Type | Description |
+|------|------|-------------|
+| `--state` | string | `open`, `closed` or `all` (hub default when not set) |
+| `--label` | string, repeatable | Only issues with this label; repeated flags are joined with commas into `labels` |
+| `--assignee` | string | Only issues assigned to this user |
+| `--limit` | string | Number of issues, 1 to 100 (the hub passes 30 when not set) |
+| `--target` | string | `origin` (default) or `upstream` (`carry_patch` workspaces only) |
+
+**Behavior:**
+
+- Sends `GET /api/v1/workspaces/<slug>/issues` with each flag that is set as a query
+  parameter and prints the issues as a JSON array (`[]` when there are none).
+  Pull requests are not in the list.
+
+**Example:**
+
+```
+$ afc issue list widgets --label af:triage --state open --limit 5
+[
+  {
+    "author": {
+      "login": "alice"
+    },
+    "body": "it breaks",
+    "created_at": "2026-01-02T03:04:05Z",
+    "html_url": "https://github.com/acme/widgets/issues/12",
+    "is_pr": false,
+    "labels": [
+      "af:triage"
+    ],
+    "number": 12,
+    "state": "open",
+    "title": "Widgets break",
+    "updated_at": "2026-01-02T03:04:05Z"
+  }
+]
+```
+
+### afc issue get
+
+Show one issue with its comments.
+
+**Usage:**
+
+```
+afc issue get <workspace-slug> <number> [--target origin|upstream]
+```
+
+**Behavior:**
+
+- Sends `GET /api/v1/workspaces/<slug>/issues/<number>` (with `?target=` when
+  `--target` is given) and prints the issue, its `comments`, `truncated` and, when
+  only the comments could not be read, `comments_err`. On GitLab `<number>` is the
+  project's `iid`.
+
+### afc pr get, state, files, checks, reviews
+
+Read a pull request: the pull request itself, its state, the files it changes, its
+CI checks and its reviews.
+
+**Usage:**
+
+```
+afc pr get     <workspace-slug> <number> [--target origin|upstream]
+afc pr state   <workspace-slug> <number> [--target origin|upstream]
+afc pr files   <workspace-slug> <number> [--target origin|upstream]
+afc pr checks  <workspace-slug> <number> [--target origin|upstream]
+afc pr reviews <workspace-slug> <number> [--target origin|upstream]
+```
+
+**Behavior:**
+
+- Sends `GET /api/v1/workspaces/<slug>/pulls/<number>`, followed by `/state`,
+  `/files`, `/checks` or `/reviews`, with `?target=` when `--target` is given, and
+  prints the answer: a pull request, its state (`number`, `state`, `merged`,
+  `head_sha`), or an array of changed files, check runs or reviews.
+- `--target upstream` reads the pull request in the `upstream_url` repository of a
+  `carry_patch` workspace, with the credential the carry-patch sync uses for the
+  upstream. On any other workspace the hub answers `400` with
+  `error_type: workspace_mode_mismatch`.
+
+**Example:**
+
+```
+$ afc pr state fork 42 --target upstream
+{
+  "head_sha": "abc123",
+  "merged": false,
+  "number": 42,
+  "state": "open"
+}
+```
+
+**Exit Codes (all forge commands):**
+
+| Code | Condition |
+|------|-----------|
+| 0 | The answer was printed |
+| 1 | The hub answered with an error: not authenticated (401), a PAT without `forge:read` (403), a workspace that is missing or not the caller's, or something the forge does not have (404, the latter with `error_type: forge_not_found`), a bad parameter (400), a forge that cannot be told or an invalid API URL variable (422), a forge failure (429, 502, 504) or a server error. The error envelope on stdout carries the hub's message, in which the workspace's token is replaced with `[redacted]` |
+| 2 | Usage error such as a wrong number of arguments, no API key configured (run `afc login`), or the hub could not be reached |
+
+---
+
 ## apikit-Provided Commands
 
 The following commands are provided by the `apikit` library and manage

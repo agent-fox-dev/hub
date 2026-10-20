@@ -44,7 +44,7 @@
       "done_when": [
         "`go build ./...` succeeds with ../aflib checked out as a sibling"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     },
     {
@@ -97,7 +97,7 @@
       "done_when": [
         "`go build ./cmd/af-hub` succeeds with forge routes mounted"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     },
     {
@@ -148,7 +148,7 @@
       "done_when": [
         "`go test ./internal/forge/... -count=1` passes"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     },
     {
@@ -191,7 +191,7 @@
       "done_when": [
         "all nine read routes return 200 against the stub"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     },
     {
@@ -229,7 +229,7 @@
       "done_when": [
         "GET /forge never makes an outbound request in any test"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     },
     {
@@ -273,7 +273,7 @@
       "done_when": [
         "`go test ./internal/forge/... -count=1` passes"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     },
     {
@@ -310,7 +310,7 @@
       "done_when": [
         "`go test ./internal/forge/... -count=1` passes"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     },
     {
@@ -346,7 +346,7 @@
       "done_when": [
         "`CGO_ENABLED=0 go build ./cmd/afc` succeeds"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     },
     {
@@ -394,7 +394,7 @@
       "done_when": [
         "`make test` and `make lint` pass with ../aflib present"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     }
   ]

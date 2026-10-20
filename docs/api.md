@@ -61,6 +61,8 @@ they can access. The following scopes are available for workspace operations:
 | `audit:write` | Ingest agent audit events, traces, and session outcomes | POST endpoints under /api/v1/workspaces/:slug/runs/:run_id/ |
 | `sandboxes:read` | List the deployment's sandbox profiles; list and read sandbox leases | GET /api/v1/sandbox-profiles, GET /api/v1/workspaces/:slug/sandboxes, GET /api/v1/workspaces/:slug/sandboxes/:id |
 | `sandboxes:write` | Issue and end sandbox leases; implies `sandboxes:read` | POST /api/v1/workspaces/:slug/sandboxes, DELETE /api/v1/workspaces/:slug/sandboxes/:id (plus all `sandboxes:read` endpoints) |
+| `forge:read` | Read a workspace's repository, issues and pull requests on its forge, and how the hub reaches it | GET /api/v1/workspaces/:slug/forge, GET .../forge/repository, GET .../issues, GET .../issues/:n, GET .../issues/:n/comments, GET .../pulls/:n, GET .../pulls/:n/state, GET .../pulls/:n/files, GET .../pulls/:n/checks, GET .../pulls/:n/reviews |
+| `forge:write` | Registered for the forge write routes; implies `forge:read` | (all `forge:read` endpoints; no route needs `forge:write` itself yet) |
 
 ### Implied Permissions
 
@@ -83,6 +85,8 @@ they can access. The following scopes are available for workspace operations:
 - `sandboxes:write` implies `sandboxes:read` — a PAT with write scope can also
   list sandbox profiles and read leases. `sandboxes:read` does not allow
   issuing or ending a lease.
+- `forge:write` implies `forge:read` — a PAT with write scope can also read a
+  workspace's forge. No route needs `forge:write` itself yet.
 
 ### Scopes Checked Literally
 
@@ -190,7 +194,7 @@ The `error_type` field is omitted when not applicable. Known error types:
 | Error Type | Endpoint | Description |
 |------------|----------|-------------|
 | `duplicate_merge` | POST /api/v1/workspaces/:slug/merges | A merge job for this source and target branch is already queued or running |
-| `workspace_mode_mismatch` | POST /api/v1/workspaces/:slug/rebuild | Workspace is not in `carry_patch` mode |
+| `workspace_mode_mismatch` | POST /api/v1/workspaces/:slug/rebuild; every forge read route with `?target=upstream` | Workspace is not in `carry_patch` mode (a forge read with `target=upstream` also needs a non-empty `upstream_url`) |
 | `no_active_patches` | POST /api/v1/workspaces/:slug/rebuild | No patches with status `active` or `conflict` |
 | `concurrent_rebuild` | POST /api/v1/workspaces/:slug/rebuild | A rebuild job is already queued or running for this workspace |
 | `origin_fetch_failed` | POST /api/v1/workspaces/:slug/sync, POST .../patches/:id/reset-to-origin | The origin fetch failed during a carry-patch sync with `PATCH_BRANCH_SOURCE=origin` or during a reset-to-origin. Distinguished from the upstream fetch failure by this error type |
@@ -201,6 +205,16 @@ The `error_type` field is omitted when not applicable. Known error types:
 | `sandbox_capacity` | POST /api/v1/workspaces/:slug/sandboxes | The deployment's `max_sandboxes` limit on live leases is reached |
 | `secret_missing` | POST /api/v1/workspaces/:slug/sandboxes | A secret the profile requires exists in no searched scope of the workspace |
 | `sandbox_provider_error` | DELETE /api/v1/workspaces/:slug/sandboxes/:id | The provider could not destroy the sandbox of an `active` lease, or did not answer within 30 seconds. The message is the provider's, scrubbed; the lease is unchanged and the request can be repeated |
+| `forge_api_url_invalid` | every forge route | `FORGE_API_URL` (`UPSTREAM_FORGE_API_URL` for the upstream) is set to something that is not an absolute `https://` URL with a host and without userinfo, query or fragment. 422; the message names the variable and the rule, not the value |
+| `forge_unknown` | every forge read route | The forge behind the remote URL cannot be told from its host or an API URL variable, or the remote URL names no repository. 422; nothing is sent to the forge |
+| `forge_not_found` | every forge read route | The forge answered 404. 404 |
+| `forge_unauthenticated` | every forge read route | The forge answered 401. 502 |
+| `forge_forbidden` | every forge read route | The forge answered 403 that is not a rate limit. 502 |
+| `forge_rate_limited` | every forge read route | A rate limit issuex could not wait out. 429, with `Retry-After` in whole seconds when known |
+| `forge_rejected` | every forge read route | The forge answered another 4xx. 422 |
+| `forge_error` | every forge read route | The forge answered 5xx, a response that could not be read, or a redirect to another host. 502 |
+| `forge_unreachable` | every forge read route | The connection to the forge failed at DNS, TCP or TLS level. 502 |
+| `forge_timeout` | every forge read route | The 30-second deadline passed. 504 |
 
 ---
 
@@ -3475,7 +3489,7 @@ owner is a member of the workspace's organization.
 ## Workspace Variables Reference
 
 The following workspace variables control carry-patch rebuild and sync
-behavior. They can be set via the
+behavior and how the hub reaches a workspace's forge. They can be set via the
 `POST /api/v1/workspaces/:slug/vars` endpoint.
 
 | Variable | Values | Default | Description |
@@ -3489,6 +3503,8 @@ behavior. They can be set via the
 | `PUSH_PATCHES_TO_ORIGIN` | `"true"` | (disabled) | Enables forwarding or mirroring of hub pushes to registered patch branches. Only the exact string `"true"` enables it. In `origin` mode (`PATCH_BRANCH_SOURCE=origin`): when enabled, a push to a registered patch branch is forwarded to the fork before the hub writes its ref; when disabled, the push is rejected. In `hub` mode: when enabled, accepted pushes to registered patch branches are mirrored (force-pushed) to the fork after the push is accepted. |
 | `SQUASH_MERGE_DETECTION` | `"ancestry_only"`, `"content_based"`, `"both"` | `"both"` | Controls which strategies are used to detect upstream merges during carry-patch sync. `"ancestry_only"` uses only `git merge-base --is-ancestor`. `"content_based"` uses only `git cherry` and PR-number scanning. `"both"` (default) uses all strategies. |
 | `CHECK_COMMAND` | any string | (unset) | Shell command executed via `sh -c` after a merge rebase to validate the result. If it exits non-zero, the rebase is rolled back. |
+| `FORGE_API_URL` | an absolute `https://` URL with a host, without userinfo, query or fragment | (unset) | The API URL of the forge behind the workspace's `git_url`, for the [forge read routes](#forge-endpoints). Unset, the API is found from the host (`api.github.com` for `github.com`, `<host>/api/v3` or `<host>/api/v4` for another). A value that contains exactly one of `github` and `gitlab` also tells which forge it is, and a GitLab value gets `/api/v4` appended when it does not end with it. Any other value answers `422 forge_api_url_invalid`. |
+| `UPSTREAM_FORGE_API_URL` | as `FORGE_API_URL` | (unset) | The same for the `upstream_url` of a `carry_patch` workspace (`?target=upstream`). It does not fall back to `FORGE_API_URL`: an upstream on another host must not inherit the fork's API URL. |
 
 ---
 
@@ -3883,6 +3899,250 @@ List the leases of every workspace, in the same representation, order, cap and
 **Error Codes:** 400 (`all` cannot be parsed), 401, 403 (any credential but an
 admin token, including an API key or a PAT holding both scopes), 404
 (`sandboxes_disabled`).
+
+---
+
+## Forge Endpoints
+
+A workspace's repository lives on a forge, GitHub or GitLab. These endpoints let
+a caller read the repository, its issues and its pull requests through the hub,
+using the credential the hub already holds for the workspace and never one of
+the caller's own. For every request the hub builds a fresh client for the
+workspace itself, from the workspace's own record; the only input it takes from
+the request is which remote to read (`target`). Neither the request's
+`Authorization` header nor its body reaches the forge, and no response shows the
+credential, only its kind.
+
+The endpoints are read-only. They work on `active` and `archived` workspaces
+alike, take no workspace lock, need no clone (`clone_status` does not matter) and
+emit no audit event.
+
+### How the hub reaches the forge
+
+| | origin (the default) | upstream |
+|---|---|---|
+| Remote URL | the workspace's `git_url` | the `upstream_url` of a `carry_patch` workspace |
+| Credential | `GIT_PAT`, or `GIT_USERNAME` with `GIT_PASSWORD` (the resolver the clone uses) | `UPSTREAM_GIT_PAT`, or `UPSTREAM_GIT_USERNAME` with `UPSTREAM_GIT_PASSWORD`, else the origin's (the resolver the carry-patch sync uses) |
+| API URL variable | `FORGE_API_URL` | `UPSTREAM_FORGE_API_URL`, with no fallback to `FORGE_API_URL` |
+
+- **Repository.** It is read from the remote URL: `https://host/owner/name`,
+  `ssh://`, or `git@host:owner/name`, with `.git` and userinfo removed. GitLab
+  subgroup paths are kept: for `https://gitlab.example.com/group/subgroup/widgets`
+  the owner is `group/subgroup` and the name `widgets`.
+- **Which forge.** The forge is GitHub or GitLab. A host whose name contains
+  `github` or `gitlab` says which; so does an API URL variable that contains one
+  of the two words. The API URL, when no variable sets it, is `https://api.github.com`
+  for `github.com`, `https://<host>/api/v3` for another GitHub host and
+  `https://<host>/api/v4` for a GitLab host. A host that names neither forge, with
+  no API URL variable that does, cannot be told: the answer is `422 forge_unknown`
+  and nothing is sent. The classification is that of the aflib `issuex` package;
+  the hub's own environment variables `GITHUB_API_URL` and `GITLAB_API_URL` are
+  read by it too.
+- **API URL variables.** `FORGE_API_URL` and `UPSTREAM_FORGE_API_URL` are workspace
+  variables (see the [Workspace Variables Reference](#workspace-variables-reference)).
+  A value that is set must be an absolute `https://` URL with a host and without
+  userinfo, query or fragment; any other is `422 forge_api_url_invalid`, with a
+  message that names the variable and the rule and not the value. Surrounding
+  white space and trailing slashes are ignored. For GitLab, issuex puts `/api/v4`
+  after a value that does not end with it, and the diagnostic shows the URL with it.
+- **Credential kind.** `pat` when the resolver returns the username `x-token-auth`
+  (a `GIT_PAT`); `basic` for any other username, in which case the password is sent
+  to the forge as the token; `none` when there is no credential, in which case the
+  client is unauthenticated and sends no token header, whatever token the hub's own
+  environment (`GITHUB_TOKEN`, `GH_TOKEN`, `GITLAB_TOKEN`) holds.
+- **No caching.** A client is built for each request, so a rotated secret or a
+  changed variable applies to the next call.
+- **Every request** to the forge carries `User-Agent: af-hub/<version>`. The HTTP
+  client follows the environment's proxy settings, as the hub's git transport does,
+  and refuses a redirect to another host, port or scheme (a GitLab token would
+  otherwise follow it): the answer is `502 forge_error`. A call, the retries issuex
+  makes inside it included, has 30 seconds, after which the answer is
+  `504 forge_timeout`.
+
+### Order of checks
+
+Every forge route checks, in this order:
+
+1. No credential: 401.
+2. A PAT without `forge:read` (or `forge:write`, which implies it): 403, with the
+   message `PAT requires forge:read scope`. A credential type the hub does not know
+   is 403 too. This comes before the workspace is looked up, so it is the answer
+   for a slug that does not exist as well.
+3. A workspace that does not exist or is not the caller's: 404 `workspace not found`
+   (admin tokens may read any workspace).
+4. The `target` parameter (all routes but `GET .../forge`): 400.
+5. The path and query parameters: 400, naming the parameter.
+6. Building the client: 422 or 500.
+
+API keys and admin tokens hold `forge:read` and `forge:write` implicitly.
+
+### The target
+
+Every route but `GET /api/v1/workspaces/:slug/forge` takes `?target=`:
+
+| Value | Reads |
+|---|---|
+| absent, or `origin` | the repository at the workspace's `git_url` |
+| `upstream` | the repository at the `upstream_url`; allowed only when `workspace_mode` is `carry_patch` and `upstream_url` is not empty, else `400` with `error_type: workspace_mode_mismatch` |
+
+Any other value (`ORIGIN`, an empty value, a repeated parameter) is `400` with the
+message `target must be "origin" or "upstream"`.
+
+### GET /api/v1/workspaces/:slug/forge
+
+Describe how the hub reaches the forge, without sending any request to it. A person
+runs it when the other routes answer `forge_unknown`.
+
+**Authentication:** API Key, Admin Token, or PAT with the `forge:read` or
+`forge:write` scope.
+
+**Response (success):** HTTP 200 OK
+
+```json
+{
+  "forge": "github",
+  "api_url": "https://api.github.com",
+  "repository": { "host": "github.com", "owner": "acme", "name": "widgets" },
+  "credential": "pat",
+  "upstream": null
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `forge` | string | `github`, `gitlab` or `unknown` |
+| `api_url` | string or null | The API URL the hub sends its requests under (for GitLab, with `/api/v4`); `null` when the forge is `unknown`. It is the variable's value or the default for the host, so a `GITHUB_API_URL` or `GITLAB_API_URL` in the hub's own environment, which issuex would honour, is not shown |
+| `repository` | object or null | `host`, `owner` (the full namespace path) and `name`; `null` when the remote URL names no repository |
+| `credential` | string | `pat`, `basic` or `none`: the kind, never a value |
+| `upstream` | object or null | The same four fields for the `upstream_url`, computed with the upstream resolver and `UPSTREAM_FORGE_API_URL`; `null` unless the workspace is `carry_patch` with a non-empty `upstream_url` |
+
+A host that cannot be classified is reported as `"forge": "unknown"` with
+`api_url: null` and is not an error. The repository is still shown when the URL
+names one.
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| 401, 403, 404 | As in [Order of checks](#order-of-checks) |
+| 422 | `FORGE_API_URL`, or `UPSTREAM_FORGE_API_URL` for the upstream block, is invalid (`error_type: forge_api_url_invalid`) |
+| 500 | The secrets or variables store failed |
+
+### The read routes
+
+Each route calls one issuex method and returns its result as issuex encodes it. A
+list is a bare JSON array, and an empty list is `[]`, never `null`.
+
+| Route | issuex method | Response |
+|---|---|---|
+| `GET /api/v1/workspaces/:slug/forge/repository` | `GetRepository` | the repository |
+| `GET /api/v1/workspaces/:slug/issues` | `ListIssues` | an array of issues |
+| `GET /api/v1/workspaces/:slug/issues/:n` | `ReadIssue` | the issue with its comments |
+| `GET /api/v1/workspaces/:slug/issues/:n/comments` | `ListComments` | an array of comments |
+| `GET /api/v1/workspaces/:slug/pulls/:n` | `ReadPullRequest` | the pull request |
+| `GET /api/v1/workspaces/:slug/pulls/:n/state` | `GetPRState` | the state of the pull request |
+| `GET /api/v1/workspaces/:slug/pulls/:n/files` | `ReadChangedFiles` | an array of changed files |
+| `GET /api/v1/workspaces/:slug/pulls/:n/checks` | `GetCIChecks` | an array of CI check runs |
+| `GET /api/v1/workspaces/:slug/pulls/:n/reviews` | `GetPRReviews` | an array of reviews |
+
+**Authentication:** API Key, Admin Token, or PAT with the `forge:read` or
+`forge:write` scope. All of them take `?target=`.
+
+`:n` must be a positive decimal integer (`400`, `n must be a positive decimal
+integer`); on GitLab it is the project's `iid`. On `GET .../issues` the query is:
+
+| Parameter | Values | Passed to the forge |
+|-----------|--------|---------------------|
+| `state` | `open`, `closed`, `all` | when given |
+| `labels` | comma-separated; empty items are dropped | when any remain |
+| `assignee` | free text | when given |
+| `sort` | `created`, `updated` | when given |
+| `direction` | `asc`, `desc` | when given |
+| `limit` | an integer from 1 to 100; default 30 | always |
+
+A parameter that is absent is not passed on, and issuex uses its own default. A bad
+value, an empty one or a repeated one answers `400` with a message that starts with
+the parameter's name (`state must be one of: open, closed, all`, `limit must be an
+integer from 1 to 100`). The check happens before a client is built.
+
+Result types, as issuex encodes them (fields marked `?` are omitted when empty):
+
+| Type | Fields |
+|---|---|
+| repository | `full_name`, `default_branch`, `private`, `archived`, `permissions` (`push`, `pull`, `admin`), `allow_merge_commit?`, `allow_squash_merge?`, `allow_rebase_merge?` |
+| issue | `number`, `title`, `body`, `state`, `url?`, `html_url?`, `author` (`login`), `labels?`, `created_at`, `updated_at`, `closed_at?`, `is_pr` |
+| issue thread | `issue`, `comments`, `truncated`, `comments_err?` |
+| comment | `id?`, `body`, `user` (`login`), `created_at`, `updated_at?`, `url?`, `html_url?` |
+| pull request | `number`, `title`, `body`, `state`, `url?`, `html_url?`, `draft`, `merged`, `head_sha`, `head_branch`, `base_branch`, `author`, `created_at`, `updated_at`, `closed_at?`, `merged_at?` |
+| pull request state | `number`, `state`, `merged`, `head_sha` |
+| changed file | `filename`, `status`, `additions`, `deletions` |
+| check run | `name`, `status`, `conclusion`, `summary?`, `url?` |
+| review | `author`, `state`, `body`, `submitted_at` |
+
+`GET .../issues/:n` answers an issue thread: the issue, its comments and `truncated`,
+issuex's flag that more comments exist than it read. When the issue was read and its
+comments could not be, the thread carries the error as `comments_err`, with the token
+and any URL userinfo taken out of its text, and the answer is still 200.
+
+issuex returns `incomplete` with the issue list and `truncated` with the comment
+list; the list routes answer the bare array and do not show those two flags.
+
+**Example:** `GET /api/v1/workspaces/widgets/issues?labels=af:triage&state=open`
+
+```json
+[
+  {
+    "number": 12,
+    "title": "Widgets break",
+    "body": "it breaks",
+    "state": "open",
+    "html_url": "https://github.com/acme/widgets/issues/12",
+    "author": { "login": "alice" },
+    "labels": ["af:triage"],
+    "created_at": "2026-01-02T03:04:05Z",
+    "updated_at": "2026-01-02T03:04:05Z",
+    "is_pr": false
+  }
+]
+```
+
+### Failures of the forge
+
+Every failure of a call to the forge is answered by one of these, whatever the route:
+
+| Condition | Status | `error_type` |
+|---|---|---|
+| `target=upstream` on a workspace that is not a `carry_patch` fork with an `upstream_url` | 400 | `workspace_mode_mismatch` |
+| an invalid `target`, `:n` or query parameter | 400 | |
+| `FORGE_API_URL` / `UPSTREAM_FORGE_API_URL` invalid | 422 | `forge_api_url_invalid` |
+| the forge cannot be told from the host, or the remote URL names no repository | 422 | `forge_unknown` |
+| the forge answered 404 | 404 | `forge_not_found` |
+| the forge answered 401 | 502 | `forge_unauthenticated` |
+| the forge answered 403 that is not a rate limit | 502 | `forge_forbidden` |
+| a rate limit issuex could not wait out | 429 | `forge_rate_limited` |
+| the forge answered another 4xx | 422 | `forge_rejected` |
+| the forge answered 5xx, a response that cannot be read, or a redirect to another host | 502 | `forge_error` |
+| the connection failed (DNS, TCP, TLS) | 502 | `forge_unreachable` |
+| the 30-second deadline passed | 504 | `forge_timeout` |
+| the secrets or variables store failed | 500 | |
+
+- The forge's own message is in `message` as `the forge answered <status>: <message>`,
+  after three steps: the resolved token is replaced with `[redacted]`, URL userinfo is
+  removed, and the text is cut to 1024 bytes on a UTF-8 boundary. A `401` for a
+  `basic` credential adds `The forge API needs a token: store one as GIT_PAT, or as
+  GIT_PASSWORD.`
+- `forge_rate_limited` carries `Retry-After` in whole seconds, rounded up, when issuex
+  knows how long to wait. issuex adds one second to the forge's own value
+  (`Retry-After: 1` gives `2`) and itself waits out a backoff of up to 120 seconds
+  and tries once more; the 30-second deadline cuts a wait of 29 to 120 seconds
+  short, which is answered `504 forge_timeout`.
+- Each 5xx and 429 answer caused by the forge is logged once, as `forge: request
+  failed` with the workspace (`slug`), the `target`, the `operation` (the issuex
+  method, for example `ListIssues`), the status the forge gave (`forge_status`; 0
+  when it gave none), the hub's `status` and `error_type`. The line never holds the
+  token, a message, a request body or a response body. A store failure is logged
+  with the workspace, the target and the type of the error, never its text.
+- No response and no log line contains the credential or the userinfo of a URL.
 
 ---
 

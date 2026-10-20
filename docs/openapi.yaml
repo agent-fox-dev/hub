@@ -135,6 +135,11 @@ tags:
       sandbox leases. A lease holder creates its one sandbox through the hub's
       sandbox gateway, a gRPC service on its own listener at the lease's
       `gateway_url`, with the lease's token.
+  - name: Forge
+    description: >-
+      A workspace's repository, issues and pull requests on its forge (GitHub or
+      GitLab), read through the hub with the credential the hub holds for the
+      workspace and never the caller's. Read-only.
   - name: Sessions
     description: Agent session lifecycle, token usage, and cost aggregation.
   - name: Audit Ingestion
@@ -2704,6 +2709,511 @@ paths:
           $ref: "#/components/responses/InternalServerError"
 
   # ---------------------------------------------------------------------------
+  # Forge (a workspace's repository on GitHub or GitLab)
+  # ---------------------------------------------------------------------------
+
+  /api/v1/workspaces/{slug}/forge:
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceSlug"
+    get:
+      tags: [Forge]
+      operationId: getForgeDiagnostic
+      summary: Show how the hub reaches the forge of a workspace
+      description: |
+        Reports the forge (`github`, `gitlab` or `unknown`), the API URL, the
+        repository and the kind of the credential (`pat`, `basic` or `none`) the
+        hub would use for the workspace's origin and, on a `carry_patch`
+        workspace with an `upstream_url`, for its upstream, without sending any
+        request to the forge. A host that cannot be classified is reported as
+        `unknown` with a null `api_url` and is not an error. The response
+        never contains a secret value. The route does not take `target`.
+
+        The checks run in this order: no credential is `401`; a PAT with
+        neither `forge:read` nor `forge:write` is `403`; a workspace that does
+        not exist or is not the caller's is `404`; an invalid `FORGE_API_URL`
+        (or `UPSTREAM_FORGE_API_URL` for the upstream block) is `422`.
+      x-required-scopes: ["forge:read", "forge:write"]
+      responses:
+        "200":
+          description: The forge, as the hub would reach it.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ForgeDiagnostic"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/MissingScope"
+        "404":
+          $ref: "#/components/responses/WorkspaceNotFoundOrNotOwned"
+        "422":
+          description: >-
+            `FORGE_API_URL`, or `UPSTREAM_FORGE_API_URL` for the upstream block,
+            is not an absolute `https://` URL with a host and without userinfo,
+            query or fragment (`error_type: forge_api_url_invalid`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /api/v1/workspaces/{slug}/forge/repository:
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceSlug"
+      - $ref: "#/components/parameters/ForgeTarget"
+    get:
+      tags: [Forge]
+      operationId: getForgeRepository
+      summary: Read the workspace's repository on its forge
+      description: |
+        Calls `GetRepository` and returns the repository as issuex encodes it.
+
+        The checks run in this order: no credential is `401`; a PAT with neither
+        `forge:read` nor `forge:write` is `403`, also for a slug that does not
+        exist; a workspace that does not exist or is not the caller's is `404`;
+        then `target` and the other parameters (`400`); then the client is built
+        (`422`, `500`) and the forge is called. API keys and admin tokens are not
+        scope-checked. The route works on archived workspaces and on workspaces
+        that are not cloned, takes no workspace lock and emits no audit event.
+        Failures of the forge are answered by the table in `docs/api.md`
+        ("Failures of the forge"); the forge's message is scrubbed of the
+        workspace's token and of URL userinfo and cut to 1024 bytes.
+      x-required-scopes: ["forge:read", "forge:write"]
+      responses:
+        "200":
+          description: The answer.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ForgeRepository"
+        "400":
+          $ref: "#/components/responses/ForgeBadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/MissingScope"
+        "404":
+          $ref: "#/components/responses/ForgeNotFound"
+        "422":
+          $ref: "#/components/responses/ForgeUnprocessable"
+        "429":
+          $ref: "#/components/responses/ForgeRateLimited"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "502":
+          $ref: "#/components/responses/ForgeBadGateway"
+        "504":
+          $ref: "#/components/responses/ForgeGatewayTimeout"
+
+  /api/v1/workspaces/{slug}/issues:
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceSlug"
+      - $ref: "#/components/parameters/ForgeTarget"
+      - $ref: "#/components/parameters/ForgeIssueState"
+      - $ref: "#/components/parameters/ForgeIssueLabels"
+      - $ref: "#/components/parameters/ForgeIssueAssignee"
+      - $ref: "#/components/parameters/ForgeIssueSort"
+      - $ref: "#/components/parameters/ForgeIssueDirection"
+      - $ref: "#/components/parameters/ForgeIssueLimit"
+    get:
+      tags: [Forge]
+      operationId: listForgeIssues
+      summary: List the issues of the workspace's repository
+      description: |
+        Calls `ListIssues` and returns the issues as a bare array, `[]` when there are none. Pull requests are not in the list. `state`, `labels` (comma-separated, empty items dropped), `assignee`, `sort` and `direction` are passed to the forge only when given; `limit` is always passed (default 30). A bad value is `400` with a message that starts with the parameter's name.
+
+        The checks run in this order: no credential is `401`; a PAT with neither
+        `forge:read` nor `forge:write` is `403`, also for a slug that does not
+        exist; a workspace that does not exist or is not the caller's is `404`;
+        then `target` and the other parameters (`400`); then the client is built
+        (`422`, `500`) and the forge is called. API keys and admin tokens are not
+        scope-checked. The route works on archived workspaces and on workspaces
+        that are not cloned, takes no workspace lock and emits no audit event.
+        Failures of the forge are answered by the table in `docs/api.md`
+        ("Failures of the forge"); the forge's message is scrubbed of the
+        workspace's token and of URL userinfo and cut to 1024 bytes.
+      x-required-scopes: ["forge:read", "forge:write"]
+      responses:
+        "200":
+          description: The answer.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ForgeIssue"
+        "400":
+          $ref: "#/components/responses/ForgeBadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/MissingScope"
+        "404":
+          $ref: "#/components/responses/ForgeNotFound"
+        "422":
+          $ref: "#/components/responses/ForgeUnprocessable"
+        "429":
+          $ref: "#/components/responses/ForgeRateLimited"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "502":
+          $ref: "#/components/responses/ForgeBadGateway"
+        "504":
+          $ref: "#/components/responses/ForgeGatewayTimeout"
+
+  /api/v1/workspaces/{slug}/issues/{n}:
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceSlug"
+      - $ref: "#/components/parameters/ForgeNumber"
+      - $ref: "#/components/parameters/ForgeTarget"
+    get:
+      tags: [Forge]
+      operationId: getForgeIssue
+      summary: Read one issue with its comments
+      description: |
+        Calls `ReadIssue`. The answer is the issue, its comments and `truncated`, issuex's flag that more comments exist than it read. When only the comments could not be read, the thread carries the error as `comments_err`, with the token and URL userinfo taken out of its text, and the answer is still `200`.
+
+        The checks run in this order: no credential is `401`; a PAT with neither
+        `forge:read` nor `forge:write` is `403`, also for a slug that does not
+        exist; a workspace that does not exist or is not the caller's is `404`;
+        then `target` and the other parameters (`400`); then the client is built
+        (`422`, `500`) and the forge is called. API keys and admin tokens are not
+        scope-checked. The route works on archived workspaces and on workspaces
+        that are not cloned, takes no workspace lock and emits no audit event.
+        Failures of the forge are answered by the table in `docs/api.md`
+        ("Failures of the forge"); the forge's message is scrubbed of the
+        workspace's token and of URL userinfo and cut to 1024 bytes.
+      x-required-scopes: ["forge:read", "forge:write"]
+      responses:
+        "200":
+          description: The answer.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ForgeIssueThread"
+        "400":
+          $ref: "#/components/responses/ForgeBadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/MissingScope"
+        "404":
+          $ref: "#/components/responses/ForgeNotFound"
+        "422":
+          $ref: "#/components/responses/ForgeUnprocessable"
+        "429":
+          $ref: "#/components/responses/ForgeRateLimited"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "502":
+          $ref: "#/components/responses/ForgeBadGateway"
+        "504":
+          $ref: "#/components/responses/ForgeGatewayTimeout"
+
+  /api/v1/workspaces/{slug}/issues/{n}/comments:
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceSlug"
+      - $ref: "#/components/parameters/ForgeNumber"
+      - $ref: "#/components/parameters/ForgeTarget"
+    get:
+      tags: [Forge]
+      operationId: listForgeIssueComments
+      summary: List the comments of an issue
+      description: |
+        Calls `ListComments` and returns the comments as a bare array, `[]` when there are none.
+
+        The checks run in this order: no credential is `401`; a PAT with neither
+        `forge:read` nor `forge:write` is `403`, also for a slug that does not
+        exist; a workspace that does not exist or is not the caller's is `404`;
+        then `target` and the other parameters (`400`); then the client is built
+        (`422`, `500`) and the forge is called. API keys and admin tokens are not
+        scope-checked. The route works on archived workspaces and on workspaces
+        that are not cloned, takes no workspace lock and emits no audit event.
+        Failures of the forge are answered by the table in `docs/api.md`
+        ("Failures of the forge"); the forge's message is scrubbed of the
+        workspace's token and of URL userinfo and cut to 1024 bytes.
+      x-required-scopes: ["forge:read", "forge:write"]
+      responses:
+        "200":
+          description: The answer.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ForgeComment"
+        "400":
+          $ref: "#/components/responses/ForgeBadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/MissingScope"
+        "404":
+          $ref: "#/components/responses/ForgeNotFound"
+        "422":
+          $ref: "#/components/responses/ForgeUnprocessable"
+        "429":
+          $ref: "#/components/responses/ForgeRateLimited"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "502":
+          $ref: "#/components/responses/ForgeBadGateway"
+        "504":
+          $ref: "#/components/responses/ForgeGatewayTimeout"
+
+  /api/v1/workspaces/{slug}/pulls/{n}:
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceSlug"
+      - $ref: "#/components/parameters/ForgeNumber"
+      - $ref: "#/components/parameters/ForgeTarget"
+    get:
+      tags: [Forge]
+      operationId: getForgePullRequest
+      summary: Read one pull request
+      description: |
+        Calls `ReadPullRequest`. On GitLab this is a merge request.
+
+        The checks run in this order: no credential is `401`; a PAT with neither
+        `forge:read` nor `forge:write` is `403`, also for a slug that does not
+        exist; a workspace that does not exist or is not the caller's is `404`;
+        then `target` and the other parameters (`400`); then the client is built
+        (`422`, `500`) and the forge is called. API keys and admin tokens are not
+        scope-checked. The route works on archived workspaces and on workspaces
+        that are not cloned, takes no workspace lock and emits no audit event.
+        Failures of the forge are answered by the table in `docs/api.md`
+        ("Failures of the forge"); the forge's message is scrubbed of the
+        workspace's token and of URL userinfo and cut to 1024 bytes.
+      x-required-scopes: ["forge:read", "forge:write"]
+      responses:
+        "200":
+          description: The answer.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ForgePullRequest"
+        "400":
+          $ref: "#/components/responses/ForgeBadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/MissingScope"
+        "404":
+          $ref: "#/components/responses/ForgeNotFound"
+        "422":
+          $ref: "#/components/responses/ForgeUnprocessable"
+        "429":
+          $ref: "#/components/responses/ForgeRateLimited"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "502":
+          $ref: "#/components/responses/ForgeBadGateway"
+        "504":
+          $ref: "#/components/responses/ForgeGatewayTimeout"
+
+  /api/v1/workspaces/{slug}/pulls/{n}/state:
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceSlug"
+      - $ref: "#/components/parameters/ForgeNumber"
+      - $ref: "#/components/parameters/ForgeTarget"
+    get:
+      tags: [Forge]
+      operationId: getForgePullRequestState
+      summary: Read the state of a pull request
+      description: |
+        Calls `GetPRState`.
+
+        The checks run in this order: no credential is `401`; a PAT with neither
+        `forge:read` nor `forge:write` is `403`, also for a slug that does not
+        exist; a workspace that does not exist or is not the caller's is `404`;
+        then `target` and the other parameters (`400`); then the client is built
+        (`422`, `500`) and the forge is called. API keys and admin tokens are not
+        scope-checked. The route works on archived workspaces and on workspaces
+        that are not cloned, takes no workspace lock and emits no audit event.
+        Failures of the forge are answered by the table in `docs/api.md`
+        ("Failures of the forge"); the forge's message is scrubbed of the
+        workspace's token and of URL userinfo and cut to 1024 bytes.
+      x-required-scopes: ["forge:read", "forge:write"]
+      responses:
+        "200":
+          description: The answer.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ForgePRState"
+        "400":
+          $ref: "#/components/responses/ForgeBadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/MissingScope"
+        "404":
+          $ref: "#/components/responses/ForgeNotFound"
+        "422":
+          $ref: "#/components/responses/ForgeUnprocessable"
+        "429":
+          $ref: "#/components/responses/ForgeRateLimited"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "502":
+          $ref: "#/components/responses/ForgeBadGateway"
+        "504":
+          $ref: "#/components/responses/ForgeGatewayTimeout"
+
+  /api/v1/workspaces/{slug}/pulls/{n}/files:
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceSlug"
+      - $ref: "#/components/parameters/ForgeNumber"
+      - $ref: "#/components/parameters/ForgeTarget"
+    get:
+      tags: [Forge]
+      operationId: listForgePullRequestFiles
+      summary: List the files a pull request changes
+      description: |
+        Calls `ReadChangedFiles` and returns the files as a bare array, `[]` when there are none.
+
+        The checks run in this order: no credential is `401`; a PAT with neither
+        `forge:read` nor `forge:write` is `403`, also for a slug that does not
+        exist; a workspace that does not exist or is not the caller's is `404`;
+        then `target` and the other parameters (`400`); then the client is built
+        (`422`, `500`) and the forge is called. API keys and admin tokens are not
+        scope-checked. The route works on archived workspaces and on workspaces
+        that are not cloned, takes no workspace lock and emits no audit event.
+        Failures of the forge are answered by the table in `docs/api.md`
+        ("Failures of the forge"); the forge's message is scrubbed of the
+        workspace's token and of URL userinfo and cut to 1024 bytes.
+      x-required-scopes: ["forge:read", "forge:write"]
+      responses:
+        "200":
+          description: The answer.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ForgeChangedFile"
+        "400":
+          $ref: "#/components/responses/ForgeBadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/MissingScope"
+        "404":
+          $ref: "#/components/responses/ForgeNotFound"
+        "422":
+          $ref: "#/components/responses/ForgeUnprocessable"
+        "429":
+          $ref: "#/components/responses/ForgeRateLimited"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "502":
+          $ref: "#/components/responses/ForgeBadGateway"
+        "504":
+          $ref: "#/components/responses/ForgeGatewayTimeout"
+
+  /api/v1/workspaces/{slug}/pulls/{n}/checks:
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceSlug"
+      - $ref: "#/components/parameters/ForgeNumber"
+      - $ref: "#/components/parameters/ForgeTarget"
+    get:
+      tags: [Forge]
+      operationId: listForgePullRequestChecks
+      summary: List the CI checks of a pull request
+      description: |
+        Calls `GetCIChecks` and returns the check runs of the pull request's head commit as a bare array, `[]` when there are none.
+
+        The checks run in this order: no credential is `401`; a PAT with neither
+        `forge:read` nor `forge:write` is `403`, also for a slug that does not
+        exist; a workspace that does not exist or is not the caller's is `404`;
+        then `target` and the other parameters (`400`); then the client is built
+        (`422`, `500`) and the forge is called. API keys and admin tokens are not
+        scope-checked. The route works on archived workspaces and on workspaces
+        that are not cloned, takes no workspace lock and emits no audit event.
+        Failures of the forge are answered by the table in `docs/api.md`
+        ("Failures of the forge"); the forge's message is scrubbed of the
+        workspace's token and of URL userinfo and cut to 1024 bytes.
+      x-required-scopes: ["forge:read", "forge:write"]
+      responses:
+        "200":
+          description: The answer.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ForgeCheckRun"
+        "400":
+          $ref: "#/components/responses/ForgeBadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/MissingScope"
+        "404":
+          $ref: "#/components/responses/ForgeNotFound"
+        "422":
+          $ref: "#/components/responses/ForgeUnprocessable"
+        "429":
+          $ref: "#/components/responses/ForgeRateLimited"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "502":
+          $ref: "#/components/responses/ForgeBadGateway"
+        "504":
+          $ref: "#/components/responses/ForgeGatewayTimeout"
+
+  /api/v1/workspaces/{slug}/pulls/{n}/reviews:
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceSlug"
+      - $ref: "#/components/parameters/ForgeNumber"
+      - $ref: "#/components/parameters/ForgeTarget"
+    get:
+      tags: [Forge]
+      operationId: listForgePullRequestReviews
+      summary: List the reviews of a pull request
+      description: |
+        Calls `GetPRReviews` and returns the reviews as a bare array, `[]` when there are none.
+
+        The checks run in this order: no credential is `401`; a PAT with neither
+        `forge:read` nor `forge:write` is `403`, also for a slug that does not
+        exist; a workspace that does not exist or is not the caller's is `404`;
+        then `target` and the other parameters (`400`); then the client is built
+        (`422`, `500`) and the forge is called. API keys and admin tokens are not
+        scope-checked. The route works on archived workspaces and on workspaces
+        that are not cloned, takes no workspace lock and emits no audit event.
+        Failures of the forge are answered by the table in `docs/api.md`
+        ("Failures of the forge"); the forge's message is scrubbed of the
+        workspace's token and of URL userinfo and cut to 1024 bytes.
+      x-required-scopes: ["forge:read", "forge:write"]
+      responses:
+        "200":
+          description: The answer.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ForgeReview"
+        "400":
+          $ref: "#/components/responses/ForgeBadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/MissingScope"
+        "404":
+          $ref: "#/components/responses/ForgeNotFound"
+        "422":
+          $ref: "#/components/responses/ForgeUnprocessable"
+        "429":
+          $ref: "#/components/responses/ForgeRateLimited"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "502":
+          $ref: "#/components/responses/ForgeBadGateway"
+        "504":
+          $ref: "#/components/responses/ForgeGatewayTimeout"
+
+  # ---------------------------------------------------------------------------
   # Agent sessions
   # ---------------------------------------------------------------------------
 
@@ -5169,6 +5679,87 @@ components:
       schema:
         type: string
 
+    ForgeTarget:
+      name: target
+      in: query
+      required: false
+      description: >-
+        Which remote to read: `origin`, the default, is the workspace's
+        `git_url`; `upstream` is the `upstream_url` of a `carry_patch` workspace
+        that has one, else `400` with `error_type: workspace_mode_mismatch`. Any
+        other value, an empty or a repeated one included, is `400` with the
+        message `target must be "origin" or "upstream"`.
+      schema:
+        type: string
+        enum: [origin, upstream]
+
+    ForgeNumber:
+      name: "n"
+      in: path
+      required: true
+      description: >-
+        The number of the issue or pull request (on GitLab the project's `iid`):
+        a positive decimal integer, else `400` with the message `n must be a
+        positive decimal integer`.
+      schema:
+        type: string
+        pattern: "^[0-9]+$"
+
+    ForgeIssueState:
+      name: state
+      in: query
+      required: false
+      description: Only issues in this state. Not passed to the forge when absent.
+      schema:
+        type: string
+        enum: [open, closed, all]
+
+    ForgeIssueLabels:
+      name: labels
+      in: query
+      required: false
+      description: >-
+        Only issues with all of these labels, comma-separated. Empty items are
+        dropped; the parameter may be repeated.
+      schema:
+        type: string
+        example: "af:triage,bug"
+
+    ForgeIssueAssignee:
+      name: assignee
+      in: query
+      required: false
+      description: Only issues assigned to this user (free text).
+      schema:
+        type: string
+
+    ForgeIssueSort:
+      name: sort
+      in: query
+      required: false
+      schema:
+        type: string
+        enum: [created, updated]
+
+    ForgeIssueDirection:
+      name: direction
+      in: query
+      required: false
+      schema:
+        type: string
+        enum: [asc, desc]
+
+    ForgeIssueLimit:
+      name: limit
+      in: query
+      required: false
+      description: The number of issues, 1 to 100. Always passed to issuex.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 30
+
     OrgSlug:
       name: slug
       in: path
@@ -5428,6 +6019,77 @@ components:
           schema:
             $ref: "#/components/schemas/Error"
 
+    ForgeBadRequest:
+      description: >-
+        `target` is not `origin` or `upstream`, or `target=upstream` is asked of
+        a workspace that is not a `carry_patch` fork with an `upstream_url`
+        (`error_type: workspace_mode_mismatch`), or `n` or a query parameter is
+        invalid. The message names the parameter. Nothing was sent to the forge.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+    ForgeNotFound:
+      description: >-
+        The workspace does not exist or is not owned by the caller
+        (`workspace not found`), or the forge answered 404
+        (`error_type: forge_not_found`).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+    ForgeUnprocessable:
+      description: >-
+        `FORGE_API_URL` (`UPSTREAM_FORGE_API_URL` for the upstream) is invalid
+        (`error_type: forge_api_url_invalid`; the message names the variable and
+        the rule, not the value); or the forge cannot be told from the host or
+        an API URL variable, or the remote URL names no repository
+        (`error_type: forge_unknown`); or the forge answered another 4xx
+        (`error_type: forge_rejected`). Nothing is sent to the forge in the
+        first two cases.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+    ForgeRateLimited:
+      description: >-
+        A rate limit issuex could not wait out (`error_type: forge_rate_limited`).
+        `Retry-After` is set, in whole seconds rounded up, when issuex knows how
+        long to wait.
+      headers:
+        Retry-After:
+          description: Whole seconds, rounded up; absent when the forge gave none.
+          schema:
+            type: integer
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+    ForgeBadGateway:
+      description: >-
+        The forge failed: it answered 401 (`error_type: forge_unauthenticated`),
+        403 that is not a rate limit (`forge_forbidden`), 5xx, a response that
+        cannot be read or a redirect to another host (`forge_error`), or the
+        connection failed at DNS, TCP or TLS level (`forge_unreachable`). The
+        message is the forge's, with the token replaced by `[redacted]`.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+    ForgeGatewayTimeout:
+      description: >-
+        The forge did not answer within 30 seconds, issuex's retries included
+        (`error_type: forge_timeout`).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
     OrgNotFound:
       description: No organization with this identifier exists.
       content:
@@ -5613,6 +6275,16 @@ components:
                 - secret_missing
                 - workspace_mismatch
                 - workspace_access_denied
+                - forge_api_url_invalid
+                - forge_unknown
+                - forge_not_found
+                - forge_unauthenticated
+                - forge_forbidden
+                - forge_rate_limited
+                - forge_rejected
+                - forge_error
+                - forge_unreachable
+                - forge_timeout
                 - workspace_archived
                 - unknown_schema_version
                 - postmortem_not_found
@@ -6277,6 +6949,294 @@ components:
           description: Every profile, sorted by name.
           items:
             $ref: "#/components/schemas/SandboxProfile"
+
+    ForgeDiagnostic:
+      type: object
+      description: >-
+        How the hub reaches the forge of a workspace's origin (the top-level
+        fields) and, on a `carry_patch` workspace with an `upstream_url`, of its
+        upstream. Nothing is sent to the forge to compute it.
+      required: [forge, api_url, repository, credential, upstream]
+      properties:
+        forge:
+          type: string
+          enum: [github, gitlab, unknown]
+        api_url:
+          type: [string, "null"]
+          description: >-
+            The API URL the hub sends its requests under (for GitLab with
+            `/api/v4`, which issuex appends to a value that lacks it); null when
+            the forge is `unknown`. The variable's value or the default for the
+            host: a `GITHUB_API_URL` or `GITLAB_API_URL` in the hub's own
+            environment is not shown.
+          example: https://api.github.com
+        repository:
+          oneOf:
+            - $ref: "#/components/schemas/ForgeRepositoryRef"
+            - type: "null"
+          description: Null when the remote URL names no repository.
+        credential:
+          $ref: "#/components/schemas/ForgeCredentialKind"
+        upstream:
+          oneOf:
+            - $ref: "#/components/schemas/ForgeRemote"
+            - type: "null"
+          description: Null unless the workspace is `carry_patch` with a non-empty `upstream_url`.
+
+    ForgeRemote:
+      type: object
+      description: The four fields that describe one remote.
+      required: [forge, api_url, repository, credential]
+      properties:
+        forge:
+          type: string
+          enum: [github, gitlab, unknown]
+        api_url:
+          type: [string, "null"]
+        repository:
+          oneOf:
+            - $ref: "#/components/schemas/ForgeRepositoryRef"
+            - type: "null"
+        credential:
+          $ref: "#/components/schemas/ForgeCredentialKind"
+
+    ForgeCredentialKind:
+      type: string
+      description: >-
+        How the hub authenticates to the forge: `pat` (a `GIT_PAT`, username
+        `x-token-auth`), `basic` (any other username; the password is sent as the
+        token) or `none`. Never a value.
+      enum: [pat, basic, none]
+
+    ForgeRepositoryRef:
+      type: object
+      required: [host, owner, name]
+      properties:
+        host:
+          type: string
+          example: gitlab.example.com
+        owner:
+          type: string
+          description: The full namespace path, `group/subgroup` on GitLab.
+          example: group/subgroup
+        name:
+          type: string
+          example: widgets
+
+    ForgeUser:
+      type: object
+      required: [login]
+      properties:
+        login:
+          type: string
+
+    ForgeRepository:
+      type: object
+      description: A repository as issuex encodes it.
+      required: [full_name, default_branch, private, archived, permissions]
+      properties:
+        full_name:
+          type: string
+        default_branch:
+          type: string
+        private:
+          type: boolean
+        archived:
+          type: boolean
+        permissions:
+          type: object
+          required: [push, pull, admin]
+          properties:
+            push:
+              type: boolean
+            pull:
+              type: boolean
+            admin:
+              type: boolean
+        allow_merge_commit:
+          type: boolean
+          description: Omitted when false.
+        allow_squash_merge:
+          type: boolean
+          description: Omitted when false.
+        allow_rebase_merge:
+          type: boolean
+          description: Omitted when false.
+
+    ForgeIssue:
+      type: object
+      required: [number, title, body, state, author, created_at, updated_at, is_pr]
+      properties:
+        number:
+          type: integer
+        title:
+          type: string
+        body:
+          type: string
+        state:
+          type: string
+        url:
+          type: string
+        html_url:
+          type: string
+        author:
+          $ref: "#/components/schemas/ForgeUser"
+        labels:
+          type: array
+          items:
+            type: string
+          description: Omitted when the issue has none.
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        closed_at:
+          type: string
+          format: date-time
+        is_pr:
+          type: boolean
+
+    ForgeComment:
+      type: object
+      required: [body, user, created_at]
+      properties:
+        id:
+          type: integer
+          format: int64
+        body:
+          type: string
+        user:
+          $ref: "#/components/schemas/ForgeUser"
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        url:
+          type: string
+        html_url:
+          type: string
+
+    ForgeIssueThread:
+      type: object
+      description: An issue with its comments.
+      required: [issue, comments, truncated]
+      properties:
+        issue:
+          $ref: "#/components/schemas/ForgeIssue"
+        comments:
+          type: array
+          items:
+            $ref: "#/components/schemas/ForgeComment"
+        truncated:
+          type: boolean
+          description: More comments exist than issuex read.
+        comments_err:
+          type: object
+          description: >-
+            Present when the issue was read and its comments could not be. The
+            error as issuex has it (an empty object for a wrapped error), with
+            the token and URL userinfo taken out of its text.
+
+    ForgePullRequest:
+      type: object
+      required: [number, title, body, state, draft, merged, head_sha, head_branch, base_branch, author, created_at, updated_at]
+      properties:
+        number:
+          type: integer
+        title:
+          type: string
+        body:
+          type: string
+        state:
+          type: string
+        url:
+          type: string
+        html_url:
+          type: string
+        draft:
+          type: boolean
+        merged:
+          type: boolean
+        head_sha:
+          type: string
+        head_branch:
+          type: string
+        base_branch:
+          type: string
+        author:
+          $ref: "#/components/schemas/ForgeUser"
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        closed_at:
+          type: string
+          format: date-time
+        merged_at:
+          type: string
+          format: date-time
+
+    ForgePRState:
+      type: object
+      required: [number, state, merged, head_sha]
+      properties:
+        number:
+          type: integer
+        state:
+          type: string
+          description: "`open`, `closed` or `merged`."
+        merged:
+          type: boolean
+        head_sha:
+          type: string
+
+    ForgeChangedFile:
+      type: object
+      required: [filename, status, additions, deletions]
+      properties:
+        filename:
+          type: string
+        status:
+          type: string
+        additions:
+          type: integer
+        deletions:
+          type: integer
+
+    ForgeCheckRun:
+      type: object
+      required: [name, status, conclusion]
+      properties:
+        name:
+          type: string
+        status:
+          type: string
+        conclusion:
+          type: string
+        summary:
+          type: string
+        url:
+          type: string
+
+    ForgeReview:
+      type: object
+      required: [author, state, body, submitted_at]
+      properties:
+        author:
+          $ref: "#/components/schemas/ForgeUser"
+        state:
+          type: string
+        body:
+          type: string
+        submitted_at:
+          type: string
+          format: date-time
 
     SandboxProfile:
       type: object
@@ -8096,7 +9056,7 @@ components:
       type: string
       description: |
         A `resource:action` permission scope. Both halves match `^[a-z0-9_]+$`.
-        The registry holds 33 scopes: 8 built into apikit and 25 registered by
+        The registry holds 37 scopes: 8 built into apikit and 29 registered by
         hub modules at startup. PAT creation rejects unknown scopes with `400`.
 
         Implications: `workspaces:create` and `workspaces:write` imply
@@ -8105,12 +9065,15 @@ components:
         `patches:write` implies `patches:read`; `git:write` implies `git:read`;
         `secrets:manage` implies `secrets:list`, `secrets:write`, and
         `secrets:delete`; `vars:manage` implies `vars:read`, `vars:write`, and
-        `vars:delete`; and `vars:write` implies `vars:read`.
+        `vars:delete`; `vars:write` implies `vars:read`; `sandboxes:write` implies
+        `sandboxes:read`; and `forge:write` implies `forge:read`.
         `workspaces:delete` and `workspaces:sync` imply nothing.
       pattern: "^[a-z0-9_]+:[a-z0-9_]+$"
       enum:
         - audit:read
         - audit:write
+        - forge:read
+        - forge:write
         - git:read
         - git:write
         - keys:manage
@@ -8123,6 +9086,8 @@ components:
         - patches:write
         - rebuilds:read
         - rebuilds:write
+        - sandboxes:read
+        - sandboxes:write
         - secrets:delete
         - secrets:list
         - secrets:manage

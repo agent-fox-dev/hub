@@ -17,6 +17,7 @@ import (
 
 	"github.com/agent-fox-dev/hub/internal/audit"
 	"github.com/agent-fox-dev/hub/internal/carrypatch"
+	"github.com/agent-fox-dev/hub/internal/forge"
 	"github.com/agent-fox-dev/hub/internal/gitserver"
 	"github.com/agent-fox-dev/hub/internal/health"
 	"github.com/agent-fox-dev/hub/internal/jobqueue"
@@ -236,6 +237,9 @@ func main() {
 	// Registered whether or not sandboxes are configured, so PATs can be issued
 	// with the sandbox scopes ahead of time (25-REQ-6.1).
 	extraPerms = append(extraPerms, sandboxes.Permissions()...)
+	// Likewise the forge scopes (30-REQ-2.1): forge:write is registered although no
+	// route needs it yet, so that PATs are issued once.
+	extraPerms = append(extraPerms, forge.Permissions()...)
 
 	// Mount all built-in handlers (OAuth, users, orgs, keys, PATs) and
 	// workspace handlers with workspace, git, secrets, variables, and
@@ -337,6 +341,19 @@ func main() {
 	// hub from starting.
 	gateway, leaseSvc := startSandboxes(ctx, sandboxSvc, database.SqlDB, store, auditEmitter, metrics)
 	sandboxes.RegisterLeaseRoutes(server.APIGroup(), leaseSvc)
+
+	// Mount the forge routes (spec 30): a workspace's repository, issues and pull
+	// requests on its forge, read with the credential hub holds for the workspace.
+	forge.RegisterRoutes(server.APIGroup(), forge.Config{
+		DB: database.SqlDB,
+		ResolveOriginAuth: func(slug string) (transport.AuthMethod, error) {
+			return workspace.ResolveCloneAuth(store, slug)
+		},
+		ResolveUpstreamAuth: func(slug string) (transport.AuthMethod, error) {
+			return workspace.ResolveUpstreamAuthMethod(store, slug)
+		},
+		GetVariable: store.GetVariableValue,
+	})
 
 	// ---------------------------------------------------------------------------
 	// Carry-patch HTTP routes (spec 16)

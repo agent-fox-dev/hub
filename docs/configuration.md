@@ -499,6 +499,35 @@ Callers read the validated profiles with `GET /api/v1/sandbox-profiles` and
 `sandboxes:write` PAT scopes on every start, whether or not the section is
 present.
 
+## Forge Access
+
+The forge routes (see [Forge Endpoints](api.md#forge-endpoints)) need no key in
+`config.toml`. The hub reads a workspace's repository on its forge with the git
+credential stored for the workspace (`GIT_PAT`, or `GIT_USERNAME` with `GIT_PASSWORD`;
+`UPSTREAM_GIT_PAT` and its siblings for the upstream of a `carry_patch` workspace),
+and two optional workspace variables set the API URL when the host does not give it
+away:
+
+| Workspace variable | Meaning |
+|---|---|
+| `FORGE_API_URL` | The API URL of the forge behind the workspace's `git_url`: an absolute `https://` URL with a host, without userinfo, query or fragment |
+| `UPSTREAM_FORGE_API_URL` | The same for the `upstream_url` of a `carry_patch` workspace; it does not fall back to `FORGE_API_URL` |
+
+Both are listed in the [Workspace Variables Reference](api.md#workspace-variables-reference).
+
+What the hub's environment changes:
+
+- The HTTP client follows the proxy settings of the environment (`HTTPS_PROXY`,
+  `NO_PROXY`), as the hub's git transport does.
+- `GITHUB_API_URL` and `GITLAB_API_URL` are read by the forge client when it decides
+  which forge serves a host. `GITHUB_TOKEN`, `GH_TOKEN` and `GITLAB_TOKEN` are never
+  sent: a workspace without a credential sends no token.
+
+Building the hub needs the sibling checkout of
+[aflib](https://github.com/agent-fox-dev/aflib) at `../aflib`, which `go.mod`
+replaces (see the README's prerequisites); the image build passes it as the `aflib`
+build context.
+
 ## Environment Variables
 
 | Variable | Description |

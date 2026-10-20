@@ -93,13 +93,14 @@ clean: ## Remove build output and the coverage profile
 .PHONY: build-containers
 build-containers: build-hub-container build-sandbox-container build-agents-container ## Build all container images
 
-# Uses siblings ../apikit and ../agentkit-go via additional build contexts
-# (go.mod replaces).
+# Uses siblings ../apikit, ../agentkit-go and ../aflib via additional build
+# contexts (go.mod replaces).
 .PHONY: build-hub-container
 build-hub-container: build ## Build the hub container locally
 	podman build \
 		--build-context apikit=../apikit \
 		--build-context agentkit=../agentkit-go \
+		--build-context aflib=../aflib \
 		--build-arg VERSION=$(VERSION) \
 		--build-arg BUILD=$(COMMIT) \
 		--build-arg BUILD_TIME=$(BUILD_TIME) \
