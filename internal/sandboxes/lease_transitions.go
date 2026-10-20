@@ -1,6 +1,8 @@
 package sandboxes
 
 import (
+	"database/sql"
+	"errors"
 	"fmt"
 	"slices"
 
@@ -16,19 +18,29 @@ import (
 // MarkActive moves a leased lease to active and records the id of its box. The
 // token stays valid: the holder uses it for every later call.
 func (s *LeaseStore) MarkActive(id, sandboxID string) (bool, error) {
-	res, err := s.db.Exec(`UPDATE sandbox_leases SET state = 'active', sandbox_id = ?, updated_at = ?
-		WHERE id = ? AND state = 'leased'`, sandboxID, apikit.FormatUTC(s.now()), id)
+	var workspace string
+	err := s.db.QueryRow(`UPDATE sandbox_leases SET state = 'active', sandbox_id = ?, updated_at = ?
+		WHERE id = ? AND state = 'leased' RETURNING workspace`, sandboxID, apikit.FormatUTC(s.now()), id).Scan(&workspace)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
 	if err != nil {
 		return false, err
 	}
-	n, err := res.RowsAffected()
-	return n > 0, err
+	s.metrics.activated(workspace)
+	return true, nil
 }
 
 // FailLease moves a leased lease to failed and records message as its error. It
 // has no end reason: the message says why.
 func (s *LeaseStore) FailLease(id, message string) (bool, error) {
 	return s.endLease(id, []string{leaseLeased}, leaseFailed, nil, &message)
+}
+
+// ExpireLease moves a leased lease to expired with the given end reason. It does
+// not end an active lease: that one has a box, which ends as destroyed.
+func (s *LeaseStore) ExpireLease(id, reason string) (bool, error) {
+	return s.endLease(id, []string{leaseLeased}, leaseExpired, &reason, nil)
 }
 
 // DestroyLease moves a lease that is in state from, leased or active, to

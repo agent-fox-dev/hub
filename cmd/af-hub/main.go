@@ -333,6 +333,7 @@ func main() {
 			DB:      database.SqlDB,
 			Secrets: store,
 			Audit:   auditEmitter,
+			Metrics: metrics,
 		})
 		if err != nil {
 			log.Fatal(err)
@@ -344,6 +345,7 @@ func main() {
 			Audit:      auditEmitter,
 			GatewayURL: gateway.URL(),
 			Boxes:      gateway,
+			Metrics:    metrics,
 		})
 	}
 	sandboxes.RegisterLeaseRoutes(server.APIGroup(), leaseSvc)

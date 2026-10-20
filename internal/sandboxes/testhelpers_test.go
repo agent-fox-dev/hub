@@ -101,6 +101,8 @@ type leaseEnvOptions struct {
 	// noEmitter builds a backend environment with no audit emitter at all. An
 	// emitter given in emitter is used in place of the recording one.
 	noEmitter bool
+	// metrics receives the sandbox metrics; nil records none.
+	metrics *audit.Metrics
 }
 
 // defaultLeaseConfig is a [sandbox] section with a default profile "tools",
@@ -185,6 +187,7 @@ func newLeaseEnv(t *testing.T, opts leaseEnvOptions) *leaseEnv {
 	}
 	svc := NewLeaseService(LeaseConfig{
 		Service: profileSvc, DB: db, Secrets: lister, Audit: opts.emitter, Now: clock.Now, Rand: opts.rand,
+		Metrics: opts.metrics,
 	})
 
 	e := echo.New()
@@ -192,7 +195,7 @@ func newLeaseEnv(t *testing.T, opts leaseEnvOptions) *leaseEnv {
 	api.Use(testAuthMiddleware())
 	RegisterLeaseRoutes(api, svc)
 
-	env := &leaseEnv{t: t, db: db, store: NewLeaseStore(db, clock.Now), svc: svc, profile: profileSvc, secrets: store, clock: clock, echo: e}
+	env := &leaseEnv{t: t, db: db, store: NewLeaseStore(db, clock.Now).WithMetrics(opts.metrics), svc: svc, profile: profileSvc, secrets: store, clock: clock, echo: e}
 	env.addWorkspace("widgets", leaseOwner, "", "active")
 	env.plantSecret("workspace", "widgets", "GIT_PAT", "PLANTED-VALUE-123")
 	return env

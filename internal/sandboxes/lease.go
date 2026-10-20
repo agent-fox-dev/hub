@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/txsvc/apikit"
+
+	"github.com/agent-fox-dev/hub/internal/audit"
 )
 
 // ErrLeaseNotFound is the one error the lease store reports for a lease that
@@ -67,10 +69,22 @@ type dbtx interface {
 	Query(query string, args ...any) (*sql.Rows, error)
 }
 
-// LeaseStore reads and writes leases. now stamps the changes it makes.
+// LeaseStore reads and writes leases. now stamps the changes it makes, and the
+// transitions record their effect on the sandbox metrics, if there are any.
 type LeaseStore struct {
-	db  *sql.DB
-	now func() time.Time
+	db      *sql.DB
+	now     func() time.Time
+	metrics metricsRecorder
+}
+
+// WithMetrics makes the store record what its transitions do to the sandbox
+// metrics: a lease that becomes active is one more afhub_sandboxes_active, a lease
+// that was active and ends is one less, and a lease that becomes destroyed is
+// observed on afhub_sandbox_lease_seconds. Only a transition that changed a row
+// records anything. A nil m records nothing. It returns the store.
+func (s *LeaseStore) WithMetrics(m *audit.Metrics) *LeaseStore {
+	s.metrics = metricsRecorder{m: m}
+	return s
 }
 
 // NewLeaseStore returns a store over db that stamps changes with now.
@@ -243,21 +257,32 @@ func (s *LeaseStore) EndLease(l *Lease, target, reason string) (bool, error) {
 // statement. It moves the lease from one of the states in from to the terminal
 // state target, records the end reason and, when message is not nil, the error
 // text, stamps ended_at and updated_at and clears the token hash, all in one
-// UPDATE conditioned on the state. It reports whether it changed a row.
+// UPDATE conditioned on the state. It reports whether it changed a row, and only
+// then records the ending on the metrics.
+//
+// The statement returns the row it changed. A lease with a sandbox_id had a box,
+// which only an active lease has, so the same statement tells the metrics whether
+// the lease was active, even when from allows both live states.
 func (s *LeaseStore) endLease(id string, from []string, target string, reason, message *string) (bool, error) {
 	now := apikit.FormatUTC(s.now())
 	args := []any{target, now, now, optional(reason), optional(message), id}
 	for _, state := range from {
 		args = append(args, state)
 	}
-	res, err := s.db.Exec(`UPDATE sandbox_leases
+	var workspace, createdAt, endedAt string
+	var sandboxID sql.NullString
+	err := s.db.QueryRow(`UPDATE sandbox_leases
 		SET state = ?, ended_at = ?, updated_at = ?, end_reason = ?, error = COALESCE(?, error), token_hash = NULL
-		WHERE id = ? AND state IN (`+strings.TrimSuffix(strings.Repeat("?, ", len(from)), ", ")+`)`, args...)
+		WHERE id = ? AND state IN (`+strings.TrimSuffix(strings.Repeat("?, ", len(from)), ", ")+`)
+		RETURNING workspace, created_at, ended_at, sandbox_id`, args...).Scan(&workspace, &createdAt, &endedAt, &sandboxID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
 	if err != nil {
 		return false, err
 	}
-	n, err := res.RowsAffected()
-	return n > 0, err
+	s.metrics.ended(workspace, createdAt, endedAt, sandboxID.Valid, target)
+	return true, nil
 }
 
 // optional returns the value s points to, or nil, which SQL stores as NULL.

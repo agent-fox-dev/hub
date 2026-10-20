@@ -33,6 +33,8 @@ type GatewayDeps struct {
 	Audit audit.Emitter
 	// Now is the clock; time.Now when nil.
 	Now func() time.Time
+	// Metrics receives the sandbox metrics; nil records none.
+	Metrics *audit.Metrics
 }
 
 // Gateway is the sandbox gateway hub serves on a second listener: a gatewayd
@@ -114,7 +116,7 @@ func startGateway(svc *Service, deps GatewayDeps, seams gatewaySeams) (*Gateway,
 	if now == nil {
 		now = time.Now
 	}
-	store := NewLeaseStore(deps.DB, now)
+	store := NewLeaseStore(deps.DB, now).WithMetrics(deps.Metrics)
 	backend := newBackend(backendConfig{Service: svc, Store: store, Secrets: deps.Secrets, DB: deps.DB, Audit: deps.Audit, Now: now})
 	server, err := seams.newServer(gatewayd.Config{
 		Backend:      backend,

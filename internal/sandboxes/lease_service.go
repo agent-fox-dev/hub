@@ -35,6 +35,8 @@ type LeaseConfig struct {
 	GatewayURL string
 	// Boxes destroys the boxes of active leases; nil when there is no gateway.
 	Boxes BoxDestroyer
+	// Metrics receives the sandbox metrics; nil records none.
+	Metrics *audit.Metrics
 }
 
 // LeaseService issues, reads and ends leases. It needs no provider: a lease is a
@@ -86,7 +88,7 @@ func NewLeaseService(cfg LeaseConfig) *LeaseService {
 	if s.rand == nil {
 		s.rand = rand.Reader
 	}
-	s.store = NewLeaseStore(cfg.DB, s.now)
+	s.store = NewLeaseStore(cfg.DB, s.now).WithMetrics(cfg.Metrics)
 	return s
 }
 
