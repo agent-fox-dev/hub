@@ -142,12 +142,14 @@ the hub is restarted.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `provider` | string | *(required)* | The provider that creates sandboxes. `"podman"` is the only accepted value; `"gateway"` is refused as not supported by this build. |
-| `engine_binary` | string | `"podman"` | The container engine command, `"podman"` or `"docker"`, or a path to one. A bare name is looked up in the `PATH` of the hub process. |
-| `runtime` | string | `""` | The engine's OCI runtime: empty for its default, or `"krun"` for a micro-VM (podman only). Passed to the provider unchanged; the provider refuses what it does not support. |
-| `userns` | string | `""` | Passed to the engine as `--userns=<value>` when set. |
+| `provider` | string | *(required)* | Where sandboxes run: `"podman"`, a container engine on the hub's own host (Podman or Docker), or `"gateway"`, a remote `agentkit-gateway` (see [The remote gateway provider](#the-remote-gateway-provider)). Any other value stops the start; the error names `sandbox.provider` and lists both. |
+| `engine_binary` | string | `"podman"` | The container engine command, `"podman"` or `"docker"`, or a path to one. A bare name is looked up in the `PATH` of the hub process. Only with provider `"podman"`: with `"gateway"` a non-empty value stops the start. |
+| `runtime` | string | `""` | The engine's OCI runtime: empty for its default, or `"krun"` for a micro-VM (podman only). Passed to the provider unchanged; the provider refuses what it does not support. Only with provider `"podman"`: with `"gateway"` a non-empty value stops the start. |
+| `userns` | string | `""` | Passed to the engine as `--userns=<value>` when set. Only with provider `"podman"`: with `"gateway"` a non-empty value stops the start. |
+| `gateway_url` | string | *(required with `"gateway"`)* | The address of the remote gateway: `https://host[:port]`, or `http://host[:port]` when the host is `localhost` or a loopback IP address. A host, a port from `1` to `65535` if there is one, no user information, query or fragment, and a path that is empty or `/`. Only with provider `"gateway"`: with `"podman"` a non-empty value stops the start. See [The remote gateway provider](#the-remote-gateway-provider). |
+| `gateway_token` | string | *(required with `"gateway"`)* | The bearer token the hub presents to the remote gateway: at least 16 characters, all printable ASCII without spaces (`0x21` to `0x7E`). Write it as `"${AGENTKIT_GATEWAY_TOKEN}"`. Only with provider `"gateway"`: with `"podman"` a non-empty value stops the start. No error shows the token or any part of it. |
 | `max_ttl` | string | `"4h"` | The longest lifetime a profile may ask for, as a Go duration (`"90m"`, `"4h"`). Must be greater than zero. |
-| `network_modes` | list of strings | `["none"]` | The network modes profiles may use. Entries must be non-empty and unique, and each must be a mode the provider honours: `"none"` and `"unrestricted"` for Podman and Docker. A sandbox has no network unless the operator allows one. An empty list is accepted but leaves no mode for any profile, so every profile is then refused. |
+| `network_modes` | list of strings | `["none"]` | The network modes profiles may use. Entries must be non-empty and unique, and each must be a mode the provider honours: `"none"` and `"unrestricted"` for Podman and Docker, and for a remote gateway the modes it offers. A sandbox has no network unless the operator allows one. An empty list is accepted but leaves no mode for any profile, so every profile is then refused. |
 | `max_sandboxes` | integer | `16` | The most sandbox leases that may be live at once, across all workspaces. A lease counts while it is `leased` or `active` and its `expires_at` is in the future; a `leased` lease also stops counting when its `lease_expires_at` (see `lease_timeout`) is at or before now. At the limit `POST /api/v1/workspaces/:slug/sandboxes` answers `409` with `error_type: sandbox_capacity`. Must be a whole number of at least `1`. The gateway holds at most this many sandboxes too. |
 | `lease_timeout` | string | `"5m"` | How long a lease may wait for its `Create`, as a Go duration. Every lease gets a `lease_expires_at`, the earlier of its `created_at` plus this and its `expires_at`; a lease that is still `leased` then lapses (see [Lease lifetime](#lease-lifetime)). At least `1s` and at most `max_ttl`. The default is not compared with `max_ttl`, so a deployment with a short `max_ttl` and no `lease_timeout` still starts; its leases are bounded by their `expires_at` all the same. |
 | `reap_interval` | string | `"10m"` | How often the reaper sweeps the leases, as a Go duration. At least `10s` and at most `1h`. Nothing depends on it for correctness: the gateway checks the deadlines itself, and a sweep only tidies up. A lease that ended stays readable for 24 hours and is removed by the first sweep after that, so it disappears between 24 hours and 24 hours plus `reap_interval` after it ended. |
@@ -161,6 +163,105 @@ over a sandbox full of secrets. The start-up error for the first names
 `sandbox.listen` and says that a plaintext gateway is allowed only on loopback;
 the second names `sandbox.external_url`. These failures are reported together
 with every other failure of the section.
+
+#### The remote gateway provider
+
+With `provider = "gateway"` the sandboxes run on an `agentkit-gateway` elsewhere,
+not on a container engine on the hub's host. The hub holds one token for that
+gateway, checks at start that it answers and accepts the token, and then puts its
+own gateway (see [The sandbox gateway](#the-sandbox-gateway)) in front of it, so a
+caller keeps the same API, the same leases and the same guarantees and never sees
+the remote gateway, its address or its token. Every other rule of the section
+(profiles, `max_ttl`, `network_modes`, the scopes, the listing, the disabled state)
+applies to both providers unchanged.
+
+```toml
+[sandbox]
+provider = "gateway"
+gateway_url = "https://agentkit-gateway.example:8443"
+gateway_token = "${AGENTKIT_GATEWAY_TOKEN}"
+```
+
+Write the token as a `${NAME}` reference, as `deploy/configmap.yaml` does for the
+OAuth secrets, and keep its value in the environment: a token written into the
+file is readable by everyone who can read the file. Both keys are validated with
+the other static checks and reported in the same joined error, before anything is
+dialled:
+
+- **`gateway_url` is required.** A value that is empty after `${NAME}` expansion
+  counts as missing. It must be an absolute URL whose scheme is `https`, or `http`
+  only when the host is `localhost` or a literal loopback IP address (no name is
+  resolved), with a host, a port from `1` to `65535` if it has one, no user
+  information, query or fragment, and a path that is empty or `/`. A failure names
+  `sandbox.gateway_url` and the rule; it never repeats user information, and the
+  plaintext rule shows the scheme and the host alone.
+- **`gateway_token` is required.** It must be at least 16 characters, all in
+  `0x21` to `0x7E`: a space, a tab, a trailing newline from a secret file and any
+  non-ASCII byte are refused. A failure names `sandbox.gateway_token` and the rule
+  and never repeats the value or any part of it.
+- **The keys of the other provider are refused.** Under `"gateway"`,
+  `engine_binary`, `runtime` and `userns`; under `"podman"`, `gateway_url` and
+  `gateway_token`. There is one failure for each, naming the key and the provider it
+  applies to (`sandbox.runtime applies only to sandbox.provider "podman"`). A key
+  that would do nothing is not ignored, since an operator who sets
+  `runtime = "krun"` would believe in an isolation a remote gateway does not give.
+
+At start, after the static checks, the hub builds no Podman provider and runs no
+engine binary. It dials the remote with `gateway.Dial`, which connects and reads
+the remote's capabilities, and then makes one `List` call, all within 10 seconds
+and under the hub's token. Nothing is created or destroyed on the remote. Any
+failure stops the start with an error that begins with `sandbox:`, names
+`sandbox.provider`, `sandbox.gateway_url` and `sandbox.gateway_token`, and carries
+the client's own text with the token replaced by `[redacted]` and URL user
+information removed: an unreachable address, a TLS failure, a remote that refuses
+the token, and a remote that does not answer within the 10 seconds all end this
+way. The remote's capabilities are read once and kept for the life of the process;
+every `network_modes` entry and every profile is then checked against them with the
+messages of the Podman provider, and a change on the remote takes effect when the
+hub is restarted. The start-up info line is the one of every provider, with the
+provider name and the profile names.
+
+What to know when you run it:
+
+- **TLS uses the host's trust store.** For `https` the hub dials with the client's
+  defaults: the system roots and TLS 1.2 or later. There is no setting for a
+  custom CA, client certificates or a proxy.
+- **The remote's limits show up at `Create`.** The hub does not check the remote's
+  `MaxSandboxes` or `MaxTTL` at start. When a `Create` exceeds one, the remote
+  refuses it and the lease is `failed`, with the remote's message, scrubbed.
+- **The token and the address stay in the hub.** The token, the `gateway_url`
+  string and its host are removed from every text produced from the remote's
+  errors: the lease's `error`, the audit events, the log, and the errors returned
+  by the gateway and the API. The token is in no response, metric or log line. A
+  lease's `gateway_url` is always the hub's own gateway, never the remote's.
+- **A remote that refuses the hub's token after start** (it was revoked or
+  rotated) is answered to the caller as `Unavailable` and not as the remote's
+  `Unauthenticated`, so that nobody takes it for the hub refusing the caller's own
+  lease token. The lease outcome is the usual one (a `Create` fails the lease, a
+  destroy leaves it `active` and `DELETE` answers `502`), and the hub logs one
+  error that names `sandbox.gateway_token`.
+- **The hub never retries a `Create` on the remote** and does not redial or monitor
+  it. A retry after a lost answer could make a second sandbox; a sandbox orphaned
+  that way is bounded by the TTL the hub passes. While the remote cannot be
+  reached, leases are issued and profiles listed, a `Create` fails the lease, a
+  `DELETE` of an `active` lease answers `502` and changes nothing, a caller's
+  `Close` fails and leaves the lease `active`, and a sweep logs what it could not
+  do. A destroy that failed is tried again by id through the same client, by the
+  next `DELETE` or the next sweep. When the remote is back at the same address the
+  next call works without a restart, though the client may need a second or more to
+  reconnect after a failed attempt.
+- **The sweep's `Reap` is a call to the remote.** The first step of every sweep
+  (see [Lease lifetime](#lease-lifetime)) is the provider's `Reap`; for a remote
+  gateway that is a `Reap` call on it, which has its backend remove the sandboxes
+  whose own expiry has passed. If the remote cannot be reached the step fails, is
+  logged, and the later steps still run.
+- **Changing `gateway_token` leaves sandboxes behind.** The remote ties each
+  sandbox to the token that made it, so after a restart with another token the hub
+  can no longer see or destroy those made under the old one. They live until their
+  TTL on the remote, which the TTL the hub passed bounds.
+- **Stopping the hub closes the client last.** After the hub has destroyed the
+  sandbox of every `active` lease through the client (see
+  [The sandbox gateway](#the-sandbox-gateway)), it closes the client.
 
 #### [[sandbox.profiles]]
 
@@ -193,7 +294,10 @@ default. Secret names are compared ignoring case, within `secrets`, within
 #### Checks against the provider
 
 When the keys and profiles pass, the hub builds the provider from
-`engine_binary`, `runtime` and `userns` and checks it once:
+`engine_binary`, `runtime` and `userns` and checks it once. The steps below are
+those of provider `"podman"`; provider `"gateway"` is built and probed as described
+under [The remote gateway provider](#the-remote-gateway-provider), and then steps 3
+and 4 apply to it unchanged:
 
 1. It builds the Podman provider. A missing engine binary or an option the
    provider refuses stops the start with an error that starts with `sandbox:`
@@ -285,7 +389,8 @@ Things to know when operating it:
 - **Stopping the hub destroys the sandboxes it holds.** When the HTTP server
   returns, which apikit does on SIGTERM or SIGINT, the hub destroys the sandbox of
   every `active` lease and ends each lease with `end_reason: "shutdown"`, within
-  20 seconds and before the databases close, and then stops the gateway. Kubernetes
+  20 seconds and before the databases close, and then stops the gateway and, with a
+  remote gateway, closes its client. Kubernetes
   gives a pod 30 seconds after SIGTERM by default. If the limit runs out the leases
   not yet ended stay `active`, and the next start ends them. A crash runs none of
   this: the next start ends every lease still `active` with `end_reason:
