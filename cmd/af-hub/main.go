@@ -323,13 +323,19 @@ func main() {
 	// emitter and the address of the gateway to show on every lease. A hub without
 	// sandboxes passes a nil service, and the routes answer sandboxes_disabled.
 	//
-	// With sandboxes on, the sandbox gateway (spec 27) is started first, on its
-	// own listener and before the HTTP server serves anything: a lease is worth
+	// With sandboxes on, the sandbox gateway (spec 27) is built first, on its own
+	// listener and before the HTTP server serves anything: a lease is worth
 	// nothing unless a gateway serves it. A key pair that cannot be loaded or an
 	// address that cannot be bound stops the start.
+	//
+	// Run (spec 28) then ends the leases a crashed process left active, does one
+	// sweep, starts the reaper, and only then lets the gateway accept connections.
+	// It needs the lease table and its migration, the audit emitter and the
+	// metrics, which all exist by now. What fails in it is logged and never stops
+	// hub from starting.
 	var leaseSvc *sandboxes.LeaseService
 	if sandboxSvc != nil {
-		gateway, err := sandboxes.StartGateway(sandboxSvc, sandboxes.GatewayDeps{
+		gateway, err := sandboxes.NewGateway(sandboxSvc, sandboxes.GatewayDeps{
 			DB:      database.SqlDB,
 			Secrets: store,
 			Audit:   auditEmitter,
@@ -337,6 +343,9 @@ func main() {
 		})
 		if err != nil {
 			log.Fatal(err)
+		}
+		if err := gateway.Run(ctx); err != nil {
+			slog.Warn("the sandbox gateway starts all the same, but its start-up work reported failures", "error", err)
 		}
 		leaseSvc = sandboxes.NewLeaseService(sandboxes.LeaseConfig{
 			Service:    sandboxSvc,

@@ -31,6 +31,7 @@ type Service struct {
 	networkModes []string
 	maxTTL       time.Duration
 	leaseTimeout time.Duration
+	reapInterval time.Duration
 	gateway      gatewaySettings
 }
 
@@ -80,6 +81,7 @@ func newService(v *Validated, p sandbox.Provider, check specChecker) (*Service, 
 		networkModes: slices.Clone(v.NetworkModes),
 		maxTTL:       v.MaxTTL,
 		leaseTimeout: v.LeaseTimeout,
+		reapInterval: v.ReapInterval,
 		gateway:      gatewaySettings{listen: v.Listen, tlsCert: v.TLSCert, tlsKey: v.TLSKey, externalURL: v.ExternalURL},
 	}, nil
 }
@@ -197,6 +199,9 @@ func megabytesToBytes(mb int64) (int64, bool) {
 
 // MaxSandboxes returns the effective limit on live leases.
 func (s *Service) MaxSandboxes() int { return s.maxSandboxes }
+
+// ReapInterval returns how often the reaper sweeps.
+func (s *Service) ReapInterval() time.Duration { return s.reapInterval }
 
 // LeaseTimeout returns how long a lease may wait for its Create.
 func (s *Service) LeaseTimeout() time.Duration { return s.leaseTimeout }

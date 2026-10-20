@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/txsvc/apikit"
@@ -37,6 +38,11 @@ type SweeperConfig struct {
 	Now func() time.Time
 	// CallTimeout limits every call to the provider; 30 seconds when zero.
 	CallTimeout time.Duration
+	// Interval is how often the reaper sweeps (reap_interval); ten minutes when
+	// zero.
+	Interval time.Duration
+	// Tickers makes the ticks of the reaper; a time.Ticker when nil.
+	Tickers tickerFactory
 }
 
 // Sweeper enforces the time limits of leases. One sweep reaps the provider,
@@ -56,6 +62,11 @@ type Sweeper struct {
 	callTimeout time.Duration
 	// running holds one value while a sweep runs.
 	running chan struct{}
+	// interval and tickers drive the reaper; reaper is the one running.
+	interval time.Duration
+	tickers  tickerFactory
+	reaperMu sync.Mutex
+	reaper   *Reaper
 }
 
 // NewSweeper returns a sweeper built from cfg.
@@ -68,6 +79,14 @@ func NewSweeper(cfg SweeperConfig) *Sweeper {
 	if timeout == 0 {
 		timeout = providerCallTimeout
 	}
+	interval := cfg.Interval
+	if interval == 0 {
+		interval = defaultReapInterval
+	}
+	tickers := cfg.Tickers
+	if tickers == nil {
+		tickers = timeTicker
+	}
 	store := NewLeaseStore(cfg.DB, now).WithMetrics(cfg.Metrics)
 	return &Sweeper{
 		db:          cfg.DB,
@@ -79,6 +98,8 @@ func NewSweeper(cfg SweeperConfig) *Sweeper {
 		now:         now,
 		callTimeout: timeout,
 		running:     make(chan struct{}, 1),
+		interval:    interval,
+		tickers:     tickers,
 	}
 }
 

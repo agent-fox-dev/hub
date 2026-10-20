@@ -41,6 +41,8 @@ type fakeBoxes struct {
 	// fails leaves the box where it is.
 	listErr    error
 	destroyErr error
+	// failNext, when set, is what the next Destroy returns, once; the box stays.
+	failNext error
 	// destroyed lists the ids passed to Destroy, in call order, failed calls
 	// included.
 	destroyed []string
@@ -95,6 +97,11 @@ func (f *fakeBoxes) Destroy(ctx context.Context, id string) error {
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.failNext != nil {
+		err := f.failNext
+		f.failNext = nil
+		return err
+	}
 	if f.destroyErr != nil {
 		return f.destroyErr
 	}

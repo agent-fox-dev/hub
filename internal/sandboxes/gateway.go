@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/agent-fox-dev/agentkit-go/sandbox"
@@ -44,6 +45,10 @@ type Gateway struct {
 	backend *Backend
 	sweeper *Sweeper
 	url     string
+	// listener and seams are what serve needs; serving starts once.
+	listener  net.Listener
+	seams     gatewaySeams
+	serveOnce sync.Once
 }
 
 // URL is the address a lease holder dials with the lease's token. A nil gateway,
@@ -78,8 +83,25 @@ func (s gatewaySeams) withDefaults() gatewaySeams {
 }
 
 // StartGateway binds the gateway's listener and serves a gatewayd server on it
-// for the life of the process. It returns (nil, nil) when svc is nil, which is
-// the feature turned off: nothing is bound and no server is built.
+// for the life of the process. It is NewGateway followed by serving at once; hub
+// itself uses NewGateway and Run, which do the start-up work of the expiry first.
+func StartGateway(svc *Service, deps GatewayDeps) (*Gateway, error) {
+	return startGateway(svc, deps, gatewaySeams{})
+}
+
+func startGateway(svc *Service, deps GatewayDeps, seams gatewaySeams) (*Gateway, error) {
+	g, err := newGateway(svc, deps, seams)
+	if err != nil || g == nil {
+		return g, err
+	}
+	g.serve()
+	return g, nil
+}
+
+// NewGateway binds the gateway's listener and builds the gatewayd server over it,
+// without serving: connections wait in the listener's backlog until Run, or serve,
+// begins. It returns (nil, nil) when svc is nil, which is the feature turned off:
+// nothing is bound and no server is built.
 //
 // The key pair, if there is one, is loaded before anything is bound, and a
 // failure names sandbox.tls_cert and sandbox.tls_key. A listener that cannot be
@@ -87,13 +109,12 @@ func (s gatewaySeams) withDefaults() gatewaySeams {
 //
 // If Serve returns an error later, the gateway logs it and ends the process:
 // hub would otherwise go on issuing leases nobody can use. A Serve that returns
-// nil has been shut down. StartGateway never shuts the gateway down; destroying
-// the boxes when hub stops belongs to the expiry work.
-func StartGateway(svc *Service, deps GatewayDeps) (*Gateway, error) {
-	return startGateway(svc, deps, gatewaySeams{})
+// nil has been shut down.
+func NewGateway(svc *Service, deps GatewayDeps) (*Gateway, error) {
+	return newGateway(svc, deps, gatewaySeams{})
 }
 
-func startGateway(svc *Service, deps GatewayDeps, seams gatewaySeams) (*Gateway, error) {
+func newGateway(svc *Service, deps GatewayDeps, seams gatewaySeams) (*Gateway, error) {
 	if svc == nil {
 		return nil, nil
 	}
@@ -122,6 +143,7 @@ func startGateway(svc *Service, deps GatewayDeps, seams gatewaySeams) (*Gateway,
 	g := &Gateway{}
 	sweeper := NewSweeper(SweeperConfig{
 		DB: deps.DB, Provider: svc.Provider(), Boxes: g, Audit: deps.Audit, Metrics: deps.Metrics, Now: now,
+		Interval: svc.ReapInterval(),
 	})
 	backend := newBackend(backendConfig{
 		Service: svc, Store: store, Secrets: deps.Secrets, DB: deps.DB, Audit: deps.Audit, Now: now,
@@ -141,15 +163,34 @@ func startGateway(svc *Service, deps GatewayDeps, seams gatewaySeams) (*Gateway,
 	}
 
 	g.server, g.backend, g.sweeper = server, backend, sweeper
+	g.listener, g.seams = listener, seams
 	g.url = gatewayURL(settings.externalURL, tlsConfig != nil, listener.Addr())
-	go func() {
-		if err := seams.serve(server, listener); err != nil {
-			slog.Error("sandbox gateway: the gateway stopped serving, and hub cannot issue leases nobody can use", "error", err)
-			seams.exit(1)
-		}
-	}()
-	slog.Info("the sandbox gateway is serving", "url", g.url)
 	return g, nil
+}
+
+// serve starts serving the listener, once. A serve that ends with an error ends
+// the process.
+func (g *Gateway) serve() {
+	g.serveOnce.Do(func() {
+		go func() {
+			if err := g.seams.serve(g.server, g.listener); err != nil {
+				slog.Error("sandbox gateway: the gateway stopped serving, and hub cannot issue leases nobody can use", "error", err)
+				g.seams.exit(1)
+			}
+		}()
+		slog.Info("the sandbox gateway is serving", "url", g.url)
+	})
+}
+
+// Run does the start-up work of the expiry and then lets the gateway serve, so
+// that no connection is accepted before the leases an earlier process left active
+// have been ended and the first sweep is done (28-REQ-5.1). It returns what failed
+// in that work, which is logged where it happens and never stops the gateway from
+// serving. The reaper it starts runs until ctx ends.
+func (g *Gateway) Run(ctx context.Context) error {
+	err := g.sweeper.RunStartup(ctx)
+	g.serve()
+	return err
 }
 
 // loadGatewayTLS loads the key pair, and returns nil when there is none.
