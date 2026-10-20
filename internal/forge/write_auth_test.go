@@ -39,9 +39,20 @@ func (r writeRouteCase) url(slug string) string {
 // nil, and with body as a JSON body when it is not empty.
 func (e *env) send(method, path string, auth *apikit.AuthInfo, body string) *httptest.ResponseRecorder {
 	e.t.Helper()
+	return e.sendHeader(method, path, auth, body, nil)
+}
+
+// sendHeader is send with extra request headers.
+func (e *env) sendHeader(method, path string, auth *apikit.AuthInfo, body string, header http.Header) *httptest.ResponseRecorder {
+	e.t.Helper()
 	req := httptest.NewRequest(method, "/api/v1"+path, strings.NewReader(body))
 	if body != "" {
 		req.Header.Set("Content-Type", "application/json")
+	}
+	for name, values := range header {
+		for _, v := range values {
+			req.Header.Add(name, v)
+		}
 	}
 	if auth != nil {
 		b, err := json.Marshal(auth)
@@ -196,18 +207,20 @@ func TestWriteRoutes_InactiveWorkspace_TS_31_6(t *testing.T) {
 		if other := e.sendRoute(route, "theirs", apiKeyAuth()); other.Code != http.StatusNotFound {
 			t.Errorf("%s on another user's archived workspace: status = %d; want 404", route.name, other.Code)
 		}
-
-		// The same request on an active workspace is not refused as inactive.
-		active := e.sendRoute(route, "widgets", apiKeyAuth())
-		if active.Code == http.StatusBadRequest && strings.Contains(active.Body.String(), want) {
-			t.Errorf("%s on an active workspace: refused as not active", route.name)
-		}
 	}
 	if n := e.stub.count(); n != 0 {
 		t.Errorf("the forge stub received %d requests; want none", n)
 	}
 	if e.originCalls.Load() != 0 {
 		t.Error("a credential was resolved for a refused request")
+	}
+
+	// The same requests on an active workspace are not refused as inactive.
+	for _, route := range writeRouteCases {
+		active := e.sendRoute(route, "widgets", apiKeyAuth())
+		if active.Code == http.StatusBadRequest && strings.Contains(active.Body.String(), want) {
+			t.Errorf("%s on an active workspace: refused as not active", route.name)
+		}
 	}
 }
 

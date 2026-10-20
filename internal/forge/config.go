@@ -6,6 +6,8 @@ import (
 
 	"github.com/agent-fox-dev/aflib/issuex"
 	"github.com/go-git/go-git/v5/plumbing/transport"
+
+	"github.com/agent-fox-dev/hub/internal/audit"
 )
 
 // Config holds what the forge routes need from the rest of the hub. Everything the
@@ -29,4 +31,8 @@ type Config struct {
 
 	// NewClient builds an issuex client; nil means issuex.NewWithOptions.
 	NewClient func(issuex.Options) (issuex.Client, error)
+
+	// Audit records the events of the write routes, one for every write that sent a
+	// request to the forge. Nil records nothing.
+	Audit audit.Emitter
 }

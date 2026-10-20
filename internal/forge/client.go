@@ -61,6 +61,9 @@ type forgeClient struct {
 	kind   credentialKind
 	token  string
 	target target
+
+	// forge is the forge the client talks to, which the body limit of a write depends on.
+	forge issuex.ForgeType
 }
 
 // buildClient builds a fresh issuex client for the request's workspace and target,
@@ -92,21 +95,27 @@ func (h *handlers) buildClient(req *request, tgt target) (*forgeClient, error) {
 	}
 	kind, token := credentialOf(auth)
 
-	api, err := h.cfg.NewClient(issuex.Options{
+	opts := issuex.Options{
 		BaseURL:    baseURL,
 		Token:      token,
 		RemoteURL:  redactRemote(remote),
 		Repo:       repo,
 		HTTPClient: h.httpClient,
-	})
+	}
+	forge, err := issuex.DetectForge(opts)
 	if errors.Is(err, issuex.ErrAmbiguousForge) {
 		return nil, ambiguousForge(repo.Host, variable, baseURL != "")
 	}
 	if err != nil {
+		slog.Error("forge: telling the forge failed", "slug", req.slug, "target", string(tgt), "error", err)
+		return nil, errInternal()
+	}
+	api, err := h.cfg.NewClient(opts)
+	if err != nil {
 		slog.Error("forge: building the client failed", "slug", req.slug, "target", string(tgt), "error", err)
 		return nil, errInternal()
 	}
-	return &forgeClient{api: api, repo: repo, kind: kind, token: token, target: tgt}, nil
+	return &forgeClient{api: api, repo: repo, forge: forge, kind: kind, token: token, target: tgt}, nil
 }
 
 // apiURL reads the workspace variable that overrides the forge's API URL. It returns

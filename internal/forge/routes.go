@@ -39,7 +39,7 @@ func RegisterRoutes(api *echo.Group, cfg Config) {
 	api.GET("/workspaces/:slug/pulls/:n/checks", h.serve("GetCIChecks", numbered(true, listOf(issuex.Client.GetCIChecks))))
 	api.GET("/workspaces/:slug/pulls/:n/reviews", h.serve("GetPRReviews", numbered(true, listOf(issuex.Client.GetPRReviews))))
 
-	api.POST("/workspaces/:slug/issues", h.write(notImplemented))
+	api.POST("/workspaces/:slug/issues", h.write(createIssue))
 	api.PATCH("/workspaces/:slug/issues/:n", h.write(notImplemented))
 	api.POST("/workspaces/:slug/issues/:n/close", h.write(notImplemented))
 	api.POST("/workspaces/:slug/issues/:n/comments", h.write(notImplemented))

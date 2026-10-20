@@ -102,7 +102,7 @@
       "done_when": [
         "a POST /issues through the real route records one hub.forge.issue.create event"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 3,

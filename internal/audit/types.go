@@ -77,6 +77,82 @@ const EventPatchReplace = "hub.patch.replace"
 // when no local branch), origin_sha, replaced_sha (only for action replaced).
 const EventPatchReset = "hub.patch.reset"
 
+// EventForgeIssueCreate is the hub audit event emitted when a caller creates an
+// issue on a workspace's forge (POST /workspaces/:slug/issues). Hub emits one
+// event of the forge write family (the nine EventForge* constants) for every
+// write request that sent at least one request to the forge, whether the write
+// succeeded or failed; a request hub refuses on its own (401, 403, 404, 400, 413,
+// 422) emits none. The actor is the caller: ActorID its user and ActorType its
+// credential type. ResourceType is "issue", ResourceID the number of the new
+// issue (empty when the create failed) and Action "create". Metadata common to
+// the whole family: target ("origin" or "upstream"), ok, error_type (only when ok
+// is false: the error_type hub answered with), number (a JSON number, when
+// known) and url (the issue, pull-request or comment URL the forge returned,
+// with any userinfo removed); never a credential, a title, a body, comment text
+// or a message from the forge. This event adds no metadata of its own.
+const EventForgeIssueCreate = "hub.forge.issue.create"
+
+// EventForgeIssueUpdate is the hub audit event emitted when a caller changes an
+// issue on a workspace's forge (PATCH /workspaces/:slug/issues/:n). ResourceType
+// is "issue", ResourceID the issue number and Action "update". Metadata: the
+// common metadata of EventForgeIssueCreate and fields, the sorted names of the
+// fields the request changed (title, body, state, labels, assignees).
+const EventForgeIssueUpdate = "hub.forge.issue.update"
+
+// EventForgeIssueClose is the hub audit event emitted when a caller closes an
+// issue on a workspace's forge (POST /workspaces/:slug/issues/:n/close). One event
+// stands for the whole request: a close with a comment posts the comment first
+// and is still this one event, not a comment event. ResourceType is "issue",
+// ResourceID the issue number and Action "close". Metadata: the common metadata of
+// EventForgeIssueCreate and comment_url, the URL of the comment, when one was
+// posted, also when the close itself failed afterwards.
+const EventForgeIssueClose = "hub.forge.issue.close"
+
+// EventForgeCommentCreate is the hub audit event emitted when a caller comments
+// on an issue on a workspace's forge (POST /workspaces/:slug/issues/:n/comments).
+// ResourceType is "comment", ResourceID the issue number and Action "create".
+// Metadata: the common metadata of EventForgeIssueCreate, whose url is the
+// comment's URL. It adds no metadata of its own.
+const EventForgeCommentCreate = "hub.forge.comment.create"
+
+// EventForgeLabelAdd is the hub audit event emitted when a caller adds labels to
+// an issue on a workspace's forge (POST /workspaces/:slug/issues/:n/labels).
+// ResourceType is "label", ResourceID the issue number and Action "add".
+// Metadata: the common metadata of EventForgeIssueCreate and labels, the label
+// names the request gave.
+const EventForgeLabelAdd = "hub.forge.label.add"
+
+// EventForgeLabelRemove is the hub audit event emitted when a caller removes a
+// label from an issue on a workspace's forge
+// (DELETE /workspaces/:slug/issues/:n/labels/:name). ResourceType is "label",
+// ResourceID the issue number and Action "remove". Metadata: the common
+// metadata of EventForgeIssueCreate and label, the name of the label.
+const EventForgeLabelRemove = "hub.forge.label.remove"
+
+// EventForgeLabelCreate is the hub audit event emitted when a caller ensures a
+// repository label exists on a workspace's forge (POST /workspaces/:slug/labels),
+// whether the call created the label or found it. ResourceType is "label",
+// ResourceID the label name and Action "create". Metadata: the common metadata of
+// EventForgeIssueCreate, label, the label name, and created, false when the label
+// already existed or the call failed.
+const EventForgeLabelCreate = "hub.forge.label.create"
+
+// EventForgePullRequestCreate is the hub audit event emitted when a caller opens
+// a pull request on a workspace's forge (POST /workspaces/:slug/pulls).
+// ResourceType is "pull_request", ResourceID the number of the new pull request
+// (empty when the create failed) and Action "create". Metadata: the common
+// metadata of EventForgeIssueCreate and head, base and draft, the request's
+// branches and flag.
+const EventForgePullRequestCreate = "hub.forge.pull_request.create"
+
+// EventForgePullRequestComment is the hub audit event emitted when a caller
+// comments on a pull request on a workspace's forge
+// (POST /workspaces/:slug/pulls/:n/comments). ResourceType is "pull_request",
+// ResourceID the pull request number and Action "comment". Metadata: the common
+// metadata of EventForgeIssueCreate, whose url is the comment's URL. It adds no
+// metadata of its own.
+const EventForgePullRequestComment = "hub.forge.pull_request.comment"
+
 // HubEvent represents a hub-internal audit event passed to the Emitter.
 type HubEvent struct {
 	ID           string         `json:"id"`

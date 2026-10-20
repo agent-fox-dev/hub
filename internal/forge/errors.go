@@ -58,17 +58,22 @@ func writeForgeError(c echo.Context, err error) error {
 	return apikit.WriteAPIErrorWithType(c, fe.status, fe.message, fe.errorType)
 }
 
-// failCall answers a call to the forge that failed. A 5xx or 429 answer is logged once,
-// with the workspace, the target, the operation and the status the forge gave; the line
-// holds no message, token or body.
+// failCall answers a call to the forge that failed.
 func (h *handlers) failCall(c echo.Context, req *request, fc *forgeClient, operation string, err error) error {
+	return writeForgeError(c, h.mapCall(req, fc, operation, err))
+}
+
+// mapCall maps a call to the forge that failed to the answer, and logs a 5xx or 429
+// answer once, with the workspace, the target, the operation and the status the forge
+// gave; the line holds no message, token or body.
+func (h *handlers) mapCall(req *request, fc *forgeClient, operation string, err error) *forgeError {
 	fe := mapForgeError(err, fc.kind, fc.token)
 	if fe.status >= http.StatusInternalServerError || fe.status == http.StatusTooManyRequests {
 		slog.Warn("forge: request failed",
 			"slug", req.slug, "target", string(fc.target), "operation", operation,
 			"forge_status", fe.forgeStatus, "status", fe.status, "error_type", fe.errorType)
 	}
-	return writeForgeError(c, fe)
+	return fe
 }
 
 // mapForgeError maps the error of a call to the forge, issuex's or the transport's, to
