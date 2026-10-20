@@ -130,7 +130,11 @@ tags:
   - name: Variables
     description: Readable variable storage scoped to a user, org, or workspace.
   - name: Sandboxes
-    description: The deployment's sandbox profiles. Read-only; defined in config.toml.
+    description: >-
+      The deployment's sandbox profiles (read-only, defined in config.toml) and
+      sandbox leases. A lease holder creates its one sandbox through the hub's
+      sandbox gateway, a gRPC service on its own listener at the lease's
+      `gateway_url`, with the lease's token.
   - name: Sessions
     description: Agent session lifecycle, token usage, and cost aggregation.
   - name: Audit Ingestion
@@ -2454,7 +2458,11 @@ paths:
         name, never reading a value, and enforces `[sandbox].max_sandboxes`.
 
         The response is the only one that ever carries the lease `token`;
-        hub keeps its SHA-256 only. No sandbox is created.
+        hub keeps its SHA-256 only. No sandbox is created here: the holder
+        creates it through the sandbox gateway at `gateway_url`, with the
+        token. The gateway builds the sandbox from the lease and not from what
+        the holder sends, reads the secrets when it creates the sandbox, makes
+        the lease `active` and emits `hub.sandbox.create`.
 
         Checks run in order: 401, `sandboxes_disabled`, 403 for a PAT without
         `sandboxes:write`, 404 for a workspace that is missing or not owned
@@ -2512,7 +2520,7 @@ paths:
       summary: List the workspace's sandbox leases
       description: |
         Newest `created_at` first, at most 200, as a bare array. Only live
-        leases (`leased`, later also `active`) are returned unless `all` is
+        leases (`leased` or `active`) are returned unless `all` is
         true. Works on an archived workspace. Never carries a token, its hash
         or an environment value.
       x-required-scopes: ["sandboxes:read", "sandboxes:write"]
@@ -2584,11 +2592,29 @@ paths:
       operationId: endSandboxLease
       summary: End a sandbox lease
       description: |
-        Moves a live lease to `destroyed` with `end_reason` `api` and revokes
-        its token in one update. Answers 204 whether or not it changed
-        anything: a lease that has ended already keeps its `ended_at` and
-        `end_reason`, so a retry is harmless. Works on an archived workspace.
-        Emits no audit event.
+        Ends a live lease: `destroyed` with `end_reason` `api`, its token
+        revoked in the same update, so that the next call to the gateway with it
+        is refused.
+
+        A `leased` lease has no sandbox and is moved without a call to the
+        provider; a `create` still in flight finds the lease ended and destroys
+        its new sandbox. An `active` lease has its sandbox destroyed first,
+        within 30 seconds, and only then is the lease moved; a sandbox that is
+        already gone counts as destroyed. After the hub has been restarted it no
+        longer holds the sandbox of a lease that was `active` before, so the lease
+        is ended without destroying that sandbox, which lives until the TTL the
+        provider enforces. When the provider fails the answer is
+        502 `sandbox_provider_error` with the provider's message scrubbed of
+        secret values, fixed environment values and URL user information, and
+        nothing has changed (the lease is still `active`, its token still works,
+        no event is emitted), so the same request can be sent again.
+
+        Answers 204 whether or not it changed anything: a lease that has ended
+        already keeps its `ended_at` and `end_reason`, calls no provider and
+        emits nothing, so a retry is harmless. Works on an archived workspace.
+        Each change into `destroyed` emits one `hub.sandbox.destroy` event with
+        the id of the sandbox (`null` when there was none), `reason: "api"` and
+        the calling credential as the actor.
       x-required-scopes: ["sandboxes:write"]
       responses:
         "204":
@@ -2605,6 +2631,20 @@ paths:
                 $ref: "#/components/schemas/Error"
         "500":
           $ref: "#/components/responses/InternalServerError"
+        "502":
+          description: >-
+            The provider could not destroy the sandbox of an `active` lease, or
+            did not answer within 30 seconds (`error_type:
+            sandbox_provider_error`). The lease is unchanged.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: 502
+                  message: "podman rm failed: run -e GIT_PAT=[redacted]"
+                  error_type: sandbox_provider_error
 
   /api/v1/sandboxes:
     get:
@@ -6091,6 +6131,7 @@ components:
         - profile
         - purpose
         - state
+        - gateway_url
         - expires_at
         - image
         - network
@@ -6118,12 +6159,22 @@ components:
           type: string
         state:
           type: string
-          description: '`leased` or `destroyed` in this release; `active`, `expired` and `failed` are reserved.'
+          description: >-
+            `leased` (issued, no sandbox yet), `active` (the sandbox was created),
+            `destroyed`, or `failed` (the sandbox could not be created).
+            `expired` is reserved for a later release.
           enum: [leased, active, destroyed, expired, failed]
+        gateway_url:
+          type: string
+          description: >-
+            Where the holder dials the sandbox gateway with the lease's token:
+            `[sandbox].external_url` when set, otherwise `http://` or `https://`
+            and the address the gateway listens on. The same on every lease, in
+            every state.
         expires_at:
           type: string
           format: date-time
-          description: '`created_at` plus the lease TTL.'
+          description: '`created_at` plus the lease TTL; the sandbox lifetime ends here.'
         image:
           type: string
         network:
@@ -6155,14 +6206,19 @@ components:
           format: date-time
         sandbox_id:
           type: [string, "null"]
+          description: The id of the sandbox once the lease is `active`.
         error:
           type: [string, "null"]
+          description: >-
+            Why a `failed` lease failed. A message that comes from the provider
+            has secret values, fixed environment values and URL user information
+            removed and is cut to 1024 bytes.
         ended_at:
           type: [string, "null"]
           format: date-time
         end_reason:
           type: [string, "null"]
-          description: '`api` for a lease its holder ended.'
+          description: '`client` for a lease whose holder closed its sandbox through the gateway, `api` for one ended by DELETE.'
 
     SandboxLeaseIssued:
       description: The lease and its token. Only the POST that issued the lease returns the token.

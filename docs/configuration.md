@@ -42,6 +42,7 @@ client_secret = "${GITHUB_CLIENT_SECRET}"
 # Optional: sandboxes for agents. Leave the whole section out to turn them off.
 [sandbox]
 provider = "podman"
+listen   = "127.0.0.1:8443"   # the sandbox gateway (default); see [sandbox]
 
 [[sandbox.profiles]]
 name    = "agent"
@@ -105,6 +106,11 @@ sandboxes run and what shape they take. The section is optional. Without it
 info line saying sandboxes are disabled, and `GET /api/v1/sandbox-profiles`
 answers `404` with `error_type: sandboxes_disabled`.
 
+With the section present the hub also serves a sandbox gateway on a second
+listener (see [The sandbox gateway](#the-sandbox-gateway)): a caller obtains a
+lease over the REST API, and creates the one sandbox the lease allows through
+the gateway, with the lease's token.
+
 With the section present, the hub validates it at start, right after the admin
 bootstrap and before it sets up the workspace root, the job queues, the
 workers or any route. The first-boot admin token therefore never depends on
@@ -125,8 +131,9 @@ the hub is restarted.
   key and profile, each naming the profile (by `name`, or as
   `sandbox.profiles[i]` when the name is missing) and the field.
 - **No `env` value is ever shown.** Validation errors, the start-up log line and
-  the profile listing contain no `env` value and no secret value (the hub reads
-  no secret value in this release). Everything else in the section is shown as
+  the profile listing contain no `env` value and no secret value. The hub reads
+  secret values only when the gateway creates a sandbox, and puts them in that
+  sandbox's environment and nowhere else. Everything else in the section is shown as
   written after `${NAME}` expansion: profile names, secret names, `image` (the
   listing returns it as is) and the deployment keys appear in errors, so do not
   put a credential into any key but `env`.
@@ -141,13 +148,25 @@ the hub is restarted.
 | `userns` | string | `""` | Passed to the engine as `--userns=<value>` when set. |
 | `max_ttl` | string | `"4h"` | The longest lifetime a profile may ask for, as a Go duration (`"90m"`, `"4h"`). Must be greater than zero. |
 | `network_modes` | list of strings | `["none"]` | The network modes profiles may use. Entries must be non-empty and unique, and each must be a mode the provider honours: `"none"` and `"unrestricted"` for Podman and Docker. A sandbox has no network unless the operator allows one. An empty list is accepted but leaves no mode for any profile, so every profile is then refused. |
-| `max_sandboxes` | integer | `16` | The most sandbox leases that may be live at once, across all workspaces. A lease counts while it is `leased` or `active` and its `expires_at` is in the future. At the limit `POST /api/v1/workspaces/:slug/sandboxes` answers `409` with `error_type: sandbox_capacity`. Must be a whole number of at least `1`. |
+| `max_sandboxes` | integer | `16` | The most sandbox leases that may be live at once, across all workspaces. A lease counts while it is `leased` or `active` and its `expires_at` is in the future. At the limit `POST /api/v1/workspaces/:slug/sandboxes` answers `409` with `error_type: sandbox_capacity`. Must be a whole number of at least `1`. The gateway holds at most this many sandboxes too. |
+| `listen` | string | `"127.0.0.1:8443"` | The address of the sandbox gateway, `host:port`. The port is a number from `0` to `65535`, and `0` picks a free port. The address is on loopback when the host is `localhost` or a literal IP address that is a loopback address; an empty host, `0.0.0.0`, `::` and any other name are not. No name is resolved. |
+| `tls_cert`, `tls_key` | string | `""` | Paths of the gateway's certificate and private key (PEM). Both are set or neither is; the message names the one that is missing. With neither the gateway speaks plaintext. |
+| `external_url` | string | `""` | The address lease holders dial, when it is not the address hub listens on, for example behind a proxy. An absolute `http` or `https` URL with a host and nothing else but an optional `/`: no user information, query, fragment or other path. The AgentKit client dials plaintext only for `localhost` and loopback addresses, so an `http` URL for any other host is accepted here and refused by the client: use `https`. |
+
+A `listen` address that is not on loopback needs TLS (`tls_cert` and `tls_key`)
+and an `external_url`: a lease token sent in plaintext over a network would hand
+over a sandbox full of secrets. The start-up error for the first names
+`sandbox.listen` and says that a plaintext gateway is allowed only on loopback;
+the second names `sandbox.external_url`. These failures are reported together
+with every other failure of the section.
 
 #### [[sandbox.profiles]]
 
-This table is repeatable. At least one profile is required. This release
-validates and publishes the profiles but creates no sandbox: the descriptions
-below say what a sandbox of the profile will get once sandboxes can be created.
+This table is repeatable. At least one profile is required. The profiles are
+published, and a lease copies the one it is issued from, so a sandbox is built
+from the lease and not from the file: editing the file and restarting the hub
+changes the leases issued afterwards. The descriptions below say what a sandbox
+of the profile gets.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
@@ -190,12 +209,86 @@ When the keys and profiles pass, the hub builds the provider from
    `sandbox.CheckSpec` must accept against the provider's capabilities. A
    refusal names the profile and carries `CheckSpec`'s text.
 
-The hub never creates a sandbox at start. Callers obtain leases, not sandboxes,
-with `POST /api/v1/workspaces/:slug/sandboxes` (see
-[Sandbox Lease Endpoints](api.md#sandbox-lease-endpoints)); the lease table is
-created at every start, whether or not the section is present. After a successful start it logs one
-info line with the provider name and the profile names, and nothing else from
-the section.
+The hub never creates a sandbox at start. Callers obtain leases with
+`POST /api/v1/workspaces/:slug/sandboxes` (see
+[Sandbox Lease Endpoints](api.md#sandbox-lease-endpoints)), and the gateway
+creates the sandbox of a lease when its holder asks; the lease table is created
+at every start, whether or not the section is present. After a successful start
+it logs one info line with the provider name and the profile names, and nothing
+else from the section.
+
+#### The sandbox gateway
+
+After the checks above, the hub starts the gateway, before its HTTP server
+serves anything and after the lease table exists. A hub without a `[sandbox]`
+section binds nothing.
+
+1. If `tls_cert` and `tls_key` are set, it loads the key pair once. A failure
+   stops the start with `sandbox.tls_cert and sandbox.tls_key: cannot load the
+   key pair:` and the loader's error, before anything is bound. A certificate
+   that is renewed is picked up at the next start.
+2. It binds `listen`. A failure stops the start with `sandbox.listen "<address>":
+   cannot bind the sandbox gateway:` and the bind error.
+3. It serves an AgentKit gateway on the listener for as long as the process
+   lives, over TLS when a key pair is set. If the gateway stops serving with an
+   error, the hub logs it once and exits with status 1, since it would otherwise
+   go on issuing leases nobody can use.
+
+The address a lease holder dials is `external_url` when set, otherwise `https://`
+(when TLS is configured) or `http://` followed by the address the listener is
+really on, so that `listen = "127.0.0.1:0"` gives the port it got. Every lease
+shows it as `gateway_url`.
+
+The gateway accepts a lease token and nothing else: it has no static tokens. A
+lease holder connects with the AgentKit client and asks for its sandbox:
+
+```go
+p, err := gateway.Dial(ctx, lease.GatewayURL, gateway.Options{Token: token})
+sb, err := p.Create(ctx, sandbox.Spec{})
+```
+
+- **One sandbox per lease.** The first `Create` under a token makes the lease
+  `active`; a second one is refused. A token stops working the moment its lease
+  is `destroyed` or `failed`, or past its `expires_at`, on the very next call,
+  the calls relayed to a sandbox that exists included.
+- **The lease decides what the sandbox is.** The image, network, resources,
+  Landlock setting and fixed `env` are those of the lease, which copied them from
+  the profile, and the TTL is the time the lease has left. Of the spec the caller
+  sends hub reads its `Workdir` and its labels only; labels that start with `hub.`
+  are dropped, and `hub.lease` and `hub.workspace` are set on the sandbox.
+- **Secrets reach a sandbox only through the hub.** At `Create` the hub resolves
+  the profile's `secrets` and `optional_secrets` from the workspace, then (only
+  if the workspace owner is a member of it) the workspace's org, then the owner's
+  user scope, the first scope that has the name winning, and puts them in the
+  sandbox's environment. A required secret that exists nowhere fails the lease
+  with `secret_missing:`, the name and the scopes searched.
+- **Nothing secret comes back.** The spec the gateway reports to the client has
+  every environment value replaced by `[redacted]`, and an error from the provider
+  is stored, logged, put in an event and returned only after every secret value,
+  every fixed `env` value and the user information of every URL in it is removed.
+
+Things to know when operating it:
+
+- **The client checks first.** The AgentKit client and the gateway check the
+  caller's TTL (one hour when it is empty) against `max_ttl` and its network mode
+  (`none` when it is empty) against `network_modes` before the hub sees the
+  request, although the hub then ignores both. With `max_ttl` under `1h`, or
+  `network_modes` without `"none"`, a client has to ask for a TTL and a network
+  that fit. A client built from a development checkout of AgentKit has no default
+  image and refuses an empty `Image`; the hub ignores whatever it is.
+- **Stopping the hub does not stop the sandboxes.** The hub does not shut the
+  gateway down, so a sandbox that is left when the process exits lives until the
+  TTL the provider enforces. The reap the gateway runs when the hub starts, and
+  every ten minutes after, removes what has passed its own expiry. A restarted hub
+  no longer holds the sandboxes of the process before it: a `DELETE` of a lease
+  that was `active` then ends the lease and leaves its sandbox to that TTL.
+- **A `DELETE` on a lease destroys its sandbox.** If the provider cannot, the
+  answer is `502` with `error_type: sandbox_provider_error`, the lease stays
+  `active` and the call can be repeated (see
+  [DELETE /api/v1/workspaces/:slug/sandboxes/:id](api.md#delete-apiv1workspacesslugsandboxesid)).
+- **The deployment is unchanged.** The manifests in `deploy/` expose the REST
+  port only; reaching the gateway from outside the pod (a second Service port,
+  gRPC through a route) is a deployment decision.
 
 ```toml
 [sandbox]
@@ -203,6 +296,10 @@ provider      = "podman"
 engine_binary = "podman"
 max_ttl       = "2h"
 network_modes = ["none", "unrestricted"]
+listen        = "0.0.0.0:8443"
+tls_cert      = "/etc/af-hub/gateway.crt"
+tls_key       = "/etc/af-hub/gateway.key"
+external_url  = "https://sandboxes.example.com"
 
 [[sandbox.profiles]]
 name             = "agent"

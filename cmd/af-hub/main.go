@@ -314,16 +314,31 @@ func main() {
 	sandboxes.RegisterRoutes(server.APIGroup(), sandboxSvc)
 
 	// Mount the lease routes (spec 26). The lease service needs the validated
-	// profiles, the database, the secrets store (for secret names only) and the
-	// audit emitter. A hub without sandboxes passes a nil service, and the routes
-	// answer sandboxes_disabled.
+	// profiles, the database, the secrets store (for secret names only), the audit
+	// emitter and the address of the gateway to show on every lease. A hub without
+	// sandboxes passes a nil service, and the routes answer sandboxes_disabled.
+	//
+	// With sandboxes on, the sandbox gateway (spec 27) is started first, on its
+	// own listener and before the HTTP server serves anything: a lease is worth
+	// nothing unless a gateway serves it. A key pair that cannot be loaded or an
+	// address that cannot be bound stops the start.
 	var leaseSvc *sandboxes.LeaseService
 	if sandboxSvc != nil {
-		leaseSvc = sandboxes.NewLeaseService(sandboxes.LeaseConfig{
-			Service: sandboxSvc,
+		gateway, err := sandboxes.StartGateway(sandboxSvc, sandboxes.GatewayDeps{
 			DB:      database.SqlDB,
 			Secrets: store,
 			Audit:   auditEmitter,
+		})
+		if err != nil {
+			log.Fatal(err)
+		}
+		leaseSvc = sandboxes.NewLeaseService(sandboxes.LeaseConfig{
+			Service:    sandboxSvc,
+			DB:         database.SqlDB,
+			Secrets:    store,
+			Audit:      auditEmitter,
+			GatewayURL: gateway.URL(),
+			Boxes:      gateway,
 		})
 	}
 	sandboxes.RegisterLeaseRoutes(server.APIGroup(), leaseSvc)

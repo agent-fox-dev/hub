@@ -14,8 +14,9 @@ import (
 const plantedSecret = "PLANTED-VALUE-123"
 
 // TS-26-53: A successful POST emits exactly one hub.sandbox.lease event
-// carrying the workspace and no secret or token; a refusal and a DELETE emit
-// none; a nil emitter or a failing emit does not change the 201.
+// carrying the workspace and no secret or token; a refusal emits none, and a
+// DELETE emits no lease event (since spec 27 it emits one hub.sandbox.destroy
+// instead); a nil emitter or a failing emit does not change the 201.
 // Requirement: 26-REQ-3.1
 func TestAudit_LeaseEvent_TS_26_53(t *testing.T) {
 	logs := captureDefaultLogs(t)
@@ -31,9 +32,22 @@ func TestAudit_LeaseEvent_TS_26_53(t *testing.T) {
 		t.Fatalf("DELETE: status %d", rec.Code)
 	}
 
-	events := emitter.recorded()
+	leaseEvents := func() []audit.HubEvent {
+		var out []audit.HubEvent
+		for _, ev := range emitter.recorded() {
+			if ev.EventType == audit.EventSandboxLease {
+				out = append(out, ev)
+			}
+		}
+		return out
+	}
+	events := leaseEvents()
 	if len(events) != 1 {
-		t.Fatalf("%d events; want exactly one: %+v", len(events), events)
+		t.Fatalf("%d lease events; want exactly one: %+v", len(events), emitter.recorded())
+	}
+	// The DELETE ended the lease, which is a destroy event and not a lease event.
+	if all := emitter.recorded(); len(all) != 2 || all[1].EventType != audit.EventSandboxDestroy {
+		t.Errorf("events = %+v; want the lease event and the destroy event of the DELETE", all)
 	}
 	e := events[0]
 	if audit.EventSandboxLease != "hub.sandbox.lease" {
@@ -71,7 +85,7 @@ func TestAudit_LeaseEvent_TS_26_53(t *testing.T) {
 	if rec := env.post("widgets", `{"profile":"tools","purpose":"nightly","ttl":"30m"}`, adminAuth()); rec.Code != http.StatusCreated {
 		t.Fatalf("admin POST: status %d", rec.Code)
 	}
-	admin := emitter.recorded()[1]
+	admin := leaseEvents()[1]
 	if admin.ActorType != "admin_token" || admin.Metadata["purpose"] != "nightly" || admin.Metadata["ttl"] != "30m0s" {
 		t.Errorf("admin event = actor %q, purpose %v, ttl %v", admin.ActorType, admin.Metadata["purpose"], admin.Metadata["ttl"])
 	}

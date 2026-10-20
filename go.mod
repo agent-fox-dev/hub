@@ -5,6 +5,7 @@ go 1.27
 require (
 	github.com/BurntSushi/toml v1.6.0
 	github.com/agent-fox-dev/agentkit-go/sandbox v0.0.0
+	github.com/agent-fox-dev/agentkit-go/sandbox/gatewayd v0.0.0
 	github.com/go-git/go-git/v5 v5.19.3
 	github.com/google/uuid v1.6.0
 	github.com/labstack/echo/v4 v4.16.0
@@ -14,6 +15,8 @@ require (
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.10
 	github.com/txsvc/apikit v0.0.0
+	google.golang.org/grpc v1.83.2
+	google.golang.org/protobuf v1.36.12
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.60.1
 )
@@ -88,8 +91,6 @@ require (
 	golang.org/x/sys v0.49.0 // indirect
 	golang.org/x/text v0.43.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260526163538-3dc84a4a5aaa // indirect
-	google.golang.org/grpc v1.83.2 // indirect
-	google.golang.org/protobuf v1.36.12 // indirect
 	gopkg.in/warnings.v0 v0.1.2 // indirect
 	kernel.org/pub/linux/libs/security/libcap/psx v1.2.70 // indirect
 	modernc.org/libc v1.77.1 // indirect
@@ -102,3 +103,5 @@ replace github.com/txsvc/apikit => ../apikit
 replace github.com/agent-fox-dev/agentkit-go => ../agentkit-go
 
 replace github.com/agent-fox-dev/agentkit-go/sandbox => ../agentkit-go/sandbox
+
+replace github.com/agent-fox-dev/agentkit-go/sandbox/gatewayd => ../agentkit-go/sandbox/gatewayd

@@ -54,7 +54,7 @@
       "done_when": [
         "`go build ./...` succeeds"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 2,
@@ -94,7 +94,7 @@
       "depends_on": [
         1
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 3,
@@ -126,7 +126,7 @@
       "depends_on": [
         1
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 4,
@@ -154,7 +154,7 @@
       "depends_on": [
         3
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 5,
@@ -190,7 +190,7 @@
       "depends_on": [
         3
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 6,
@@ -231,7 +231,7 @@
       "depends_on": [
         5
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 7,
@@ -265,7 +265,7 @@
       "depends_on": [
         6
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 8,
@@ -309,7 +309,7 @@
         4,
         7
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 9,
@@ -346,7 +346,7 @@
       "depends_on": [
         8
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 10,
@@ -386,7 +386,7 @@
       "depends_on": [
         9
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 11,
@@ -425,7 +425,7 @@
         "`make test` and `make lint` pass",
         "every execution path 27-PATH-1..5 is live in production code"
       ],
-      "state": "pending"
+      "state": "done"
     }
   ]
 }

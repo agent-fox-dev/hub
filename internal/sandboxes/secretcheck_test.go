@@ -84,13 +84,15 @@ func TestCheckRequiredSecrets_NamesOnly_TS_26_24(t *testing.T) {
 		t.Errorf("SecretLister has %d methods; want only ListSecrets", iface.NumMethod())
 	}
 
-	// No production file calls the store's value reader.
+	// No production file calls the store's value reader, except the one that
+	// reads the values for a box when the sandbox gateway creates it (spec 27,
+	// 27-REQ-5.1). The lease service, which issues leases, only lists names.
 	files, err := filepath.Glob("*.go")
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, f := range files {
-		if strings.HasSuffix(f, "_test.go") {
+		if strings.HasSuffix(f, "_test.go") || f == "secret_resolve.go" {
 			continue
 		}
 		src, err := os.ReadFile(f)

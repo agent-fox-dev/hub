@@ -28,6 +28,14 @@ The hub binary includes a built-in git smart HTTP server that exposes
 workspace repositories at `/git/<org>/<slug>.git` for clone, fetch, and push
 operations.
 
+With a `[sandbox]` section in `config.toml` the hub also hands out sandboxes. A
+caller gets a lease over the REST API (`afc sandbox create`) and creates the one
+sandbox it allows by connecting an AgentKit client to the **sandbox gateway**,
+which the hub serves on a second port with the lease's token. The gateway
+listens on `127.0.0.1:8443` unless `[sandbox].listen` says otherwise, and only
+loopback may be plaintext; every lease shows the address as `gateway_url`. See
+[Server Configuration](docs/configuration.md#the-sandbox-gateway).
+
 ## Getting Started
 
 ### Prerequisites

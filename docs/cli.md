@@ -1889,8 +1889,11 @@ sandboxes only when its `config.toml` has a `[sandbox]` section (see
 [Server Configuration](configuration.md#sandbox)). `afc sandbox profiles` shows
 what the hub offers; `create`, `list`, `get` and `destroy` work with the leases
 a caller holds (see [Sandbox Lease Endpoints](api.md#sandbox-lease-endpoints)).
-A lease is a right to one sandbox: this release records it and revokes its token,
-and creates no sandbox.
+A lease is a right to one sandbox. `afc` issues and ends leases and does not
+create the sandbox: the holder connects an AgentKit client to the lease's
+`gateway_url` with its token (see
+[The sandbox gateway](api.md#the-sandbox-gateway)), and every lease `afc` prints
+shows that address.
 
 ### afc sandbox profiles
 
@@ -1990,7 +1993,8 @@ afc sandbox create <workspace-slug> [--profile <name>] [--purpose <text>] [--ttl
   any request is sent.
 - Without `--token-file` it prints the whole lease, token included, to stdout and
   warns on stderr that the token will not be shown again. The hub returns the
-  token only in this response.
+  token only in this response. The lease carries `gateway_url`, where the token
+  is used.
 - With `--token-file` it opens the file before the request: it is created or
   truncated and set to mode `0600` (an explicit chmod, which the umask does not
   narrow). If the file cannot be opened the command exits with code 2 and sends
@@ -2058,7 +2062,7 @@ afc sandbox get <workspace-slug> <lease-id>
 
 ### afc sandbox destroy
 
-End a lease and revoke its token.
+End a lease, destroy its sandbox and revoke its token.
 
 **Usage:**
 
@@ -2068,12 +2072,20 @@ afc sandbox destroy <workspace-slug> <lease-id>
 
 **Behavior:**
 
-- Sends `DELETE /api/v1/workspaces/<slug>/sandboxes/<lease-id>`. The hub answers
-  `204` with no body, also for a lease that has ended already.
+- Sends `DELETE /api/v1/workspaces/<slug>/sandboxes/<lease-id>`. The hub destroys
+  the sandbox of an `active` lease first and answers `204` with no body when the
+  lease is `destroyed`, also for a lease that has ended already. A lease that has
+  no sandbox yet is simply ended.
 - Prints `{"id": "<lease-id>", "status": "destroyed"}` to stdout and a
   confirmation to stderr.
+- If the provider cannot destroy the sandbox the hub answers `502` with
+  `error_type: sandbox_provider_error`. The command prints the error envelope,
+  exits with code 1 and changes nothing: the lease stays `active` and the same
+  command can be run again. The hub gives the provider 30 seconds, which is also
+  the time `afc` waits for any answer, so a provider that does not answer at all
+  may make `afc` give up first, with exit code 2 and no 502; run the command again.
 
-**Exit Codes:** as for `afc sandbox list`.
+**Exit Codes:** as for `afc sandbox list`; a `502` is code 1.
 
 ---
 

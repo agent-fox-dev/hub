@@ -7,9 +7,9 @@ This document describes the high-level architecture of af-hub.
 `internal/sandboxes` owns the deployment's sandbox definition: where sandboxes
 run and what shape they take. It builds one AgentKit sandbox provider from the
 `[sandbox]` section of `config.toml`, checks every profile against what that
-provider can honour, and publishes the profiles read-only. It creates no
-sandbox. The lease record (below) is built on top of it; the gateway, expiry and
-a remote provider are later specs.
+provider can honour, and publishes the profiles read-only. The lease record
+(below) is built on top of it, and the sandbox gateway (below) is what creates
+a sandbox for a lease. Expiry and a remote provider are later specs.
 
 | File | Responsibility |
 |------|----------------|
@@ -20,10 +20,13 @@ a remote provider are later specs.
 | `startup.go` | `Init`: the one call `cmd/af-hub` makes. Loads, validates, starts and logs. |
 | `permissions.go`, `auth.go` | The `sandboxes:read` and `sandboxes:write` scopes and the standalone auth helpers. |
 | `handlers.go` | `RegisterRoutes` and `GET /api/v1/sandbox-profiles`, built from the in-memory profiles. |
-| `lease_schema.go`, `lease.go`, `store_query.go` | The `sandbox_leases` table (`InitSchema`), the `Lease` type and the `LeaseStore`: insert, read, list, `LookupByToken`, `EndLease`, `RevokeToken`. |
+| `lease_schema.go`, `lease.go`, `store_query.go`, `lease_transitions.go` | The `sandbox_leases` table (`InitSchema`), the `Lease` type and the `LeaseStore`: insert, read, list, `LookupByToken`, and the conditional transitions `MarkActive`, `FailLease`, `DestroyLease`, `EndLease`. |
 | `lease_service.go`, `lease_validate.go`, `token.go` | `LeaseService.Issue`: request validation, the required-secret check, id and token generation, the capacity count and the insert. |
 | `secretcheck.go` | `ResolutionChain` and `CheckRequiredSecrets`: which scopes a workspace's secrets are searched in, and a check that lists names only. |
-| `routes.go`, `handlers_issue.go`, `handlers_read.go`, `handlers_delete.go`, `render.go` | `RegisterLeaseRoutes`: the five lease routes, the checks they share (`begin`, `authorize`) and the lease representation. |
+| `routes.go`, `handlers_issue.go`, `handlers_read.go`, `handlers_delete.go`, `delete_destroy.go`, `render.go` | `RegisterLeaseRoutes`: the five lease routes, the checks they share (`begin`, `authorize`), the lease representation (with `gateway_url`) and how `DELETE` ends a lease and its sandbox. |
+| `gateway.go` | `StartGateway`: loads the key pair, binds `listen`, builds the `gatewayd.Server` and serves it; `Gateway.DestroyBox`. |
+| `gateway_auth.go` | `NewLeaseAuthenticator`: the function gatewayd calls for every RPC to turn a lease token into a principal. |
+| `backend.go`, `create_spec.go`, `secret_resolve.go`, `handle.go`, `events.go`, `scrub.go` | The wrapping backend, the `sandbox.Provider` hub gives gatewayd: `Create` and its outcomes, the spec built from the lease, the secrets read when the sandbox is created, the handle around the provider's sandbox, the audit events and the scrubber for provider errors. |
 
 ### Start-up order
 
@@ -45,6 +48,12 @@ up:
    on every start, and `RegisterRoutes` mounts the listing with the service,
    or with a nil service when the feature is off. A nil service answers
    `404 sandboxes_disabled`.
+6. Later, after the lease table exists and before `server.Start()`, `StartGateway`
+   binds the gateway's listener and starts serving it, and the lease service is
+   built with the gateway's URL and the gateway itself, which it destroys boxes
+   through. A key pair that cannot be loaded or an address that cannot be bound
+   is fatal, like any other failure of the section. A hub without sandboxes
+   binds nothing.
 
 The service holds no database handle and no secrets store, and the listing
 reads nothing but the profiles in memory, so it keeps answering when the
@@ -59,8 +68,22 @@ names and the fixed environment). The table is created by `sandboxes.InitSchema`
 at every start, right after `secrets.InitSchema`, whether or not sandboxes are
 enabled, so switching them off and on again keeps the history. Its `state`
 column allows all five states (`leased`, `active`, `destroyed`, `expired`,
-`failed`) because SQLite cannot alter a `CHECK`; only `leased` and `destroyed`
-are reachable in this release.
+`failed`) because SQLite cannot alter a `CHECK`. All but `expired` are reachable:
+
+```
+leased ── Create succeeds ─────────────────▶ active
+  │                                            │
+  │                                            ├── DELETE ───────────────────▶ destroyed  (end_reason api)
+  │                                            └── Close through the gateway ▶ destroyed  (end_reason client)
+  ├── DELETE ───────────────────────────────────────────────────────────────▶ destroyed  (end_reason api)
+  └── Create cannot proceed (profile gone, required secret missing,
+      spec cannot be built, provider failed) ────────────────────────────────▶ failed     (error set)
+```
+
+Every transition is one conditional `UPDATE` on the state the caller expects to
+find, and `destroyed` and `failed` are terminal. Two callers racing for the same
+lease cannot both win: the one that finds zero rows changed reads the lease again
+and acts on what it is now.
 
 `cmd/af-hub` builds a `LeaseService` from the validated profiles, the database,
 the secrets store and the audit emitter when sandboxes are enabled, and passes
@@ -84,29 +107,102 @@ service answers `404 sandboxes_disabled`. Issuing a lease, in `Issue`:
    the lock keeps the limit with a handle whose transactions are deferred.
 5. One `hub.sandbox.lease` audit event is emitted after the commit.
 
-Every ending of a lease goes through `LeaseStore.EndLease`: one conditional
-`UPDATE` that sets the terminal state, `ended_at`, `updated_at` and `end_reason`
-and clears the token hash for a lease that is still `leased` or `active`. The
-`DELETE` route calls it, and a test pins that no other production code clears a
-token hash.
+Every ending of a lease (`failed` and `destroyed` alike) goes through one
+statement in `lease.go`, `endLease`: it sets the terminal state, `ended_at`,
+`updated_at`, the end reason or the error text, and clears the token hash, for a
+lease that is in a state the caller names. `EndLease`, `FailLease` and
+`DestroyLease` are thin callers of it, and a test pins that no other production
+code clears a token hash. Clearing the hash is what revokes a token, so ending a
+lease and revoking its token are the same act. `MarkActive` (leased to active,
+recording the sandbox id) leaves the token alone.
 
-Two exported pieces are seams for the sandbox gateway and have no production
-caller yet: `LeaseStore.LookupByToken` (a presented token to its live lease, or
-`ErrLeaseNotFound` without saying why) and `LeaseStore.RevokeToken`. A third,
-`ResolutionChain`, is used today by the presence check at issue and is the order
-the gateway will resolve secret *values* in, so that the check and the lookup at
-creation agree.
+`LeaseStore.LookupByToken` (a presented token to its live lease, or
+`ErrLeaseNotFound` without saying why) is what the gateway authenticates with.
+`LeaseStore.RevokeToken` still has no production caller. `ResolutionChain` serves
+both the presence check at issue and the lookup of secret *values* when a sandbox
+is created, so that the check and the lookup agree.
+
+### The sandbox gateway
+
+The hub embeds an AgentKit gateway (`gatewayd.Server`, from the sibling module
+`agentkit-go/sandbox/gatewayd`) and serves it on a second listener. The REST API
+issues and ends leases; the gateway is where a lease holder turns its lease into
+a sandbox and uses it.
+
+```
+lease holder ── gateway.Dial(gateway_url, token) ──▶ gatewayd.Server
+                                                       │ every RPC
+                                                       ▼
+                                              lease authenticator ── LeaseStore.LookupByToken
+                                                       │ principal = lease id
+                                                       ▼
+                                   Backend (wrapping sandbox.Provider) ──▶ the provider (Podman)
+                                                       │
+                                  lease store, secrets store, audit emitter
+```
+
+- **The authenticator** (`NewLeaseAuthenticator`) hashes the presented token, looks
+  the lease up on every call and keeps nothing, so a lease that ends is refused on
+  the next call. It accepts only a `leased` or `active` lease whose `expires_at`
+  is in the future. The principal gatewayd hands the backend is the lease id, which
+  also owns the sandboxes the call creates: gatewayd lists and destroys per
+  principal, so a lease sees only its own sandbox.
+- **The backend** implements `sandbox.Provider`, which has only `Capabilities`,
+  `Create` and `Reap`. `Create` claims the lease in a set in the process (one
+  `Create` at a time), loads it, refuses one that is not `leased` or whose time is
+  up, builds the spec from the lease alone (`buildSpec`), reads the secrets
+  (`resolveSecrets`) and asks the provider. The outcome is recorded by the
+  conditional transitions above. A box that arrives for a lease that a `DELETE`
+  has ended in the meantime is destroyed on the spot.
+- **The handle** is what `Create` returns: the provider's sandbox with two
+  differences. `Spec` redacts the environment values, because the gateway sends
+  the spec back to the caller. `Close` is the client destroy path: gatewayd calls
+  it when the holder destroys its sandbox (and also at the sandbox's TTL, when it
+  prunes a box that is no longer live, and at shutdown), and it ends the lease with the reason `client` unless a `DELETE` is
+  ending it or the lease's time is up (within two seconds of `expires_at`, since
+  the box's TTL is the lease's time cut to whole seconds and gatewayd closes the
+  box a moment early). The handle has an `Unwrap`, without which
+  gatewayd could not relay the holder's calls to the sandbox's agent.
+- **`DELETE`** ends a lease through `LeaseService.destroyLease`. For an `active`
+  lease it asks the gateway to destroy the box first (`Gateway.DestroyBox`): the
+  embedder's `gatewayd.Server.Destroy`, which also frees the box's place in the
+  gateway. gatewayd forgets a box whose destruction failed, and does not hold one
+  until its `Create` has returned, so the backend keeps the handle of every box
+  from before its lease reads `active` until it is closed, and a `DELETE` closes
+  that handle when the gateway no longer holds the box. A box neither holds is
+  taken to be gone, which is not true of one made by a process that has since been
+  restarted.
+- **Reap.** The backend's `Reap` passes through to the provider for the gateway's
+  own periodic call, with the error text scrubbed; with a principal, a lease
+  holder's call, it does nothing.
+- **Scrubbing.** Provider error text is scrubbed (`scrub`) before it is stored on
+  a lease, put in an event, logged or returned: every secret value and fixed
+  environment value becomes `[redacted]`, URL user information is removed, and
+  only then is the text cut to 1024 bytes on a UTF-8 boundary.
+- **Events** are emitted in one place (`events.go`; `delete_destroy.go` for
+  `DELETE`): `hub.sandbox.create`, `hub.sandbox.failed` and `hub.sandbox.destroy`.
+  A nil emitter skips emission and an emit error is logged and changes no outcome.
+
+The gateway never calls `Server.Shutdown`: destroying the boxes when the hub
+stops, and marking leases that run out, belong to the expiry work. Until then a
+box left behind is bounded by the TTL the provider enforces.
+
+Where the gateway differs from what its spec expected of AgentKit (no provider
+`List` or `Destroy`, the codes gatewayd answers with, the handle's `Close`) is in
+`docs/errata/27_sandbox_gateway_divergences.md`.
 
 ### AgentKit dependency
 
 The provider comes from the sibling checkout `../agentkit-go`. Its sandbox
 packages are a separate Go module, `github.com/agent-fox-dev/agentkit-go/sandbox`,
-that requires the root module, so `go.mod` replaces both with the sibling
-(`replace` lines in a dependency's `go.mod` are ignored). The hub image build
+that requires the root module, and the gateway server is a third module,
+`github.com/agent-fox-dev/agentkit-go/sandbox/gatewayd`, that requires both, so
+`go.mod` replaces all three with the sibling (`replace` lines in a dependency's
+`go.mod` are ignored). The hub image build
 and both CI workflows supply the checkout next to the repository the same way
 they supply `../apikit`. `afc` stays a static `CGO_ENABLED=0` binary: neither
-`cmd/afc` nor `internal/cli` imports `internal/sandboxes` or any AgentKit
-package.
+`cmd/afc` nor `internal/cli` imports `internal/sandboxes`, any AgentKit
+package or gRPC.
 
 `sandbox.Provider` has no `List` or `Destroy`; the start-up probe is therefore
 one `Reap` call under a 10-second timeout. See

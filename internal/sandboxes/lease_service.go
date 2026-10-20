@@ -31,6 +31,10 @@ type LeaseConfig struct {
 	Now func() time.Time
 	// Rand is the source of ids and tokens; crypto/rand when nil.
 	Rand io.Reader
+	// GatewayURL is the address lease holders dial, which every lease shows.
+	GatewayURL string
+	// Boxes destroys the boxes of active leases; nil when there is no gateway.
+	Boxes BoxDestroyer
 }
 
 // LeaseService issues, reads and ends leases. It needs no provider: a lease is a
@@ -49,6 +53,18 @@ type LeaseService struct {
 	audit   audit.Emitter
 	now     func() time.Time
 	rand    io.Reader
+	// gatewayURL is where a lease holder dials the gateway.
+	gatewayURL string
+	// boxes destroys the box of an active lease; nil when there is no gateway.
+	boxes BoxDestroyer
+	// afterRead is called by DELETE between reading a lease and ending it, so that
+	// a test can change the lease in that window. Nil in production.
+	afterRead func()
+}
+
+// BoxDestroyer destroys the box of an active lease.
+type BoxDestroyer interface {
+	DestroyBox(ctx context.Context, lease *Lease) error
 }
 
 // NewLeaseService returns a lease service built from cfg.
@@ -60,6 +76,9 @@ func NewLeaseService(cfg LeaseConfig) *LeaseService {
 		audit:    cfg.Audit,
 		now:      cfg.Now,
 		rand:     cfg.Rand,
+
+		gatewayURL: cfg.GatewayURL,
+		boxes:      cfg.Boxes,
 	}
 	if s.now == nil {
 		s.now = time.Now

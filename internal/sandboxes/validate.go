@@ -5,8 +5,11 @@ import (
 	"fmt"
 	"maps"
 	"math"
+	"net"
+	"net/url"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -19,6 +22,8 @@ const (
 	defaultMaxTTL       = 4 * time.Hour
 	defaultNetwork      = "none"
 	defaultMaxSandboxes = 16
+	// defaultListen is the address of the sandbox gateway when listen is absent.
+	defaultListen = "127.0.0.1:8443"
 )
 
 // defaultNetworkModes returns network_modes when the key is absent: a sandbox
@@ -47,7 +52,12 @@ type Validated struct {
 	NetworkModes []string
 	// MaxSandboxes is the effective limit on live leases.
 	MaxSandboxes int
-	Profiles     []ValidatedProfile
+	// Listen, TLSCert, TLSKey and ExternalURL are the gateway's settings.
+	Listen      string
+	TLSCert     string
+	TLSKey      string
+	ExternalURL string
+	Profiles    []ValidatedProfile
 }
 
 // Resources are a profile's resource bounds. Zero means the provider's
@@ -108,6 +118,7 @@ func Validate(cfg *Config) (*Validated, error) {
 	maxTTLValid := validateMaxTTL(&c, cfg, v)
 	validateNetworkModes(&c, cfg, v)
 	validateMaxSandboxes(&c, cfg, v)
+	validateGateway(&c, cfg, v)
 	validateProfiles(&c, cfg, v, maxTTLValid)
 
 	if len(c.errs) > 0 {
@@ -161,6 +172,89 @@ func validateMaxSandboxes(c *collector, cfg *Config, v *Validated) {
 		return
 	}
 	v.MaxSandboxes = int(n)
+}
+
+// validateGateway checks the four keys of the sandbox gateway and stores the
+// effective values in v. It reports the failures of listen, of the key pair and
+// of external_url separately, so that one pass names everything to correct.
+func validateGateway(c *collector, cfg *Config, v *Validated) {
+	v.Listen = defaultListen
+	if cfg.Listen != "" {
+		v.Listen = cfg.Listen
+	}
+	v.TLSCert, v.TLSKey, v.ExternalURL = cfg.TLSCert, cfg.TLSKey, cfg.ExternalURL
+
+	listenValid := validateListen(c, v.Listen)
+	switch {
+	case cfg.TLSCert != "" && cfg.TLSKey == "":
+		c.addf("sandbox.tls_key is required when sandbox.tls_cert is set")
+	case cfg.TLSCert == "" && cfg.TLSKey != "":
+		c.addf("sandbox.tls_cert is required when sandbox.tls_key is set")
+	}
+
+	if listenValid && !isLoopback(v.Listen) {
+		if cfg.TLSCert == "" && cfg.TLSKey == "" {
+			c.addf("sandbox.listen %q is not on loopback: a plaintext gateway is allowed only on loopback (set sandbox.tls_cert and sandbox.tls_key)", v.Listen)
+		}
+		if cfg.ExternalURL == "" {
+			c.addf("sandbox.external_url is required when sandbox.listen %q is not on loopback", v.Listen)
+		}
+	}
+	validateExternalURL(c, cfg.ExternalURL)
+}
+
+// validateListen checks that listen is host:port with a numeric port from 0 to
+// 65535, and reports whether it is.
+func validateListen(c *collector, listen string) bool {
+	_, port, err := net.SplitHostPort(listen)
+	if err != nil {
+		c.addf("sandbox.listen %q is not a host:port address: %v", listen, err)
+		return false
+	}
+	if _, err := strconv.ParseUint(port, 10, 16); err != nil {
+		c.addf("sandbox.listen %q: the port must be a number from 0 to 65535", listen)
+		return false
+	}
+	return true
+}
+
+// isLoopback reports whether addr, a host:port address, is on loopback: its host
+// is localhost or a literal loopback IP address. No name is resolved, so an empty
+// host, 0.0.0.0, :: and any other name are not loopback.
+func isLoopback(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// validateExternalURL checks external_url, when set: an absolute http or https
+// URL with a host and nothing else but an optional root path. A failure never
+// repeats the value, which may hold user information.
+func validateExternalURL(c *collector, raw string) {
+	if raw == "" {
+		return
+	}
+	u, err := url.Parse(raw)
+	switch {
+	case err != nil:
+		c.addf("sandbox.external_url is not a valid URL")
+	case u.Scheme != "http" && u.Scheme != "https":
+		c.addf("sandbox.external_url must be an absolute http or https URL")
+	case u.Hostname() == "":
+		c.addf("sandbox.external_url must name a host")
+	case u.User != nil:
+		c.addf("sandbox.external_url must not contain user information")
+	case strings.ContainsAny(raw, "?#"):
+		c.addf("sandbox.external_url must not have a query or a fragment")
+	case u.Path != "" && u.Path != "/":
+		c.addf("sandbox.external_url must not have a path other than /")
+	}
 }
 
 // validateNetworkModes checks network_modes and stores the effective list in

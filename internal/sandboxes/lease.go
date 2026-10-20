@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"regexp"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/txsvc/apikit"
@@ -18,9 +19,11 @@ import (
 // cannot be found or used, so that a caller cannot tell why.
 var ErrLeaseNotFound = errors.New("sandbox lease not found")
 
-// Terminal lease states. Only destroyed is reachable through the lease routes;
-// the others belong to later specs.
+// Lease states. A lease is live while it is leased or active; the gateway moves
+// it from leased to active or to failed, and the others end it.
 const (
+	leaseLeased    = "leased"
+	leaseActive    = "active"
 	leaseDestroyed = "destroyed"
 	leaseExpired   = "expired"
 	leaseFailed    = "failed"
@@ -218,24 +221,45 @@ func (s *LeaseStore) LookupByToken(token string) (*Lease, error) {
 // terminalStates are the states a lease ends in.
 var terminalStates = []string{leaseDestroyed, leaseExpired, leaseFailed}
 
-// EndLease is the one place a lease ends. It moves a live lease (leased or
-// active) to the terminal state target with the given reason, stamps ended_at
-// and updated_at, and clears the token hash, all in one conditional UPDATE, so
-// that a lease that has ended already is not touched. It reports whether it
-// changed a row. Revoking a token and ending a lease are the same act.
+// EndLease ends a live lease (leased or active) in the terminal state target
+// with the given reason, stamps ended_at and updated_at, and clears the token
+// hash, all in one conditional UPDATE, so that a lease that has ended already is
+// not touched. It reports whether it changed a row. Revoking a token and ending
+// a lease are the same act.
 func (s *LeaseStore) EndLease(l *Lease, target, reason string) (bool, error) {
 	if !slices.Contains(terminalStates, target) {
 		return false, fmt.Errorf("sandbox lease: %q is not a terminal state", target)
 	}
+	return s.endLease(l.ID, []string{leaseLeased, leaseActive}, target, &reason, nil)
+}
+
+// endLease is the one place a lease ends: every ending goes through this
+// statement. It moves the lease from one of the states in from to the terminal
+// state target, records the end reason and, when message is not nil, the error
+// text, stamps ended_at and updated_at and clears the token hash, all in one
+// UPDATE conditioned on the state. It reports whether it changed a row.
+func (s *LeaseStore) endLease(id string, from []string, target string, reason, message *string) (bool, error) {
 	now := apikit.FormatUTC(s.now())
+	args := []any{target, now, now, optional(reason), optional(message), id}
+	for _, state := range from {
+		args = append(args, state)
+	}
 	res, err := s.db.Exec(`UPDATE sandbox_leases
-		SET state = ?, ended_at = ?, updated_at = ?, end_reason = ?, token_hash = NULL
-		WHERE id = ? AND state IN ('leased', 'active')`, target, now, now, reason, l.ID)
+		SET state = ?, ended_at = ?, updated_at = ?, end_reason = ?, error = COALESCE(?, error), token_hash = NULL
+		WHERE id = ? AND state IN (`+strings.TrimSuffix(strings.Repeat("?, ", len(from)), ", ")+`)`, args...)
 	if err != nil {
 		return false, err
 	}
 	n, err := res.RowsAffected()
 	return n > 0, err
+}
+
+// optional returns the value s points to, or nil, which SQL stores as NULL.
+func optional(s *string) any {
+	if s == nil {
+		return nil
+	}
+	return *s
 }
 
 // RevokeToken revokes the token of the lease with the given id by ending the

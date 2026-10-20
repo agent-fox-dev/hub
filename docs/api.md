@@ -200,6 +200,7 @@ The `error_type` field is omitted when not applicable. Known error types:
 | `sandboxes_disabled` | GET /api/v1/sandbox-profiles and every sandbox lease route | The hub has no `[sandbox]` section in its `config.toml`, so sandboxes are not enabled. Answered with 404 to every authenticated caller before any scope is checked |
 | `sandbox_capacity` | POST /api/v1/workspaces/:slug/sandboxes | The deployment's `max_sandboxes` limit on live leases is reached |
 | `secret_missing` | POST /api/v1/workspaces/:slug/sandboxes | A secret the profile requires exists in no searched scope of the workspace |
+| `sandbox_provider_error` | DELETE /api/v1/workspaces/:slug/sandboxes/:id | The provider could not destroy the sandbox of an `active` lease, or did not answer within 30 seconds. The message is the provider's, scrubbed; the lease is unchanged and the request can be repeated |
 
 ---
 
@@ -3578,11 +3579,14 @@ issued the hub fixes the sandbox's shape from a configured profile (see
 secrets the profile requires exist for the workspace, enforces the deployment's
 limit on live leases and hands back a **token**, a bearer credential for that one
 sandbox. The token is returned once, in the response that issues the lease, and
-the hub keeps only its SHA-256. This release records leases: no sandbox is
-created, and ending a lease only revokes its token.
+the hub keeps only its SHA-256. The routes below record the lease; the holder
+creates the one sandbox it allows through the hub's sandbox gateway, with the
+token (see [The sandbox gateway](#the-sandbox-gateway)), and ending a lease
+destroys that sandbox.
 
-A lease is in state `leased` or `destroyed`; `active`, `expired` and `failed`
-are reserved for later releases. A lease never carries its token, the token's
+A lease is in state `leased` (issued, no sandbox yet), `active` (its sandbox was
+created), `destroyed` or `failed` (its sandbox could not be created); `expired`
+is reserved for a later release. A lease never carries its token, the token's
 hash or the profile's environment values in any response but the issuing `POST`,
 which carries the token only.
 
@@ -3610,8 +3614,9 @@ Every response that shows a lease has exactly these fields.
 | `workspace` | string | The workspace slug |
 | `profile` | string | The profile the lease was issued from |
 | `purpose` | string | The caller's purpose text, `""` when none |
-| `state` | string | `leased` or `destroyed` |
-| `expires_at` | string (RFC 3339 UTC) | `created_at` plus the lease's TTL |
+| `state` | string | `leased`, `active`, `destroyed` or `failed` |
+| `gateway_url` | string | Where the holder dials the sandbox gateway with the lease's token: `[sandbox].external_url` when set, otherwise `http://` or `https://` and the address the gateway listens on. The same on every lease, in every state |
+| `expires_at` | string (RFC 3339 UTC) | `created_at` plus the lease's TTL; the sandbox's lifetime ends here |
 | `image` | string | The profile's image, as it was at issue |
 | `network` | string | The profile's network mode |
 | `resources` | object | `cpus` (number), `memory_mb`, `pids`, `disk_mb` (integers); `0` means the provider's default |
@@ -3621,7 +3626,7 @@ Every response that shows a lease has exactly these fields.
 | `labels` | object | The caller's labels exactly as given; `{}` when none |
 | `created_by` | string | The caller's user ID, or `admin` for an admin token |
 | `created_at`, `updated_at` | string (RFC 3339 UTC) | When the lease was issued and last changed |
-| `sandbox_id`, `error`, `ended_at`, `end_reason` | string or `null` | `null` until set; `end_reason` is `api` for a lease its holder ended |
+| `sandbox_id`, `error`, `ended_at`, `end_reason` | string or `null` | `null` until set. `sandbox_id` is the id of the sandbox once the lease is `active`. `error` is the reason a `failed` lease failed; a message that comes from the provider has secret values, fixed environment values and URL user information removed and is cut to 1024 bytes. `end_reason` is `client` for a lease whose holder closed its sandbox through the gateway and `api` for one ended by `DELETE` |
 
 The profile is copied onto the lease when it is issued, so editing the
 configuration and restarting the hub does not change a lease that exists.
@@ -3653,6 +3658,7 @@ not `profile`), and anything after the object is refused.
   "profile": "tools",
   "purpose": "triage",
   "state": "leased",
+  "gateway_url": "https://sandboxes.example.com",
   "expires_at": "2030-01-02T04:04:05Z",
   "image": "registry.example.com/tools:1",
   "network": "none",
@@ -3687,8 +3693,8 @@ searched, and no owner or org identifier, for example
 `required secrets not found: A_KEY, C_KEY (searched scopes: workspace, user)`.
 
 **Capacity.** `[sandbox].max_sandboxes` (default 16) limits the leases that are
-live at once. A lease counts while it is `leased` and its `expires_at` is in the
-future, in every workspace. At the limit the answer is 409 `sandbox_capacity`,
+live at once. A lease counts while it is `leased` or `active` and its `expires_at`
+is in the future, in every workspace. At the limit the answer is 409 `sandbox_capacity`,
 for example `sandbox capacity reached: at most 2 leases may be live at once
 (max_sandboxes)`. The count and the insert are serialised, so concurrent
 requests never exceed the limit.
@@ -3709,9 +3715,8 @@ requests never exceed the limit.
 ### GET /api/v1/workspaces/:slug/sandboxes
 
 List the workspace's leases, newest `created_at` first, at most 200, as a bare
-JSON array (`[]` when there are none). Only live leases (`leased`, and `active`
-in later releases) are returned unless `?all=true` also asks for those that have
-ended. `all` accepts what Go's `strconv.ParseBool` accepts (`1`, `t`, `T`, `TRUE`,
+JSON array (`[]` when there are none). Only live leases (`leased` or `active`)
+are returned unless `?all=true` also asks for those that have ended. `all` accepts what Go's `strconv.ParseBool` accepts (`1`, `t`, `T`, `TRUE`,
 `true`, `True`, `0`, `f`, `F`, `FALSE`, `false`, `False`); anything else, an empty
 value included, is 400. Works on an archived workspace.
 
@@ -3733,16 +3738,117 @@ another workspace, without saying which).
 
 ### DELETE /api/v1/workspaces/:slug/sandboxes/:id
 
-End a lease and revoke its token. A `leased` lease becomes `destroyed`, with
-`end_reason` `api` and `ended_at` and `updated_at` set to now; its token stops
-working at once. Answers 204 with no body. Ending a lease that has ended already
-also answers 204 and changes nothing, so a retry is harmless. Works on an
-archived workspace. No audit event is emitted.
+End a lease, destroy its sandbox and revoke its token. The lease becomes
+`destroyed`, with `end_reason` `api` and `ended_at` and `updated_at` set to now,
+and its token stops working with the very next call to the gateway, the calls
+relayed to a sandbox that exists included. Answers 204 with no body. Works on an
+archived workspace.
+
+- **A `leased` lease** has no sandbox. It is moved to `destroyed` without a call to
+  the provider. If its holder's `Create` is in flight, the sandbox that call makes
+  is destroyed the moment it exists, and the call fails.
+- **An `active` lease** has its sandbox destroyed first, within 30 seconds, and only
+  when that worked is the lease moved to `destroyed`. A sandbox that is already
+  gone counts as destroyed. The hub reaches only the sandboxes its own process
+  made: after the hub has been restarted it no longer holds the sandbox of a lease
+  that was `active` before, so a `DELETE` ends that lease without destroying the
+  sandbox, which then lives until the TTL the provider enforces. If the provider fails, or does not answer in time, the
+  answer is 502 with `error_type: sandbox_provider_error` and the provider's
+  message with secret values, fixed environment values and URL user information
+  removed. Nothing has changed: the lease is still `active`, its token still
+  works, no event was emitted, and the same `DELETE` can be sent again.
+- **A lease that has ended** (`destroyed`, `expired` or `failed`) is left alone:
+  204, no call to the provider, no event, and the original `ended_at` and
+  `end_reason` stay. A retry or a clean-up script is harmless.
+
+If the lease changes state between the hub reading it and updating it (its
+`Create` finished, or its holder closed the sandbox), the hub reads it once more
+and acts on the new state.
+
+Each change into `destroyed` that `DELETE` makes emits one `hub.sandbox.destroy`
+event with `reason: "api"`, the id of the sandbox or `null` when the lease had
+none, and the actor of the calling credential (see
+[Hub Audit Events](#hub-audit-events)).
 
 **Authentication:** API Key, Admin Token, or PAT with `sandboxes:write`.
 
-**Error Codes:** 401, 403, 404 (`sandboxes_disabled`; workspace not found; or
-`sandbox lease not found`, as above).
+**Error Codes:**
+
+| Status | Condition |
+|--------|-----------|
+| 401 | Unauthenticated request |
+| 403 | PAT lacks `sandboxes:write` scope |
+| 404 | `sandboxes_disabled`; workspace not found; or `sandbox lease not found`, as above |
+| 500 | A database failure |
+| 502 | The provider could not destroy the sandbox (`error_type: sandbox_provider_error`); the lease is unchanged |
+
+### The sandbox gateway
+
+The hub serves an AgentKit sandbox gateway on its own listener (`[sandbox].listen`,
+see [Server Configuration](configuration.md#the-sandbox-gateway)). It is a gRPC
+service and not part of the REST API, and it is reached with AgentKit's client at
+the lease's `gateway_url`:
+
+```go
+p, err := gateway.Dial(ctx, gatewayURL, gateway.Options{Token: token})
+sb, err := p.Create(ctx, sandbox.Spec{})
+```
+
+**Authentication.** The gateway accepts a lease token and nothing else. Every call,
+`Dial` included, carries the token as a bearer credential. The hub looks the
+token's SHA-256 up in the lease table on every call and accepts it only for a
+lease that is `leased` or `active` and whose `expires_at` is in the future. A
+token that hub never issued, and the token of a lease that is `destroyed`,
+`expired`, `failed` or past its time, is refused with gRPC `Unauthenticated`,
+without saying which, on the very next call.
+
+**Creating the sandbox.** The lease is the principal of the call, and the hub
+builds the sandbox from the lease and not from the spec the caller sends:
+
+| Of the sandbox | Comes from |
+|----------------|------------|
+| Image, network, resources, Landlock setting, fixed environment | The lease (copied from the profile when it was issued) |
+| Secrets | The profile's `secrets` and `optional_secrets`, read when the sandbox is created: the workspace, then the workspace's org (only if its owner is a member), then the owner's user scope; the first scope that has the name wins. They are put in the sandbox's environment under the profile's spelling of the name |
+| TTL | The time the lease has left, in whole seconds |
+| Working directory | The caller's `Workdir` |
+| Labels | The caller's labels without every key that starts with `hub.`, the lease's labels as `hub.<key>`, and `hub.lease` and `hub.workspace` |
+
+The caller's image, environment, network, resources, TTL and Landlock setting are
+not read. The spec the gateway reports back has every environment value replaced
+by `[redacted]`.
+
+A `Create` changes the lease as follows. Only one `Create` can be under way for a
+lease, and only a `leased` lease can create:
+
+| Outcome | Lease | Event |
+|---------|-------|-------|
+| The provider made the sandbox | `leased` to `active`, `sandbox_id` set | `hub.sandbox.create` |
+| The profile is no longer configured; a required secret exists in no scope; the spec cannot be built; the provider failed | `leased` to `failed`, `error` set to the message | `hub.sandbox.failed` |
+| A `DELETE` ended the lease while the provider worked | stays `destroyed`; the new sandbox is destroyed | none |
+| The secrets store failed | stays `leased`, so the call can be repeated | none |
+
+The gateway hands a failure of `Create` to the client as gRPC `Unavailable` with
+the hub's message: `lease <id> is <state>: only a leased lease can create its
+box`, `lease <id> has expired`, `a Create for lease <id> is already in progress`,
+`profile "<name>" is no longer configured`, `secret_missing: <KEYS> (searched
+scopes: workspace, org, user)` (the scope types actually searched), or the
+provider's error text, scrubbed as under `error` above. A second `Create` under
+the same token therefore fails while the lease is `active`, and is
+`Unauthenticated` once it has ended or failed.
+
+**Using and ending the sandbox.** The gateway relays the holder's calls to its
+sandbox, lists only the sandbox of the holder's lease, and answers a request to
+destroy a sandbox that is not the holder's lease's as it answers an unknown id,
+without touching anything. Its `Reap` call, which the gateway makes for itself when
+it starts and at an interval, does nothing when a lease holder makes it: reaping
+the provider is not a holder's to ask, and the answer would show other leases'
+sandbox ids and the provider's error text. When the holder closes its sandbox the hub destroys it
+and moves the lease from `active` to `destroyed` with `end_reason` `client`,
+emitting one `hub.sandbox.destroy`. If the provider cannot destroy it, the client
+gets the scrubbed error and the lease stays `active`. Closing a sandbox in the
+last two seconds of the lease's time, or after it, closes it and changes nothing
+else: the gateway closes a sandbox when its TTL ends, a moment before the lease
+does, and marking an expired lease is a later release's job.
 
 ### GET /api/v1/sandboxes
 
@@ -3772,7 +3878,10 @@ query endpoint (`GET /api/v1/audit`). Each event has an `event_type`, an actor
 | `hub.patch.replace` | `patch` | A patch branch is replaced during an `origin`-mode sync (one event per replaced branch; `resource_id` is the branch name, `action` is `replace`, as for the reset-triggered event) | `branch_name`, `replaced_sha`, `origin_sha` |
 | `hub.patch.mirror_failed` | `patch` | A hub-mode mirror of a registered patch branch to the fork failed (one event per failed branch) | `branch_name`, `error` (with any URL userinfo removed) |
 | `hub.patch.reset` | `patch` | A patch branch is reset to the fork's tip via `POST /workspaces/:slug/patches/:id/reset-to-origin` | `branch_name`, `action` (`none`, `created`, `fast_forwarded` or `replaced`), `local_sha` (omitted when no local branch), `origin_sha`, `replaced_sha` (present only for `replaced`) |
-| `hub.sandbox.lease` | `sandbox` | A sandbox lease is issued via `POST /workspaces/:slug/sandboxes` (one event per successful request; `resource_id` is the lease ID, `action` is `lease`; ending a lease emits no event) | `lease_id`, `profile`, `purpose`, `ttl` (a Go duration string such as `1h0m0s`), `secret_names`, `optional_secret_names`. Never a secret value, an environment value or the lease token |
+| `hub.sandbox.lease` | `sandbox` | A sandbox lease is issued via `POST /workspaces/:slug/sandboxes` (one event per successful request; `resource_id` is the lease ID, `action` is `lease`; ending a lease emits a `hub.sandbox.destroy` event and no event of this kind) | `lease_id`, `profile`, `purpose`, `ttl` (a Go duration string such as `1h0m0s`), `secret_names`, `optional_secret_names`. Never a secret value, an environment value or the lease token |
+| `hub.sandbox.create` | `sandbox` | The sandbox gateway made the sandbox of a lease, which became `active` (`resource_id` is the lease ID, `action` is `create`; actor type `lease` and actor ID the lease's `created_by`) | `lease_id`, `sandbox_id`, `image`, `network` |
+| `hub.sandbox.failed` | `sandbox` | A lease became `failed` because its sandbox could not be created (`action` is `fail`; actor type `lease` and actor ID the lease's `created_by`) | `lease_id`, `error` (scrubbed: no secret value, fixed environment value or URL user information, at most 1024 bytes) |
+| `hub.sandbox.destroy` | `sandbox` | A lease became `destroyed`: its holder closed the sandbox through the gateway (actor type `lease`, actor ID the lease's `created_by`), or `DELETE` ended it (the calling credential is the actor). One event per change (`action` is `destroy`) | `lease_id`, `sandbox_id` (`null` when the lease never had a sandbox), `reason` (`client` or `api`) |
 
 A nil audit emitter skips emission. An emit error is logged without affecting
 the response. In `hub` mode no `hub.patch.sync` or `hub.patch.replace` events

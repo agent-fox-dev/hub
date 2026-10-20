@@ -37,7 +37,7 @@ func handleIssueLease(s *LeaseService) echo.HandlerFunc {
 		if err != nil {
 			return writeIssueError(c, slug, err)
 		}
-		return c.JSON(http.StatusCreated, issuedLeaseResponse{leaseResponse: renderLease(lease), Token: token})
+		return c.JSON(http.StatusCreated, issuedLeaseResponse{leaseResponse: s.render(lease), Token: token})
 	}
 }
 

@@ -34,6 +34,14 @@ type Config struct {
 	// float so that a value that is not a whole number reaches validation;
 	// nil when absent.
 	MaxSandboxes *float64 `toml:"max_sandboxes"`
+	// Listen is the address of the sandbox gateway, host:port; empty when absent.
+	Listen string `toml:"listen"`
+	// TLSCert and TLSKey are the paths of the gateway's certificate and key;
+	// both are set or neither is.
+	TLSCert string `toml:"tls_cert"`
+	TLSKey  string `toml:"tls_key"`
+	// ExternalURL is the URL lease holders dial; empty when absent.
+	ExternalURL string `toml:"external_url"`
 	// Profiles are the [[sandbox.profiles]] tables in file order.
 	Profiles []ProfileConfig `toml:"profiles"`
 }
