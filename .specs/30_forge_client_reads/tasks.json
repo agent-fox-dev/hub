@@ -229,7 +229,7 @@
       "done_when": [
         "GET /forge never makes an outbound request in any test"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     },
     {

@@ -242,3 +242,76 @@ func redactRemote(remote string) string {
 	}
 	return remote
 }
+
+// remoteInfo describes how hub reaches the forge of one remote, without contacting it.
+type remoteInfo struct {
+	// Forge is github, gitlab or unknown.
+	Forge string `json:"forge"`
+	// APIURL is the API the forge is reached at; null when the forge is unknown.
+	APIURL *string `json:"api_url"`
+	// Repository is the repository the remote URL names; null when it names none.
+	Repository *repositoryInfo `json:"repository"`
+	// Credential is the kind of the credential, pat, basic or none, never its value.
+	Credential credentialKind `json:"credential"`
+}
+
+// repositoryInfo is a repository as the diagnostic shows it. Owner carries the full
+// namespace path, for example group/subgroup on GitLab.
+type repositoryInfo struct {
+	Host  string `json:"host"`
+	Owner string `json:"owner"`
+	Name  string `json:"name"`
+}
+
+// describeRemote reports how a read would reach the forge of the request's workspace
+// for the target, without sending a request. A forge that cannot be classified, and a
+// remote that names no repository, are reported as unknown and are no error; an
+// invalid API URL variable and a failure of the store are.
+func (h *handlers) describeRemote(req *request, tgt target) (*remoteInfo, error) {
+	remote, variable, resolve := req.remotes.gitURL, originAPIURLVariable, h.cfg.ResolveOriginAuth
+	if tgt == targetUpstream {
+		remote, variable, resolve = req.remotes.upstreamURL, upstreamAPIURLVariable, h.cfg.ResolveUpstreamAuth
+	}
+
+	baseURL, err := h.apiURL(req.slug, tgt, variable)
+	if err != nil {
+		return nil, err
+	}
+	auth, err := resolve(req.slug)
+	if err != nil {
+		return nil, storeFailure("reading the credential", req.slug, tgt, err)
+	}
+	kind, _ := credentialOf(auth)
+
+	info := &remoteInfo{Forge: "unknown", Credential: kind}
+	repo, ok := parseRemote(remote)
+	if !ok {
+		return info, nil
+	}
+	info.Repository = &repositoryInfo{Host: repo.Host, Owner: repo.Owner, Name: repo.Name}
+
+	forge, err := issuex.DetectForge(issuex.Options{BaseURL: baseURL, RemoteURL: redactRemote(remote), Repo: repo})
+	if err != nil || (forge != issuex.ForgeTypeGitHub && forge != issuex.ForgeTypeGitLab) {
+		return info, nil
+	}
+	info.Forge = string(forge)
+	apiURL := strings.TrimRight(baseURL, "/")
+	if apiURL == "" {
+		apiURL = defaultAPIURL(forge, repo.Host)
+	}
+	info.APIURL = &apiURL
+	return info, nil
+}
+
+// defaultAPIURL is the API URL issuex reaches a forge at when no variable names one:
+// the public API of github.com, and /api/v3 or /api/v4 on the host of a self-hosted
+// GitHub or GitLab. issuex has no accessor for it.
+func defaultAPIURL(forge issuex.ForgeType, host string) string {
+	if forge == issuex.ForgeTypeGitLab {
+		return "https://" + host + "/api/v4"
+	}
+	if host == "github.com" {
+		return "https://api.github.com"
+	}
+	return "https://" + host + "/api/v3"
+}

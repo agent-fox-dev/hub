@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"os/exec"
 	"strings"
 	"testing"
 
@@ -423,4 +424,36 @@ func assertNothingSent(t *testing.T, e *env) {
 	if n := e.stub.count(); n != 0 {
 		t.Errorf("the forge stub received %d requests; want none", n)
 	}
+}
+
+// A host that names both forges cannot be classified, and issuex must not then fall back
+// to the origin of the git repository the hub happens to run in: the read is refused and
+// the diagnostic says unknown, whatever the working directory holds.
+// Requirement: 30-REQ-4.4, 30-REQ-6.3
+func TestAmbiguousHostNeverAsksTheWorkingDirectory(t *testing.T) {
+	dir := t.TempDir()
+	for _, args := range [][]string{
+		{"init", "-q"},
+		{"remote", "add", "origin", "https://github.com/evil/repo.git"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Skipf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	t.Chdir(dir)
+
+	e := newEnv(t)
+	addWorkspace(t, e.db, "widgets", func(r *workspaceRow) { r.gitURL = "https://github.gitlab.example/acme/widgets" })
+
+	rec := e.get("/workspaces/widgets/forge/repository", apiKeyAuth())
+	if rec.Code != http.StatusUnprocessableEntity || decodeError(t, rec).ErrorType != "forge_unknown" {
+		t.Errorf("read: status %d, body %s; want 422 forge_unknown", rec.Code, rec.Body)
+	}
+	d, _ := getDiagnostic(t, e, "widgets")
+	if d.Forge != "unknown" || d.APIURL != nil {
+		t.Errorf("diagnostic: forge, api_url = %q, %v; want unknown and null", d.Forge, d.APIURL)
+	}
+	assertNothingSent(t, e)
 }

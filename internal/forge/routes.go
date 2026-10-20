@@ -28,7 +28,7 @@ func RegisterRoutes(api *echo.Group, cfg Config) {
 	}
 	h := &handlers{cfg: cfg, httpClient: newHTTPClient(cfg.Transport)}
 
-	api.GET("/workspaces/:slug/forge", h.route(false))
+	api.GET("/workspaces/:slug/forge", h.diagnostic)
 	api.GET("/workspaces/:slug/forge/repository", h.serve(prepareRepository))
 	api.GET("/workspaces/:slug/issues", h.serve(prepareIssues))
 	api.GET("/workspaces/:slug/issues/:n", h.serve(numbered(false, readIssue)))
@@ -99,21 +99,4 @@ func (h *handlers) loadRemotes(slug string) (workspaceRemotes, error) {
 		remotes.mode = mode.String
 	}
 	return remotes, nil
-}
-
-// route is the handler of a forge route. takesTarget is false for the diagnostic.
-// After the checks it answers 501: the operations come with the tasks that follow.
-func (h *handlers) route(takesTarget bool) echo.HandlerFunc {
-	return func(c echo.Context) error {
-		req, err := h.authorize(c)
-		if req == nil {
-			return err
-		}
-		if takesTarget {
-			if _, ref := resolveTarget(c.QueryParams(), req.remotes); ref != nil {
-				return apikit.WriteAPIErrorWithType(c, ref.status, ref.message, ref.errorType)
-			}
-		}
-		return apikit.WriteAPIError(c, http.StatusNotImplemented, "not implemented")
-	}
 }
