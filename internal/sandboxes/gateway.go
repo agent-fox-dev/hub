@@ -271,11 +271,13 @@ const ShutdownLimit = 20 * time.Second
 // Shutdown is the sandbox part of hub's shutdown, run when the HTTP server's Start
 // returns, while the databases are still open. Within ShutdownLimit it puts hub in
 // shutdown mode, stops the reaper, destroys the box of every active lease and ends
-// the lease with the reason shutdown, and only then stops the gatewayd server,
-// which closes any box it still holds. When the limit runs out the leases still
-// active stay so, for the recovery at the next start. Leases in state leased are
-// not changed. A second call does nothing, and neither does a call on a nil
-// Gateway, the feature turned off.
+// the lease with the reason shutdown, then stops the gatewayd server, which closes
+// any box it still holds, and last closes the client of the remote gateway, if
+// there is one and it can be closed: the boxes are destroyed through the client, so
+// the client outlives them. When the limit runs out the leases still active stay
+// so, for the recovery at the next start. Leases in state leased are not changed.
+// A second call does nothing, and neither does a call on a nil Gateway, the
+// feature turned off.
 func (g *Gateway) Shutdown(ctx context.Context) error {
 	if g == nil {
 		return nil
@@ -290,10 +292,25 @@ func (g *Gateway) Shutdown(ctx context.Context) error {
 	// is about to exit.
 	stopped := make(chan error, 1)
 	go func() { stopped <- g.server.Shutdown(ctx) }()
+	var stopErr error
 	select {
-	case stopErr := <-stopped:
-		return errors.Join(err, stopErr)
+	case stopErr = <-stopped:
 	case <-ctx.Done():
-		return errors.Join(err, fmt.Errorf("stopping the gateway: %w", ctx.Err()))
+		stopErr = fmt.Errorf("stopping the gateway: %w", ctx.Err())
+	}
+	return errors.Join(err, stopErr, g.closeRemote(ctx))
+}
+
+// closeRemote closes the client of the remote gateway, and stops waiting for it
+// when ctx ends: hub is about to exit, and a client that cannot close must not hold
+// it past its limit.
+func (g *Gateway) closeRemote(ctx context.Context) error {
+	closed := make(chan error, 1)
+	go func() { closed <- g.backend.service.Close() }()
+	select {
+	case err := <-closed:
+		return err
+	case <-ctx.Done():
+		return fmt.Errorf("closing the client of the remote gateway: %w", ctx.Err())
 	}
 }

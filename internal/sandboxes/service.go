@@ -9,6 +9,7 @@ import (
 	"math"
 	"net/url"
 	"slices"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -48,6 +49,9 @@ type Service struct {
 	gateway      gatewaySettings
 	// shutdown is set when hub starts to shut down.
 	shutdown atomic.Bool
+	// closeOnce and closeErr make Close close the remote client once.
+	closeOnce sync.Once
+	closeErr  error
 }
 
 // Start validates cfg, builds the provider and checks it. A static failure is
@@ -344,6 +348,23 @@ func remoteScrubValues(v *Validated) []string {
 		values = append(values, u.Host)
 	}
 	return values
+}
+
+// Close closes the client of the remote gateway, once, if the client can be closed.
+// The client first destroys the boxes it still holds, so hub calls Close after it
+// has destroyed every active box itself (see Gateway.Shutdown). A service that is
+// not remote has nothing to close, and neither has a client without a Close. The
+// error of the first Close is returned by every call.
+func (s *Service) Close() error {
+	if s == nil || s.remote == nil {
+		return nil
+	}
+	s.closeOnce.Do(func() {
+		if closer, ok := s.remote.(io.Closer); ok {
+			s.closeErr = closer.Close()
+		}
+	})
+	return s.closeErr
 }
 
 // Provider returns the provider the service was built with.
