@@ -23,6 +23,9 @@ type writer interface {
 	CreateIssue(ctx context.Context, repo issuex.Repo, req issuex.CreateIssueRequest) (issuex.Issue, error)
 	ChangeIssue(ctx context.Context, ref issuex.IssueRef, update issueUpdate) (issuex.Issue, error)
 	AddComment(ctx context.Context, ref issuex.IssueRef, body string) (string, error)
+	AddLabels(ctx context.Context, ref issuex.IssueRef, labels []string) error
+	DropLabel(ctx context.Context, ref issuex.IssueRef, label string) error
+	CheckIssue(ctx context.Context, ref issuex.IssueRef) error
 }
 
 // writerFor is the writer for a client built for a write: issuex's client for what it
@@ -50,6 +53,25 @@ type forgeWriter struct {
 // fields that are not empty, so it cannot clear a body or a set of labels or assignees.
 func (f forgeWriter) ChangeIssue(ctx context.Context, ref issuex.IssueRef, update issueUpdate) (issuex.Issue, error) {
 	return f.raw.updateIssue(ctx, ref, update)
+}
+
+// DropLabel removes a label from an issue and returns the forge's not found when it
+// answers one: the label is not on the issue, or the issue is not there. issuex's
+// RemoveLabel is that on GitLab, whose removal of an absent label succeeds, and on GitHub
+// treats the 404 as a success, which would hide a missing issue; there hub sends it.
+func (f forgeWriter) DropLabel(ctx context.Context, ref issuex.IssueRef, label string) error {
+	if f.raw.forge == issuex.ForgeTypeGitLab {
+		return f.Client.RemoveLabel(ctx, ref, label)
+	}
+	return f.raw.do(ctx, http.MethodDelete, f.raw.issuePath(ref)+"/labels/"+url.PathEscape(label), nil, nil)
+}
+
+// CheckIssue returns nil when the issue is there, and the forge's error when it is not or
+// cannot be told. It is one request. issuex's ReadIssue would also list the issue's
+// comments, up to five pages, which a caller that only wants to know that the issue is
+// there does not need.
+func (f forgeWriter) CheckIssue(ctx context.Context, ref issuex.IssueRef) error {
+	return f.raw.do(ctx, http.MethodGet, f.raw.issuePath(ref), nil, nil)
 }
 
 // issueUpdate is what PATCH /issues/:n sets. A nil field is left as it is; a field that is
@@ -128,19 +150,25 @@ type rawForge struct {
 	token string
 }
 
+// issuePath is the path of an issue in the forge's API.
+func (r rawForge) issuePath(ref issuex.IssueRef) string {
+	if r.forge == issuex.ForgeTypeGitLab {
+		return fmt.Sprintf("/projects/%s/issues/%d", gitlabProject(ref.Repo), ref.Number)
+	}
+	return fmt.Sprintf("/repos/%s/%s/issues/%d", url.PathEscape(ref.Repo.Owner), url.PathEscape(ref.Repo.Name), ref.Number)
+}
+
 // updateIssue is PATCH on GitHub's issue and PUT on GitLab's.
 func (r rawForge) updateIssue(ctx context.Context, ref issuex.IssueRef, update issueUpdate) (issuex.Issue, error) {
 	if r.forge == issuex.ForgeTypeGitLab {
 		var raw gitlabWireIssue
-		path := fmt.Sprintf("/projects/%s/issues/%d", gitlabProject(ref.Repo), ref.Number)
-		if err := r.do(ctx, http.MethodPut, path, update.gitlabPayload(), &raw); err != nil {
+		if err := r.do(ctx, http.MethodPut, r.issuePath(ref), update.gitlabPayload(), &raw); err != nil {
 			return issuex.Issue{}, err
 		}
 		return raw.issue(), nil
 	}
 	var raw githubWireIssue
-	path := fmt.Sprintf("/repos/%s/%s/issues/%d", url.PathEscape(ref.Repo.Owner), url.PathEscape(ref.Repo.Name), ref.Number)
-	if err := r.do(ctx, http.MethodPatch, path, update.githubPayload(), &raw); err != nil {
+	if err := r.do(ctx, http.MethodPatch, r.issuePath(ref), update.githubPayload(), &raw); err != nil {
 		return issuex.Issue{}, err
 	}
 	return raw.issue(), nil
