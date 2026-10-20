@@ -17,6 +17,7 @@ import (
 
 	"github.com/agent-fox-dev/agentkit-go/sandbox"
 	"github.com/agent-fox-dev/agentkit-go/sandbox/gateway"
+	"github.com/agent-fox-dev/hub/internal/audit"
 )
 
 // The names of two RPCs of the gateway protocol. The authentication of gatewayd
@@ -230,5 +231,72 @@ func TestGateway_ConcurrentCreatesAndDelete_TS_27_40(t *testing.T) {
 		if lease.State == "active" && live != 1 {
 			t.Fatalf("schedule %d: the lease is active and has %d live boxes; want 1", i, live)
 		}
+	}
+}
+
+// gatedEmitter holds an event of one type until the test lets it go, so that a
+// test can act while the code that emits it is stopped there.
+type gatedEmitter struct {
+	*recordingEmitter
+	eventType string
+	reached   chan struct{}
+	release   chan struct{}
+}
+
+func (g *gatedEmitter) Emit(ctx context.Context, event audit.HubEvent) error {
+	if event.EventType == g.eventType {
+		g.reached <- struct{}{}
+		<-g.release
+	}
+	return g.recordingEmitter.Emit(ctx, event)
+}
+
+// A DELETE that arrives when the lease is active but gatewayd has not yet recorded
+// the box leaves no box behind: Create has marked the lease active and is stopped
+// emitting the create event, so the box is the backend's alone and the gateway
+// does not hold it. The backend must hold its handle by then, so that the DELETE
+// destroys the box.
+// Requirement: 27-REQ-6.6
+func TestGateway_DeleteBetweenActiveAndRegistered(t *testing.T) {
+	gate := &gatedEmitter{
+		recordingEmitter: &recordingEmitter{},
+		eventType:        audit.EventSandboxCreate,
+		reached:          make(chan struct{}, 1),
+		release:          make(chan struct{}),
+	}
+	env := newBackendEnv(t, leaseEnvOptions{config: gatewayLeaseConfig(), emitter: gate})
+	id, token := env.issueToken(`{"profile":"tools"}`)
+	gw := env.startGateway()
+	client := gw.dial(t, token)
+
+	created := make(chan error, 1)
+	go func() {
+		_, err := client.Create(context.Background(), sandbox.Spec{Image: "ignored"})
+		created <- err
+	}()
+	select {
+	case <-gate.reached:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Create never reached the create event")
+	}
+	if lease := env.lease(id); lease.State != "active" {
+		t.Fatalf("lease state %q while the create event is held; want active", lease.State)
+	}
+
+	if code, body := env.deleteLease(id); code != 204 {
+		t.Fatalf("DELETE answered %d: %s", code, body)
+	}
+	close(gate.release)
+	select {
+	case <-created:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Create never returned")
+	}
+
+	if lease := env.lease(id); lease.State != "destroyed" {
+		t.Errorf("lease state %q; want destroyed", lease.State)
+	}
+	if live := env.prov.live(); len(live) != 0 {
+		t.Errorf("live boxes = %v; want none: the lease is destroyed and its box must not outlive it", live)
 	}
 }

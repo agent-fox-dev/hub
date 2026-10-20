@@ -9,8 +9,8 @@ import (
 	"github.com/agent-fox-dev/agentkit-go/sandbox"
 )
 
-// providerLabel is the label key AgentKit reserves for itself; a provider
-// refuses a spec that has it.
+// providerLabel is the label key AgentKit reserves for itself, and every key under
+// it (providerLabel + "."); a provider refuses a spec that has one.
 const providerLabel = "agentkit.sandbox"
 
 // hubLabelPrefix starts every label hub sets on a box.
@@ -64,13 +64,13 @@ func buildSpec(lease *Lease, caller sandbox.Spec, caps sandbox.Capabilities, ttl
 }
 
 // boxLabels are the labels of the box: the caller's, except every key hub sets
-// itself (hub.*) and the key the provider reserves, then each label of the
+// itself (hub.*) and the keys the provider reserves, then each label of the
 // lease as hub.<key>, and last hub.lease and hub.workspace, which override any
 // label before them. A caller cannot name another lease's box as its own.
 func boxLabels(lease *Lease, caller map[string]string) map[string]string {
 	labels := make(map[string]string, len(caller)+len(lease.Labels)+2)
 	for k, v := range caller {
-		if strings.HasPrefix(k, hubLabelPrefix) || k == providerLabel {
+		if strings.HasPrefix(k, hubLabelPrefix) || k == providerLabel || strings.HasPrefix(k, providerLabel+".") {
 			continue
 		}
 		labels[k] = v

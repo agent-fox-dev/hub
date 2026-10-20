@@ -304,6 +304,44 @@ func TestBackendCreate_BuildsHubsSpec_TS_27_25(t *testing.T) {
 	}
 }
 
+// The lease decides, not the profile it was copied from: after the hub is
+// restarted with the profile edited in every field the lease copied, a lease issued
+// before still gets the box it was issued for.
+// Requirement: 27-REQ-4.6
+func TestBackendCreate_TheLeaseWinsOverTheEditedProfile(t *testing.T) {
+	env := newBackendEnv(t, leaseEnvOptions{})
+	id := env.issue(`{"profile":"tools"}`)
+
+	edited := defaultLeaseConfig()
+	edited.NetworkModes = []string{"none", "unrestricted"}
+	p := &edited.Profiles[0]
+	p.Image, p.CPUs, p.MemoryMB, p.PIDs, p.DiskMB = "registry.example/other:9", 8, 4096, 1000, 2048
+	p.Network, p.RequireLandlock = strPtr("unrestricted"), false
+	p.Env = map[string]string{"SECRET_ENV": "changed", "NEW": "x"}
+	restarted, err := New(requireValid(t, edited), env.prov)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	b := newBackend(backendConfig{Service: restarted, Store: env.store, Secrets: env.secrets, DB: env.db, Audit: env.emitter, Now: env.clock.Now, Principal: testPrincipal})
+
+	if _, err := b.Create(withPrincipal(context.Background(), id), sandbox.Spec{}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	got := env.prov.lastSpec()
+	if got.Image != "registry.example/tools:1" || got.Network.Mode != sandbox.NetworkNone || !got.RequireLandlock {
+		t.Errorf("image %q, network %v, landlock %v; want the lease's tools:1, none, true", got.Image, got.Network.Mode, got.RequireLandlock)
+	}
+	if want := (sandbox.Resources{CPUs: 1, MemoryBytes: 512 << 20, PIDs: 100}); got.Resources != want {
+		t.Errorf("Resources = %+v; want the lease's %+v", got.Resources, want)
+	}
+	if got.Env["SECRET_ENV"] != "envval" {
+		t.Errorf("Env = %v; want the lease's SECRET_ENV=envval", got.Env)
+	}
+	if _, has := got.Env["NEW"]; has {
+		t.Errorf("Env = %v; want nothing from the edited profile", got.Env)
+	}
+}
+
 // TS-27-26: The labels drop the caller's hub.* keys, carry the lease's labels as
 // hub.<key>, and end with hub.lease and hub.workspace.
 // Requirement: 27-REQ-4.7
@@ -321,16 +359,25 @@ func TestBackendCreate_Labels_TS_27_26(t *testing.T) {
 	}
 }
 
-// The provider reserves the label agentkit.sandbox and refuses a spec that has
-// it, which would let a caller fail its own lease; hub drops the key.
-func TestBackendCreate_DropsTheProvidersReservedLabel(t *testing.T) {
+// The provider reserves the label agentkit.sandbox and every label under it
+// (agentkit.sandbox.*), and refuses a spec that has one, which would let a caller
+// fail its own lease; hub drops them. A key that only starts with the same letters
+// is not reserved.
+func TestBackendCreate_DropsTheProvidersReservedLabels(t *testing.T) {
 	env := newBackendEnv(t, leaseEnvOptions{})
 	id := env.issue(`{"profile":"tools"}`)
-	if _, err := env.create(id, sandbox.Spec{Labels: map[string]string{"agentkit.sandbox": "x", "a": "1"}}); err != nil {
+	caller := map[string]string{"agentkit.sandbox": "x", "agentkit.sandbox.id": "y", "agentkit.sandbox.": "z", "agentkit.sandboxes": "kept", "a": "1"}
+	if _, err := env.create(id, sandbox.Spec{Labels: caller}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if got := env.prov.lastSpec().Labels; got["agentkit.sandbox"] != "" || got["a"] != "1" {
-		t.Errorf("Labels = %v; want the reserved key dropped and the others kept", got)
+	got := env.prov.lastSpec().Labels
+	for _, key := range []string{"agentkit.sandbox", "agentkit.sandbox.id", "agentkit.sandbox."} {
+		if _, has := got[key]; has {
+			t.Errorf("Labels = %v; want the reserved key %q dropped", got, key)
+		}
+	}
+	if got["a"] != "1" || got["agentkit.sandboxes"] != "kept" {
+		t.Errorf("Labels = %v; want the other keys kept", got)
 	}
 }
 

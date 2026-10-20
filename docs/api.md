@@ -3626,7 +3626,7 @@ Every response that shows a lease has exactly these fields.
 | `labels` | object | The caller's labels exactly as given; `{}` when none |
 | `created_by` | string | The caller's user ID, or `admin` for an admin token |
 | `created_at`, `updated_at` | string (RFC 3339 UTC) | When the lease was issued and last changed |
-| `sandbox_id`, `error`, `ended_at`, `end_reason` | string or `null` | `null` until set. `sandbox_id` is the id of the sandbox once the lease is `active`. `error` is the reason a `failed` lease failed, with secret values, fixed environment values and URL user information removed and at most 1024 bytes. `end_reason` is `client` for a lease whose holder closed its sandbox through the gateway and `api` for one ended by `DELETE` |
+| `sandbox_id`, `error`, `ended_at`, `end_reason` | string or `null` | `null` until set. `sandbox_id` is the id of the sandbox once the lease is `active`. `error` is the reason a `failed` lease failed; a message that comes from the provider has secret values, fixed environment values and URL user information removed and is cut to 1024 bytes. `end_reason` is `client` for a lease whose holder closed its sandbox through the gateway and `api` for one ended by `DELETE` |
 
 The profile is copied onto the lease when it is issued, so editing the
 configuration and restarting the hub does not change a lease that exists.
@@ -3749,7 +3749,10 @@ archived workspace.
   is destroyed the moment it exists, and the call fails.
 - **An `active` lease** has its sandbox destroyed first, within 30 seconds, and only
   when that worked is the lease moved to `destroyed`. A sandbox that is already
-  gone counts as destroyed. If the provider fails, or does not answer in time, the
+  gone counts as destroyed. The hub reaches only the sandboxes its own process
+  made: after the hub has been restarted it no longer holds the sandbox of a lease
+  that was `active` before, so a `DELETE` ends that lease without destroying the
+  sandbox, which then lives until the TTL the provider enforces. If the provider fails, or does not answer in time, the
   answer is 502 with `error_type: sandbox_provider_error` and the provider's
   message with secret values, fixed environment values and URL user information
   removed. Nothing has changed: the lease is still `active`, its token still
@@ -3836,7 +3839,10 @@ the same token therefore fails while the lease is `active`, and is
 **Using and ending the sandbox.** The gateway relays the holder's calls to its
 sandbox, lists only the sandbox of the holder's lease, and answers a request to
 destroy a sandbox that is not the holder's lease's as it answers an unknown id,
-without touching anything. When the holder closes its sandbox the hub destroys it
+without touching anything. Its `Reap` call, which the gateway makes for itself when
+it starts and at an interval, does nothing when a lease holder makes it: reaping
+the provider is not a holder's to ask, and the answer would show other leases'
+sandbox ids and the provider's error text. When the holder closes its sandbox the hub destroys it
 and moves the lease from `active` to `destroyed` with `end_reason` `client`,
 emitting one `hub.sandbox.destroy`. If the provider cannot destroy it, the client
 gets the scrubbed error and the lease stays `active`. Closing a sandbox in the

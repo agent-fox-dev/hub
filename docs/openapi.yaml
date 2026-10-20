@@ -2600,7 +2600,10 @@ paths:
         provider; a `create` still in flight finds the lease ended and destroys
         its new sandbox. An `active` lease has its sandbox destroyed first,
         within 30 seconds, and only then is the lease moved; a sandbox that is
-        already gone counts as destroyed. When the provider fails the answer is
+        already gone counts as destroyed. After the hub has been restarted it no
+        longer holds the sandbox of a lease that was `active` before, so the lease
+        is ended without destroying that sandbox, which lives until the TTL the
+        provider enforces. When the provider fails the answer is
         502 `sandbox_provider_error` with the provider's message scrubbed of
         secret values, fixed environment values and URL user information, and
         nothing has changed (the lease is still `active`, its token still works,
@@ -6207,8 +6210,9 @@ components:
         error:
           type: [string, "null"]
           description: >-
-            Why a `failed` lease failed, with secret values, fixed environment
-            values and URL user information removed, at most 1024 bytes.
+            Why a `failed` lease failed. A message that comes from the provider
+            has secret values, fixed environment values and URL user information
+            removed and is cut to 1024 bytes.
         ended_at:
           type: [string, "null"]
           format: date-time

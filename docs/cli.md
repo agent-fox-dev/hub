@@ -2081,7 +2081,9 @@ afc sandbox destroy <workspace-slug> <lease-id>
 - If the provider cannot destroy the sandbox the hub answers `502` with
   `error_type: sandbox_provider_error`. The command prints the error envelope,
   exits with code 1 and changes nothing: the lease stays `active` and the same
-  command can be run again.
+  command can be run again. The hub gives the provider 30 seconds, which is also
+  the time `afc` waits for any answer, so a provider that does not answer at all
+  may make `afc` give up first, with exit code 2 and no 502; run the command again.
 
 **Exit Codes:** as for `afc sandbox list`; a `502` is code 1.
 

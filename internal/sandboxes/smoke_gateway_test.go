@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -337,6 +339,85 @@ ttl   = "30m"
 	}
 	if !bindable(addr) {
 		t.Errorf("%s is bound after the refusal", addr)
+	}
+	if env.listening() {
+		t.Error("something listens on the hub's port after the refusal")
+	}
+}
+
+// A key pair that cannot be loaded stops the real af-hub: it exits with a failure,
+// names both fields and the loader's complaint, and binds nothing.
+// Requirement: 27-REQ-1.8
+func TestAfHubBinary_UnloadableKeyPairRefusesStart(t *testing.T) {
+	bin := buildAfHub(t)
+	garbage := filepath.Join(t.TempDir(), "garbage.pem")
+	if err := os.WriteFile(garbage, []byte("not a PEM file"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	addr := freeAddr(t)
+	engine, _ := writeFakeEngine(t)
+	env := newAfHubEnv(t, fmt.Sprintf(`[sandbox]
+provider      = "podman"
+engine_binary = %q
+listen        = %q
+tls_cert      = %q
+tls_key       = %q
+
+[[sandbox.profiles]]
+name  = "dev"
+image = "registry.example/dev:1"
+ttl   = "30m"
+`, engine, addr, garbage, garbage))
+	bootstrapAfHub(t, bin, env)
+
+	output, exit := env.run(t, bin, 30*time.Second)
+	if exit <= 0 {
+		t.Fatalf("af-hub exited with status %d; want a refusal\n%s", exit, output)
+	}
+	for _, want := range []string{"sandbox.tls_cert", "sandbox.tls_key", "cannot load the key pair"} {
+		if !strings.Contains(output, want) {
+			t.Errorf("the output does not contain %q:\n%s", want, output)
+		}
+	}
+	if !bindable(addr) {
+		t.Errorf("%s is bound after the refusal", addr)
+	}
+	if env.listening() {
+		t.Error("something listens on the hub's port after the refusal")
+	}
+}
+
+// An address that is taken stops the real af-hub: it exits with a failure and names
+// sandbox.listen.
+// Requirement: 27-REQ-2.2
+func TestAfHubBinary_TakenGatewayAddressRefusesStart(t *testing.T) {
+	bin := buildAfHub(t)
+	taken, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer taken.Close()
+	engine, _ := writeFakeEngine(t)
+	env := newAfHubEnv(t, fmt.Sprintf(`[sandbox]
+provider      = "podman"
+engine_binary = %q
+listen        = %q
+
+[[sandbox.profiles]]
+name  = "dev"
+image = "registry.example/dev:1"
+ttl   = "30m"
+`, engine, taken.Addr().String()))
+	bootstrapAfHub(t, bin, env)
+
+	output, exit := env.run(t, bin, 30*time.Second)
+	if exit <= 0 {
+		t.Fatalf("af-hub exited with status %d; want a refusal\n%s", exit, output)
+	}
+	for _, want := range []string{"sandbox.listen", "cannot bind the sandbox gateway"} {
+		if !strings.Contains(output, want) {
+			t.Errorf("the output does not contain %q:\n%s", want, output)
+		}
 	}
 	if env.listening() {
 		t.Error("something listens on the hub's port after the refusal")

@@ -86,6 +86,9 @@ lets the embedder end any sandbox the server holds.
   `Shutdown`. A sandbox left behind is bounded by the TTL the provider enforces
   and removed by the reap the gateway runs at start and every ten minutes; ending
   boxes at shutdown and marking leases that run out are left to the expiry work.
+  A restarted hub does not hold the boxes of the process before it either, so a
+  `DELETE` of a lease that was `active` then ends the lease and cannot reach its
+  box; reconciling such leases is also the expiry work.
 - **gatewayd answers some failures its own way.** It hands a backend error that is
   no spec refusal to the client as gRPC `Unavailable` with the backend's text, so
   a second `Create` shows as `Unavailable` ("lease is active") and not as

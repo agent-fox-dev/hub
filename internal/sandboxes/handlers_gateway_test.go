@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -320,26 +321,45 @@ func TestDelete_LeaseChangedUnderIt_TS_27_52(t *testing.T) {
 	}
 }
 
+// countingBoxes is a box destroyer that counts the calls it gets.
+type countingBoxes struct {
+	mu    sync.Mutex
+	calls int
+}
+
+func (c *countingBoxes) DestroyBox(context.Context, *Lease) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.calls++
+	return nil
+}
+
 // TS-27-53: DELETE of a lease that has ended answers 204 as before, calls no
-// provider and emits nothing.
+// provider and emits nothing. The leases here have a sandbox_id, so that a call to
+// destroy their boxes would be seen.
 // Requirement: 27-REQ-8.7
 func TestDelete_EndedLeases_TS_27_53(t *testing.T) {
 	env := newBackendEnv(t, leaseEnvOptions{config: gatewayLeaseConfig()})
-	env.startGateway()
+	boxes := &countingBoxes{}
+	env.svc.boxes = boxes
 	ids := map[string]string{"destroyed": leaseID(1), "expired": leaseID(2), "failed": leaseID(3)}
 	for state, id := range ids {
 		insertRawLease(t, env.db, id, "widgets", state, nil)
+		if _, err := env.db.Exec(`UPDATE sandbox_leases SET sandbox_id = ?, ended_at = '2030-01-02T03:30:00Z', end_reason = 'api' WHERE id = ?`, "box-of-"+state, id); err != nil {
+			t.Fatal(err)
+		}
 	}
 	for state, id := range ids {
+		before := *env.lease(id)
 		if code, body := env.deleteLease(id); code != http.StatusNoContent {
 			t.Errorf("DELETE of a %s lease answered %d: %s", state, code, body)
 		}
-		if lease := env.lease(id); lease.State != state {
-			t.Errorf("a %s lease became %s", state, lease.State)
+		if after := *env.lease(id); !reflect.DeepEqual(before, after) {
+			t.Errorf("a %s lease changed: %+v -> %+v", state, before, after)
 		}
 	}
-	if n := len(env.prov.boxes); n != 0 {
-		t.Errorf("the provider made %d boxes; want none", n)
+	if boxes.calls != 0 {
+		t.Errorf("the box destroyer was called %d times; want 0", boxes.calls)
 	}
 	if n := len(env.eventsOf(audit.EventSandboxDestroy)); n != 0 {
 		t.Errorf("hub.sandbox.destroy events = %d; want 0", n)

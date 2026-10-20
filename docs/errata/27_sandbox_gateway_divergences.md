@@ -60,9 +60,10 @@ secret leaves hub.
    `end_reason` columns and fields. The spec's `ALTER TABLE` migration is therefore
    not needed and was not written, and `buildSpec` (`create_spec.go:27`) reads
    every field from the lease; the in-memory profile is only looked up to see that
-   it still exists (27-REQ-4.5, `backend.go:183`). TS-27-25's "a resource field
-   the lease lacks" cannot occur; `TestBackendCreate_BuildsHubsSpec_TS_27_25`
-   asserts that the lease's values win. Design decision 12 ("fixed `env` values
+   it still exists (27-REQ-4.5, `backend.go:175`). TS-27-25's "a resource field
+   the lease lacks" cannot occur; `TestBackendCreate_BuildsHubsSpec_TS_27_25` asserts
+   the lease's values, and `TestBackendCreate_TheLeaseWinsOverTheEditedProfile`
+   restarts the hub with every copied profile field edited to show that they win. Design decision 12 ("fixed `env` values
    are never written to the database") does not hold: spec 26 stores them for the
    gateway and shows none of them in a response. The values the scrubber removes
    from error text are therefore the lease's fixed environment and the resolved
@@ -102,8 +103,8 @@ secret leaves hub.
    connection (`rawCall`, `gateway_grpc_test.go`), which gets `Unauthenticated`
    from gatewayd's tap before a message is read.
 
-7. **`Close` is also what gatewayd calls at a sandbox's TTL, at shutdown and for
-   the embedder's `Destroy`.** gatewayd has one path to the backend's sandbox, so
+7. **`Close` is also what gatewayd calls at a sandbox's TTL, when it prunes a box
+   that is no longer live, at shutdown and for the embedder's `Destroy`.** gatewayd has one path to the backend's sandbox, so
    the handle's `Close` cannot tell a client's destroy from the others by its
    arguments. Three rules keep the record true (`handle.go:70`, `:147`):
    - `DELETE` marks the lease as being ended by the API while it destroys the box
@@ -119,22 +120,32 @@ secret leaves hub.
      `TestHandleClose_AfterExpiryChangesNothing`).
    - Any other `Close` is the client's. A client that closes its box in the last two
      seconds of its lease leaves the lease `active` with no box until the expiry
-     sweep ends it.
+     sweep ends it. A box that died on its own is pruned by gatewayd the next time
+     it lists, relays to or reserves for that box's principal, through the same
+     `Close`, and the lease is then recorded as destroyed by the client with one
+     destroy event; the backend cannot tell it from a holder's `Close`.
 
 8. **`DELETE` keeps the handle of every box until it is closed.** gatewayd removes
    an entry before it closes the box and keeps it removed when `Close` fails, so a
    retried `DELETE` would find `ErrNotHeld` and call the box destroyed while it
    runs. The backend keeps the handle of every box it made in a map by lease id
-   (`backend.go:91`, `boxes`), and `endBox` (`handle.go:111`) closes it when the
-   gateway no longer holds the box. When hub holds none, the box is gone. The same
-   map covers the window in which a lease is `active` but gatewayd has not yet
-   recorded the box. `TestDelete_ProviderFailureIsRetryable_TS_27_50` exercises it:
+   (`backend.go:91`, `boxes`, held by `remember`, `backend.go:282`), and `endBox` (`handle.go:111`) closes it when the
+   gateway no longer holds the box. When hub holds none, the box is taken to be gone.
+   That is not true of a box made by a process that has since been restarted: the
+   gateway and the map are gone with it, so a `DELETE` of a lease that was `active`
+   before the restart ends the lease and leaves the box to the TTL the provider
+   enforces. Reconciling such leases is the expiry spec's. The same map covers the
+   window in which a lease is `active` but gatewayd has not yet recorded the box:
+   the handle is held before the lease is marked `active`, so a `DELETE` that
+   arrives while `Create` emits its create event still destroys the box
+   (`TestGateway_DeleteBetweenActiveAndRegistered`; it failed, with a live box on a
+   destroyed lease, before the handle was held that early). `TestDelete_ProviderFailureIsRetryable_TS_27_50` exercises it:
    its first failure removes the gateway's entry, and the retries go through the
    fallback.
 
 9. **A Serve that returns `nil` is not a failure.** 27-REQ-2.4 ends the process when
    `Serve` returns. gatewayd returns `nil` only after `Shutdown`, which a later
-   spec calls, so `nil` is an orderly stop (`gateway.go:140`) and only an error is
+   spec calls, so `nil` is an orderly stop (`gateway.go:138`) and only an error is
    logged and ends the process (`TestStartGateway_ServeReturns_TS_27_12`).
 
 10. **The planned file names differ.** The tasks name `lease_store.go`, which does
@@ -194,3 +205,39 @@ secret leaves hub.
     events (`the sandbox gateway is serving`, the errors listed in `backend.go`
     and `gateway.go`); a refused authentication is not logged by hub, which the
     spec's "never logs a token or its hash" makes the safe default.
+
+15. **`Reap` by a lease holder does nothing.** gatewayd answers a `Reap` call that a
+    client makes with its token by running the backend's `Reap` with the lease as
+    the principal and returning the ids and the error text to the caller. Passed
+    straight to the provider (27-REQ-7.7) that would hand a lease holder the ids of
+    other leases' sandboxes and the provider's unscrubbed error text (27-REQ-9.3,
+    9.7), and let it make the provider work at will. `Backend.Reap`
+    (`backend.go:355`) does nothing when the context carries a principal, and goes
+    to the provider, with the error text scrubbed, when it does not, which is the
+    gateway's own periodic call (`TestBackendReap_ScrubsTheProviderError`,
+    `TestGateway_ReapByALeaseHolderDoesNothing`).
+
+16. **Reserved labels.** The provider refuses every label under `agentkit.sandbox.`
+    as well as the key `agentkit.sandbox`; `boxLabels` drops both
+    (`create_spec.go`, `TestBackendCreate_DropsTheProvidersReservedLabels`). The
+    entry on labels above (11) is this one's first half.
+
+17. **Left as the spec has it, with the consequence.**
+    - Any provider error at `Create` fails the lease (27-REQ-6.3), so a client whose
+      context ends during a slow `Create`, or that sends a working directory the
+      provider refuses (it wants an absolute, clean path outside `/`, `/tmp`,
+      `/proc`, `/sys` and `/dev`), burns its one-shot lease. The error is returned as
+      plain text, so gatewayd answers `Unavailable` and not the refusal a client could
+      correct.
+    - A failure to record the end of a lease after the box was destroyed
+      (`endByClient`) is logged and not returned: the box is gone, the client cannot
+      retry, and the lease stays `active` until a `DELETE` or the expiry sweep.
+    - A workspace that no longer exists makes the secret lookup fail with an internal
+      error on every attempt, and the lease stays `leased`.
+    - The scrubber replaces exact substrings; a value an engine echoes quoted,
+      escaped or encoded is not found.
+    - The authenticator reads SQLite inside gRPC's tap handle, which gatewayd asks to
+      stay quick (design decision 8).
+    - An `http` `external_url` for a host that is not loopback validates (27-REQ-1.7)
+      and is refused by the AgentKit client, which dials plaintext only for
+      loopback.

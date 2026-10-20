@@ -151,7 +151,7 @@ the hub is restarted.
 | `max_sandboxes` | integer | `16` | The most sandbox leases that may be live at once, across all workspaces. A lease counts while it is `leased` or `active` and its `expires_at` is in the future. At the limit `POST /api/v1/workspaces/:slug/sandboxes` answers `409` with `error_type: sandbox_capacity`. Must be a whole number of at least `1`. The gateway holds at most this many sandboxes too. |
 | `listen` | string | `"127.0.0.1:8443"` | The address of the sandbox gateway, `host:port`. The port is a number from `0` to `65535`, and `0` picks a free port. The address is on loopback when the host is `localhost` or a literal IP address that is a loopback address; an empty host, `0.0.0.0`, `::` and any other name are not. No name is resolved. |
 | `tls_cert`, `tls_key` | string | `""` | Paths of the gateway's certificate and private key (PEM). Both are set or neither is; the message names the one that is missing. With neither the gateway speaks plaintext. |
-| `external_url` | string | `""` | The address lease holders dial, when it is not the address hub listens on, for example behind a proxy. An absolute `http` or `https` URL with a host and nothing else but an optional `/`: no user information, query, fragment or other path. |
+| `external_url` | string | `""` | The address lease holders dial, when it is not the address hub listens on, for example behind a proxy. An absolute `http` or `https` URL with a host and nothing else but an optional `/`: no user information, query, fragment or other path. The AgentKit client dials plaintext only for `localhost` and loopback addresses, so an `http` URL for any other host is accepted here and refused by the client: use `https`. |
 
 A `listen` address that is not on loopback needs TLS (`tls_cert` and `tls_key`)
 and an `external_url`: a lease token sent in plaintext over a network would hand
@@ -279,7 +279,9 @@ Things to know when operating it:
 - **Stopping the hub does not stop the sandboxes.** The hub does not shut the
   gateway down, so a sandbox that is left when the process exits lives until the
   TTL the provider enforces. The reap the gateway runs when the hub starts, and
-  every ten minutes after, removes what has passed its own expiry.
+  every ten minutes after, removes what has passed its own expiry. A restarted hub
+  no longer holds the sandboxes of the process before it: a `DELETE` of a lease
+  that was `active` then ends the lease and leaves its sandbox to that TTL.
 - **A `DELETE` on a lease destroys its sandbox.** If the provider cannot, the
   answer is `502` with `error_type: sandbox_provider_error`, the lease stays
   `active` and the call can be repeated (see

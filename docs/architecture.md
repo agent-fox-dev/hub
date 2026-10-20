@@ -157,8 +157,8 @@ lease holder ── gateway.Dial(gateway_url, token) ──▶ gatewayd.Server
 - **The handle** is what `Create` returns: the provider's sandbox with two
   differences. `Spec` redacts the environment values, because the gateway sends
   the spec back to the caller. `Close` is the client destroy path: gatewayd calls
-  it when the holder destroys its sandbox (and also at the sandbox's TTL and at
-  shutdown), and it ends the lease with the reason `client` unless a `DELETE` is
+  it when the holder destroys its sandbox (and also at the sandbox's TTL, when it
+  prunes a box that is no longer live, and at shutdown), and it ends the lease with the reason `client` unless a `DELETE` is
   ending it or the lease's time is up (within two seconds of `expires_at`, since
   the box's TTL is the lease's time cut to whole seconds and gatewayd closes the
   box a moment early). The handle has an `Unwrap`, without which
@@ -166,9 +166,15 @@ lease holder ── gateway.Dial(gateway_url, token) ──▶ gatewayd.Server
 - **`DELETE`** ends a lease through `LeaseService.destroyLease`. For an `active`
   lease it asks the gateway to destroy the box first (`Gateway.DestroyBox`): the
   embedder's `gatewayd.Server.Destroy`, which also frees the box's place in the
-  gateway. gatewayd forgets a box whose destruction failed, so the backend keeps
-  the handle of every box until it is closed, and a retried `DELETE` closes that
-  handle; a box neither holds is gone.
+  gateway. gatewayd forgets a box whose destruction failed, and does not hold one
+  until its `Create` has returned, so the backend keeps the handle of every box
+  from before its lease reads `active` until it is closed, and a `DELETE` closes
+  that handle when the gateway no longer holds the box. A box neither holds is
+  taken to be gone, which is not true of one made by a process that has since been
+  restarted.
+- **Reap.** The backend's `Reap` passes through to the provider for the gateway's
+  own periodic call, with the error text scrubbed; with a principal, a lease
+  holder's call, it does nothing.
 - **Scrubbing.** Provider error text is scrubbed (`scrub`) before it is stored on
   a lease, put in an event, logged or returned: every secret value and fixed
   environment value becomes `[redacted]`, URL user information is removed, and

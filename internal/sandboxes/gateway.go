@@ -38,10 +38,9 @@ type GatewayDeps struct {
 // Gateway is the sandbox gateway hub serves on a second listener: a gatewayd
 // server over hub's wrapping backend, for as long as the process lives.
 type Gateway struct {
-	server   *gatewayd.Server
-	backend  *Backend
-	listener net.Listener
-	url      string
+	server  *gatewayd.Server
+	backend *Backend
+	url     string
 }
 
 // URL is the address a lease holder dials with the lease's token. A nil gateway,
@@ -131,10 +130,9 @@ func startGateway(svc *Service, deps GatewayDeps, seams gatewaySeams) (*Gateway,
 	}
 
 	g := &Gateway{
-		server:   server,
-		backend:  backend,
-		listener: listener,
-		url:      gatewayURL(settings.externalURL, tlsConfig != nil, listener.Addr()),
+		server:  server,
+		backend: backend,
+		url:     gatewayURL(settings.externalURL, tlsConfig != nil, listener.Addr()),
 	}
 	go func() {
 		if err := seams.serve(server, listener); err != nil {

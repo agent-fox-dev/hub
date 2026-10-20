@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -103,8 +104,9 @@ func gatewayTestEnv(t *testing.T, edit func(*Config)) (*backendEnv, GatewayDeps)
 	return env, GatewayDeps{DB: env.db, Secrets: env.secrets, Audit: env.emitter, Now: env.clock.Now}
 }
 
-// stopAfter closes what a started gateway holds when the test ends. Shutdown
-// ends Serve without an error, which the gateway does not treat as a failure.
+// stopAfter shuts a started gateway down when the test ends. That closes its
+// listener and ends Serve without an error, which the gateway does not treat as
+// a failure.
 func stopAfter(t *testing.T, gw *Gateway) {
 	t.Helper()
 	if gw == nil {
@@ -114,7 +116,6 @@ func stopAfter(t *testing.T, gw *Gateway) {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		_ = gw.server.Shutdown(ctx)
-		_ = gw.listener.Close()
 	})
 }
 
@@ -282,10 +283,24 @@ func TestStartGateway_ServeReturns_TS_27_12(t *testing.T) {
 		logs = captureDefaultLog(t)
 		env, deps := gatewayTestEnv(t, nil)
 		codes = make(chan int, 4)
+		var mu sync.Mutex
+		var held net.Listener
+		t.Cleanup(func() {
+			mu.Lock()
+			defer mu.Unlock()
+			if held != nil {
+				held.Close()
+			}
+		})
 		gw, err := startGateway(env.profile, deps, gatewaySeams{
 			newServer: gatewayd.New,
-			serve:     func(*gatewayd.Server, net.Listener) error { return serveErr },
-			exit:      func(code int) { codes <- code },
+			serve: func(_ *gatewayd.Server, l net.Listener) error {
+				mu.Lock()
+				held = l
+				mu.Unlock()
+				return serveErr
+			},
+			exit: func(code int) { codes <- code },
 		})
 		if err != nil {
 			t.Fatalf("startGateway: %v", err)
@@ -357,13 +372,18 @@ func TestStartGateway_GatewayURL_TS_27_14(t *testing.T) {
 			t.Fatalf("StartGateway: %v", err)
 		}
 		stopAfter(t, gw)
-		want := "http://" + gw.listener.Addr().String()
-		if gw.URL() != want {
-			t.Errorf("URL = %q; want %q", gw.URL(), want)
+		addr := strings.TrimPrefix(gw.URL(), "http://")
+		if addr == gw.URL() {
+			t.Fatalf("URL = %q; want http://<address>", gw.URL())
 		}
-		if port := gw.listener.Addr().(*net.TCPAddr).Port; port == 0 {
-			t.Error("the listener reports port 0; want the port it was given")
+		if _, port, err := net.SplitHostPort(addr); err != nil || port == "0" {
+			t.Errorf("URL = %q; want the port the listener really got, not 0 (%v)", gw.URL(), err)
 		}
+		conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
+		if err != nil {
+			t.Fatalf("the address in the URL does not accept connections: %v", err)
+		}
+		conn.Close()
 	})
 
 	t.Run("TLS", func(t *testing.T) {
@@ -375,15 +395,16 @@ func TestStartGateway_GatewayURL_TS_27_14(t *testing.T) {
 			t.Fatalf("StartGateway: %v", err)
 		}
 		stopAfter(t, gw)
-		if want := "https://" + gw.listener.Addr().String(); gw.URL() != want {
-			t.Errorf("URL = %q; want %q", gw.URL(), want)
+		addr := strings.TrimPrefix(gw.URL(), "https://")
+		if addr == gw.URL() {
+			t.Fatalf("URL = %q; want https://<address>", gw.URL())
 		}
 		client, err := gateway.Dial(context.Background(), gw.URL(), gateway.Options{Token: token, TLSConfig: &tls.Config{RootCAs: pool}})
 		if err != nil {
 			t.Fatalf("gateway.Dial over TLS: %v", err)
 		}
 		client.Close()
-		if _, err := gateway.Dial(context.Background(), "http://"+gw.listener.Addr().String(), gateway.Options{Token: token}); err == nil {
+		if _, err := gateway.Dial(context.Background(), "http://"+addr, gateway.Options{Token: token}); err == nil {
 			t.Error("a plaintext client reached a gateway that serves TLS")
 		}
 	})

@@ -354,7 +354,10 @@ type recordingProvider struct {
 	// createDelay, when set, is how long every Create takes before it makes the
 	// box.
 	createDelay time.Duration
-	reaps       int
+	// reapIDs and reapErr are what Reap returns.
+	reapIDs []string
+	reapErr error
+	reaps   int
 	// entered receives one value for each Create that waits on block.
 	entered chan struct{}
 }
@@ -387,7 +390,14 @@ func (p *recordingProvider) Reap(context.Context) ([]string, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.reaps++
-	return nil, nil
+	return slices.Clone(p.reapIDs), p.reapErr
+}
+
+// setReap makes Reap return ids and err.
+func (p *recordingProvider) setReap(ids []string, err error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.reapIDs, p.reapErr = ids, err
 }
 
 func (p *recordingProvider) Create(ctx context.Context, spec sandbox.Spec) (sandbox.Sandbox, error) {
@@ -736,4 +746,12 @@ func createVia(t *testing.T, p *gateway.Provider) sandbox.Sandbox {
 		t.Fatalf("Create through the gateway: %v", err)
 	}
 	return sb
+}
+
+// claimed reports whether a Create for the lease is in flight.
+func (b *Backend) claimed(id string) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	_, busy := b.claims[id]
+	return busy
 }

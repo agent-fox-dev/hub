@@ -135,14 +135,6 @@ func (b *Backend) release(id string) {
 	delete(b.claims, id)
 }
 
-// claimed reports whether a Create for the lease is in flight.
-func (b *Backend) claimed(id string) bool {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	_, busy := b.claims[id]
-	return busy
-}
-
 // hasProfile reports whether the profile is among the validated profiles of
 // this run.
 func (b *Backend) hasProfile(name string) bool {
@@ -261,12 +253,19 @@ func (b *Backend) createBox(ctx context.Context, lease *Lease, spec sandbox.Spec
 		msg := scrub(err.Error(), values)
 		return nil, b.failLease(ctx, lease, msg, errors.New(msg))
 	}
+	// The handle is held before the lease reads active: from then on a DELETE finds
+	// the lease active, asks the gateway for a box it has not recorded yet, and
+	// must be able to close the box through the handle instead.
+	h := newHandle(b, lease, box, values)
+	b.remember(h)
 	changed, err := b.store.MarkActive(lease.ID, box.ID())
 	switch {
 	case err != nil:
+		b.forget(h)
 		b.discard(lease, box, "the box of a lease could not be recorded; destroyed it", values)
 		return nil, internalError("recording the box of a lease failed", err)
 	case !changed:
+		b.forget(h)
 		b.discard(lease, box, "a box was created for a lease that had ended; destroyed it", values)
 		return nil, b.staleLease(lease.ID)
 	}
@@ -276,11 +275,23 @@ func (b *Backend) createBox(ctx context.Context, lease *Lease, spec sandbox.Spec
 		"image":      lease.Image,
 		"network":    lease.Network,
 	})
-	h := newHandle(b, lease, box, values)
-	b.mu.Lock()
-	b.boxes[lease.ID] = h
-	b.mu.Unlock()
 	return h, nil
+}
+
+// remember holds the handle of a box until it is closed.
+func (b *Backend) remember(h *handle) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.boxes[h.lease.ID] = h
+}
+
+// forget lets go of a handle whose box nobody will use.
+func (b *Backend) forget(h *handle) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.boxes[h.lease.ID] == h {
+		delete(b.boxes, h.lease.ID)
+	}
 }
 
 // discard destroys a box nobody will use, whatever has become of the call that
@@ -332,8 +343,24 @@ func (b *Backend) Capabilities() sandbox.Capabilities {
 	return caps
 }
 
-// Reap passes straight through to the provider. The sweep of leases whose boxes
-// are gone is not the backend's.
-func (b *Backend) Reap(ctx context.Context) ([]string, error) { return b.provider.Reap(ctx) }
+// Reap passes through to the provider. It is the gateway's own work, which it does
+// when it starts and at an interval, with no principal; the error text of the
+// provider is scrubbed before it leaves the backend. The sweep of leases whose
+// boxes are gone is not the backend's.
+//
+// gatewayd also answers a Reap call that a client makes with its token, with the
+// lease as the principal. That is not a lease holder's to ask: it would hand it
+// the ids of other leases' boxes and the provider's error text, and let it make
+// the provider work at will. A call with a principal does nothing.
+func (b *Backend) Reap(ctx context.Context) ([]string, error) {
+	if _, ok := b.principal(ctx); ok {
+		return nil, nil
+	}
+	ids, err := b.provider.Reap(ctx)
+	if err != nil {
+		return ids, errors.New(scrub(err.Error(), nil))
+	}
+	return ids, nil
+}
 
 var _ sandbox.Provider = (*Backend)(nil)

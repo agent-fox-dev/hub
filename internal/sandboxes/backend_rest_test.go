@@ -3,6 +3,7 @@ package sandboxes
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
 	"strings"
@@ -383,5 +384,47 @@ func TestHandleClose_AfterTheLeaseWasEnded(t *testing.T) {
 	}
 	if n := len(env.eventsOf(audit.EventSandboxDestroy)); n != 0 {
 		t.Errorf("hub.sandbox.destroy events = %d; want 0", n)
+	}
+}
+
+// The periodic reap of the gateway has no principal and goes to the provider; the
+// error text it gets back is scrubbed like any other before it leaves the backend.
+// Requirements: 27-REQ-7.7, 27-REQ-9.3
+func TestBackendReap_ScrubsTheProviderError(t *testing.T) {
+	env := newBackendEnv(t, leaseEnvOptions{})
+	env.prov.setReap([]string{"left-over"}, errors.New("podman rm failed at https://user:pw@registry.example/x"))
+	before := env.prov.reapCount()
+
+	ids, err := env.backend.Reap(context.Background())
+	if got := env.prov.reapCount() - before; got != 1 {
+		t.Errorf("provider Reap calls = %d; want 1", got)
+	}
+	if !reflect.DeepEqual(ids, []string{"left-over"}) {
+		t.Errorf("ids = %v; want the provider's", ids)
+	}
+	if err == nil || strings.Contains(err.Error(), "user:pw") || !strings.Contains(err.Error(), "podman rm failed") {
+		t.Errorf("error = %v; want the provider's text with the user information removed", err)
+	}
+}
+
+// A lease holder can call the gateway's Reap RPC with its token, and that reaches
+// the backend with the lease as the principal. Reaping the provider is the
+// gateway's own work and not a lease holder's: the call does nothing, and no id
+// of another lease's sandbox and no text of the provider's reaches the holder.
+// Requirement: 27-REQ-9.7
+func TestGateway_ReapByALeaseHolderDoesNothing(t *testing.T) {
+	env := newBackendEnv(t, leaseEnvOptions{config: gatewayLeaseConfig()})
+	_, token := env.issueToken(`{"profile":"tools"}`)
+	gw := env.startGateway()
+	client := gw.dial(t, token)
+	env.prov.setReap([]string{"someone-elses-box"}, errors.New("podman rm failed at https://user:pw@registry.example/x"))
+	before := env.prov.reapCount()
+
+	ids, err := client.Reap(context.Background())
+	if err != nil || len(ids) != 0 {
+		t.Errorf("Reap by a lease holder = (%v, %v); want nothing", ids, err)
+	}
+	if got := env.prov.reapCount() - before; got != 0 {
+		t.Errorf("provider Reap calls = %d; want 0: a lease holder does not reap the provider", got)
 	}
 }
