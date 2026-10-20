@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"io"
-	"net/http"
 	"strings"
 
 	"github.com/labstack/echo/v4"
@@ -132,13 +131,6 @@ func (h *handlers) write(rt writeRoute) echo.HandlerFunc {
 	}
 }
 
-// notImplemented is the route of a write whose action is not delivered yet.
-var notImplemented = writeRoute{
-	prepare: func(echo.Context, []byte) (*writePlan, *refusal) {
-		return nil, &refusal{status: http.StatusNotImplemented, message: "not implemented"}
-	},
-}
-
 // body is the JSON object of a request body, each field still raw JSON. Fields a route
 // does not know are ignored.
 type body map[string]json.RawMessage
@@ -186,6 +178,18 @@ func (b body) required(name string) (string, *refusal) {
 		return "", badRequest("%s must not be blank", name)
 	}
 	return value, nil
+}
+
+// flag reads an optional boolean field.
+func (b body) flag(name string) (value bool, present bool, ref *refusal) {
+	raw, ok := b.raw(name)
+	if !ok {
+		return false, false, nil
+	}
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return false, true, badRequest("%s must be true or false", name)
+	}
+	return value, true, nil
 }
 
 // names reads an optional list of at most maxNames names, none of them blank.

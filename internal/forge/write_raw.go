@@ -28,6 +28,7 @@ type writer interface {
 	CheckIssue(ctx context.Context, ref issuex.IssueRef) error
 	GetLabel(ctx context.Context, repo issuex.Repo, name string) (issuex.Label, error)
 	MakeLabel(ctx context.Context, repo issuex.Repo, label issuex.Label) (issuex.Label, error)
+	CreatePullRequest(ctx context.Context, repo issuex.Repo, req issuex.CreatePullRequestRequest) (issuex.PullRequest, error)
 }
 
 // writerFor is the writer for a client built for a write: issuex's client for what it

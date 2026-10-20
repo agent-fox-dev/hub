@@ -46,8 +46,8 @@ func RegisterRoutes(api *echo.Group, cfg Config) {
 	api.POST("/workspaces/:slug/issues/:n/labels", h.write(addLabels))
 	api.DELETE("/workspaces/:slug/issues/:n/labels/:name", h.write(removeLabel))
 	api.POST("/workspaces/:slug/labels", h.write(ensureLabel))
-	api.POST("/workspaces/:slug/pulls", h.write(notImplemented))
-	api.POST("/workspaces/:slug/pulls/:n/comments", h.write(notImplemented))
+	api.POST("/workspaces/:slug/pulls", h.write(openPullRequest))
+	api.POST("/workspaces/:slug/pulls/:n/comments", h.write(commentOnPullRequest))
 }
 
 // request is what the checks every forge route shares establish about a request.

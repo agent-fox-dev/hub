@@ -183,7 +183,7 @@ func TestUpdateIssue_NothingToUpdate_TS_31_13(t *testing.T) {
 func TestWriteNumbers_Malformed(t *testing.T) {
 	em := &recordingEmitter{}
 	e := newWriteEnv(t, withEmitter(em))
-	numbered := map[string]bool{"update issue": true, "close issue": true, "comment on issue": true, "add labels": true, "remove label": true}
+	numbered := map[string]bool{"update issue": true, "close issue": true, "comment on issue": true, "add labels": true, "remove label": true, "comment on pull request": true}
 	for _, route := range writeRouteCases {
 		if !numbered[route.name] {
 			continue
