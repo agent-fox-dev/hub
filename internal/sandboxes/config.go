@@ -48,6 +48,10 @@ type Config struct {
 	// ReapInterval is how often the reaper sweeps, a Go duration string; nil when
 	// absent.
 	ReapInterval *string `toml:"reap_interval"`
+	// GatewayURL and GatewayToken locate and open the remote agentkit-gateway that
+	// provider "gateway" runs the sandboxes on; empty when absent.
+	GatewayURL   string `toml:"gateway_url"`
+	GatewayToken string `toml:"gateway_token"`
 	// Profiles are the [[sandbox.profiles]] tables in file order.
 	Profiles []ProfileConfig `toml:"profiles"`
 }

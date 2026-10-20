@@ -64,7 +64,7 @@
         "internal/sandboxes/validate_gateway_url_test.go",
         "internal/sandboxes/redact_test.go"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 2,

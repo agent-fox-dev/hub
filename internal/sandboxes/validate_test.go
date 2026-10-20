@@ -75,18 +75,18 @@ func TestValidate_ProviderRequired_TS_25_9(t *testing.T) {
 	requireFailure(t, err, "sandbox.provider", "required")
 }
 
-// TS-25-10: provider gateway is unsupported in this build and any other
-// unknown provider lists the accepted values.
+// TS-25-10: provider gateway is accepted since spec 29, which replaced the
+// refusal of 25-REQ-2.2 (see docs/errata/29_sandbox_gateway_provider_divergences.md),
+// and any other unknown provider lists the accepted values.
 // Requirements: 25-REQ-2.2, 25-REQ-2.3
 func TestValidate_UnsupportedProviders_TS_25_10(t *testing.T) {
-	cfg := validConfig()
-	cfg.Provider = "gateway"
-	_, err := Validate(cfg)
-	requireFailure(t, err, "sandbox.provider", "not supported by this build")
+	if _, err := Validate(remoteConfig("https://gw.example")); err != nil {
+		t.Errorf("provider gateway with a gateway_url and a gateway_token returned error: %v", err)
+	}
 
-	cfg = validConfig()
+	cfg := validConfig()
 	cfg.Provider = "kubernetes"
-	_, err = Validate(cfg)
+	_, err := Validate(cfg)
 	requireFailure(t, err, "sandbox.provider", "kubernetes", "podman")
 	if strings.Contains(err.Error(), "not supported by this build") {
 		t.Errorf("an unknown provider got the gateway message: %v", err)
