@@ -1,0 +1,1159 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/test_spec.v2.json",
+  "spec_id": "31",
+  "spec_name": "forge_writes",
+  "schema_version": 2,
+  "tests": [
+    {
+      "id": "TS-31-1",
+      "kind": "unit",
+      "verifies": [
+        "31-REQ-1.1"
+      ],
+      "title": "A request failing several checks answers the status of the earliest failing check",
+      "given": [
+        "a forge handler set with a recording forge stub and recording emitter",
+        "an archived workspace owned by another user",
+        "a workspace whose origin forge host is unknown"
+      ],
+      "when": "write requests are sent that fail combinations of checks: no credential plus bad body; forge:read-only PAT plus missing workspace; non-owner on archived workspace; active owned workspace with malformed JSON and unknown forge; unknown forge with oversized body",
+      "then": [
+        "the statuses are 401, 403, 404, 400 (not active), 400 (invalid request before client resolution), 422 (before 413) respectively",
+        "the forge stub received no request in any case"
+      ],
+      "pseudocode": "for case in combos: r = send(case.req); assert r.status == case.expected_earliest; assert stub.count == 0"
+    },
+    {
+      "id": "TS-31-2",
+      "kind": "unit",
+      "verifies": [
+        "31-REQ-1.2"
+      ],
+      "title": "A PAT without forge:write, including forge:read only, is refused with 403 on every write route",
+      "given": [
+        "a PAT holding only forge:read",
+        "an owned active workspace"
+      ],
+      "when": "each of the nine write routes is called with the PAT",
+      "then": [
+        "every answer is 403 with message \"PAT requires forge:write scope\"",
+        "the forge stub received no request"
+      ],
+      "pseudocode": "for route in WRITE_ROUTES: r = call(route, pat(['forge:read'])); assert r.status == 403; assert r.msg == 'PAT requires forge:write scope'; assert stub.count == 0"
+    },
+    {
+      "id": "TS-31-3",
+      "kind": "unit",
+      "verifies": [
+        "31-REQ-1.3"
+      ],
+      "title": "An unknown credential type is denied the write scope check",
+      "given": [
+        "an AuthInfo whose CredentialType is \"service\" injected with apikit.SetAuthInfo"
+      ],
+      "when": "a write route is called",
+      "then": [
+        "the answer is 403",
+        "the forge stub received no request"
+      ]
+    },
+    {
+      "id": "TS-31-4",
+      "kind": "unit",
+      "verifies": [
+        "31-REQ-1.4"
+      ],
+      "title": "API keys and admin tokens pass the scope check without permissions",
+      "given": [
+        "an api_key credential with empty permissions and an admin_token credential",
+        "an owned active workspace with a forge stub"
+      ],
+      "when": "POST /issues is called with each credential",
+      "then": [
+        "neither response status is 401 or 403",
+        "the request proceeds to the forge (201)"
+      ]
+    },
+    {
+      "id": "TS-31-5",
+      "kind": "unit",
+      "verifies": [
+        "31-REQ-1.5"
+      ],
+      "title": "A missing or not-owned workspace answers 404 workspace not found on every write route",
+      "given": [
+        "a workspace owned by another user and a slug that does not exist"
+      ],
+      "when": "each write route is called by a non-owner with forge:write for both slugs",
+      "then": [
+        "every answer is 404 with message \"workspace not found\"",
+        "no credential resolution happens and the forge stub received no request"
+      ]
+    },
+    {
+      "id": "TS-31-6",
+      "kind": "unit",
+      "verifies": [
+        "31-REQ-1.6"
+      ],
+      "title": "An archived workspace answers 400 workspace is not active on every write route",
+      "given": [
+        "an archived workspace owned by the caller"
+      ],
+      "when": "each write route is called by the owner with a valid body",
+      "then": [
+        "every answer is 400 with message \"workspace is not active\"",
+        "the forge stub received no request"
+      ]
+    },
+    {
+      "id": "TS-31-7",
+      "kind": "property",
+      "verifies": [
+        "31-REQ-1.7"
+      ],
+      "title": "Any hub-side rejection sends no forge request and records no event",
+      "given": [
+        "a forge stub and a recording emitter"
+      ],
+      "when": "for any write route and any hub-side rejection class (401, 403, 404, inactive 400, invalid-request 400, workspace_mode_mismatch 400, 422 client resolution, credential error, 413 body_too_large)",
+      "then": [
+        "the forge stub request count is unchanged",
+        "the recorded event count is unchanged"
+      ],
+      "pseudocode": "for route, rejection in product(WRITE_ROUTES, REJECTIONS): before=(stub.n, em.n); send(route, rejection); assert (stub.n, em.n) == before"
+    },
+    {
+      "id": "TS-31-8",
+      "kind": "integration",
+      "verifies": [
+        "31-REQ-1.8"
+      ],
+      "title": "Writes ignore clone_status and the workspace lock",
+      "given": [
+        "an active workspace with clone_status pending",
+        "the workspace lock is held by another operation (wslock.Lock)"
+      ],
+      "when": "POST /issues is called with a valid body",
+      "then": [
+        "the status is 201, the same as for a ready unlocked workspace",
+        "the call does not block on the lock"
+      ],
+      "pseudocode": "unlock = wslock.Lock(slug); r = post('/issues', valid); assert r.status == 201"
+    },
+    {
+      "id": "TS-31-9",
+      "kind": "integration",
+      "verifies": [
+        "31-REQ-2.1"
+      ],
+      "title": "Creating an issue sends the workspace GIT_PAT and never the caller bearer",
+      "given": [
+        "a GitHub forge stub",
+        "an active workspace with stored GIT_PAT",
+        "an API key caller"
+      ],
+      "when": "POST /issues {\"title\":\"t\",\"body\":\"b\",\"labels\":[\"af:triage\"],\"extra\":1} is called",
+      "then": [
+        "the status is 201 and the body is the issue as issuex encodes it",
+        "the stub received Authorization with the GIT_PAT value and not the caller bearer",
+        "the unknown field extra caused no error"
+      ]
+    },
+    {
+      "id": "TS-31-10",
+      "kind": "unit",
+      "verifies": [
+        "31-REQ-2.2"
+      ],
+      "title": "Invalid POST /issues bodies answer 400 naming the field",
+      "given": [
+        "an active owned workspace and a forge stub"
+      ],
+      "when": "POST /issues is sent with absent title, blank title \"  \", 101 labels, a blank label, 101 assignees, and a blank assignee",
+      "then": [
+        "each answer is 400 and the message names title, labels or assignees accordingly",
+        "the forge stub received no request"
+      ]
+    },
+    {
+      "id": "TS-31-11",
+      "kind": "integration",
+      "verifies": [
+        "31-REQ-2.3"
+      ],
+      "title": "PATCH sends only present fields and honours clear semantics",
+      "given": [
+        "a GitHub forge stub recording update request bodies"
+      ],
+      "when": "PATCH /issues/42 is sent with {\"body\":\"\"}, then {\"title\":\"x\",\"state\":\"closed\",\"labels\":[],\"assignees\":[\"a\"],\"body\":null}",
+      "then": [
+        "both answers are 200 with the issue as the forge returns it",
+        "first stub update contains exactly body \"\"",
+        "second contains exactly title, state, labels [] and assignees [\"a\"], and no body key"
+      ]
+    },
+    {
+      "id": "TS-31-12",
+      "kind": "unit",
+      "verifies": [
+        "31-REQ-2.4"
+      ],
+      "title": "Invalid PATCH bodies answer 400 naming the field",
+      "given": [
+        "an active owned workspace and a forge stub"
+      ],
+      "when": "PATCH /issues/42 is sent with blank title, state \"merged\", 101 labels, a blank assignee",
+      "then": [
+        "each answer is 400 naming title, state, labels or assignees",
+        "the forge stub received no request"
+      ]
+    },
+    {
+      "id": "TS-31-13",
+      "kind": "unit",
+      "verifies": [
+        "31-REQ-2.5"
+      ],
+      "title": "PATCH with nothing to change answers 400 nothing to update",
+      "given": [
+        "an active owned workspace and a forge stub"
+      ],
+      "when": "PATCH /issues/42 is sent with {} and with {\"title\":null,\"body\":null}",
+      "then": [
+        "both answers are 400 with message \"nothing to update\"",
+        "the forge stub received no request"
+      ]
+    },
+    {
+      "id": "TS-31-14",
+      "kind": "integration",
+      "verifies": [
+        "31-REQ-2.6"
+      ],
+      "title": "Issue create and update work on both GitHub and GitLab with :n as the iid",
+      "given": [
+        "one GitHub workspace and one GitLab workspace, each with its own stub"
+      ],
+      "when": "POST /issues and PATCH /issues/42 are called on each",
+      "then": [
+        "both forges answer 201 for create and 200 for update",
+        "the GitHub stub sees issue 42, the GitLab stub sees iid 42"
+      ]
+    },
+    {
+      "id": "TS-31-15",
+      "kind": "integration",
+      "verifies": [
+        "31-REQ-3.1"
+      ],
+      "title": "Close without a usable comment closes only, also an already closed issue",
+      "given": [
+        "a forge stub with an open issue 7 and a closed issue 8"
+      ],
+      "when": "POST /issues/7/close with no body, with {} , and with {\"comment\":\"   \"}, and POST /issues/8/close",
+      "then": [
+        "every answer is 200 with the issue after the close",
+        "the stub received no comment request",
+        "closing the already closed issue answers 200"
+      ]
+    },
+    {
+      "id": "TS-31-16",
+      "kind": "integration",
+      "verifies": [
+        "31-REQ-3.2"
+      ],
+      "title": "Close with a comment posts the comment before the close",
+      "given": [
+        "a forge stub recording request order"
+      ],
+      "when": "POST /issues/42/close {\"comment\":\"done\"} is called",
+      "then": [
+        "the answer is 200 with the closed issue",
+        "the stub records the comment request before the close request"
+      ],
+      "pseudocode": "assert stub.requests[0].kind == 'comment'; assert stub.requests[1].kind == 'close'"
+    },
+    {
+      "id": "TS-31-17",
+      "kind": "integration",
+      "verifies": [
+        "31-REQ-3.3"
+      ],
+      "title": "A failed close comment prevents the close request",
+      "given": [
+        "a forge stub that answers 403 to the comment request"
+      ],
+      "when": "POST /issues/42/close {\"comment\":\"done\"} is called",
+      "then": [
+        "the answer carries the status and error_type of the mapped 403 (forge_forbidden)",
+        "the stub recorded no close request"
+      ]
+    },
+    {
+      "id": "TS-31-18",
+      "kind": "integration",
+      "verifies": [
+        "31-REQ-3.4"
+      ],
+      "title": "A close that fails after the comment answers the close error and records comment_url",
+      "given": [
+        "a forge stub that accepts the comment and answers 500 to the close"
+      ],
+      "when": "POST /issues/42/close {\"comment\":\"done\"} is called",
+      "then": [
+        "the answer is the mapped error of the close failure",
+        "the hub.forge.issue.close event has ok false, an error_type and comment_url set to the comment URL"
+      ]
+    },
+    {
+      "id": "TS-31-19",
+      "kind": "integration",
+      "verifies": [
+        "31-REQ-3.5"
+      ],
+      "title": "Commenting on an issue answers 201 with the comment URL",
+      "given": [
+        "a forge stub returning a comment URL"
+      ],
+      "when": "POST /issues/42/comments {\"body\":\"hello\"} is called",
+      "then": [
+        "the status is 201",
+        "the body is {\"url\":\"<comment url>\"}"
+      ]
+    },
+    {
+      "id": "TS-31-20",
+      "kind": "unit",
+      "verifies": [
+        "31-REQ-3.6"
+      ],
+      "title": "An absent or blank issue comment body answers 400 naming body",
+      "given": [
+        "an active owned workspace and a forge stub"
+      ],
+      "when": "POST /issues/42/comments is sent with {} and {\"body\":\"  \"}",
+      "then": [
+        "both answers are 400 and the message names body",
+        "the forge stub received no request"
+      ]
+    },
+    {
+      "id": "TS-31-21",
+      "kind": "integration",
+      "verifies": [
+        "31-REQ-4.1"
+      ],
+      "title": "Adding labels answers 204 and passes through a forge refusal",
+      "given": [
+        "a forge stub; one run succeeds, another answers 422 for an unknown label"
+      ],
+      "when": "POST /issues/42/labels [\"af:ready\",\"af:fix\"] is called",
+      "then": [
+        "on success the status is 204 with an empty body and the stub received both names",
+        "on refusal the answer carries the status and error_type of the mapping"
+      ]
+    },
+    {
+      "id": "TS-31-22",
+      "kind": "unit",
+      "verifies": [
+        "31-REQ-4.2"
+      ],
+      "title": "Invalid label-add bodies answer 400 without a forge request",
+      "given": [
+        "an active owned workspace and a forge stub"
+      ],
+      "when": "POST /issues/42/labels is sent with an object, [], 101 names, [1], and [\"  \"]",
+      "then": [
+        "every answer is 400",
+        "the forge stub received no request"
+      ]
+    },
+    {
+      "id": "TS-31-23",
+      "kind": "integration",
+      "verifies": [
+        "31-REQ-4.3"
+      ],
+      "title": "A label name is percent-decoded exactly once",
+      "given": [
+        "a forge stub recording the removed label name"
+      ],
+      "when": "DELETE /issues/42/labels/type%2Fbug and DELETE /issues/42/labels/af:fix are called",
+      "then": [
+        "both answer 204",
+        "the stub received type/bug and af:fix"
+      ]
+    },
+    {
+      "id": "TS-31-24",
+      "kind": "integration",
+      "verifies": [
+        "31-REQ-4.4"
+      ],
+      "title": "Not-found on removal with an existing issue answers 204 after one read-back",
+      "given": [
+        "a forge stub answering 404 to label removal and 200 to the issue read"
+      ],
+      "when": "DELETE /issues/42/labels/af:fix is called",
+      "then": [
+        "the status is 204",
+        "the stub received exactly one issue read request after the removal"
+      ]
+    },
+    {
+      "id": "TS-31-25",
+      "kind": "integration",
+      "verifies": [
+        "31-REQ-4.5"
+      ],
+      "title": "Not-found on removal and on read-back answers 404 forge_not_found",
+      "given": [
+        "a forge stub answering 404 to both the removal and the issue read"
+      ],
+      "when": "DELETE /issues/99/labels/af:fix is called",
+      "then": [
+        "the status is 404 with error_type forge_not_found",
+        "exactly one read-back request was sent"
+      ]
+    },
+    {
+      "id": "TS-31-26",
+      "kind": "integration",
+      "verifies": [
+        "31-REQ-4.6"
+      ],
+      "title": "Label add and remove answer 204 on both GitHub and GitLab",
+      "given": [
+        "a GitHub workspace and a GitLab workspace with stubs"
+      ],
+      "when": "POST /issues/42/labels [\"af:ready\"] and DELETE /issues/42/labels/af:fix are called on each",
+      "then": [
+        "all four answers are 204"
+      ]
+    },
+    {
+      "id": "TS-31-27",
+      "kind": "unit",
+      "verifies": [
+        "31-REQ-5.1"
+      ],
+      "title": "Invalid POST /labels bodies answer 400 naming the field",
+      "given": [
+        "an active owned workspace and a forge stub"
+      ],
+      "when": "POST /labels is sent with no name, blank name, color \"red\", color \"12345\", color \"#12345g\"",
+      "then": [
+        "each answer is 400 naming name or color",
+        "the forge stub received no request"
+      ]
+    },
+    {
+      "id": "TS-31-28",
+      "kind": "integration",
+      "verifies": [
+        "31-REQ-5.2"
+      ],
+      "title": "An existing label is returned unchanged with no create request",
+      "given": [
+        "a forge stub holding label af:triage with color ff0000 and description old"
+      ],
+      "when": "POST /labels {\"name\":\"af:triage\",\"color\":\"00ff00\",\"description\":\"new\"} is called",
+      "then": [
+        "the status is 200 with the label as the forge holds it (ff0000, old)",
+        "the stub recorded no label-create or update request"
+      ]
+    },
+    {
+      "id": "TS-31-29",
+      "kind": "integration",
+      "verifies": [
+        "31-REQ-5.3"
+      ],
+      "title": "A missing label is created with the default color ededed",
+      "given": [
+        "a forge stub without the label"
+      ],
+      "when": "POST /labels {\"name\":\"af:triage\",\"description\":\"d\"} and POST /labels {\"name\":\"b\",\"color\":\"#AABBCC\"} are called",
+      "then": [
+        "both answers are 201 with the created label",
+        "the first create carried color ededed and description d",
+        "the second carried the color without the leading #"
+      ]
+    },
+    {
+      "id": "TS-31-30",
+      "kind": "integration",
+      "verifies": [
+        "31-REQ-5.4"
+      ],
+      "title": "A refused create is followed by exactly one more lookup",
+      "given": [
+        "a forge stub whose first lookup says not found and whose create answers 422; in one run the second lookup finds the label, in another it does not"
+      ],
+      "when": "POST /labels {\"name\":\"af:triage\"} is called in each run",
+      "then": [
+        "run one answers 200 with the label after exactly two lookups",
+        "run two answers the status and error_type the mapping assigns to the create failure, after exactly two lookups"
+      ]
+    },
+    {
+      "id": "TS-31-31",
+      "kind": "integration",
+      "verifies": [
+        "31-REQ-5.5"
+      ],
+      "title": "Two sequential label creates answer 201 then 200 with one create request",
+      "given": [
+        "a stateful forge stub that stores created labels"
+      ],
+      "when": "POST /labels {\"name\":\"af:triage\"} is called twice",
+      "then": [
+        "the first answer is 201 and the second 200",
+        "the stub recorded exactly one label-create request"
+      ]
+    },
+    {
+      "id": "TS-31-32",
+      "kind": "integration",
+      "verifies": [
+        "31-REQ-6.1"
+      ],
+      "title": "Opening a pull request passes head verbatim and defaults draft to false",
+      "given": [
+        "a GitHub forge stub"
+      ],
+      "when": "POST /pulls {\"title\":\"t\",\"head\":\"me:feature\",\"base\":\"main\"} is called",
+      "then": [
+        "the status is 201 with the pull request as issuex encodes it",
+        "the stub received head me:feature, base main and draft false"
+      ]
+    },
+    {
+      "id": "TS-31-33",
+      "kind": "integration",
+      "verifies": [
+        "31-REQ-6.2"
+      ],
+      "title": "?target=upstream opens the pull request on upstream_url with the upstream credential",
+      "given": [
+        "a carry_patch workspace with distinct origin and upstream stubs and credentials"
+      ],
+      "when": "POST /pulls?target=upstream is called",
+      "then": [
+        "the status is 201",
+        "the upstream stub received the request with the upstream token",
+        "the origin stub received no request"
+      ]
+    },
+    {
+      "id": "TS-31-34",
+      "kind": "unit",
+      "verifies": [
+        "31-REQ-6.3"
+      ],
+      "title": "?target=upstream on a standard workspace answers 400 workspace_mode_mismatch",
+      "given": [
+        "a standard workspace with a forge stub and recording emitter"
+      ],
+      "when": "POST /pulls?target=upstream is called",
+      "then": [
+        "the status is 400 with error_type workspace_mode_mismatch",
+        "no forge request and no audit event"
+      ]
+    },
+    {
+      "id": "TS-31-35",
+      "kind": "unit",
+      "verifies": [
+        "31-REQ-6.4"
+      ],
+      "title": "Invalid POST /pulls bodies answer 400 naming the field",
+      "given": [
+        "an active owned workspace and a forge stub"
+      ],
+      "when": "POST /pulls is sent without title, with blank head, with blank base, and with draft \"yes\"",
+      "then": [
+        "each answer is 400 naming title, head, base or draft",
+        "the forge stub received no request"
+      ]
+    },
+    {
+      "id": "TS-31-36",
+      "kind": "integration",
+      "verifies": [
+        "31-REQ-6.5"
+      ],
+      "title": "A forge refusal of the pull request goes through the error mapping",
+      "given": [
+        "a forge stub answering 422 because a pull request already exists"
+      ],
+      "when": "POST /pulls with valid body is called",
+      "then": [
+        "the status is 422 with error_type forge_rejected"
+      ]
+    },
+    {
+      "id": "TS-31-37",
+      "kind": "integration",
+      "verifies": [
+        "31-REQ-6.6"
+      ],
+      "title": "Commenting on a pull request answers 201 with the URL; blank body answers 400",
+      "given": [
+        "a forge stub returning a comment URL"
+      ],
+      "when": "POST /pulls/5/comments {\"body\":\"lgtm\"} and then {\"body\":\" \"} are called",
+      "then": [
+        "the first answers 201 {\"url\":\"<comment url>\"} via PostReviewComment",
+        "the second answers 400 naming body and sends no forge request"
+      ]
+    },
+    {
+      "id": "TS-31-38",
+      "kind": "integration",
+      "verifies": [
+        "31-REQ-7.1"
+      ],
+      "title": "A GitHub body of 65,537 characters answers 413 body_too_large for every body-like field",
+      "given": [
+        "a GitHub workspace with a forge stub and recording emitter"
+      ],
+      "when": "each of issue create body, issue update body, close comment, issue comment body, pull request body and pull-request comment body is 65,537 characters",
+      "then": [
+        "each answer is 413 with error_type body_too_large",
+        "the message is like \"body is 65537 characters; github accepts at most 65536\" and names the field",
+        "the stub received no request and no event was recorded"
+      ]
+    },
+    {
+      "id": "TS-31-39",
+      "kind": "integration",
+      "verifies": [
+        "31-REQ-7.2"
+      ],
+      "title": "A GitLab body over 1,000,000 characters answers 413 naming gitlab and the limit",
+      "given": [
+        "a GitLab workspace with a forge stub"
+      ],
+      "when": "POST /issues with a 1,000,001-character body is called, and one with exactly 1,000,000 characters",
+      "then": [
+        "the first answers 413 body_too_large naming gitlab and 1000000 with no forge request",
+        "the second reaches the forge and answers 201"
+      ]
+    },
+    {
+      "id": "TS-31-40",
+      "kind": "property",
+      "verifies": [
+        "31-REQ-7.3"
+      ],
+      "title": "Body length is counted in code points: the limit passes, one more is refused",
+      "given": [
+        "GitHub and GitLab workspaces with stubs"
+      ],
+      "when": "for any body-like field, any forge and any code point of 1 to 4 bytes, a string of exactly the limit length and a string of limit+1 length",
+      "then": [
+        "the string at the limit reaches the forge (e.g. 65,536 four-byte characters pass on GitHub)",
+        "the string one code point longer answers 413 regardless of byte size"
+      ],
+      "pseudocode": "for field, forge, ch in product(FIELDS, FORGES, CHARS): assert send(ch*limit).status != 413; assert send(ch*(limit+1)).status == 413"
+    },
+    {
+      "id": "TS-31-41",
+      "kind": "unit",
+      "verifies": [
+        "31-REQ-7.4"
+      ],
+      "title": "An oversized body on an unresolvable client answers 422 forge_unknown",
+      "given": [
+        "a workspace whose git_url host is not a known forge"
+      ],
+      "when": "POST /issues with a 70,000-character body is called",
+      "then": [
+        "the status is 422 with error_type forge_unknown, not 413"
+      ]
+    },
+    {
+      "id": "TS-31-42",
+      "kind": "integration",
+      "verifies": [
+        "31-REQ-7.5"
+      ],
+      "title": "Titles and other non-body fields get no hub length check",
+      "given": [
+        "a GitHub workspace with a forge stub"
+      ],
+      "when": "POST /issues with a 70,000-character title is called",
+      "then": [
+        "the request reaches the forge stub",
+        "the answer is not 413"
+      ]
+    },
+    {
+      "id": "TS-31-43",
+      "kind": "integration",
+      "verifies": [
+        "31-REQ-8.1"
+      ],
+      "title": "Forge write failures use the shared mapping, including 429 with Retry-After",
+      "given": [
+        "a forge stub answering 401, 403, 404, 429 with Retry-After: 30, and 500 in turn"
+      ],
+      "when": "POST /issues is called against each",
+      "then": [
+        "the statuses and error_types are those of the spec 30 mapping",
+        "the 429 answer is forge_rate_limited with Retry-After 30",
+        "messages are scrubbed"
+      ]
+    },
+    {
+      "id": "TS-31-44",
+      "kind": "unit",
+      "verifies": [
+        "31-REQ-8.2"
+      ],
+      "title": "Hub adds no retries to a failing write step",
+      "given": [
+        "a fake issuex client factory failing every call with a 5xx, timeout or unreachable error"
+      ],
+      "when": "each write route is called once",
+      "then": [
+        "each issuex write method is invoked exactly once per step (close-with-comment: one comment call and no close call)"
+      ],
+      "pseudocode": "for route in WRITE_ROUTES: fake.reset(); call(route); assert fake.calls_per_method.values() <= 1"
+    },
+    {
+      "id": "TS-31-45",
+      "kind": "integration",
+      "verifies": [
+        "31-REQ-8.3"
+      ],
+      "title": "A write continues and is recorded after the caller disconnects",
+      "given": [
+        "a forge stub that delays its answer",
+        "a request context cancelled while the forge call is in flight"
+      ],
+      "when": "POST /issues is sent and the caller cancels before the stub answers",
+      "then": [
+        "the stub completes the write",
+        "exactly one event is recorded after the cancel"
+      ]
+    },
+    {
+      "id": "TS-31-46",
+      "kind": "unit",
+      "verifies": [
+        "31-REQ-8.4"
+      ],
+      "title": "Each forge request of a multi-request operation gets a fresh per-call timeout",
+      "given": [
+        "a configured per-call timeout and a fake client whose first call consumes most of it"
+      ],
+      "when": "close-with-comment, label lookup then create, and label removal then read-back are run",
+      "then": [
+        "the context of each second request has a deadline of the full timeout from its own start"
+      ],
+      "pseudocode": "d2 = ctx_of_call2.deadline - start_of_call2; assert d2 >= timeout - epsilon"
+    },
+    {
+      "id": "TS-31-47",
+      "kind": "property",
+      "verifies": [
+        "31-REQ-8.5"
+      ],
+      "title": "No credential or URL userinfo appears in responses, logs or events",
+      "given": [
+        "a GIT_PAT token and a git_url carrying user:pass@ userinfo",
+        "captured slog output and a recording emitter"
+      ],
+      "when": "for any write route and any outcome (success and each error class, including forge messages echoing the token)",
+      "then": [
+        "no response body, header, log line or event metadata contains the token or a user:pass@ sequence"
+      ],
+      "pseudocode": "for route, outcome in product(WRITE_ROUTES, OUTCOMES): run(); assert token not in all_captured and 'user:pass@' not in all_captured"
+    },
+    {
+      "id": "TS-31-48",
+      "kind": "integration",
+      "verifies": [
+        "31-REQ-9.1"
+      ],
+      "title": "Exactly one event per write that reached the forge, with actor and workspace",
+      "given": [
+        "a recording emitter and forge stub",
+        "an API key caller with a known UserID"
+      ],
+      "when": "a successful write, a forge-failed write and a close-with-comment are each made",
+      "then": [
+        "each request records exactly one event with ActorID = UserID, ActorType = api_key and Workspace = slug",
+        "close-with-comment records only hub.forge.issue.close, no comment event",
+        "the event is recorded before the response is observed"
+      ]
+    },
+    {
+      "id": "TS-31-49",
+      "kind": "integration",
+      "verifies": [
+        "31-REQ-9.2"
+      ],
+      "title": "Each route records its event type, resource type, resource id and action",
+      "given": [
+        "a recording emitter and forge stub"
+      ],
+      "when": "each of the nine write routes is called successfully with n=42, and issue and pull-request creation are also called against a failing stub",
+      "then": [
+        "the events match the table: issue create hub.forge.issue.create/issue/<new number>/create, update, close, comment.create, label.add, label.remove, label.create (resource_id is the label name), pull_request.create, pull_request.comment",
+        "resource_id is empty on a failed issue or pull-request create"
+      ]
+    },
+    {
+      "id": "TS-31-50",
+      "kind": "integration",
+      "verifies": [
+        "31-REQ-9.3"
+      ],
+      "title": "Common metadata holds target, ok, number and a userinfo-free url",
+      "given": [
+        "a recording emitter and forge stub returning an issue URL containing userinfo"
+      ],
+      "when": "a successful POST /issues and a failing POST /issues (forge 403) are made",
+      "then": [
+        "success metadata is {target: origin, ok: true, number: <JSON number>, url: <issue url without userinfo>} with no error_type",
+        "failure metadata has ok false and error_type forge_forbidden and no url"
+      ]
+    },
+    {
+      "id": "TS-31-51",
+      "kind": "integration",
+      "verifies": [
+        "31-REQ-9.4"
+      ],
+      "title": "Per-type metadata is recorded",
+      "given": [
+        "a recording emitter and forge stub"
+      ],
+      "when": "PATCH with body and labels, close with comment, label add, label remove, POST /labels twice, and POST /pulls with draft true are called",
+      "then": [
+        "update records fields [\"body\",\"labels\"]",
+        "close records comment_url",
+        "add records labels, remove records label",
+        "the first label create records created true and the second created false",
+        "pull request create records head, base and draft"
+      ]
+    },
+    {
+      "id": "TS-31-52",
+      "kind": "property",
+      "verifies": [
+        "31-REQ-9.5"
+      ],
+      "title": "Event metadata never holds content, credentials or forge messages",
+      "given": [
+        "a recording emitter",
+        "forge stubs that echo bodies and tokens in their error messages"
+      ],
+      "when": "for any write route, any title, body, comment text and token strings, and any forge outcome",
+      "then": [
+        "no metadata value equals or contains the title, body, comment text, token or forge error message"
+      ],
+      "pseudocode": "for req, outcome in gen(): run(req, outcome); for v in flatten(event.metadata): assert not any(s in str(v) for s in secrets_and_texts)"
+    },
+    {
+      "id": "TS-31-53",
+      "kind": "unit",
+      "verifies": [
+        "31-REQ-9.6"
+      ],
+      "title": "With no emitter configured writes behave the same and record nothing",
+      "given": [
+        "forge.Config with Audit nil"
+      ],
+      "when": "POST /issues and POST /labels are called",
+      "then": [
+        "the statuses and bodies equal those with an emitter configured",
+        "no panic occurs"
+      ]
+    },
+    {
+      "id": "TS-31-54",
+      "kind": "unit",
+      "verifies": [
+        "31-REQ-9.7"
+      ],
+      "title": "An emit failure is logged and leaves the response unchanged",
+      "given": [
+        "an emitter that returns an error",
+        "captured slog output"
+      ],
+      "when": "POST /issues succeeds at the forge",
+      "then": [
+        "the status is 201 with the normal body",
+        "one error log line names hub.forge.issue.create and the workspace"
+      ]
+    },
+    {
+      "id": "TS-31-55",
+      "kind": "integration",
+      "verifies": [
+        "31-REQ-9.8"
+      ],
+      "title": "Event constants are documented and a write is queryable through the audit API",
+      "given": [
+        "the nine Event* constants in internal/audit/types.go",
+        "a hub wired like main.go with audit.NewEmitterWithBroadcast over a real audit store and SSE manager"
+      ],
+      "when": "a write is made and GET /api/v1/audit?workspace=<slug> is called",
+      "then": [
+        "the nine constants have the documented hub.forge.* values",
+        "the audit query returns the hub.forge.issue.create event",
+        "the SSE stream for the workspace receives it"
+      ]
+    },
+    {
+      "id": "TS-31-56",
+      "kind": "integration",
+      "verifies": [
+        "31-REQ-10.1"
+      ],
+      "title": "The write commands send the matching routes and print one JSON document",
+      "given": [
+        "a stub hub recording requests and answering with JSON"
+      ],
+      "when": "afc issue create|update|close|comment, afc label create and afc pr create|comment are run with valid arguments, with a slug and label name needing escaping",
+      "then": [
+        "each sends POST /issues, PATCH /issues/<n>, POST /issues/<n>/close, POST /issues/<n>/comments, POST /labels, POST /pulls, POST /pulls/<n>/comments with escaped segments",
+        "each exits 0 and prints exactly one JSON document equal to the hub response"
+      ]
+    },
+    {
+      "id": "TS-31-57",
+      "kind": "integration",
+      "verifies": [
+        "31-REQ-10.2"
+      ],
+      "title": "label and unlabel print synthetic status documents on 204",
+      "given": [
+        "a stub hub answering 204"
+      ],
+      "when": "afc issue label w 3 a b and afc issue unlabel w 3 type/bug are run",
+      "then": [
+        "POST /issues/3/labels carries the bare array [\"a\",\"b\"]",
+        "DELETE /issues/3/labels/type%2Fbug is sent",
+        "stdout is {\"status\":\"labeled\",\"number\":3,\"labels\":[\"a\",\"b\"]} and {\"status\":\"unlabeled\",\"number\":3,\"label\":\"type/bug\"}",
+        "exit code 0"
+      ]
+    },
+    {
+      "id": "TS-31-58",
+      "kind": "integration",
+      "verifies": [
+        "31-REQ-10.3"
+      ],
+      "title": "--body-file reads a file or stdin verbatim without trimming",
+      "given": [
+        "a file and stdin with identical content ending in a newline"
+      ],
+      "when": "afc issue create w --title t --body-file <file> and --body-file - are run",
+      "then": [
+        "both requests carry byte-identical body values including the trailing newline"
+      ]
+    },
+    {
+      "id": "TS-31-59",
+      "kind": "unit",
+      "verifies": [
+        "31-REQ-10.4"
+      ],
+      "title": "Usage errors exit 2 without sending a request",
+      "given": [
+        "a stub hub recording requests"
+      ],
+      "when": "commands are run with --body plus --body-file, an unreadable body file, a missing --title, --head, --base or comment body, issue number 0 or abc, and issue update with no flags",
+      "then": [
+        "each exits with code 2 and a message such as \"--title flag is required\"",
+        "the stub hub recorded no request"
+      ]
+    },
+    {
+      "id": "TS-31-60",
+      "kind": "integration",
+      "verifies": [
+        "31-REQ-10.5"
+      ],
+      "title": "Only set flags are sent and --target is added only when set",
+      "given": [
+        "a stub hub recording method, path, query and body"
+      ],
+      "when": "afc issue update w 3 --body \"\", afc issue update w 3 --label a,b --assignee x --assignee y, and afc issue create w --title t --target upstream are run",
+      "then": [
+        "the first sends {\"body\":\"\"} with no query string",
+        "the second sends labels [\"a,b\"] and assignees [\"x\",\"y\"] only",
+        "the third sends ?target=upstream",
+        "update help text says labels and assignees replace the set"
+      ]
+    },
+    {
+      "id": "TS-31-61",
+      "kind": "integration",
+      "verifies": [
+        "31-REQ-10.6"
+      ],
+      "title": "Hub errors go through apikit.CLIHandleError with apikit's exit code",
+      "given": [
+        "a stub hub answering 413 body_too_large and 404 forge_not_found"
+      ],
+      "when": "afc issue create and afc issue unlabel are run",
+      "then": [
+        "exit codes are the non-zero ones apikit assigns to 413 and 404",
+        "the error is reported through CLIHandleError"
+      ]
+    },
+    {
+      "id": "TS-31-62",
+      "kind": "smoke",
+      "verifies": [
+        "31-PATH-1",
+        "31-REQ-9.1",
+        "31-REQ-9.3"
+      ],
+      "title": "An API-key caller creates an issue and finds its audit event",
+      "given": [
+        "a running hub wiring with real routes, workspace store and audit store",
+        "a GitHub stub and a workspace widgets with a stored GIT_PAT"
+      ],
+      "when": "POST /api/v1/workspaces/widgets/issues {\"title\":\"t\",\"body\":\"b\",\"labels\":[\"af:triage\"]} is sent with an API key, then GET /api/v1/audit?workspace=widgets",
+      "then": [
+        "the answer is 201 with the forge's issue",
+        "the stub received the GIT_PAT and not the caller's bearer",
+        "the audit query returns exactly one hub.forge.issue.create event with workspace widgets, target origin, the new number, the issue url and ok true"
+      ],
+      "real_components": [
+        "forge handlers",
+        "issuex client",
+        "wsaccess",
+        "audit emitter",
+        "audit store",
+        "httptest GitHub stub"
+      ]
+    },
+    {
+      "id": "TS-31-63",
+      "kind": "smoke",
+      "verifies": [
+        "31-PATH-2",
+        "31-REQ-3.2",
+        "31-REQ-10.1"
+      ],
+      "title": "A user closes a GitLab issue with a comment through afc",
+      "given": [
+        "a running hub with a GitLab stub and workspace widgets",
+        "the built afc command pointed at the hub"
+      ],
+      "when": "afc issue close widgets 42 --comment done is run",
+      "then": [
+        "the GitLab stub records the comment on iid 42 then the close",
+        "one hub.forge.issue.close event with comment_url and ok true is recorded",
+        "afc prints the closed issue as one JSON document and exits 0"
+      ],
+      "real_components": [
+        "afc command tree",
+        "apikit CLI client",
+        "hub HTTP server",
+        "forge handlers",
+        "issuex client",
+        "audit emitter",
+        "httptest GitLab stub"
+      ]
+    },
+    {
+      "id": "TS-31-64",
+      "kind": "smoke",
+      "verifies": [
+        "31-PATH-3",
+        "31-REQ-5.5",
+        "31-REQ-9.4"
+      ],
+      "title": "A user ensures a repository label exists twice",
+      "given": [
+        "a running hub with a stateful GitHub stub and workspace widgets",
+        "the afc command pointed at the hub"
+      ],
+      "when": "afc label create widgets af:triage is run twice",
+      "then": [
+        "the first answer is 201 and the second 200",
+        "the stub recorded exactly one label-create request with color ededed",
+        "the audit store holds two hub.forge.label.create events, created true then created false"
+      ],
+      "real_components": [
+        "afc command tree",
+        "apikit CLI client",
+        "hub HTTP server",
+        "forge handlers",
+        "issuex client",
+        "audit emitter",
+        "audit store",
+        "httptest GitHub stub"
+      ]
+    },
+    {
+      "id": "TS-31-65",
+      "kind": "smoke",
+      "verifies": [
+        "31-PATH-4",
+        "31-REQ-6.2"
+      ],
+      "title": "A user opens an upstream pull request from a carry-patch fork",
+      "given": [
+        "a running hub with a carry_patch workspace fork, origin and upstream stubs with distinct credentials"
+      ],
+      "when": "afc pr create fork --title t --head me:feature --base main --target upstream is run",
+      "then": [
+        "the upstream stub receives the create request with head me:feature verbatim and the upstream token",
+        "the origin stub receives none",
+        "one hub.forge.pull_request.create event with target upstream, head, base and draft false is recorded",
+        "afc prints the pull request as one JSON document and exits 0"
+      ],
+      "real_components": [
+        "afc command tree",
+        "apikit CLI client",
+        "hub HTTP server",
+        "forge handlers",
+        "issuex client",
+        "audit emitter",
+        "two httptest forge stubs"
+      ]
+    },
+    {
+      "id": "TS-31-66",
+      "kind": "smoke",
+      "verifies": [
+        "31-PATH-5",
+        "31-REQ-4.5",
+        "31-REQ-10.6"
+      ],
+      "title": "A forge failure on a label removal is mapped, audited and reported by afc",
+      "given": [
+        "a running hub with a forge stub answering 404 to the removal and 404 to issue 99",
+        "the afc command pointed at the hub"
+      ],
+      "when": "afc issue unlabel widgets 99 af:fix is run",
+      "then": [
+        "hub answers 404 forge_not_found with a scrubbed message",
+        "one hub.forge.label.remove event with ok false and error_type forge_not_found is recorded",
+        "afc exits with apikit's non-zero code for 404"
+      ],
+      "real_components": [
+        "afc command tree",
+        "apikit CLI client",
+        "hub HTTP server",
+        "forge handlers",
+        "issuex client",
+        "audit emitter",
+        "httptest forge stub"
+      ]
+    }
+  ]
+}

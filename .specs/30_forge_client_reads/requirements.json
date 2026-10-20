@@ -1,0 +1,661 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/requirements.v2.json",
+  "spec_id": "30",
+  "spec_name": "forge_client_reads",
+  "schema_version": 2,
+  "introduction": "Hub serves read access to a workspace's repository on its forge (GitHub or GitLab) through a new package internal/forge, building a fresh aflib issuex client per request from the workspace's own git_url or upstream_url, its stored git credential and an optional API URL variable, behind the new forge:read and forge:write scopes, with every forge failure mapped to one documented hub error and matching afc forge, issue and pr commands.",
+  "glossary": {
+    "FORGE_API_URL": "Optional workspace variable overriding the forge API base URL for origin; UPSTREAM_FORGE_API_URL is its upstream sibling, with no fallback between the two.",
+    "carry_patch workspace": "A workspace whose workspace_mode is carry_patch; it is a fork with an upstream_url that hub syncs from.",
+    "credential kind": "How hub authenticates to the forge, derived from the resolver result: pat (basic auth with username x-token-auth), basic (any other username; the password is sent as the token) or none (unauthenticated).",
+    "forge": "The hosted git service (GitHub or GitLab) whose REST API serves a workspace's repository, issues and pull requests.",
+    "forge stub": "An httptest TLS server standing in for GitHub or GitLab in tests, recording each request it receives.",
+    "issuex": "The aflib package github.com/agent-fox-dev/aflib/issuex that classifies a forge, parses remote URLs and implements the forge client hub calls; hub never changes or reimplements it.",
+    "target": "The ?target= query parameter selecting which remote a forge route reads: origin (the workspace's git_url, the default) or upstream (the upstream_url of a carry_patch workspace)."
+  },
+  "requirements": [
+    {
+      "id": "30-REQ-1",
+      "title": "aflib dependency and import boundaries",
+      "rationale": "issuex must enter hub the way every first-party module does, without leaking cgo dependencies into the CGO_ENABLED=0 afc binary.",
+      "criteria": [
+        {
+          "id": "30-REQ-1.1",
+          "pattern": "ubiquitous",
+          "system": "hub build",
+          "action": "require github.com/agent-fox-dev/aflib v0.0.0 in go.mod with a replace directive to ../aflib, copy an aflib build context in containers/hub/Containerfile, pass --build-context aflib=../aflib in make build-hub-container, and clone aflib next to the repository in the hub and afc build workflows",
+          "contract": "go build ./... succeeds with ../aflib present as a sibling checkout"
+        },
+        {
+          "id": "30-REQ-1.2",
+          "pattern": "ubiquitous",
+          "system": "hub module",
+          "action": "limit direct imports of github.com/agent-fox-dev/aflib/issuex to packages under internal/forge",
+          "contract": "go list -deps reports issuex imported by no package outside internal/forge"
+        },
+        {
+          "id": "30-REQ-1.3",
+          "pattern": "ubiquitous",
+          "system": "afc build",
+          "action": "keep internal/forge out of the transitive imports of internal/cli and cmd/afc so that afc still builds with CGO_ENABLED=0",
+          "contract": "go list -deps ./cmd/afc contains no internal/forge path and CGO_ENABLED=0 go build ./cmd/afc exits 0"
+        }
+      ]
+    },
+    {
+      "id": "30-REQ-2",
+      "title": "Forge scopes and authorization order",
+      "rationale": "Forge access is a new capability that PATs must be granted explicitly, and the check order must match the sandbox and merge handlers.",
+      "criteria": [
+        {
+          "id": "30-REQ-2.1",
+          "pattern": "ubiquitous",
+          "system": "forge package",
+          "action": "expose forge.Permissions() returning the scopes forge:read and forge:write as apikit.Permission values, appended to extraPerms in cmd/af-hub/main.go at every start",
+          "contract": "forge.Permissions() returns exactly [{forge read} {forge write}]"
+        },
+        {
+          "id": "30-REQ-2.2",
+          "pattern": "unwanted",
+          "condition": "a request to any forge route carries no credential",
+          "system": "forge handlers",
+          "action": "reject the request before any workspace lookup or forge call",
+          "contract": "HTTP 401 error envelope"
+        },
+        {
+          "id": "30-REQ-2.3",
+          "pattern": "unwanted",
+          "condition": "a PAT holding neither forge:read nor forge:write calls any forge route",
+          "system": "forge handlers",
+          "action": "reject the request before the workspace lookup with a message naming the forge:read scope",
+          "contract": "HTTP 403 error envelope whose message contains \"forge:read\", also for a slug that does not exist"
+        },
+        {
+          "id": "30-REQ-2.4",
+          "pattern": "event_driven",
+          "condition": "a PAT holding forge:write but not forge:read, an api_key or an admin_token calls a forge read route on a workspace it may access",
+          "system": "forge handlers",
+          "action": "pass the scope check and continue to the workspace lookup",
+          "contract": "the response status is not 401 or 403"
+        },
+        {
+          "id": "30-REQ-2.5",
+          "pattern": "unwanted",
+          "condition": "the credential type in apikit.AuthInfo is not admin_token, api_key or pat",
+          "system": "forge handlers",
+          "action": "deny the scope check",
+          "contract": "HTTP 403 error envelope; no forge request is sent"
+        },
+        {
+          "id": "30-REQ-2.6",
+          "pattern": "unwanted",
+          "condition": "wsaccess.AuthorizeWorkspace reports the workspace missing or not owned by the caller",
+          "system": "forge handlers",
+          "action": "reject the request without resolving credentials or contacting the forge",
+          "contract": "HTTP 404 error envelope on every forge route"
+        },
+        {
+          "id": "30-REQ-2.7",
+          "pattern": "event_driven",
+          "condition": "an authorized caller calls a forge read route on a workspace whose status is archived or whose clone_status is not ready",
+          "system": "forge handlers",
+          "action": "serve the read without taking the workspace lock",
+          "contract": "the same HTTP 200 response as for an active, cloned workspace"
+        }
+      ]
+    },
+    {
+      "id": "30-REQ-3",
+      "title": "Target selection",
+      "rationale": "A carry-patch fork must be able to read its upstream repository with the credential sync already uses, and only then.",
+      "criteria": [
+        {
+          "id": "30-REQ-3.1",
+          "pattern": "event_driven",
+          "condition": "a forge route other than GET /forge is called with target absent or target=origin",
+          "system": "forge handlers",
+          "action": "build the client from the workspace's git_url, the origin credential resolver and the FORGE_API_URL workspace variable",
+          "contract": "the forge stub receives requests for the repository parsed from git_url"
+        },
+        {
+          "id": "30-REQ-3.2",
+          "pattern": "complex_event",
+          "condition": "a forge route other than GET /forge is called with target=upstream",
+          "guard": "the workspace_mode is carry_patch and upstream_url is non-empty",
+          "system": "forge handlers",
+          "action": "build the client from upstream_url, the upstream credential resolver (ResolveUpstreamAuthMethod chain) and the UPSTREAM_FORGE_API_URL variable, never falling back to FORGE_API_URL",
+          "contract": "the forge stub receives requests for the repository parsed from upstream_url carrying the upstream credential"
+        },
+        {
+          "id": "30-REQ-3.3",
+          "pattern": "unwanted",
+          "condition": "target=upstream is requested on a workspace whose workspace_mode is standard or NULL, or whose upstream_url is NULL or empty",
+          "system": "forge handlers",
+          "action": "reject the request without contacting the forge",
+          "contract": "HTTP 400 with error_type workspace_mode_mismatch; the forge stub receives no request"
+        },
+        {
+          "id": "30-REQ-3.4",
+          "pattern": "unwanted",
+          "condition": "target has a value other than origin or upstream, including an empty string",
+          "system": "forge handlers",
+          "action": "reject the request without contacting the forge",
+          "contract": "HTTP 400 whose message lists the allowed values origin and upstream"
+        }
+      ]
+    },
+    {
+      "id": "30-REQ-4",
+      "title": "Forge client construction",
+      "rationale": "Hub must act only with what it holds for the workspace, so the request can choose the target and nothing else.",
+      "criteria": [
+        {
+          "id": "30-REQ-4.1",
+          "pattern": "ubiquitous",
+          "system": "forge client builder",
+          "action": "build a fresh issuex client for every forge request and cache no client or response, so a rotated secret or changed variable applies to the next call",
+          "contract": "two consecutive calls separated by a GIT_PAT change send the old and then the new token to the forge stub"
+        },
+        {
+          "id": "30-REQ-4.2",
+          "pattern": "unwanted",
+          "condition": "issuex cannot parse a repository from the selected remote URL",
+          "system": "forge client builder",
+          "action": "stop before any forge request and name the remote URL with its userinfo removed",
+          "contract": "HTTP 422 with error_type forge_unknown; the message contains no userinfo"
+        },
+        {
+          "id": "30-REQ-4.3",
+          "pattern": "unwanted",
+          "condition": "FORGE_API_URL (for origin) or UPSTREAM_FORGE_API_URL (for upstream) is set to a value that is not an absolute https:// URL with a host and without userinfo, query or fragment",
+          "system": "forge client builder",
+          "action": "stop before any forge request with a message naming the variable and the rule but not the value",
+          "contract": "HTTP 422 with error_type forge_api_url_invalid; the message does not contain the variable's value"
+        },
+        {
+          "id": "30-REQ-4.4",
+          "pattern": "unwanted",
+          "condition": "issuex returns ErrAmbiguousForge because the host cannot be classified and no API URL variable is set",
+          "system": "forge client builder",
+          "action": "stop before any request leaves hub with a message naming the host and the variable to set (FORGE_API_URL or UPSTREAM_FORGE_API_URL)",
+          "contract": "HTTP 422 with error_type forge_unknown; no outbound request is made"
+        },
+        {
+          "id": "30-REQ-4.5",
+          "pattern": "ubiquitous",
+          "system": "forge client builder",
+          "action": "derive the credential kind from the injected resolver result: pat when the basic-auth username is x-token-auth, basic for any other username with the password sent as the token, none for a nil result with an unauthenticated client",
+          "contract": "the forge stub receives the GIT_PAT or GIT_PASSWORD value as the token for pat or basic, and no token header for none"
+        },
+        {
+          "id": "30-REQ-4.6",
+          "pattern": "unwanted",
+          "condition": "the credential resolver or the variable lookup returns an error other than secrets.NotFoundError",
+          "system": "forge client builder",
+          "action": "stop before any forge request and log the failure without any secret value",
+          "contract": "HTTP 500 error envelope; no log line contains a secret value"
+        },
+        {
+          "id": "30-REQ-4.7",
+          "pattern": "ubiquitous",
+          "system": "forge client builder",
+          "action": "for any incoming request, forward neither its Authorization header nor its body to the forge",
+          "contract": "the forge stub never observes the caller's bearer token"
+        }
+      ]
+    },
+    {
+      "id": "30-REQ-5",
+      "title": "Shared HTTP client behaviour",
+      "rationale": "Forge calls must reach the same hosts as git does, identify hub, never leak a token across hosts and never hang a handler.",
+      "criteria": [
+        {
+          "id": "30-REQ-5.1",
+          "pattern": "ubiquitous",
+          "system": "forge HTTP client",
+          "action": "use one http.Client per process whose base transport is a clone of http.DefaultTransport (honouring the environment's proxy settings) unless Config.Transport replaces it",
+          "contract": "requests go through Config.Transport when it is set"
+        },
+        {
+          "id": "30-REQ-5.2",
+          "pattern": "ubiquitous",
+          "system": "forge HTTP client",
+          "action": "set the User-Agent header to af-hub/<apikit.Version> on every outbound forge request through a round-tripper",
+          "contract": "every request recorded by the forge stub carries User-Agent af-hub/<apikit.Version>"
+        },
+        {
+          "id": "30-REQ-5.3",
+          "pattern": "unwanted",
+          "condition": "the forge answers with a redirect to a host different from the one the request was sent to",
+          "system": "forge HTTP client",
+          "action": "refuse to follow the redirect so no request, and no token, reaches the other host",
+          "contract": "HTTP 502 with error_type forge_error; the redirect target receives no request"
+        },
+        {
+          "id": "30-REQ-5.4",
+          "pattern": "unwanted",
+          "condition": "a forge call, including issuex's own retries, has not completed within 30 seconds of the deadline derived from the request context",
+          "system": "forge HTTP client",
+          "action": "cancel the outbound call",
+          "contract": "HTTP 504 with error_type forge_timeout"
+        }
+      ]
+    },
+    {
+      "id": "30-REQ-6",
+      "title": "GET /workspaces/:slug/forge diagnostic",
+      "rationale": "A person debugging forge_unknown needs to see what hub would use without hub contacting the forge.",
+      "criteria": [
+        {
+          "id": "30-REQ-6.1",
+          "pattern": "event_driven",
+          "condition": "an authorized caller sends GET /api/v1/workspaces/:slug/forge",
+          "system": "forge handlers",
+          "action": "report the forge kind, API URL, repository and credential kind for origin without sending any request to the forge",
+          "contract": "HTTP 200 with body {forge: github|gitlab|unknown, api_url: string|null, repository: {host, owner, name}|null, credential: pat|basic|none, upstream: object|null}; the forge stub receives no request"
+        },
+        {
+          "id": "30-REQ-6.2",
+          "pattern": "ubiquitous",
+          "system": "forge handlers",
+          "action": "report the repository owner as the full namespace path, keeping GitLab subgroups",
+          "contract": "a git_url of https://gitlab.example.com/group/subgroup/widgets yields owner group/subgroup and name widgets"
+        },
+        {
+          "id": "30-REQ-6.3",
+          "pattern": "event_driven",
+          "condition": "the remote host cannot be classified, or no repository can be parsed from the remote URL",
+          "system": "forge handlers",
+          "action": "report forge unknown with api_url null, and repository null when unparseable, instead of failing",
+          "contract": "HTTP 200 with forge \"unknown\" and api_url null"
+        },
+        {
+          "id": "30-REQ-6.4",
+          "pattern": "complex_event",
+          "condition": "GET /forge is called",
+          "guard": "the workspace is carry_patch with a non-empty upstream_url",
+          "system": "forge handlers",
+          "action": "fill the upstream block with the same four fields computed from upstream_url, the upstream resolver and UPSTREAM_FORGE_API_URL",
+          "contract": "upstream is an object on a carry_patch workspace and null on a standard workspace"
+        },
+        {
+          "id": "30-REQ-6.5",
+          "pattern": "unwanted",
+          "condition": "FORGE_API_URL, or UPSTREAM_FORGE_API_URL for the upstream block, is invalid when GET /forge is called",
+          "system": "forge handlers",
+          "action": "reject the request",
+          "contract": "HTTP 422 with error_type forge_api_url_invalid"
+        },
+        {
+          "id": "30-REQ-6.6",
+          "pattern": "ubiquitous",
+          "system": "forge handlers",
+          "action": "for any stored credential, include only its kind in the GET /forge response and never a secret value",
+          "contract": "the response body contains neither the token nor the password"
+        }
+      ]
+    },
+    {
+      "id": "30-REQ-7",
+      "title": "Read routes",
+      "rationale": "Callers read repository, issues, comments and pull requests in the shapes issuex defines, with bad parameters failing in hub rather than at the forge.",
+      "criteria": [
+        {
+          "id": "30-REQ-7.1",
+          "pattern": "event_driven",
+          "condition": "an authorized caller sends GET on /forge/repository, /issues, /issues/:n, /issues/:n/comments, /pulls/:n, /pulls/:n/state, /pulls/:n/files, /pulls/:n/checks or /pulls/:n/reviews under /api/v1/workspaces/:slug",
+          "system": "forge handlers",
+          "action": "call respectively GetRepository, ListIssues, ReadIssue, ListComments, ReadPullRequest, GetPRState, ReadChangedFiles, GetCIChecks or GetPRReviews and encode the issuex result unchanged",
+          "contract": "HTTP 200 with the JSON encoding of the issuex result type; GET /issues/:n includes the comments and issuex's truncation flag"
+        },
+        {
+          "id": "30-REQ-7.2",
+          "pattern": "ubiquitous",
+          "system": "forge handlers",
+          "action": "encode every list result as a bare JSON array and an empty list as []",
+          "contract": "an empty list response body is [] and never null"
+        },
+        {
+          "id": "30-REQ-7.3",
+          "pattern": "unwanted",
+          "condition": "the :n path parameter is not a positive decimal integer (for example 0, -1, 1.5, abc)",
+          "system": "forge handlers",
+          "action": "reject the request before building a client",
+          "contract": "HTTP 400 whose message names the parameter; the forge stub receives no request"
+        },
+        {
+          "id": "30-REQ-7.4",
+          "pattern": "unwanted",
+          "condition": "on GET /issues, state is not open|closed|all, sort is not created|updated, direction is not asc|desc, or limit is not an integer from 1 to 100",
+          "system": "forge handlers",
+          "action": "reject the request before building a client",
+          "contract": "HTTP 400 whose message names the offending parameter; the forge stub receives no request"
+        },
+        {
+          "id": "30-REQ-7.5",
+          "pattern": "event_driven",
+          "condition": "GET /issues is called with valid query parameters",
+          "system": "forge handlers",
+          "action": "split labels on commas dropping empty items, pass assignee as free text, omit every absent parameter from the issuex call, and always pass limit, defaulting to 30",
+          "contract": "labels=af:triage,,bug reaches issuex as [af:triage bug]; no limit query yields limit 30"
+        },
+        {
+          "id": "30-REQ-7.6",
+          "pattern": "ubiquitous",
+          "system": "forge handlers",
+          "action": "emit no audit event for any forge read route",
+          "contract": "no hub audit event is recorded for a forge read"
+        }
+      ]
+    },
+    {
+      "id": "30-REQ-8",
+      "title": "Forge failure mapping",
+      "rationale": "Every class of forge failure needs exactly one documented hub answer.",
+      "criteria": [
+        {
+          "id": "30-REQ-8.1",
+          "pattern": "unwanted",
+          "condition": "the forge answers 404",
+          "system": "forge error mapper",
+          "action": "map the failure",
+          "contract": "HTTP 404 with error_type forge_not_found"
+        },
+        {
+          "id": "30-REQ-8.2",
+          "pattern": "unwanted",
+          "condition": "the forge answers 401",
+          "system": "forge error mapper",
+          "action": "map the failure and, when the credential kind is basic, append a note that the forge API needs a token stored as GIT_PAT or as GIT_PASSWORD",
+          "contract": "HTTP 502 with error_type forge_unauthenticated"
+        },
+        {
+          "id": "30-REQ-8.3",
+          "pattern": "unwanted",
+          "condition": "the forge answers 403 that issuex does not report as a rate limit",
+          "system": "forge error mapper",
+          "action": "map the failure",
+          "contract": "HTTP 502 with error_type forge_forbidden"
+        },
+        {
+          "id": "30-REQ-8.4",
+          "pattern": "unwanted",
+          "condition": "issuex reports a rate limit it could not wait out",
+          "system": "forge error mapper",
+          "action": "map the failure and, when the forge gave a retry-after duration, set the Retry-After header to that duration in whole seconds rounded up",
+          "contract": "HTTP 429 with error_type forge_rate_limited and Retry-After when known (1.2s yields 2)"
+        },
+        {
+          "id": "30-REQ-8.5",
+          "pattern": "unwanted",
+          "condition": "the forge answers a 4xx status other than 401, 403 or 404",
+          "system": "forge error mapper",
+          "action": "map the failure",
+          "contract": "HTTP 422 with error_type forge_rejected"
+        },
+        {
+          "id": "30-REQ-8.6",
+          "pattern": "unwanted",
+          "condition": "the forge answers 5xx or a response issuex cannot read",
+          "system": "forge error mapper",
+          "action": "map the failure",
+          "contract": "HTTP 502 with error_type forge_error"
+        },
+        {
+          "id": "30-REQ-8.7",
+          "pattern": "unwanted",
+          "condition": "the connection to the forge fails at DNS, TCP or TLS level",
+          "system": "forge error mapper",
+          "action": "map the failure",
+          "contract": "HTTP 502 with error_type forge_unreachable"
+        }
+      ]
+    },
+    {
+      "id": "30-REQ-9",
+      "title": "Message scrubbing and logging",
+      "rationale": "A forge message relayed to the caller or written to a log must never carry the workspace credential.",
+      "criteria": [
+        {
+          "id": "30-REQ-9.1",
+          "pattern": "ubiquitous",
+          "system": "forge error mapper",
+          "action": "for any forge message placed in the error envelope, replace every occurrence of the resolved token with [redacted], remove URL userinfo, and cut the result to at most 1024 bytes on a UTF-8 boundary",
+          "contract": "the message contains neither the token nor userinfo, is valid UTF-8 and is at most 1024 bytes"
+        },
+        {
+          "id": "30-REQ-9.2",
+          "pattern": "event_driven",
+          "condition": "a forge route answers 5xx or 429 because of a forge failure",
+          "system": "forge error mapper",
+          "action": "log one line with the workspace slug, the target, the operation and the forge status",
+          "contract": "the log line contains no token, request body or response body"
+        },
+        {
+          "id": "30-REQ-9.3",
+          "pattern": "ubiquitous",
+          "system": "forge handlers",
+          "action": "for any forge route response body and any log line it writes, include neither the credential value nor URL userinfo",
+          "contract": "captured responses and logs across all error classes contain no secret value or user:pass@ sequence"
+        }
+      ]
+    },
+    {
+      "id": "30-REQ-10",
+      "title": "afc forge, issue and pr commands",
+      "rationale": "Agents and people read forge data through afc with the same output and exit-code conventions as the rest of the CLI.",
+      "criteria": [
+        {
+          "id": "30-REQ-10.1",
+          "pattern": "event_driven",
+          "condition": "a user runs afc forge status <slug>",
+          "system": "afc",
+          "action": "send GET /api/v1/workspaces/<slug>/forge and print the response as one JSON document through apikit.CLIPrintResult",
+          "contract": "exit code 0 and exactly one JSON document on stdout"
+        },
+        {
+          "id": "30-REQ-10.2",
+          "pattern": "event_driven",
+          "condition": "a user runs afc issue list <slug> with any of --state, --label (repeatable), --assignee, --limit and --target",
+          "system": "afc",
+          "action": "send GET /api/v1/workspaces/<slug>/issues with each set flag as a query parameter, repeated --label values joined with commas, unset flags omitted, and values passed as given",
+          "contract": "--label a --label b yields labels=a,b; no flags yields no query string; one JSON document on stdout"
+        },
+        {
+          "id": "30-REQ-10.3",
+          "pattern": "event_driven",
+          "condition": "a user runs afc issue get <slug> <n> or afc pr get|state|files|checks|reviews <slug> <n>, optionally with --target",
+          "system": "afc",
+          "action": "send GET to /issues/<n>, /pulls/<n>, /pulls/<n>/state, /pulls/<n>/files, /pulls/<n>/checks or /pulls/<n>/reviews under the workspace, with segments escaped by apiPath and target added only when set",
+          "contract": "one JSON document on stdout and exit code 0 on HTTP 200"
+        },
+        {
+          "id": "30-REQ-10.4",
+          "pattern": "unwanted",
+          "condition": "hub answers a forge, issue or pr command with an error status",
+          "system": "afc",
+          "action": "return the error through apikit.CLIHandleError",
+          "contract": "the non-zero exit code apikit assigns to that status"
+        },
+        {
+          "id": "30-REQ-10.5",
+          "pattern": "unwanted",
+          "condition": "a forge, issue or pr subcommand is given the wrong number of positional arguments",
+          "system": "afc",
+          "action": "fail without sending any request to hub",
+          "contract": "non-zero exit code; the stub hub records no request"
+        }
+      ]
+    }
+  ],
+  "execution_paths": [
+    {
+      "id": "30-PATH-1",
+      "title": "An API-key caller lists open triage issues on the workspace's origin forge",
+      "steps": [
+        {
+          "actor": "caller",
+          "action": "sends GET /api/v1/workspaces/widgets/issues?labels=af:triage&state=open with an API key bearer token"
+        },
+        {
+          "actor": "forge handlers",
+          "action": "pass the scope check, authorize the workspace with wsaccess.AuthorizeWorkspace and validate target and query parameters"
+        },
+        {
+          "actor": "forge client builder",
+          "action": "reads git_url, resolves GIT_PAT through the origin resolver and FORGE_API_URL through GetVariable, and builds a fresh issuex client"
+        },
+        {
+          "actor": "forge stub",
+          "action": "receives the issues request carrying the GIT_PAT token and User-Agent af-hub/<version>, without the caller's Authorization header, and answers with issues"
+        },
+        {
+          "actor": "forge handlers",
+          "action": "return HTTP 200 with the issuex issues encoded as a JSON array"
+        }
+      ]
+    },
+    {
+      "id": "30-PATH-2",
+      "title": "A user reads an upstream pull request state on a carry-patch workspace with afc",
+      "steps": [
+        {
+          "actor": "user",
+          "action": "runs afc pr state fork 42 --target upstream"
+        },
+        {
+          "actor": "afc",
+          "action": "sends GET /api/v1/workspaces/fork/pulls/42/state?target=upstream"
+        },
+        {
+          "actor": "forge client builder",
+          "action": "selects upstream_url, resolves UPSTREAM_GIT_PAT through the upstream resolver and UPSTREAM_FORGE_API_URL, and builds an issuex client"
+        },
+        {
+          "actor": "forge stub",
+          "action": "receives the pull request state request for the upstream repository with the upstream token"
+        },
+        {
+          "actor": "afc",
+          "action": "prints the PR state as one JSON document and exits 0"
+        }
+      ]
+    },
+    {
+      "id": "30-PATH-3",
+      "title": "A user diagnoses the forge configuration without contacting the forge",
+      "steps": [
+        {
+          "actor": "user",
+          "action": "runs afc forge status widgets"
+        },
+        {
+          "actor": "forge handlers",
+          "action": "authorize the request, classify the remote host, parse the repository and derive the credential kind for origin and, on a carry_patch workspace, upstream"
+        },
+        {
+          "actor": "afc",
+          "action": "prints {forge, api_url, repository, credential, upstream} as one JSON document while the forge stub records no request"
+        }
+      ]
+    },
+    {
+      "id": "30-PATH-4",
+      "title": "A rate-limited forge read is mapped to a hub error and an afc exit code",
+      "steps": [
+        {
+          "actor": "user",
+          "action": "runs afc issue get widgets 7"
+        },
+        {
+          "actor": "forge stub",
+          "action": "answers the issue request with a rate-limit response carrying a retry-after duration"
+        },
+        {
+          "actor": "forge error mapper",
+          "action": "maps the issuex rate-limit error to HTTP 429 forge_rate_limited with Retry-After in whole seconds, a scrubbed message and one log line without the token"
+        },
+        {
+          "actor": "afc",
+          "action": "reports the error through apikit.CLIHandleError and exits with apikit's non-zero code for 429"
+        }
+      ]
+    }
+  ],
+  "external_apis": [
+    {
+      "package": "github.com/agent-fox-dev/aflib/issuex",
+      "version": "v0.0.0 (replace => ../aflib)",
+      "verified": false,
+      "symbols": [
+        {
+          "name": "NewWithOptions",
+          "import_path": "github.com/agent-fox-dev/aflib/issuex",
+          "signature": "func NewWithOptions(opts issuex.Options) (issuex.Client, error)",
+          "notes": "From the input PRD; aflib is outside the repository."
+        },
+        {
+          "name": "Options",
+          "import_path": "github.com/agent-fox-dev/aflib/issuex",
+          "signature": "type Options struct { BaseURL string; Token string; RemoteURL string; Repo <repo type>; HTTPClient *http.Client }",
+          "notes": "A UserAgent field may exist; hub does not depend on it."
+        },
+        {
+          "name": "ParseRemote",
+          "import_path": "github.com/agent-fox-dev/aflib/issuex",
+          "signature": "func ParseRemote(remote string) (<repo type>, error)",
+          "notes": "Keeps GitLab subgroup paths."
+        },
+        {
+          "name": "ErrAmbiguousForge",
+          "import_path": "github.com/agent-fox-dev/aflib/issuex",
+          "signature": "var ErrAmbiguousForge error",
+          "notes": "Returned before any request when the host cannot be classified."
+        },
+        {
+          "name": "Client",
+          "import_path": "github.com/agent-fox-dev/aflib/issuex",
+          "signature": "interface with GetRepository, ListIssues, ReadIssue, ListComments, ReadPullRequest, GetPRState, ReadChangedFiles, GetCIChecks, GetPRReviews, each taking context.Context and, where relevant, the issue or PR number",
+          "notes": "Forge-kind and resolved API URL accessor name unknown; needed by GET /forge. HTTP error type exposing status, message and retry-after is also unnamed."
+        }
+      ]
+    },
+    {
+      "package": "github.com/txsvc/apikit",
+      "version": "v0.0.0 (replace => ../apikit)",
+      "verified": false,
+      "symbols": [
+        {
+          "name": "GetAuthInfo",
+          "import_path": "github.com/txsvc/apikit",
+          "signature": "func GetAuthInfo(c echo.Context) *apikit.AuthInfo",
+          "notes": "Seen at call sites in internal/sandboxes/routes.go."
+        },
+        {
+          "name": "WriteAPIErrorWithType",
+          "import_path": "github.com/txsvc/apikit",
+          "signature": "func WriteAPIErrorWithType(c echo.Context, status int, msg, errorType string) error",
+          "notes": "Seen at call sites."
+        },
+        {
+          "name": "Permission",
+          "import_path": "github.com/txsvc/apikit",
+          "signature": "type Permission struct { Resource, Action string }",
+          "notes": "Seen in internal/sandboxes/permissions.go."
+        },
+        {
+          "name": "Version",
+          "import_path": "github.com/txsvc/apikit",
+          "signature": "var Version string",
+          "notes": "Set by -X ldflags in Makefile and Containerfile."
+        },
+        {
+          "name": "CLIClientFromCmd",
+          "import_path": "github.com/txsvc/apikit",
+          "signature": "func CLIClientFromCmd(cmd *cobra.Command) (client, error); client.DoRequest(ctx, method, path string, body any)",
+          "notes": "Seen in internal/cli/sandbox_cmd.go; CLIPrintResult and CLIHandleError used alongside."
+        }
+      ]
+    }
+  ]
+}

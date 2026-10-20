@@ -1,0 +1,1052 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/test_spec.v2.json",
+  "spec_id": "30",
+  "spec_name": "forge_client_reads",
+  "schema_version": 2,
+  "tests": [
+    {
+      "id": "TS-30-1",
+      "kind": "unit",
+      "verifies": [
+        "30-REQ-1.1"
+      ],
+      "title": "The aflib require, replace, Containerfile, Makefile and workflow wiring are present and the module builds",
+      "given": [
+        "a sibling ../aflib checkout"
+      ],
+      "when": "go.mod, containers/hub/Containerfile, Makefile and the hub and afc workflow files are read and go build ./... is run",
+      "then": [
+        "go.mod requires github.com/agent-fox-dev/aflib v0.0.0 and replaces it with ../aflib",
+        "the Containerfile copies the aflib build context",
+        "the build-hub-container target passes --build-context aflib=../aflib",
+        "the hub and afc workflows clone aflib next to the repository",
+        "go build ./... exits 0"
+      ],
+      "pseudocode": "mod = read('go.mod'); assert 'github.com/agent-fox-dev/aflib => ../aflib' in mod; assert 'aflib=../aflib' in read('Makefile'); assert exec('go build ./...').exit == 0"
+    },
+    {
+      "id": "TS-30-2",
+      "kind": "unit",
+      "verifies": [
+        "30-REQ-1.2"
+      ],
+      "title": "Only packages under internal/forge import issuex",
+      "given": [
+        "the hub module with internal/forge present"
+      ],
+      "when": "go list -f '{{.ImportPath}} {{.Imports}}' ./... is scanned for the issuex import path",
+      "then": [
+        "every package importing github.com/agent-fox-dev/aflib/issuex has an import path under internal/forge"
+      ],
+      "pseudocode": "for pkg in go_list('./...'): if 'aflib/issuex' in pkg.Imports: assert pkg.ImportPath.startswith('.../internal/forge')"
+    },
+    {
+      "id": "TS-30-3",
+      "kind": "unit",
+      "verifies": [
+        "30-REQ-1.3"
+      ],
+      "title": "afc does not depend on internal/forge and builds with CGO disabled",
+      "given": [
+        "the hub module"
+      ],
+      "when": "go list -deps ./cmd/afc is run and CGO_ENABLED=0 go build ./cmd/afc is run",
+      "then": [
+        "no dependency path contains internal/forge",
+        "the build exits 0"
+      ],
+      "pseudocode": "deps = exec('go list -deps ./cmd/afc'); assert 'internal/forge' not in deps; assert exec('CGO_ENABLED=0 go build -o /tmp/afc ./cmd/afc').exit == 0"
+    },
+    {
+      "id": "TS-30-4",
+      "kind": "unit",
+      "verifies": [
+        "30-REQ-2.1"
+      ],
+      "title": "forge.Permissions returns exactly forge:read and forge:write",
+      "given": [],
+      "when": "forge.Permissions() is called",
+      "then": [
+        "the result equals [{Resource:forge Action:read} {Resource:forge Action:write}]"
+      ],
+      "pseudocode": "assert forge.Permissions() == [Permission('forge','read'), Permission('forge','write')]"
+    },
+    {
+      "id": "TS-30-5",
+      "kind": "unit",
+      "verifies": [
+        "30-REQ-2.2"
+      ],
+      "title": "A request without a credential gets 401 on every forge route before any lookup",
+      "given": [
+        "forge routes mounted with no auth info injected",
+        "a forge stub that records requests"
+      ],
+      "when": "each of the ten forge GET routes is called for an existing workspace",
+      "then": [
+        "every status is 401 with the error envelope",
+        "the stub received no request",
+        "the workspaces table was not queried"
+      ],
+      "pseudocode": "for route in ROUTES: r = get(route); assert r.status == 401; assert stub.count == 0"
+    },
+    {
+      "id": "TS-30-6",
+      "kind": "unit",
+      "verifies": [
+        "30-REQ-2.3"
+      ],
+      "title": "A PAT with neither forge scope gets 403 naming forge:read on every route, also for a missing slug",
+      "given": [
+        "a PAT whose permissions contain only sandboxes:read",
+        "one existing and one non-existent workspace slug"
+      ],
+      "when": "every forge route is called with that PAT for both slugs",
+      "then": [
+        "every status is 403",
+        "the message contains forge:read",
+        "the answer is the same for the missing slug (no 404)"
+      ],
+      "pseudocode": "for route in ROUTES: for slug in [existing, missing]: r = get(route, pat); assert r.status == 403 and 'forge:read' in r.message"
+    },
+    {
+      "id": "TS-30-7",
+      "kind": "unit",
+      "verifies": [
+        "30-REQ-2.4"
+      ],
+      "title": "forge:write-only PAT, api_key and admin_token pass the scope check",
+      "given": [
+        "an owned workspace with a stub forge answering 200",
+        "credentials: PAT with only forge:write, api_key, admin_token"
+      ],
+      "when": "GET /workspaces/:slug/forge/repository is called with each credential",
+      "then": [
+        "no response status is 401 or 403",
+        "each returns 200"
+      ],
+      "pseudocode": "for cred in [pat_write, api_key, admin]: r = get(path, cred); assert r.status not in (401,403)"
+    },
+    {
+      "id": "TS-30-8",
+      "kind": "unit",
+      "verifies": [
+        "30-REQ-2.5"
+      ],
+      "title": "An unknown credential type is denied and nothing is sent to the forge",
+      "given": [
+        "AuthInfo with CredentialType \"mystery\" and forge:read permissions"
+      ],
+      "when": "a forge route is called",
+      "then": [
+        "status is 403 with the error envelope",
+        "the forge stub received no request"
+      ],
+      "pseudocode": "r = get(path, auth(type='mystery', perms=['forge:read'])); assert r.status == 403; assert stub.count == 0"
+    },
+    {
+      "id": "TS-30-9",
+      "kind": "unit",
+      "verifies": [
+        "30-REQ-2.6"
+      ],
+      "title": "A missing or foreign workspace gives 404 on every route without credential resolution or forge contact",
+      "given": [
+        "a workspace owned by another user and a missing slug",
+        "resolver and variable stubs that count calls"
+      ],
+      "when": "every forge route is called as an api_key user for both slugs",
+      "then": [
+        "every status is 404",
+        "resolver and variable lookups were never called",
+        "the forge stub received no request"
+      ],
+      "pseudocode": "for route in ROUTES: for slug in [foreign, missing]: assert get(route).status == 404; assert resolver.calls == 0 and stub.count == 0"
+    },
+    {
+      "id": "TS-30-10",
+      "kind": "integration",
+      "verifies": [
+        "30-REQ-2.7"
+      ],
+      "title": "Reads on archived and not-yet-cloned workspaces succeed without the workspace lock",
+      "given": [
+        "three workspaces: active/ready, archived, active with clone_status pending",
+        "the workspace lock is held (rebuild active) on one of them",
+        "a TLS forge stub answering the repository"
+      ],
+      "when": "GET /forge/repository is called on each",
+      "then": [
+        "all responses are 200 with identical body shape",
+        "the call does not block on the lock"
+      ],
+      "pseudocode": "for ws in [ready, archived, pending, locked]: r = get(ws+'/forge/repository'); assert r.status == 200"
+    },
+    {
+      "id": "TS-30-11",
+      "kind": "unit",
+      "verifies": [
+        "30-REQ-3.1"
+      ],
+      "title": "Absent target and target=origin read the repository parsed from git_url with the origin resolver and FORGE_API_URL",
+      "given": [
+        "a workspace with git_url https://github.com/acme/widgets and FORGE_API_URL pointing to a TLS stub",
+        "origin resolver returning GIT_PAT"
+      ],
+      "when": "GET /forge/repository is called without target and with target=origin",
+      "then": [
+        "both return 200",
+        "the stub saw requests for /repos/acme/widgets",
+        "the upstream resolver was not called"
+      ],
+      "pseudocode": "for q in ['', '?target=origin']: assert get(path+q).status == 200; assert stub.last.path.contains('acme/widgets'); assert upstreamResolver.calls == 0"
+    },
+    {
+      "id": "TS-30-12",
+      "kind": "integration",
+      "verifies": [
+        "30-REQ-3.2"
+      ],
+      "title": "target=upstream on a carry_patch workspace uses upstream_url, the upstream credential and UPSTREAM_FORGE_API_URL only",
+      "given": [
+        "a carry_patch workspace whose upstream_url is a different repo and host",
+        "UPSTREAM_GIT_PAT differs from GIT_PAT",
+        "FORGE_API_URL points to stub A, UPSTREAM_FORGE_API_URL to stub B",
+        "a second carry_patch workspace with FORGE_API_URL set but no UPSTREAM_FORGE_API_URL on an unclassifiable upstream host"
+      ],
+      "when": "GET /pulls/1/state?target=upstream is called on both",
+      "then": [
+        "stub B received the request for the upstream repository with the upstream token",
+        "stub A received nothing",
+        "the second workspace answers 422 forge_unknown (no fallback to FORGE_API_URL)"
+      ],
+      "pseudocode": "assert get('/pulls/1/state?target=upstream').status == 200; assert B.last.token == UP_PAT; assert A.count == 0; assert get2(...).status == 422"
+    },
+    {
+      "id": "TS-30-13",
+      "kind": "unit",
+      "verifies": [
+        "30-REQ-3.3"
+      ],
+      "title": "target=upstream without a carry_patch upstream answers 400 workspace_mode_mismatch",
+      "given": [
+        "workspaces: standard, NULL workspace_mode, carry_patch with NULL upstream_url, carry_patch with empty upstream_url"
+      ],
+      "when": "GET /forge/repository?target=upstream is called on each",
+      "then": [
+        "each status is 400 with error_type workspace_mode_mismatch",
+        "the forge stub received no request"
+      ],
+      "pseudocode": "for ws in cases: r = get(ws, '?target=upstream'); assert r.status == 400 and r.error_type == 'workspace_mode_mismatch'; assert stub.count == 0"
+    },
+    {
+      "id": "TS-30-14",
+      "kind": "unit",
+      "verifies": [
+        "30-REQ-3.4"
+      ],
+      "title": "An unknown or empty target answers 400 listing origin and upstream",
+      "given": [
+        "an owned workspace"
+      ],
+      "when": "a forge route is called with target=bogus, target= (empty) and target=ORIGIN",
+      "then": [
+        "each status is 400",
+        "the message contains both \"origin\" and \"upstream\"",
+        "the forge stub received no request"
+      ],
+      "pseudocode": "for t in ['bogus','','ORIGIN']: r = get('?target='+t); assert r.status == 400 and 'origin' in r.msg and 'upstream' in r.msg"
+    },
+    {
+      "id": "TS-30-15",
+      "kind": "integration",
+      "verifies": [
+        "30-REQ-4.1"
+      ],
+      "title": "A rotated GIT_PAT applies to the next call because no client is cached",
+      "given": [
+        "real secrets store with GIT_PAT=old",
+        "TLS forge stub recording the token"
+      ],
+      "when": "GET /forge/repository is called, GIT_PAT is updated to new, and the route is called again",
+      "then": [
+        "the stub recorded the old token first and the new token second"
+      ],
+      "pseudocode": "get(p); store.update('GIT_PAT','new'); get(p); assert stub.tokens == ['old','new']"
+    },
+    {
+      "id": "TS-30-16",
+      "kind": "unit",
+      "verifies": [
+        "30-REQ-4.2"
+      ],
+      "title": "An unparseable remote URL answers 422 forge_unknown without userinfo",
+      "given": [
+        "a workspace whose git_url is https://user:s3cret@host with no repository path"
+      ],
+      "when": "GET /forge/repository is called",
+      "then": [
+        "status is 422 with error_type forge_unknown",
+        "the message names the URL but contains neither user nor s3cret nor userinfo",
+        "the forge stub received no request"
+      ],
+      "pseudocode": "r = get(path); assert r.status == 422 and r.error_type == 'forge_unknown'; assert 's3cret' not in r.msg and '@' not in r.msg"
+    },
+    {
+      "id": "TS-30-17",
+      "kind": "unit",
+      "verifies": [
+        "30-REQ-4.3"
+      ],
+      "title": "An invalid FORGE_API_URL or UPSTREAM_FORGE_API_URL answers 422 forge_api_url_invalid without echoing the value",
+      "given": [
+        "values: http://x.example, relative/path, https://u:p@h.example, https://h.example/?q=1, https://h.example/#f, https:///nohost"
+      ],
+      "when": "a forge route is called with target origin for FORGE_API_URL values and with target=upstream for UPSTREAM_FORGE_API_URL values",
+      "then": [
+        "each status is 422 with error_type forge_api_url_invalid",
+        "the message names the variable and the rule",
+        "the message does not contain the value",
+        "the forge stub received no request"
+      ],
+      "pseudocode": "for v in BAD: set_var(NAME, v); r = get(); assert r.status == 422 and NAME in r.msg and v not in r.msg"
+    },
+    {
+      "id": "TS-30-18",
+      "kind": "unit",
+      "verifies": [
+        "30-REQ-4.4"
+      ],
+      "title": "An unclassifiable host without an API URL answers 422 forge_unknown naming host and variable",
+      "given": [
+        "git_url https://git.internal.example/acme/widgets, no FORGE_API_URL",
+        "a carry_patch workspace with an unclassifiable upstream host and no UPSTREAM_FORGE_API_URL",
+        "a counting RoundTripper as the base transport"
+      ],
+      "when": "a read route is called for origin and for target=upstream",
+      "then": [
+        "each status is 422 with error_type forge_unknown",
+        "origin message contains git.internal.example and FORGE_API_URL",
+        "upstream message contains UPSTREAM_FORGE_API_URL",
+        "the transport saw zero requests"
+      ],
+      "pseudocode": "r = get(); assert r.status == 422 and 'FORGE_API_URL' in r.msg and transport.count == 0"
+    },
+    {
+      "id": "TS-30-19",
+      "kind": "unit",
+      "verifies": [
+        "30-REQ-4.5"
+      ],
+      "title": "Credential kinds pat, basic and none produce the right token handling",
+      "given": [
+        "resolver results: BasicAuth{x-token-auth, tok-pat}, BasicAuth{alice, tok-pass}, nil",
+        "a fake issuex factory capturing Options.Token"
+      ],
+      "when": "a read route is called with each resolver result",
+      "then": [
+        "pat: the Options.Token is tok-pat",
+        "basic: the Options.Token is tok-pass",
+        "none: the Options.Token is empty and the stub saw no token header"
+      ],
+      "pseudocode": "for (auth, want) in cases: get(); assert captured.Token == want"
+    },
+    {
+      "id": "TS-30-20",
+      "kind": "unit",
+      "verifies": [
+        "30-REQ-4.6"
+      ],
+      "title": "A store failure from the resolver or variable lookup answers 500 and logs no secret",
+      "given": [
+        "a resolver returning an error containing the text of a secret",
+        "a variable lookup returning a non-NotFound error",
+        "a captured log"
+      ],
+      "when": "a read route is called in each failure mode",
+      "then": [
+        "each status is 500 with the error envelope",
+        "the forge stub received no request",
+        "no log line contains the secret value"
+      ],
+      "pseudocode": "for mode in [resolver_err, var_err]: r = get(); assert r.status == 500; assert 'SECRET' not in log.text"
+    },
+    {
+      "id": "TS-30-21",
+      "kind": "property",
+      "verifies": [
+        "30-REQ-4.7"
+      ],
+      "title": "The caller's Authorization header and body never reach the forge",
+      "given": [
+        "a TLS forge stub recording headers and bodies of every request"
+      ],
+      "when": "for any caller bearer string, extra request headers and request body, a read route is called",
+      "then": [
+        "no recorded request carries the caller's bearer token in any header",
+        "no recorded request body contains the caller's body",
+        "the stub's Authorization or PRIVATE-TOKEN header carries only the workspace token"
+      ],
+      "pseudocode": "for bearer, body in gen(): get(path, headers={'Authorization': 'Bearer '+bearer}, body=body); for req in stub.requests: assert bearer not in str(req.headers) and body not in req.body"
+    },
+    {
+      "id": "TS-30-22",
+      "kind": "unit",
+      "verifies": [
+        "30-REQ-5.1"
+      ],
+      "title": "Requests go through Config.Transport when it is set",
+      "given": [
+        "Config.Transport is a counting RoundTripper returning canned responses"
+      ],
+      "when": "a read route is called",
+      "then": [
+        "the counting transport observed the outbound request"
+      ],
+      "pseudocode": "cfg.Transport = counting; get(path); assert counting.count >= 1"
+    },
+    {
+      "id": "TS-30-23",
+      "kind": "unit",
+      "verifies": [
+        "30-REQ-5.2"
+      ],
+      "title": "Every outbound request carries User-Agent af-hub/<apikit.Version>",
+      "given": [
+        "apikit.Version set to 1.2.3 in the test",
+        "a TLS forge stub recording headers; a route that makes several upstream calls (GET /issues/:n)"
+      ],
+      "when": "the route is called",
+      "then": [
+        "every recorded request has User-Agent af-hub/1.2.3"
+      ],
+      "pseudocode": "apikit.Version='1.2.3'; get('/issues/1'); for r in stub.requests: assert r.UA == 'af-hub/1.2.3'"
+    },
+    {
+      "id": "TS-30-24",
+      "kind": "integration",
+      "verifies": [
+        "30-REQ-5.3"
+      ],
+      "title": "A redirect to another host is refused and the other host receives nothing",
+      "given": [
+        "forge stub A answering 302 with Location pointing to stub B on a different host",
+        "stub B recording requests"
+      ],
+      "when": "a read route is called",
+      "then": [
+        "status is 502 with error_type forge_error",
+        "stub B received no request and saw no token"
+      ],
+      "pseudocode": "r = get(path); assert r.status == 502 and r.error_type == 'forge_error'; assert B.count == 0"
+    },
+    {
+      "id": "TS-30-25",
+      "kind": "unit",
+      "verifies": [
+        "30-REQ-5.4"
+      ],
+      "title": "A forge call that outlives the deadline answers 504 forge_timeout",
+      "given": [
+        "the call deadline is shortened to 50ms through the package's test hook",
+        "a forge stub that sleeps longer than the deadline"
+      ],
+      "when": "a read route is called",
+      "then": [
+        "status is 504 with error_type forge_timeout",
+        "the outbound request context was cancelled",
+        "the default deadline constant is 30 seconds"
+      ],
+      "pseudocode": "setDeadline(50ms); r = get(path); assert r.status == 504 and r.error_type == 'forge_timeout'; assert defaultDeadline == 30s"
+    },
+    {
+      "id": "TS-30-26",
+      "kind": "unit",
+      "verifies": [
+        "30-REQ-6.1"
+      ],
+      "title": "GET /forge reports forge, API URL, repository and credential kind without contacting the forge",
+      "given": [
+        "git_url https://github.com/acme/widgets, GIT_PAT set, standard workspace",
+        "a counting forge transport"
+      ],
+      "when": "GET /workspaces/:slug/forge is called",
+      "then": [
+        "status 200",
+        "body forge=github, api_url=https://api.github.com, repository={host:github.com, owner:acme, name:widgets}, credential=pat, upstream=null",
+        "the transport saw zero requests"
+      ],
+      "pseudocode": "r = get('/forge'); assert r.json == {...}; assert transport.count == 0"
+    },
+    {
+      "id": "TS-30-27",
+      "kind": "unit",
+      "verifies": [
+        "30-REQ-6.2"
+      ],
+      "title": "GitLab subgroup namespaces are reported as the full owner path",
+      "given": [
+        "git_url https://gitlab.example.com/group/subgroup/widgets with FORGE_API_URL https://gitlab.example.com/api/v4"
+      ],
+      "when": "GET /forge is called",
+      "then": [
+        "repository.owner is group/subgroup",
+        "repository.name is widgets"
+      ],
+      "pseudocode": "r = get('/forge'); assert r.repository.owner == 'group/subgroup' and r.repository.name == 'widgets'"
+    },
+    {
+      "id": "TS-30-28",
+      "kind": "unit",
+      "verifies": [
+        "30-REQ-6.3"
+      ],
+      "title": "GET /forge reports unknown instead of failing for unclassifiable or unparseable remotes",
+      "given": [
+        "workspace A with git_url on an unclassifiable host and no FORGE_API_URL",
+        "workspace B with an unparseable git_url"
+      ],
+      "when": "GET /forge is called on each",
+      "then": [
+        "both answer 200 with forge \"unknown\" and api_url null",
+        "B's repository is null"
+      ],
+      "pseudocode": "a = get(A); assert a.status == 200 and a.forge == 'unknown' and a.api_url is None; b = get(B); assert b.repository is None"
+    },
+    {
+      "id": "TS-30-29",
+      "kind": "unit",
+      "verifies": [
+        "30-REQ-6.4"
+      ],
+      "title": "The upstream block is filled on carry_patch workspaces and null on standard ones",
+      "given": [
+        "a carry_patch workspace with upstream_url https://github.com/up/widgets and UPSTREAM_GIT_PAT",
+        "a standard workspace"
+      ],
+      "when": "GET /forge is called on each",
+      "then": [
+        "carry_patch: upstream is an object with forge, api_url, repository up/widgets and credential pat",
+        "standard: upstream is null"
+      ],
+      "pseudocode": "assert get(cp).upstream.repository.owner == 'up'; assert get(std).upstream is None"
+    },
+    {
+      "id": "TS-30-30",
+      "kind": "unit",
+      "verifies": [
+        "30-REQ-6.5"
+      ],
+      "title": "GET /forge rejects an invalid FORGE_API_URL or UPSTREAM_FORGE_API_URL with 422",
+      "given": [
+        "FORGE_API_URL=http://insecure on one workspace",
+        "UPSTREAM_FORGE_API_URL=ftp://x on a carry_patch workspace with a valid FORGE_API_URL"
+      ],
+      "when": "GET /forge is called on each",
+      "then": [
+        "each answers 422 with error_type forge_api_url_invalid"
+      ],
+      "pseudocode": "for ws in cases: r = get(ws+'/forge'); assert r.status == 422 and r.error_type == 'forge_api_url_invalid'"
+    },
+    {
+      "id": "TS-30-31",
+      "kind": "property",
+      "verifies": [
+        "30-REQ-6.6"
+      ],
+      "title": "GET /forge never contains a secret value, only the credential kind",
+      "given": [
+        "a workspace whose resolver returns arbitrary credentials"
+      ],
+      "when": "for any non-empty token, username and password strings (including origin and upstream), GET /forge is called",
+      "then": [
+        "the response body contains neither the token nor the password",
+        "credential is one of pat, basic, none"
+      ],
+      "pseudocode": "for tok, user, pw in gen(): body = get('/forge').text; assert tok not in body and pw not in body; assert json(body).credential in ('pat','basic','none')"
+    },
+    {
+      "id": "TS-30-32",
+      "kind": "integration",
+      "verifies": [
+        "30-REQ-7.1"
+      ],
+      "title": "Each read route calls its issuex method and returns the issuex JSON encoding unchanged",
+      "given": [
+        "a TLS stub serving minimal GitHub JSON for repository, issues, one issue with comments, comments, pull request, state, files, checks and reviews",
+        "real issuex client"
+      ],
+      "when": "each of the nine read routes is called",
+      "then": [
+        "every status is 200",
+        "each body equals json.Marshal of the corresponding issuex result type",
+        "GET /issues/:n includes the comments and the truncation flag"
+      ],
+      "pseudocode": "for (route, method) in TABLE: assert get(route).json == json(issuex_direct(method))"
+    },
+    {
+      "id": "TS-30-33",
+      "kind": "unit",
+      "verifies": [
+        "30-REQ-7.2"
+      ],
+      "title": "Empty list results are encoded as [] never null",
+      "given": [
+        "a fake issuex client returning nil slices for ListIssues, ListComments, ReadChangedFiles, GetCIChecks and GetPRReviews"
+      ],
+      "when": "each list route is called",
+      "then": [
+        "every body is exactly []"
+      ],
+      "pseudocode": "for route in LIST_ROUTES: assert get(route).body.strip() == '[]'"
+    },
+    {
+      "id": "TS-30-34",
+      "kind": "unit",
+      "verifies": [
+        "30-REQ-7.3"
+      ],
+      "title": "A non-positive-integer :n answers 400 naming the parameter before any client is built",
+      "given": [
+        "a factory and a forge stub that count calls"
+      ],
+      "when": "every :n route is called with 0, -1, 1.5, abc and 007x",
+      "then": [
+        "each status is 400 and the message names n",
+        "the client factory and forge stub were not called"
+      ],
+      "pseudocode": "for route in N_ROUTES: for n in ['0','-1','1.5','abc']: r = get(route % n); assert r.status == 400 and 'n' in r.msg; assert factory.calls == 0"
+    },
+    {
+      "id": "TS-30-35",
+      "kind": "unit",
+      "verifies": [
+        "30-REQ-7.4"
+      ],
+      "title": "Invalid list query parameters answer 400 naming the parameter",
+      "given": [
+        "a factory and a forge stub that count calls"
+      ],
+      "when": "GET /issues is called with state=bogus, sort=name, direction=up, limit=0, limit=101, limit=abc",
+      "then": [
+        "each status is 400 and the message names the offending parameter",
+        "no client was built and no forge request sent"
+      ],
+      "pseudocode": "for q in BAD: r = get('/issues?'+q); assert r.status == 400 and param(q) in r.msg; assert factory.calls == 0"
+    },
+    {
+      "id": "TS-30-36",
+      "kind": "unit",
+      "verifies": [
+        "30-REQ-7.5"
+      ],
+      "title": "Valid list query parameters reach issuex with commas split, absent values omitted and limit defaulted to 30",
+      "given": [
+        "a fake issuex client capturing ListIssues options"
+      ],
+      "when": "GET /issues is called with labels=af:triage,,bug&assignee=bob&state=open and then with no query",
+      "then": [
+        "first call: labels [af:triage bug], assignee bob, state open, limit 30, sort and direction unset",
+        "second call: only limit 30 is set; all other options absent"
+      ],
+      "pseudocode": "get('/issues?labels=af:triage,,bug&assignee=bob&state=open'); assert cap.labels == ['af:triage','bug'] and cap.limit == 30 and cap.sort == ''"
+    },
+    {
+      "id": "TS-30-37",
+      "kind": "unit",
+      "verifies": [
+        "30-REQ-7.6"
+      ],
+      "title": "Forge reads record no audit event",
+      "given": [
+        "an audit store or emitter spy wired to the same DB"
+      ],
+      "when": "every read route is called successfully and with a forge error",
+      "then": [
+        "no hub event row or emit call was recorded"
+      ],
+      "pseudocode": "for route in ROUTES: get(route); assert emitter.calls == 0 and count(hub_events) == 0"
+    },
+    {
+      "id": "TS-30-38",
+      "kind": "integration",
+      "verifies": [
+        "30-REQ-8.1"
+      ],
+      "title": "A forge 404 maps to 404 forge_not_found",
+      "given": [
+        "a TLS stub answering 404 to the issue request"
+      ],
+      "when": "GET /issues/9 is called",
+      "then": [
+        "status 404 with error_type forge_not_found"
+      ],
+      "pseudocode": "stub.status=404; r = get('/issues/9'); assert r.status == 404 and r.error_type == 'forge_not_found'"
+    },
+    {
+      "id": "TS-30-39",
+      "kind": "integration",
+      "verifies": [
+        "30-REQ-8.2"
+      ],
+      "title": "A forge 401 maps to 502 forge_unauthenticated with a token hint for basic credentials",
+      "given": [
+        "a TLS stub answering 401",
+        "one workspace with a pat credential and one with a basic credential"
+      ],
+      "when": "GET /forge/repository is called on each",
+      "then": [
+        "both answer 502 with error_type forge_unauthenticated",
+        "only the basic-credential message mentions GIT_PAT and GIT_PASSWORD"
+      ],
+      "pseudocode": "assert pat.status == 502 and 'GIT_PASSWORD' not in pat.msg; assert basic.status == 502 and 'GIT_PASSWORD' in basic.msg"
+    },
+    {
+      "id": "TS-30-40",
+      "kind": "integration",
+      "verifies": [
+        "30-REQ-8.3"
+      ],
+      "title": "A non-rate-limit forge 403 maps to 502 forge_forbidden",
+      "given": [
+        "a TLS stub answering 403 without rate-limit headers"
+      ],
+      "when": "GET /pulls/3 is called",
+      "then": [
+        "status 502 with error_type forge_forbidden"
+      ],
+      "pseudocode": "stub.status=403; r = get('/pulls/3'); assert r.status == 502 and r.error_type == 'forge_forbidden'"
+    },
+    {
+      "id": "TS-30-41",
+      "kind": "integration",
+      "verifies": [
+        "30-REQ-8.4"
+      ],
+      "title": "A rate limit issuex cannot wait out maps to 429 with Retry-After rounded up",
+      "given": [
+        "a TLS stub answering rate-limited with a retry-after of 1.2 seconds, and another with no retry-after"
+      ],
+      "when": "GET /issues is called against each",
+      "then": [
+        "both answer 429 with error_type forge_rate_limited",
+        "the first has Retry-After 2",
+        "the second has no Retry-After header"
+      ],
+      "pseudocode": "r = get('/issues'); assert r.status == 429 and r.header['Retry-After'] == '2'; assert 'Retry-After' not in get2('/issues').header"
+    },
+    {
+      "id": "TS-30-42",
+      "kind": "integration",
+      "verifies": [
+        "30-REQ-8.5"
+      ],
+      "title": "Other forge 4xx statuses map to 422 forge_rejected",
+      "given": [
+        "a TLS stub answering 400, 410 and 422 in turn"
+      ],
+      "when": "GET /issues is called for each",
+      "then": [
+        "each answers 422 with error_type forge_rejected"
+      ],
+      "pseudocode": "for code in (400,410,422): stub.status=code; assert get('/issues').status == 422 and error_type == 'forge_rejected'"
+    },
+    {
+      "id": "TS-30-43",
+      "kind": "integration",
+      "verifies": [
+        "30-REQ-8.6"
+      ],
+      "title": "A forge 5xx or unreadable response maps to 502 forge_error",
+      "given": [
+        "a TLS stub answering 500, 503, and 200 with a non-JSON body"
+      ],
+      "when": "GET /issues/1 is called for each",
+      "then": [
+        "each answers 502 with error_type forge_error"
+      ],
+      "pseudocode": "for mode in (500,503,'garbage200'): r = get('/issues/1'); assert r.status == 502 and r.error_type == 'forge_error'"
+    },
+    {
+      "id": "TS-30-44",
+      "kind": "integration",
+      "verifies": [
+        "30-REQ-8.7"
+      ],
+      "title": "A connection failure maps to 502 forge_unreachable",
+      "given": [
+        "FORGE_API_URL pointing to a closed TLS listener port, and another with a TLS certificate the transport does not trust"
+      ],
+      "when": "GET /forge/repository is called for each",
+      "then": [
+        "each answers 502 with error_type forge_unreachable"
+      ],
+      "pseudocode": "closed.Close(); r = get('/forge/repository'); assert r.status == 502 and r.error_type == 'forge_unreachable'"
+    },
+    {
+      "id": "TS-30-45",
+      "kind": "property",
+      "verifies": [
+        "30-REQ-9.1"
+      ],
+      "title": "Forwarded forge messages never contain the token or userinfo and stay within 1024 valid UTF-8 bytes",
+      "given": [
+        "a scrub function or a forge stub whose error message is attacker-chosen"
+      ],
+      "when": "for any message built from arbitrary Unicode text with the token and URLs of the form scheme://user:pass@host embedded at random positions, and any non-empty token",
+      "then": [
+        "the output contains no occurrence of the token",
+        "the output contains no userinfo before an @ in a URL",
+        "the output is valid UTF-8",
+        "len(output) <= 1024",
+        "a token is replaced with [redacted] when short enough to remain"
+      ],
+      "pseudocode": "for msg, tok in gen(): out = scrub(msg, tok); assert tok not in out and utf8valid(out) and len(out) <= 1024 and not userinfo_re.search(out)"
+    },
+    {
+      "id": "TS-30-46",
+      "kind": "unit",
+      "verifies": [
+        "30-REQ-9.2"
+      ],
+      "title": "A 5xx or 429 answer logs one line with slug, target, operation and forge status and no secrets or bodies",
+      "given": [
+        "a captured log",
+        "stub answering 500 with a body containing the token, and another answering 429"
+      ],
+      "when": "GET /issues is called on workspace widgets against each",
+      "then": [
+        "exactly one forge log line per call containing slug widgets, target origin, the operation name and the forge status",
+        "the line contains neither the token, the request body nor the response body"
+      ],
+      "pseudocode": "get('/issues'); line = log.single(); assert all(k in line for k in ['widgets','origin','ListIssues','500']); assert TOKEN not in line and BODY not in line"
+    },
+    {
+      "id": "TS-30-47",
+      "kind": "property",
+      "verifies": [
+        "30-REQ-9.3"
+      ],
+      "title": "No response body or log line across all error classes contains the credential or userinfo",
+      "given": [
+        "a token and a git_url carrying userinfo",
+        "a stub that returns each failure class with the token and user:pass@host in its message",
+        "captured logs"
+      ],
+      "when": "for any error class (400, 404, 422, 429, 500, 502, 504 variants) and any route, the route is called",
+      "then": [
+        "no response body contains the token or a user:pass@ sequence",
+        "no log line contains the token or a user:pass@ sequence"
+      ],
+      "pseudocode": "for route, cls in product(ROUTES, CLASSES): r = get(route); assert TOKEN not in r.body and not re.search(r'://[^/\\s]*:[^/\\s]*@', r.body + log.text)"
+    },
+    {
+      "id": "TS-30-48",
+      "kind": "unit",
+      "verifies": [
+        "30-REQ-10.1"
+      ],
+      "title": "afc forge status prints one JSON document from GET /forge",
+      "given": [
+        "a stub hub recording method and path and answering the diagnostic JSON"
+      ],
+      "when": "afc forge status widgets is run with --endpoint-url and --api-key",
+      "then": [
+        "the stub saw GET /api/v1/workspaces/widgets/forge",
+        "exit code 0",
+        "stdout holds exactly one JSON document equal to the response"
+      ],
+      "pseudocode": "out = run('forge','status','widgets'); assert hub.path == '/api/v1/workspaces/widgets/forge' and decodeOneDocument(out)"
+    },
+    {
+      "id": "TS-30-49",
+      "kind": "unit",
+      "verifies": [
+        "30-REQ-10.2"
+      ],
+      "title": "afc issue list maps flags to query parameters, joining labels and omitting unset flags",
+      "given": [
+        "a stub hub recording the raw query"
+      ],
+      "when": "afc issue list widgets is run with --label a --label b --state open --assignee bob --limit 5 --target upstream, and again with no flags",
+      "then": [
+        "first query decodes to labels=a,b state=open assignee=bob limit=5 target=upstream",
+        "second request has no query string",
+        "each prints one JSON document"
+      ],
+      "pseudocode": "run('issue','list','widgets','--label','a','--label','b'); assert hub.query['labels'] == 'a,b'; run('issue','list','widgets'); assert hub.rawquery == ''"
+    },
+    {
+      "id": "TS-30-50",
+      "kind": "unit",
+      "verifies": [
+        "30-REQ-10.3"
+      ],
+      "title": "afc issue get and pr get|state|files|checks|reviews hit the right paths with target only when set",
+      "given": [
+        "a stub hub recording the path and query"
+      ],
+      "when": "each of issue get, pr get, pr state, pr files, pr checks, pr reviews is run for slug and 42, with and without --target upstream, and with a slug needing escaping",
+      "then": [
+        "paths are /issues/42, /pulls/42, /pulls/42/state, /pulls/42/files, /pulls/42/checks, /pulls/42/reviews under the workspace",
+        "target=upstream is present only when --target is given",
+        "segments are escaped by apiPath",
+        "exit code 0 and one JSON document each"
+      ],
+      "pseudocode": "for cmd, suffix in TABLE: run(cmd,'w','42'); assert hub.path == '/api/v1/workspaces/w'+suffix and hub.query == ''"
+    },
+    {
+      "id": "TS-30-51",
+      "kind": "unit",
+      "verifies": [
+        "30-REQ-10.4"
+      ],
+      "title": "A hub error status is returned through CLIHandleError with apikit's exit code",
+      "given": [
+        "a stub hub answering 404, 422 and 429 error envelopes"
+      ],
+      "when": "afc issue get widgets 7 is run against each",
+      "then": [
+        "each exit code is the non-zero value apikit assigns to that status",
+        "no JSON result document is printed on stdout"
+      ],
+      "pseudocode": "for status in (404,422,429): res = run(...); assert res.exit == apikit.CLIExitCode(status)"
+    },
+    {
+      "id": "TS-30-52",
+      "kind": "unit",
+      "verifies": [
+        "30-REQ-10.5"
+      ],
+      "title": "Wrong positional argument counts fail without contacting hub",
+      "given": [
+        "a stub hub recording requests"
+      ],
+      "when": "afc forge status, afc issue list, afc issue get w, afc pr state w and afc pr get w 1 extra are run",
+      "then": [
+        "each exits non-zero",
+        "the stub recorded no request"
+      ],
+      "pseudocode": "for args in BAD: assert run(*args).exit != 0; assert hub.count == 0"
+    },
+    {
+      "id": "TS-30-53",
+      "kind": "smoke",
+      "verifies": [
+        "30-PATH-1",
+        "30-REQ-4.7",
+        "30-REQ-5.2"
+      ],
+      "title": "An API-key caller lists open triage issues and the forge sees only the workspace credential",
+      "given": [
+        "a hub router with real forge handlers, wsaccess, a real secrets store and workspaces table",
+        "workspace widgets owned by the caller with git_url https://github.com/acme/widgets, GIT_PAT and FORGE_API_URL set to a TLS stub",
+        "the stub serves GitHub issues JSON"
+      ],
+      "when": "GET /api/v1/workspaces/widgets/issues?labels=af:triage&state=open is called with the API key bearer",
+      "then": [
+        "status 200 and a JSON array of issues matching the issuex encoding",
+        "the stub saw labels=af:triage and state=open and limit=30",
+        "the request carried the GIT_PAT token and User-Agent af-hub/<version>",
+        "the caller's Authorization bearer was never seen by the stub"
+      ],
+      "real_components": [
+        "forge handlers",
+        "wsaccess.AuthorizeWorkspace",
+        "secrets store",
+        "real ResolveCloneAuth",
+        "real issuex client",
+        "shared forge http.Client",
+        "workspaces table"
+      ]
+    },
+    {
+      "id": "TS-30-54",
+      "kind": "smoke",
+      "verifies": [
+        "30-PATH-2",
+        "30-REQ-3.2"
+      ],
+      "title": "afc pr state --target upstream on a carry_patch workspace reads the upstream repository with the upstream credential",
+      "given": [
+        "real afc root command pointed at a real hub router with forge handlers",
+        "carry_patch workspace fork with upstream_url https://github.com/up/widgets, UPSTREAM_GIT_PAT and UPSTREAM_FORGE_API_URL set to a TLS stub"
+      ],
+      "when": "afc pr state fork 42 --target upstream is run",
+      "then": [
+        "the stub received a request for the upstream repository's pull 42 with the upstream token",
+        "afc prints the PR state as one JSON document",
+        "exit code 0"
+      ],
+      "real_components": [
+        "afc CLI commands",
+        "forge handlers",
+        "wsaccess.AuthorizeWorkspace",
+        "secrets store",
+        "real ResolveUpstreamAuthMethod",
+        "real issuex client",
+        "workspaces table"
+      ]
+    },
+    {
+      "id": "TS-30-55",
+      "kind": "smoke",
+      "verifies": [
+        "30-PATH-3",
+        "30-REQ-6.1"
+      ],
+      "title": "afc forge status diagnoses origin and upstream without any forge request",
+      "given": [
+        "real afc and hub router with forge handlers",
+        "carry_patch workspace widgets with a classifiable origin and an unclassifiable upstream host",
+        "a counting forge transport"
+      ],
+      "when": "afc forge status widgets is run",
+      "then": [
+        "stdout is one JSON document with forge, api_url, repository, credential and an upstream object whose forge is unknown",
+        "no credential value appears in stdout",
+        "the forge transport recorded zero requests",
+        "exit code 0"
+      ],
+      "real_components": [
+        "afc CLI commands",
+        "forge handlers",
+        "wsaccess.AuthorizeWorkspace",
+        "secrets store",
+        "real issuex classification",
+        "workspaces table"
+      ]
+    },
+    {
+      "id": "TS-30-56",
+      "kind": "smoke",
+      "verifies": [
+        "30-PATH-4",
+        "30-REQ-8.4",
+        "30-REQ-9.2"
+      ],
+      "title": "A rate-limited forge read becomes 429 forge_rate_limited and a non-zero afc exit code",
+      "given": [
+        "real afc and hub router with forge handlers",
+        "a TLS stub answering the issue request with a rate limit and a retry-after of 1.2 seconds, its message containing the GIT_PAT",
+        "a captured log"
+      ],
+      "when": "afc issue get widgets 7 is run",
+      "then": [
+        "hub answered 429 with error_type forge_rate_limited and Retry-After 2",
+        "the error message shows [redacted] instead of the token",
+        "exactly one log line with slug, target, operation and status and no token",
+        "afc exits with apikit's non-zero code for 429"
+      ],
+      "real_components": [
+        "afc CLI commands",
+        "forge handlers",
+        "forge error mapper",
+        "secrets store",
+        "real issuex client",
+        "shared forge http.Client",
+        "workspaces table"
+      ]
+    }
+  ]
+}

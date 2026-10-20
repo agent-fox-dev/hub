@@ -1,0 +1,1347 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/test_spec.v2.json",
+  "spec_id": "32",
+  "spec_name": "forge_webhook_ingress",
+  "schema_version": 2,
+  "tests": [
+    {
+      "id": "TS-32-1",
+      "kind": "unit",
+      "verifies": [
+        "32-REQ-1.1"
+      ],
+      "title": "PUT with no body, {} or secret null generates a 64-hex secret, stores it and returns it once",
+      "given": [
+        "an active workspace widgets owned by the caller",
+        "a real secrets store on an in-memory SQLite database",
+        "external_url is https://hub.example.com"
+      ],
+      "when": "PUT /api/v1/workspaces/widgets/forge/webhook is called three times, with no body, with {} and with {\"secret\":null}",
+      "then": [
+        "each answer is 200",
+        "the body has configured true, url https://hub.example.com/hooks/forge/widgets and a secret of exactly 64 lowercase hex characters",
+        "GetSecretValue(\"workspace\",\"widgets\",\"FORGE_WEBHOOK_SECRET\") equals the returned secret after each call",
+        "two generated secrets differ"
+      ],
+      "pseudocode": "for body in [none, '{}', '{\"secret\":null}']: r = put(body); assert r.status==200; assert re.match('^[0-9a-f]{64}$', r.json.secret); assert store.Get('workspace','widgets','FORGE_WEBHOOK_SECRET') == r.json.secret"
+    },
+    {
+      "id": "TS-32-2",
+      "kind": "unit",
+      "verifies": [
+        "32-REQ-1.2"
+      ],
+      "title": "A supplied valid secret is stored and not echoed back",
+      "given": [
+        "an active workspace widgets owned by the caller"
+      ],
+      "when": "PUT …/forge/webhook is called with secrets of length 16, 40 and 255 made of printable ASCII from '!' to '~'",
+      "then": [
+        "each answer is 200 with configured true and a url field",
+        "the body has no secret key",
+        "the stored value equals the supplied value"
+      ],
+      "pseudocode": "for s in [rand(16), rand(40), rand(255)]: r = put({'secret': s}); assert r.status==200; assert 'secret' not in r.json; assert store.Get(...) == s"
+    },
+    {
+      "id": "TS-32-3",
+      "kind": "unit",
+      "verifies": [
+        "32-REQ-1.3"
+      ],
+      "title": "Invalid PUT bodies answer 400 naming secret without echoing the value and store nothing",
+      "given": [
+        "an active workspace widgets that already has the secret 'existing-secret-value'"
+      ],
+      "when": "PUT is called with a JSON array body, malformed JSON, {\"secret\":123}, a 15-character secret, a 256-character secret, a secret containing a space and a secret containing a control character",
+      "then": [
+        "every answer is 400 via the apikit error envelope",
+        "the message names secret and the violated rule",
+        "the message does not contain the supplied value",
+        "the stored secret is still 'existing-secret-value'"
+      ],
+      "pseudocode": "for body in invalid: r = put(body); assert r.status==400; assert 'secret' in r.msg; assert supplied not in r.msg; assert store.Get(...)=='existing-secret-value'"
+    },
+    {
+      "id": "TS-32-4",
+      "kind": "unit",
+      "verifies": [
+        "32-REQ-1.4"
+      ],
+      "title": "PUT checks credential, scope, ownership and status in order and stops at the first failure",
+      "given": [
+        "workspace widgets owned by user A and active",
+        "workspace old owned by user A and archived",
+        "a secrets store wrapper that records calls"
+      ],
+      "when": "PUT is called with no credential, with a PAT lacking forge:write, as user B on widgets, and as user A on archived old, each with an invalid body",
+      "then": [
+        "the answers are 401, 403, 404 and 400 respectively",
+        "the 403 message names forge:write",
+        "the 400 message is 'workspace is not active'",
+        "the body is never validated (no 'secret' rule message) and the secrets store is never called"
+      ],
+      "pseudocode": "assert put(noauth).status==401; r=put(pat_read_only); assert r.status==403 and 'forge:write' in r.msg; assert put(userB).status==404; r=put(archived); assert r.status==400 and r.msg=='workspace is not active'; assert store.calls==0"
+    },
+    {
+      "id": "TS-32-5",
+      "kind": "unit",
+      "verifies": [
+        "32-REQ-1.5"
+      ],
+      "title": "PUT updates an existing secret and retries once after a concurrent create conflict",
+      "given": [
+        "a workspace whose scope already has FORGE_WEBHOOK_SECRET=old",
+        "a second workspace where CreateSecrets returns *ConflictError once because another request created the key"
+      ],
+      "when": "PUT is called with a new valid secret on each workspace",
+      "then": [
+        "both answers are 200",
+        "exactly one FORGE_WEBHOOK_SECRET entry exists in the scope",
+        "the stored value is the new secret",
+        "UpdateSecret is called at most twice in the conflict case"
+      ],
+      "pseudocode": "put({'secret': new}); assert len(store.List('workspace', slug) where key=='FORGE_WEBHOOK_SECRET')==1; assert store.Get(...)==new"
+    },
+    {
+      "id": "TS-32-6",
+      "kind": "unit",
+      "verifies": [
+        "32-REQ-1.6"
+      ],
+      "title": "A full secrets scope answers 400 with the store message and other store failures answer 500, with no event",
+      "given": [
+        "a workspace whose scope holds 100 secrets",
+        "a store stub whose UpdateSecret fails with a generic error",
+        "a recording emitter"
+      ],
+      "when": "PUT …/forge/webhook is called against each",
+      "then": [
+        "the full scope answers 400 carrying 'maximum of 100 entries per scope exceeded'",
+        "the generic failure answers 500",
+        "the recording emitter holds no hub.forge.webhook.set event"
+      ],
+      "pseudocode": "r=put(full); assert r.status==400 and 'maximum of 100 entries' in r.msg; r=put(broken); assert r.status==500; assert emitter.events==[]"
+    },
+    {
+      "id": "TS-32-7",
+      "kind": "unit",
+      "verifies": [
+        "32-REQ-1.7"
+      ],
+      "title": "The ingress URL trims a trailing slash and is null when external_url is unset while the secret is still stored",
+      "given": [
+        "external_url configured as https://hub.example.com/ in one run and empty in another"
+      ],
+      "when": "PUT …/forge/webhook is called for workspace widgets in each configuration",
+      "then": [
+        "with the configured value url equals https://hub.example.com/hooks/forge/widgets",
+        "with an empty value url is JSON null",
+        "in both cases the secret is stored"
+      ],
+      "pseudocode": "assert put().json.url=='https://hub.example.com/hooks/forge/widgets'; cfg.ExternalURL=''; r=put(); assert r.json.url is None; assert store.Get(...) != ''"
+    },
+    {
+      "id": "TS-32-8",
+      "kind": "unit",
+      "verifies": [
+        "32-REQ-1.8"
+      ],
+      "title": "A successful PUT emits hub.forge.webhook.set with only the generated flag",
+      "given": [
+        "a recording emitter in forge.Config.Audit"
+      ],
+      "when": "PUT is called once with no body and once with a supplied secret",
+      "then": [
+        "two hub.forge.webhook.set events are recorded with workspace widgets",
+        "metadata is exactly {generated:true} for the first and {generated:false} for the second",
+        "no metadata value contains the secret"
+      ],
+      "pseudocode": "assert events[0].Metadata=={'generated':True}; assert events[1].Metadata=={'generated':False}"
+    },
+    {
+      "id": "TS-32-9",
+      "kind": "unit",
+      "verifies": [
+        "32-REQ-2.1"
+      ],
+      "title": "DELETE removes the secret, answers 204 whether or not it existed and works on archived workspaces",
+      "given": [
+        "an active workspace with the secret set",
+        "an archived workspace with the secret set",
+        "an active workspace without the secret",
+        "a recording emitter"
+      ],
+      "when": "DELETE …/forge/webhook is called on each workspace",
+      "then": [
+        "every answer is 204 with an empty body",
+        "the secret is gone on the first two workspaces",
+        "hub.forge.webhook.unset events carry existed true, true and false respectively"
+      ],
+      "pseudocode": "for ws in three: assert delete(ws).status==204; assert [e.Metadata['existed'] for e in events]==[True,True,False]"
+    },
+    {
+      "id": "TS-32-10",
+      "kind": "unit",
+      "verifies": [
+        "32-REQ-2.2"
+      ],
+      "title": "DELETE answers 401, 403, 404 on auth failures without touching the store and 500 on a store failure",
+      "given": [
+        "a secrets store wrapper that records calls and can fail DeleteSecret with a generic error"
+      ],
+      "when": "DELETE is called with no credential, with a PAT lacking forge:write, as a non-owner, and with a failing store",
+      "then": [
+        "answers are 401, 403 (message names forge:write), 404",
+        "the store is not called in the first three cases",
+        "the failing store answers 500"
+      ],
+      "pseudocode": "assert delete(noauth).status==401; ...; assert delete(broken).status==500"
+    },
+    {
+      "id": "TS-32-11",
+      "kind": "integration",
+      "verifies": [
+        "32-REQ-2.3"
+      ],
+      "title": "After DELETE a delivery answers 404 identical to an unknown slug and old rows remain listed",
+      "given": [
+        "workspace widgets with a secret and one recorded delivery row",
+        "ingress and API routes registered on one Echo instance with a real SQLite database"
+      ],
+      "when": "DELETE …/forge/webhook is called, then a signed delivery is posted to /hooks/forge/widgets, then GET …/forge/deliveries is called",
+      "then": [
+        "the delivery answers 404 with the same body as an unknown slug",
+        "no new row is written",
+        "GET deliveries still returns the earlier row"
+      ],
+      "pseudocode": "delete(); r=post_signed(); assert r.status==404 and r.body==post('/hooks/forge/nosuch').body; assert len(get_deliveries())==1"
+    },
+    {
+      "id": "TS-32-12",
+      "kind": "unit",
+      "verifies": [
+        "32-REQ-2.4",
+        "32-REQ-2.5"
+      ],
+      "title": "GET /forge carries a webhook block with configured, url and last_delivery_at and sends nothing to the forge",
+      "given": [
+        "workspace A with a secret and delivery rows received_at 09:00 (ignored) and 09:12 (malformed)",
+        "workspace B with no secret and no rows",
+        "a forge transport that fails the test on any request"
+      ],
+      "when": "GET /api/v1/workspaces/<slug>/forge is called for A and B",
+      "then": [
+        "A has webhook.configured true, the ingress URL and last_delivery_at equal to the 09:12 timestamp",
+        "B has configured false, url present or null per external_url and last_delivery_at null",
+        "no outbound forge request was made"
+      ],
+      "pseudocode": "a=get('A'); assert a.webhook=={'configured':True,'url':url,'last_delivery_at':'…09:12:00Z'}; b=get('B'); assert b.webhook.configured==False and b.webhook.last_delivery_at is None"
+    },
+    {
+      "id": "TS-32-13",
+      "kind": "unit",
+      "verifies": [
+        "32-REQ-2.6"
+      ],
+      "title": "A secrets or delivery-log failure on GET /forge answers 500 with no partial webhook block",
+      "given": [
+        "one run with a secrets store that fails with a generic error",
+        "one run with the forge_deliveries table dropped"
+      ],
+      "when": "GET …/forge is called in each run",
+      "then": [
+        "both answers are 500 via the apikit envelope",
+        "the body has no webhook key"
+      ],
+      "pseudocode": "assert get().status==500 and 'webhook' not in get().json"
+    },
+    {
+      "id": "TS-32-14",
+      "kind": "property",
+      "verifies": [
+        "32-REQ-2.7"
+      ],
+      "title": "The secret value never appears outside the response of the PUT that generated it",
+      "given": [
+        "captured slog output, a real audit store and a real delivery log"
+      ],
+      "when": "for any valid secret value (generated or supplied, 16 to 255 printable ASCII characters), PUT then GET /forge, GET /forge/deliveries, GitHub and GitLab deliveries (accepted and rejected), and DELETE are executed",
+      "then": [
+        "the secret string occurs in no GET /forge body, deliveries body, DELETE response, ingress response, log line, hub_audit_events metadata or forge_deliveries row",
+        "for a generated secret it occurs only in the PUT response"
+      ],
+      "pseudocode": "for s in gen_secrets(): run_all(s); for sink in [responses_except_put, logs, audit_metadata, delivery_rows]: assert s not in str(sink)"
+    },
+    {
+      "id": "TS-32-15",
+      "kind": "integration",
+      "verifies": [
+        "32-REQ-3.1"
+      ],
+      "title": "POST /hooks/forge/:slug is served on the Echo root without bearer authentication",
+      "given": [
+        "an Echo instance with the API group protected by bearer authentication and the ingress mounted on the root, no lock manager supplied",
+        "a forge transport that fails on any request"
+      ],
+      "when": "a signed delivery without an Authorization header is posted to /hooks/forge/widgets and an unauthenticated GET is made to an API route",
+      "then": [
+        "the delivery reaches the handler and answers 202",
+        "the API route answers 401",
+        "no workspace lock was taken and no forge request was made"
+      ],
+      "pseudocode": "assert post_signed(no_auth).status==202; assert get('/api/v1/workspaces/widgets/forge').status==401"
+    },
+    {
+      "id": "TS-32-16",
+      "kind": "unit",
+      "verifies": [
+        "32-REQ-3.2"
+      ],
+      "title": "Unknown slug and missing workspace-scope secret give byte-identical 404 before the body is read, and lookup failures give 500",
+      "given": [
+        "workspace nosecret without a secret but with an org-scoped and a user-scoped FORGE_WEBHOOK_SECRET",
+        "a body reader that fails the test if read",
+        "a variant where the workspaces table is missing"
+      ],
+      "when": "a delivery is posted to /hooks/forge/nosuch and /hooks/forge/nosecret, then to a slug during a database failure",
+      "then": [
+        "both first answers are 404 with identical bytes",
+        "the body is never read",
+        "no row and no event are written",
+        "the failure case answers 500"
+      ],
+      "pseudocode": "a=post('/hooks/forge/nosuch'); b=post('/hooks/forge/nosecret'); assert a.status==404 and a.body==b.body; assert post(dbfail).status==500"
+    },
+    {
+      "id": "TS-32-17",
+      "kind": "unit",
+      "verifies": [
+        "32-REQ-3.3"
+      ],
+      "title": "A GitHub delivery is accepted only with sha256= plus the exact 64-hex HMAC of the body",
+      "given": [
+        "workspace widgets with secret S and a valid issues labeled body"
+      ],
+      "when": "deliveries carry the correct signature, a signature over a different body, a signature with another key, a header without the sha256= prefix, a 63-digit hex, non-hex characters, and an uppercase-hex correct digest",
+      "then": [
+        "the correct signature answers 202",
+        "every wrong or malformed one answers 401 'delivery signature missing or invalid'",
+        "the signature check uses the raw bytes received"
+      ],
+      "pseudocode": "assert post(sig='sha256='+hmac(S,body)).status==202; for bad in variants: assert post(sig=bad).status==401"
+    },
+    {
+      "id": "TS-32-18",
+      "kind": "unit",
+      "verifies": [
+        "32-REQ-3.4"
+      ],
+      "title": "A GitLab delivery is accepted only when X-Gitlab-Token equals the secret and the token is checked before the body is read",
+      "given": [
+        "workspace widgets with secret S",
+        "a body reader that records whether it was read"
+      ],
+      "when": "a delivery with a wrong X-Gitlab-Token and a delivery with the correct token are posted",
+      "then": [
+        "the wrong token answers 401 and the body was not read",
+        "the correct token answers 202",
+        "when both X-Hub-Signature-256 and X-Gitlab-Token are present the GitHub scheme is used"
+      ],
+      "pseudocode": "r=post(token='x', body=tracking); assert r.status==401 and not body.read; assert post(token=S).status==202"
+    },
+    {
+      "id": "TS-32-19",
+      "kind": "unit",
+      "verifies": [
+        "32-REQ-3.5"
+      ],
+      "title": "Unverified deliveries answer 401 with one message, record nothing and log only slug and scheme",
+      "given": [
+        "workspace widgets with a secret",
+        "captured slog output",
+        "empty forge_deliveries and hub_audit_events"
+      ],
+      "when": "deliveries are posted with no scheme header, a wrong GitHub signature, a malformed signature and a wrong GitLab token",
+      "then": [
+        "each answer is 401 with the message 'delivery signature missing or invalid'",
+        "forge_deliveries and hub_audit_events row counts are unchanged",
+        "a warn-level log line carries slug and scheme",
+        "no log line contains a header value or the body"
+      ],
+      "pseudocode": "for req in bad: r=post(req); assert r.status==401 and r.msg=='delivery signature missing or invalid'; assert count(deliveries)==0; assert header_value not in logs and body not in logs"
+    },
+    {
+      "id": "TS-32-20",
+      "kind": "unit",
+      "verifies": [
+        "32-REQ-3.6"
+      ],
+      "title": "A body over 1 MiB or over max_body_size answers 413, the handler's own with body_too_large",
+      "given": [
+        "workspace widgets with a secret",
+        "one Echo instance with max_body_size raised above 1 MiB and one with the 1MB default"
+      ],
+      "when": "a correctly signed delivery of 1048577 bytes is posted (chunked and with Content-Length), and one of exactly 1048576 bytes",
+      "then": [
+        "the oversize deliveries answer 413",
+        "with the raised global limit the 413 carries error_type body_too_large",
+        "no row and no event are written",
+        "the delivery of exactly 1048576 bytes passes the size check"
+      ],
+      "pseudocode": "r=post_signed(size=1<<20+1); assert r.status==413 and r.error_type=='body_too_large'; assert count(rows)==0"
+    },
+    {
+      "id": "TS-32-21",
+      "kind": "integration",
+      "verifies": [
+        "32-REQ-3.7"
+      ],
+      "title": "A rotated secret applies from the next delivery with no caching",
+      "given": [
+        "workspace widgets with secret OLD accepted once",
+        "a real secrets store"
+      ],
+      "when": "the secret is rotated to NEW through PUT …/forge/webhook and the secrets CLI path, then deliveries signed with OLD and NEW are posted",
+      "then": [
+        "the OLD-signed delivery answers 401",
+        "the NEW-signed delivery answers 202"
+      ],
+      "pseudocode": "put({'secret':NEW}); assert post(sign(OLD, body, id='d2')).status==401; assert post(sign(NEW, body, id='d3')).status==202"
+    },
+    {
+      "id": "TS-32-22",
+      "kind": "unit",
+      "verifies": [
+        "32-REQ-3.8"
+      ],
+      "title": "An archived workspace with a secret verifies, records and relays like an active one",
+      "given": [
+        "an archived workspace widgets with a secret and origin repo acme/widgets",
+        "a recording emitter"
+      ],
+      "when": "a signed GitHub issues labeled delivery for acme/widgets is posted",
+      "then": [
+        "the answer is 202 {\"outcome\":\"relayed\"}",
+        "one row is recorded",
+        "hub.forge.issue.labeled is emitted"
+      ],
+      "pseudocode": "r=post_signed(); assert r.status==202 and r.json.outcome=='relayed'; assert len(emitter.events)==1"
+    },
+    {
+      "id": "TS-32-23",
+      "kind": "unit",
+      "verifies": [
+        "32-REQ-4.1"
+      ],
+      "title": "InitSchema creates forge_deliveries with its key and index idempotently without touching rows",
+      "given": [
+        "an empty SQLite database"
+      ],
+      "when": "forge.InitSchema is called, a row is inserted, and InitSchema is called again",
+      "then": [
+        "both calls return nil",
+        "table forge_deliveries has the nine listed columns, primary key (workspace_slug, delivery_id) and an index on (workspace_slug, received_at)",
+        "the row count is unchanged and inserting the same key twice conflicts"
+      ],
+      "pseudocode": "assert InitSchema(db)==nil; insert(row); assert InitSchema(db)==nil; assert count==1; assert pragma_table_info columns == expected"
+    },
+    {
+      "id": "TS-32-24",
+      "kind": "unit",
+      "verifies": [
+        "32-REQ-4.2",
+        "32-REQ-4.4"
+      ],
+      "title": "A verified delivery records one row with ids and event taken from the right headers",
+      "given": [
+        "workspace widgets with a secret",
+        "an event name longer than 64 bytes in one GitHub case"
+      ],
+      "when": "a GitHub issues labeled delivery, a GitLab delivery with both Idempotency-Key and X-Gitlab-Event-UUID, a GitLab delivery with only X-Gitlab-Event-UUID, and the long event name delivery are posted",
+      "then": [
+        "each produces exactly one row",
+        "delivery_id equals X-GitHub-Delivery, Idempotency-Key, and X-Gitlab-Event-UUID respectively",
+        "forge is github or gitlab, event is the header value cut to 64 bytes, action is the payload action or empty, target is origin, relayed is a JSON array of event types",
+        "received_at is a UTC timestamp"
+      ],
+      "pseudocode": "assert row.delivery_id=='gh-1'; assert json.loads(row.relayed)==['hub.forge.issue.labeled']; assert len(row.event.encode())<=64"
+    },
+    {
+      "id": "TS-32-25",
+      "kind": "unit",
+      "verifies": [
+        "32-REQ-4.3"
+      ],
+      "title": "A verified delivery without id or event name, or with an invalid id, answers 400 and records nothing",
+      "given": [
+        "workspace widgets with a secret"
+      ],
+      "when": "signed deliveries are posted with no X-GitHub-Delivery, no X-GitHub-Event, a GitLab delivery with neither id header, a 256-character id and an id containing a non-ASCII character",
+      "then": [
+        "each answer is 400 via apikit.WriteAPIError",
+        "forge_deliveries row count is unchanged and no event is emitted",
+        "a 255-character id is accepted"
+      ],
+      "pseudocode": "for req in bad: assert post(req).status==400; assert count(rows)==0; assert post(id='a'*255).status==202"
+    },
+    {
+      "id": "TS-32-26",
+      "kind": "unit",
+      "verifies": [
+        "32-REQ-4.5"
+      ],
+      "title": "A repeated delivery id answers 202 duplicate with no new row and no event",
+      "given": [
+        "workspace widgets with a secret and a recording emitter",
+        "one prior accepted delivery gh-1"
+      ],
+      "when": "the same signed delivery with id gh-1 is posted again",
+      "then": [
+        "the answer is 202 {\"outcome\":\"duplicate\"}",
+        "row count stays 1",
+        "the emitter holds only the events of the first delivery"
+      ],
+      "pseudocode": "post(); r=post(); assert r.json=={'outcome':'duplicate'}; assert count(rows)==1; assert len(emitter.events)==1"
+    },
+    {
+      "id": "TS-32-27",
+      "kind": "unit",
+      "verifies": [
+        "32-REQ-4.6"
+      ],
+      "title": "A delivery-log insert failure answers 500 with no event and a redelivery is then processed in full",
+      "given": [
+        "workspace widgets with a secret and a recording emitter",
+        "forge_deliveries dropped so the insert fails"
+      ],
+      "when": "a signed delivery is posted, the table is recreated and the same delivery is posted again",
+      "then": [
+        "the first answer is 500 via the apikit envelope and no hub.forge.* event was emitted",
+        "the second answer is 202 relayed with one row and one event"
+      ],
+      "pseudocode": "drop(); assert post().status==500; assert emitter.events==[]; InitSchema(db); assert post().json.outcome=='relayed'"
+    },
+    {
+      "id": "TS-32-28",
+      "kind": "property",
+      "verifies": [
+        "32-REQ-4.7"
+      ],
+      "title": "N copies of one delivery, including concurrent ones, record one row and relay once",
+      "given": [
+        "workspace widgets with a secret and a recording emitter"
+      ],
+      "when": "for any N from 1 to 20, N copies of the same signed delivery id are posted concurrently",
+      "then": [
+        "exactly one forge_deliveries row exists",
+        "the events of the delivery are emitted exactly once",
+        "exactly one answer is relayed and N-1 answers are duplicate"
+      ],
+      "pseudocode": "for n in range(1,21): res = parallel(post, n); assert count(rows)==1; assert counter(res.outcome)=={'relayed':1,'duplicate':n-1}; assert len(emitter.events)==1"
+    },
+    {
+      "id": "TS-32-29",
+      "kind": "unit",
+      "verifies": [
+        "32-REQ-5.1"
+      ],
+      "title": "A non-object body or a missing required field is recorded as malformed and answered 400",
+      "given": [
+        "workspace widgets with a secret and a recording emitter"
+      ],
+      "when": "signed deliveries are posted with a body of [], of 'null', of invalid JSON, and with a GitHub issues payload lacking issue.number",
+      "then": [
+        "each answer is 400",
+        "one forge_deliveries row with outcome malformed is written per delivery",
+        "nothing is emitted"
+      ],
+      "pseudocode": "for b in bad: assert post(b).status==400; assert [r.outcome for r in rows]==['malformed']*4; assert emitter.events==[]"
+    },
+    {
+      "id": "TS-32-30",
+      "kind": "unit",
+      "verifies": [
+        "32-REQ-5.2"
+      ],
+      "title": "Unmapped event and action pairs are recorded ignored, answered 202 and emit nothing",
+      "given": [
+        "workspace widgets with a secret and a recording emitter"
+      ],
+      "when": "GitHub ping, pull_request labeled and issue_comment edited, GitLab Confidential Issue Hook, Confidential Note Hook and a Note Hook on a Commit are posted",
+      "then": [
+        "each answer is 202 {\"outcome\":\"ignored\"}",
+        "each is recorded with outcome ignored and relayed []",
+        "nothing is emitted"
+      ],
+      "pseudocode": "for d in cases: assert post(d).json=={'outcome':'ignored'}; assert emitter.events==[]"
+    },
+    {
+      "id": "TS-32-31",
+      "kind": "unit",
+      "verifies": [
+        "32-REQ-5.3"
+      ],
+      "title": "A repository equal to origin ignoring case binds the delivery to origin",
+      "given": [
+        "workspace git_url https://forge.example.com/Acme/Widgets.git",
+        "a nested GitLab namespace variant group/sub/widgets"
+      ],
+      "when": "a GitHub delivery with repository.full_name acme/widgets and a GitLab delivery with project.path_with_namespace group/sub/Widgets are posted",
+      "then": [
+        "rows have target origin",
+        "event metadata target is origin"
+      ],
+      "pseudocode": "assert row.target=='origin'; assert event.Metadata['target']=='origin'"
+    },
+    {
+      "id": "TS-32-32",
+      "kind": "unit",
+      "verifies": [
+        "32-REQ-5.4"
+      ],
+      "title": "On a carry_patch workspace a delivery for the upstream repository binds to upstream",
+      "given": [
+        "carry_patch workspace with git_url …/acme/widgets and upstream_url …/upstream/widgets"
+      ],
+      "when": "a signed delivery with repository.full_name upstream/widgets is posted",
+      "then": [
+        "the answer is 202 relayed",
+        "the row target and event metadata target are upstream"
+      ],
+      "pseudocode": "post(repo='upstream/widgets'); assert row.target=='upstream' and event.Metadata['target']=='upstream'"
+    },
+    {
+      "id": "TS-32-33",
+      "kind": "unit",
+      "verifies": [
+        "32-REQ-5.5"
+      ],
+      "title": "A delivery for an unrelated repository or with an unparseable remote is a repository_mismatch",
+      "given": [
+        "a workspace with origin acme/widgets",
+        "a standard workspace that has an upstream_url",
+        "a carry_patch workspace without upstream_url",
+        "a workspace whose git_url cannot be parsed"
+      ],
+      "when": "signed deliveries for other/repo, for the upstream repo on the standard workspace, for an upstream repo on the carry_patch workspace without upstream_url, and for any repo on the unparseable workspace are posted",
+      "then": [
+        "each answer is 202 {\"outcome\":\"repository_mismatch\"}",
+        "each row has outcome repository_mismatch and NULL target",
+        "no event is emitted"
+      ],
+      "pseudocode": "for ws in cases: r=post(ws); assert r.json.outcome=='repository_mismatch'; assert row.target is None; assert emitter.events==[]"
+    },
+    {
+      "id": "TS-32-34",
+      "kind": "unit",
+      "verifies": [
+        "32-REQ-6.1"
+      ],
+      "title": "GitHub issues actions map to the six hub.forge.issue.* events",
+      "given": [
+        "a bound workspace and a recording emitter"
+      ],
+      "when": "GitHub issues deliveries with action opened, edited, closed, reopened, labeled and unlabeled are posted",
+      "then": [
+        "each yields exactly one event of type hub.forge.issue.<action>",
+        "each outcome is relayed"
+      ],
+      "pseudocode": "for a in actions: post(issues, a); assert [e.EventType for e in emitter.events]==['hub.forge.issue.'+a for a in actions]"
+    },
+    {
+      "id": "TS-32-35",
+      "kind": "unit",
+      "verifies": [
+        "32-REQ-6.2"
+      ],
+      "title": "GitHub issue_comment created maps to comment.created with the pull_request flag",
+      "given": [
+        "a bound workspace and a recording emitter"
+      ],
+      "when": "an issue_comment created delivery is posted once with issue.pull_request present and once without",
+      "then": [
+        "two hub.forge.comment.created events are emitted",
+        "metadata pull_request is true for the first and false for the second"
+      ],
+      "pseudocode": "assert [e.Metadata['pull_request'] for e in events]==[True,False]"
+    },
+    {
+      "id": "TS-32-36",
+      "kind": "unit",
+      "verifies": [
+        "32-REQ-6.3"
+      ],
+      "title": "GitHub pull_request actions map to opened, reopened, synchronize and merged or closed",
+      "given": [
+        "a bound workspace and a recording emitter"
+      ],
+      "when": "pull_request deliveries with opened, reopened, synchronize, closed with merged true and closed with merged false are posted",
+      "then": [
+        "events are pull_request.opened, .reopened, .synchronize, .merged and .closed in that order",
+        "the merged pull request never yields .closed"
+      ],
+      "pseudocode": "assert types==['…opened','…reopened','…synchronize','…merged','…closed']"
+    },
+    {
+      "id": "TS-32-37",
+      "kind": "unit",
+      "verifies": [
+        "32-REQ-6.4"
+      ],
+      "title": "A GitHub push delivery maps to hub.forge.push",
+      "given": [
+        "a bound workspace and a recording emitter"
+      ],
+      "when": "a signed push delivery with ref, before and after is posted",
+      "then": [
+        "exactly one hub.forge.push event is emitted",
+        "the outcome is relayed"
+      ],
+      "pseudocode": "assert [e.EventType for e in events]==['hub.forge.push']"
+    },
+    {
+      "id": "TS-32-38",
+      "kind": "unit",
+      "verifies": [
+        "32-REQ-7.1"
+      ],
+      "title": "GitLab Issue Hook open, close and reopen map to opened, closed and reopened",
+      "given": [
+        "a bound workspace and a recording emitter"
+      ],
+      "when": "Issue Hook deliveries with object_attributes.action open, close and reopen are posted with the correct token",
+      "then": [
+        "events hub.forge.issue.opened, .closed and .reopened are emitted, one per delivery",
+        "number is the object_attributes iid"
+      ],
+      "pseudocode": "assert types==['hub.forge.issue.opened','hub.forge.issue.closed','hub.forge.issue.reopened']"
+    },
+    {
+      "id": "TS-32-39",
+      "kind": "unit",
+      "verifies": [
+        "32-REQ-7.2"
+      ],
+      "title": "GitLab Issue Hook update emits edited, then unlabeled, then labeled, each group sorted by name",
+      "given": [
+        "a bound workspace and a recording emitter"
+      ],
+      "when": "an update delivery changes the title, removes labels z and b and adds labels y and a, and a second update only adds A and removes B",
+      "then": [
+        "the first delivery emits edited, unlabeled(b), unlabeled(z), labeled(a), labeled(y) in that order",
+        "the second emits unlabeled(B) then labeled(A)",
+        "labeled and unlabeled events carry the label name in metadata label"
+      ],
+      "pseudocode": "assert types==['edited','unlabeled','unlabeled','labeled','labeled']; assert [e.Metadata['label'] for e in events[1:]]==['b','z','a','y']"
+    },
+    {
+      "id": "TS-32-40",
+      "kind": "unit",
+      "verifies": [
+        "32-REQ-7.3"
+      ],
+      "title": "A GitLab issue update with no title, description or label change is ignored",
+      "given": [
+        "a bound workspace and a recording emitter"
+      ],
+      "when": "an Issue Hook update with an empty changes object and one whose labels previous equals current are posted",
+      "then": [
+        "each answer is 202 {\"outcome\":\"ignored\"}",
+        "nothing is emitted"
+      ],
+      "pseudocode": "assert post(update_no_change).json.outcome=='ignored'; assert emitter.events==[]"
+    },
+    {
+      "id": "TS-32-41",
+      "kind": "unit",
+      "verifies": [
+        "32-REQ-7.4"
+      ],
+      "title": "GitLab Note Hook on Issue or MergeRequest maps to comment.created with the right number and flag",
+      "given": [
+        "a bound workspace and a recording emitter"
+      ],
+      "when": "Note Hook deliveries with noteable_type Issue (issue.iid 7, action absent) and MergeRequest (merge_request.iid 9, action create) are posted",
+      "then": [
+        "two hub.forge.comment.created events are emitted",
+        "numbers are 7 and 9 and pull_request is false then true"
+      ],
+      "pseudocode": "assert [(e.Metadata['number'],e.Metadata['pull_request']) for e in events]==[(7,False),(9,True)]"
+    },
+    {
+      "id": "TS-32-42",
+      "kind": "unit",
+      "verifies": [
+        "32-REQ-7.5"
+      ],
+      "title": "GitLab Merge Request Hook maps open, close, reopen, merge and update with or without oldrev",
+      "given": [
+        "a bound workspace and a recording emitter"
+      ],
+      "when": "Merge Request Hook deliveries with open, close, reopen, merge, update with oldrev and update without oldrev are posted",
+      "then": [
+        "events are pull_request.opened, .closed, .reopened, .merged and .synchronize",
+        "the update without oldrev answers 202 ignored and emits nothing"
+      ],
+      "pseudocode": "assert types==['opened','closed','reopened','merged','synchronize']; assert last.json.outcome=='ignored'"
+    },
+    {
+      "id": "TS-32-43",
+      "kind": "unit",
+      "verifies": [
+        "32-REQ-7.6"
+      ],
+      "title": "GitLab Push Hook and Tag Push Hook map to hub.forge.push",
+      "given": [
+        "a bound workspace and a recording emitter"
+      ],
+      "when": "a Push Hook and a Tag Push Hook are posted",
+      "then": [
+        "two hub.forge.push events are emitted",
+        "resource_id is the ref of each"
+      ],
+      "pseudocode": "assert [e.EventType for e in events]==['hub.forge.push']*2"
+    },
+    {
+      "id": "TS-32-44",
+      "kind": "unit",
+      "verifies": [
+        "32-REQ-8.1",
+        "32-REQ-8.2"
+      ],
+      "title": "Every relayed event has the fixed HubEvent fields and exactly the metadata keys of its kind",
+      "given": [
+        "a bound workspace widgets and a recording emitter"
+      ],
+      "when": "one delivery of each kind is posted: issue edited, issue labeled, comment created, pull request merged, push (GitHub) and a GitLab issue update",
+      "then": [
+        "Workspace is widgets, ActorType is forge, ActorID is empty",
+        "ResourceType is issue, comment, pull_request or repository, ResourceID is the decimal number (iid for GitLab) or the ref for a push, Action is the last segment of the event type (push for a push)",
+        "metadata keys equal forge, target, delivery_id, actor plus: number,title,url,labels / number,label,labels,url / number,comment_url,pull_request / number,url,head,base,merged / ref,before,after",
+        "actor is the forge login or empty string when absent, and no other payload field appears"
+      ],
+      "pseudocode": "assert set(e.Metadata)==base | extra[kind]; assert e.ActorType=='forge' and e.ActorID==''; assert e.Action==e.EventType.split('.')[-1]"
+    },
+    {
+      "id": "TS-32-45",
+      "kind": "property",
+      "verifies": [
+        "32-REQ-8.3"
+      ],
+      "title": "Titles are cut to 256 bytes on a UTF-8 boundary and URLs never carry userinfo",
+      "given": [
+        "a bound workspace and a recording emitter"
+      ],
+      "when": "for any payload whose issue title is an arbitrary Unicode string of any length and whose URLs may carry user:password@ userinfo",
+      "then": [
+        "metadata title is valid UTF-8 of at most 256 bytes and a prefix of the original title",
+        "no URL in the metadata contains user:password@"
+      ],
+      "pseudocode": "for title,url in gen(): post(issue_opened(title,url)); t=e.Metadata['title']; assert len(t.encode())<=256 and valid_utf8(t) and title.startswith(t); assert '@' not in userinfo(e.Metadata['url'])"
+    },
+    {
+      "id": "TS-32-46",
+      "kind": "unit",
+      "verifies": [
+        "32-REQ-8.4"
+      ],
+      "title": "Each delivery and webhook event type is an exported constant in internal/audit/types.go equal to its string",
+      "given": [
+        "the internal/audit package"
+      ],
+      "when": "the constants for hub.forge.issue.opened/edited/closed/reopened/labeled/unlabeled, comment.created, pull_request.opened/closed/merged/reopened/synchronize, push, webhook.set and webhook.unset are read",
+      "then": [
+        "each constant's value equals its event type string",
+        "each has a doc comment in the source"
+      ],
+      "pseudocode": "assert audit.EventForgeIssueOpened=='hub.forge.issue.opened'; …; assert doc_comment(const) != ''"
+    },
+    {
+      "id": "TS-32-47",
+      "kind": "unit",
+      "verifies": [
+        "32-REQ-8.5"
+      ],
+      "title": "The 202 answer is written and flushed before any event is emitted",
+      "given": [
+        "an emitter whose Emit blocks until the test releases it",
+        "workspace widgets with a secret"
+      ],
+      "when": "a relayed delivery is posted to a real HTTP server running the ingress",
+      "then": [
+        "the client receives the complete 202 {\"outcome\":\"relayed\"} while Emit is still blocked",
+        "the emitter was handed the events only after the response was flushed",
+        "ignored and repository_mismatch answers carry their outcome and nothing is emitted"
+      ],
+      "pseudocode": "resp = http.post(); assert resp.status==202 and resp.json.outcome=='relayed'; assert emitter.blocked; release(); assert emitter.count==1"
+    },
+    {
+      "id": "TS-32-48",
+      "kind": "integration",
+      "verifies": [
+        "32-REQ-8.6"
+      ],
+      "title": "Relayed events are stored in production order and appear on the SSE stream and the audit query",
+      "given": [
+        "a real DuckDB audit store, SSE manager and broadcast emitter",
+        "audit query routes registered, a user owning workspace widgets, and an open GET /api/v1/events?workspace=widgets stream"
+      ],
+      "when": "a GitLab issue update delivery producing unlabeled then labeled is posted",
+      "then": [
+        "the SSE stream receives both events in order",
+        "GET /api/v1/audit?workspace=widgets returns both events in production order",
+        "the emitter context was not cancelled by the request completing"
+      ],
+      "pseudocode": "post(update); assert sse.read_types()==['hub.forge.issue.unlabeled','hub.forge.issue.labeled']; assert [e.event_type for e in get_audit()]==same"
+    },
+    {
+      "id": "TS-32-49",
+      "kind": "unit",
+      "verifies": [
+        "32-REQ-8.7"
+      ],
+      "title": "An Emit error is logged and the remaining events are still emitted without changing the answer",
+      "given": [
+        "an emitter that returns an error for the first event and records the rest",
+        "captured slog output"
+      ],
+      "when": "a delivery producing three events is posted",
+      "then": [
+        "the answer is 202 relayed",
+        "all three events were offered to the emitter",
+        "an error is logged",
+        "the delivery-log row is unchanged"
+      ],
+      "pseudocode": "assert r.status==202; assert emitter.attempts==3; assert 'error' in logs.level"
+    },
+    {
+      "id": "TS-32-50",
+      "kind": "unit",
+      "verifies": [
+        "32-REQ-8.8"
+      ],
+      "title": "A nil emitter skips emission while still recording and answering",
+      "given": [
+        "forge.Config.Audit is nil"
+      ],
+      "when": "a signed relayable delivery is posted",
+      "then": [
+        "the answer is 202 with outcome relayed",
+        "one row is recorded",
+        "there is no panic"
+      ],
+      "pseudocode": "cfg.Audit=nil; r=post(); assert r.status==202 and r.json.outcome=='relayed'; assert count(rows)==1"
+    },
+    {
+      "id": "TS-32-51",
+      "kind": "unit",
+      "verifies": [
+        "32-REQ-9.1"
+      ],
+      "title": "GET …/forge/deliveries returns rows newest first, filtered by inclusive since and limited, on any workspace status",
+      "given": [
+        "an archived workspace with 40 rows with distinct received_at values",
+        "an empty workspace"
+      ],
+      "when": "GET deliveries is called with no query, with since equal to the received_at of the 10th newest row, and with limit=5; and on the empty workspace",
+      "then": [
+        "the default returns 30 rows newest first",
+        "since includes the row whose received_at equals it",
+        "limit=5 returns the 5 newest",
+        "every element has delivery_id, forge, event, action, target, outcome, relayed (array) and received_at",
+        "the empty workspace returns []"
+      ],
+      "pseudocode": "assert len(get().json)==30; assert get(since=t10).json[-1].received_at==t10; assert get_empty().json==[]"
+    },
+    {
+      "id": "TS-32-52",
+      "kind": "unit",
+      "verifies": [
+        "32-REQ-9.2"
+      ],
+      "title": "Bad since or limit values answer 400 naming the parameter",
+      "given": [
+        "an active workspace"
+      ],
+      "when": "GET deliveries is called with since=yesterday, limit=0, limit=101 and limit=abc",
+      "then": [
+        "each answer is 400",
+        "the message names since or limit respectively"
+      ],
+      "pseudocode": "for q in bad: r=get(q); assert r.status==400 and name in r.msg"
+    },
+    {
+      "id": "TS-32-53",
+      "kind": "unit",
+      "verifies": [
+        "32-REQ-9.3"
+      ],
+      "title": "The deliveries route answers 401, 403 naming forge:read and 404, and accepts forge:read and forge:write PATs",
+      "given": [
+        "workspaces owned by users A and B"
+      ],
+      "when": "GET deliveries is called with no credential, with a PAT holding neither scope, as non-owner, and with PATs holding forge:read and forge:write",
+      "then": [
+        "answers are 401, 403 (message names forge:read) and 404",
+        "both PATs with the scope answer 200"
+      ],
+      "pseudocode": "assert get(noauth).status==401; r=get(pat_other); assert r.status==403 and 'forge:read' in r.msg; assert get(userB).status==404; assert get(pat_read).status==200 and get(pat_write).status==200"
+    },
+    {
+      "id": "TS-32-54",
+      "kind": "unit",
+      "verifies": [
+        "32-REQ-9.4"
+      ],
+      "title": "PruneDeliveries deletes rows older than 7 days and rows of deleted workspaces and returns the count",
+      "given": [
+        "workspace a existing with rows 8 days old and 6 days old",
+        "a row 1 day old for slug gone that is not in workspaces"
+      ],
+      "when": "forge.PruneDeliveries(ctx, db) is called",
+      "then": [
+        "it returns (2, nil)",
+        "only the 6-day-old row of a remains"
+      ],
+      "pseudocode": "n,err=PruneDeliveries(ctx,db); assert n==2 and err is None; assert ids(rows)==['recent-a']"
+    },
+    {
+      "id": "TS-32-55",
+      "kind": "unit",
+      "verifies": [
+        "32-REQ-9.5",
+        "32-REQ-9.6"
+      ],
+      "title": "StartDeliveryRetention prunes immediately, then hourly, survives a failed pass and returns on cancel",
+      "given": [
+        "a database with an expired row",
+        "a fake ticker or injected clock",
+        "a variant where the first pass fails because the table is missing"
+      ],
+      "when": "StartDeliveryRetention is run in a goroutine, a tick is fired, then ctx is cancelled",
+      "then": [
+        "the expired row is gone before the first tick",
+        "a failed pass is logged and the next tick prunes again",
+        "the function returns after cancel and no goroutine leaks",
+        "no panic and no os.Exit"
+      ],
+      "pseudocode": "go Start(ctx,db); eventually(rows==0); cancel(); assert returned within 1s"
+    },
+    {
+      "id": "TS-32-56",
+      "kind": "integration",
+      "verifies": [
+        "32-REQ-9.7"
+      ],
+      "title": "cmd/af-hub/main.go initialises the schema, mounts the ingress with its config and starts the pruner",
+      "given": [
+        "the source of cmd/af-hub/main.go parsed with go/parser, or the af-hub binary started on a temporary data directory"
+      ],
+      "when": "main.go's calls are inspected, or the binary is started and POST /hooks/forge/nosuch is sent",
+      "then": [
+        "forge.InitSchema is called with a fatal-on-error path before forge.StartDeliveryRetention is launched with go",
+        "the ingress is mounted on server.Echo() and forge.Config receives the audit emitter, secrets store and ExternalURL",
+        "the running binary answers 404 (not 405 or 401) at /hooks/forge/nosuch"
+      ],
+      "pseudocode": "ast = parse('cmd/af-hub/main.go'); assert calls(ast) contains forge.InitSchema, forge.MountWebhookIngress, go forge.StartDeliveryRetention; assert index(InitSchema) < index(StartDeliveryRetention)"
+    },
+    {
+      "id": "TS-32-57",
+      "kind": "unit",
+      "verifies": [
+        "32-REQ-10.1"
+      ],
+      "title": "afc forge webhook set --secret sends the secret and prints one JSON document",
+      "given": [
+        "a stub hub recording requests and answering 200 {configured:true,url:…}"
+      ],
+      "when": "afc forge webhook set widgets --secret s3cretvalue123456 is run",
+      "then": [
+        "a PUT to /api/v1/workspaces/widgets/forge/webhook is made with body {\"secret\":\"s3cretvalue123456\"}",
+        "stdout is one JSON document equal to the answer",
+        "exit code is 0"
+      ],
+      "pseudocode": "assert req.method=='PUT' and req.path==…; assert req.body=={'secret':'s3cretvalue123456'}; assert decodeOneDocument(stdout)==answer; assert ExitCode(err)==0"
+    },
+    {
+      "id": "TS-32-58",
+      "kind": "unit",
+      "verifies": [
+        "32-REQ-10.2",
+        "32-REQ-10.3"
+      ],
+      "title": "set with --generate or no flag sends {} and warns on stderr, and --from-stdin sends stdin minus one trailing newline",
+      "given": [
+        "a stub hub that answers with a generated secret",
+        "stdin containing 'topsecretvalue-1234\\n\\n' in the stdin case"
+      ],
+      "when": "afc forge webhook set widgets is run with --generate, with no flag, and with --from-stdin",
+      "then": [
+        "--generate and no-flag requests carry body {} and print a document containing secret",
+        "stderr has one line saying hub will not show the secret again",
+        "the --from-stdin request body secret is 'topsecretvalue-1234\\n' (one newline dropped)",
+        "all exit 0"
+      ],
+      "pseudocode": "assert req.body=={}; assert len(stderr.splitlines())==1; assert 'again' in stderr; assert stdin_req.body.secret=='topsecretvalue-1234\\n'"
+    },
+    {
+      "id": "TS-32-59",
+      "kind": "unit",
+      "verifies": [
+        "32-REQ-10.4"
+      ],
+      "title": "Combining --secret, --from-stdin and --generate exits 2 before any request",
+      "given": [
+        "a stub hub that fails the test on any request"
+      ],
+      "when": "afc forge webhook set widgets is run with each pair and with all three flags",
+      "then": [
+        "exit code is 2",
+        "the error message says the flags are mutually exclusive",
+        "no HTTP request is made"
+      ],
+      "pseudocode": "for flags in combos: assert ExitCode(run(flags))==2; assert stub.requests==0"
+    },
+    {
+      "id": "TS-32-60",
+      "kind": "unit",
+      "verifies": [
+        "32-REQ-10.5"
+      ],
+      "title": "afc forge webhook unset sends DELETE and prints the synthetic status document",
+      "given": [
+        "a stub hub answering 204"
+      ],
+      "when": "afc forge webhook unset widgets is run",
+      "then": [
+        "a DELETE to /api/v1/workspaces/widgets/forge/webhook is made",
+        "stdout is {\"status\":\"unset\",\"workspace\":\"widgets\"}",
+        "exit code 0"
+      ],
+      "pseudocode": "assert decodeOneDocument(stdout)=={'status':'unset','workspace':'widgets'}"
+    },
+    {
+      "id": "TS-32-61",
+      "kind": "unit",
+      "verifies": [
+        "32-REQ-10.6"
+      ],
+      "title": "afc forge deliveries sends only the flags that were set, as given",
+      "given": [
+        "a stub hub answering with a JSON array"
+      ],
+      "when": "afc forge deliveries widgets is run with no flags, with --limit 10, with --since 2026-10-21T00:00:00Z and with --limit 500",
+      "then": [
+        "the query strings are empty, limit=10, since=2026-10-21T00:00:00Z and limit=500 respectively (no client-side validation)",
+        "each prints one JSON document"
+      ],
+      "pseudocode": "assert queries==['', 'limit=10', 'since=…', 'limit=500']"
+    },
+    {
+      "id": "TS-32-62",
+      "kind": "unit",
+      "verifies": [
+        "32-REQ-10.7"
+      ],
+      "title": "Error statuses from hub are reported through CLIHandleError with apikit exit codes and the hub message",
+      "given": [
+        "a stub hub answering 400, 401, 403, 404 and 500 with an error envelope"
+      ],
+      "when": "set, unset and deliveries are each run against these answers",
+      "then": [
+        "each command exits with apikit's exit code for the HTTP status",
+        "the hub error message is reported"
+      ],
+      "pseudocode": "for cmd in cmds: for st in statuses: assert ExitCode(run(cmd,st))==apikit_code(st); assert msg in stderr"
+    },
+    {
+      "id": "TS-32-63",
+      "kind": "integration",
+      "verifies": [
+        "32-REQ-10.8"
+      ],
+      "title": "The forge subcommands are registered under afc forge, use apiPath and keep afc free of internal/forge and internal/audit",
+      "given": [
+        "the afc root command and the internal/cli package imports"
+      ],
+      "when": "the command tree is walked and the CGO_ENABLED=0 afc build and the import graph are checked",
+      "then": [
+        "afc forge has webhook (set, unset) and deliveries subcommands",
+        "internal/cli does not import internal/forge or internal/audit",
+        "afc builds with CGO_ENABLED=0",
+        "a slug containing '/' is path-escaped in the request path"
+      ],
+      "pseudocode": "assert find(root,'forge','webhook','set'); assert 'internal/forge' not in deps('internal/cli'); assert build(CGO_ENABLED=0).ok"
+    },
+    {
+      "id": "TS-32-64",
+      "kind": "smoke",
+      "verifies": [
+        "32-PATH-1",
+        "32-REQ-1.1",
+        "32-REQ-8.6"
+      ],
+      "title": "An operator configures a webhook and a GitHub label delivery reaches the SSE stream and the audit query",
+      "given": [
+        "a running hub composition with real SQLite, secrets store, DuckDB audit store, SSE manager, broadcast emitter, workspace routes, forge routes and the ingress",
+        "workspace widgets (origin acme/widgets, active) owned by the operator",
+        "an open GET /api/v1/events?workspace=widgets stream"
+      ],
+      "when": "afc forge webhook set widgets is run, then a GitHub issues labeled delivery signed with the generated secret is posted to /hooks/forge/widgets",
+      "then": [
+        "afc prints the configured document with a 64-hex secret and the ingress URL",
+        "the delivery answers 202 {\"outcome\":\"relayed\"}",
+        "exactly one forge_deliveries row exists",
+        "hub.forge.issue.labeled with workspace widgets, target origin, number, label and labels appears on the SSE stream and in GET /api/v1/audit?workspace=widgets",
+        "hub.forge.webhook.set is recorded with generated true"
+      ],
+      "real_components": [
+        "afc CLI",
+        "forge webhook handlers",
+        "webhook ingress",
+        "secrets store",
+        "SQLite database",
+        "audit emitter",
+        "DuckDB audit store",
+        "SSE manager",
+        "audit query routes"
+      ]
+    },
+    {
+      "id": "TS-32-65",
+      "kind": "smoke",
+      "verifies": [
+        "32-PATH-2",
+        "32-REQ-3.4",
+        "32-REQ-7.2"
+      ],
+      "title": "A GitLab label change is relayed as unlabeled then labeled",
+      "given": [
+        "a running hub composition with real stores, the broadcast emitter and the ingress",
+        "workspace widgets with origin group/widgets and a known secret"
+      ],
+      "when": "a GitLab Issue Hook update adding one label and removing another is posted with X-Gitlab-Token equal to the secret",
+      "then": [
+        "the answer is 202 {\"outcome\":\"relayed\"}",
+        "one forge_deliveries row exists",
+        "hub_audit_events holds hub.forge.issue.unlabeled then hub.forge.issue.labeled for workspace widgets"
+      ],
+      "real_components": [
+        "webhook ingress",
+        "secrets store",
+        "SQLite database",
+        "audit emitter",
+        "DuckDB audit store"
+      ]
+    },
+    {
+      "id": "TS-32-66",
+      "kind": "smoke",
+      "verifies": [
+        "32-PATH-3",
+        "32-REQ-4.5"
+      ],
+      "title": "A redelivered GitHub delivery is answered as a duplicate with no extra row or event",
+      "given": [
+        "a running hub composition with real stores and the broadcast emitter",
+        "workspace widgets with a known secret and one accepted signed delivery"
+      ],
+      "when": "the same signed delivery with the same X-GitHub-Delivery is posted again",
+      "then": [
+        "the answer is 202 {\"outcome\":\"duplicate\"}",
+        "forge_deliveries still has one row",
+        "hub_audit_events still has only the first delivery's event"
+      ],
+      "real_components": [
+        "webhook ingress",
+        "secrets store",
+        "SQLite database",
+        "audit emitter",
+        "DuckDB audit store"
+      ]
+    },
+    {
+      "id": "TS-32-67",
+      "kind": "smoke",
+      "verifies": [
+        "32-PATH-4",
+        "32-REQ-9.1",
+        "32-REQ-2.4"
+      ],
+      "title": "An operator reads the delivery log through afc and the webhook state through GET /forge",
+      "given": [
+        "a running hub composition with real stores and API routes",
+        "workspace widgets with a secret and several recorded deliveries"
+      ],
+      "when": "afc forge deliveries widgets --limit 10 is run and then GET /api/v1/workspaces/widgets/forge is called",
+      "then": [
+        "afc prints a JSON array of at most 10 rows newest first",
+        "GET /forge shows webhook.configured true, the ingress URL and last_delivery_at equal to the newest row",
+        "neither output contains the secret"
+      ],
+      "real_components": [
+        "afc CLI",
+        "forge deliveries handler",
+        "forge status handler",
+        "secrets store",
+        "SQLite database"
+      ]
+    },
+    {
+      "id": "TS-32-68",
+      "kind": "smoke",
+      "verifies": [
+        "32-PATH-5",
+        "32-REQ-9.7",
+        "32-REQ-9.4"
+      ],
+      "title": "af-hub starts the pruner, which removes old and orphaned delivery rows",
+      "given": [
+        "the af-hub startup path (main wiring) against a temporary SQLite database that already holds a row older than 7 days, a recent row and a row of a deleted workspace"
+      ],
+      "when": "the hub starts, runs forge.InitSchema and launches forge.StartDeliveryRetention, and the immediate pass completes",
+      "then": [
+        "the old row and the orphaned row are gone",
+        "the recent row of the existing workspace remains",
+        "cancelling the context stops the loop"
+      ],
+      "real_components": [
+        "cmd/af-hub startup wiring",
+        "forge.InitSchema",
+        "delivery retention loop",
+        "forge.PruneDeliveries",
+        "SQLite database"
+      ]
+    },
+    {
+      "id": "TS-32-69",
+      "kind": "smoke",
+      "verifies": [
+        "32-PATH-6",
+        "32-REQ-2.1",
+        "32-REQ-2.3"
+      ],
+      "title": "An operator turns ingress off and later signed deliveries answer 404",
+      "given": [
+        "a running hub composition with real stores, the ingress and the forge routes",
+        "workspace widgets with a secret and one recorded delivery"
+      ],
+      "when": "afc forge webhook unset widgets is run and a signed delivery is then posted to /hooks/forge/widgets",
+      "then": [
+        "afc prints {\"status\":\"unset\",\"workspace\":\"widgets\"}",
+        "hub.forge.webhook.unset with existed true is recorded",
+        "the delivery answers 404 and no row is added",
+        "the earlier delivery row is still listed by GET …/forge/deliveries"
+      ],
+      "real_components": [
+        "afc CLI",
+        "forge webhook handlers",
+        "webhook ingress",
+        "secrets store",
+        "SQLite database",
+        "audit emitter"
+      ]
+    }
+  ]
+}

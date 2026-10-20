@@ -1,0 +1,395 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/tasks.v2.json",
+  "spec_id": "31",
+  "spec_name": "forge_writes",
+  "schema_version": 2,
+  "test_commands": {
+    "all_tests": "make test",
+    "linter": "make lint",
+    "spec_tests": "go test ./internal/forge/... ./internal/cli/... ./internal/audit/... -count=1"
+  },
+  "dependencies": [
+    {
+      "spec": "30_forge_client_reads",
+      "reason": "provides internal/forge (Config, RegisterRoutes), the per-request issuex client and ?target resolution, the forge:write scope and auth helpers, the forge error mapping and scrubber, the aflib module requirement, and the afc issue and afc pr parent commands that this spec extends"
+    }
+  ],
+  "tasks": [
+    {
+      "id": 1,
+      "kind": "implement",
+      "title": "Write-route pipeline: authorization, workspace checks, client resolution, body-limit step and route registration",
+      "criteria": [
+        "31-REQ-1.2",
+        "31-REQ-1.3",
+        "31-REQ-1.5",
+        "31-REQ-1.6"
+      ],
+      "tests": [
+        "TS-31-2",
+        "TS-31-3",
+        "TS-31-5",
+        "TS-31-6"
+      ],
+      "steps": [
+        "Read internal/forge from spec 30 (config.go, routes, errors.go, auth helpers, client construction, ?target resolution) and internal/sandboxes/routes.go + auth.go + handlers_issue.go for the pattern; reuse spec 30's canWriteForge / forge:write scope and error mapper, do not redefine them",
+        "Add internal/forge/issuex_write_imports_test.go pinning the real issuex write signatures at compile time (var _ func(...) = (*issuex.Client).Method, as internal/sandboxes/imports_test.go does); define a small unexported writer interface in internal/forge/write.go over exactly the pinned methods (CreateIssue, UpdateIssue/close, PostComment, AddLabels, RemoveLabel, GetLabel, CreateLabel, ReadIssue, CreatePullRequest, PostReviewComment) with an adapter so tests can inject fakes through Config.NewClient; if a capability is missing in issuex, implement it in the adapter from the closest issuex method and note it in a comment",
+        "Write TS-31-2, TS-31-3, TS-31-5 and TS-31-6 first (httptest forge stub counting requests, apikit.SetAuthInfo for credentials, workspace rows as in the spec 30 tests) and confirm they fail",
+        "In internal/forge/write.go add a shared pipeline helper: 401 'authentication required' → 403 'PAT requires forge:write scope' (unknown credential type also 403) → wsaccess.AuthorizeWorkspace (404 'workspace not found') → status != active gives 400 'workspace is not active' via apikit.WriteAPIError; only then run a per-route func that decodes/validates the body (400), resolves the client through spec 30 (target, credential, forge kind), applies the body-limit step and calls the route action",
+        "Add the body-limit helper in internal/forge/write_limits.go: limit by forge kind (github 65536, gitlab 1000000) counted with utf8.RuneCountInString; on excess answer apikit.WriteAPIErrorWithType(c, 413, \"<field> is <n> characters; <forge> accepts at most <limit>\", \"body_too_large\")",
+        "Register the nine write routes under the workspace group in forge.RegisterRoutes (POST /issues, PATCH /issues/:n, POST /issues/:n/close, POST /issues/:n/comments, POST /issues/:n/labels, DELETE /issues/:n/labels/:name, POST /labels, POST /pulls, POST /pulls/:n/comments), each running the pipeline; route actions not yet delivered answer 501 through a single notImplemented func that later tasks replace",
+        "Make TS-31-2, TS-31-3, TS-31-5 and TS-31-6 pass for all nine routes, then run make test and make lint"
+      ],
+      "touches": [
+        "internal/forge/write.go",
+        "internal/forge/write_limits.go",
+        "internal/forge/routes.go",
+        "internal/forge/issuex_write_imports_test.go",
+        "internal/forge/write_auth_test.go"
+      ],
+      "done_when": [
+        "every one of the nine routes answers 401/403/404/400 per the check order and sends no forge request for those"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 2,
+      "kind": "implement",
+      "title": "Audit event constants and emitter wiring, with issue creation",
+      "criteria": [
+        "31-REQ-1.1",
+        "31-REQ-1.4",
+        "31-REQ-1.8",
+        "31-REQ-2.1",
+        "31-REQ-2.2",
+        "31-REQ-9.1",
+        "31-REQ-9.3",
+        "31-REQ-9.6",
+        "31-REQ-9.7",
+        "31-REQ-9.8"
+      ],
+      "tests": [
+        "TS-31-1",
+        "TS-31-4",
+        "TS-31-8",
+        "TS-31-9",
+        "TS-31-10",
+        "TS-31-53",
+        "TS-31-54",
+        "TS-31-55"
+      ],
+      "steps": [
+        "Write the listed tests first and confirm they fail; copy the recordingEmitter test double from internal/sandboxes/testhelpers_test.go into internal/forge tests",
+        "In internal/audit/types.go add the nine documented constants EventForgeIssueCreate ('hub.forge.issue.create'), EventForgeIssueUpdate, EventForgeIssueClose, EventForgeCommentCreate ('hub.forge.comment.create'), EventForgeLabelAdd, EventForgeLabelRemove, EventForgeLabelCreate, EventForgePullRequestCreate ('hub.forge.pull_request.create') and EventForgePullRequestComment, each with a doc comment stating resource_type, resource_id, action and extra metadata, in the style of EventSandboxLease",
+        "Add 'Audit audit.Emitter' to forge.Config; in internal/forge/write_events.go add one emit helper modelled on internal/sandboxes/events.go: nil emitter returns; build HubEvent with ActorID auth.UserID, ActorType auth.CredentialType, Workspace slug, resource fields, Metadata {target, ok, error_type only when !ok, number as int when known, url with userinfo stripped via net/url when known}; call Emit(context.WithoutCancel(ctx), ev) synchronously and on error slog.Error('audit: failed to emit '+type, 'workspace', slug, 'error', err)",
+        "In cmd/af-hub/main.go pass Audit: auditEmitter (built with audit.NewEmitterWithBroadcast) into forge.Config",
+        "Implement POST /issues in internal/forge/write_issues.go: decode with encoding/json ignoring unknown fields; title required non-blank; labels/assignees at most 100 entries each non-blank, 400 messages naming the field; resolve the client, run the body limit on body, call CreateIssue on a context from context.WithoutCancel(request ctx) with spec 30's per-call timeout, answer 201 with the issue; map failures through spec 30's mapper and emit exactly one hub.forge.issue.create event (resource_id new number or empty on failure) before writing the response",
+        "Verify the request carries the workspace GIT_PAT and never the caller's bearer (TS-31-9), unknown JSON fields are ignored, api_key and admin_token pass the scope check (TS-31-4), the order-of-checks matrix of TS-31-1 holds, and wslock/clone_status are ignored (TS-31-8: hold wslock.Lock(slug) with clone_status pending and still get 201)",
+        "TS-31-55: wire a real audit store, audit.NewEmitterWithBroadcast and SSEManager like main.go in the test, make a write, assert GET /api/v1/audit?workspace=<slug> returns the event and the SSE stream receives it; run make test and make lint"
+      ],
+      "touches": [
+        "internal/audit/types.go",
+        "internal/forge/config.go",
+        "internal/forge/write_events.go",
+        "internal/forge/write_issues.go",
+        "internal/forge/write_issue_create_test.go",
+        "internal/forge/write_audit_test.go",
+        "cmd/af-hub/main.go"
+      ],
+      "depends_on": [
+        1
+      ],
+      "done_when": [
+        "a POST /issues through the real route records one hub.forge.issue.create event"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 3,
+      "kind": "implement",
+      "title": "Update, close and comment on issues",
+      "criteria": [
+        "31-REQ-2.3",
+        "31-REQ-2.4",
+        "31-REQ-2.5",
+        "31-REQ-2.6",
+        "31-REQ-3"
+      ],
+      "tests": [
+        "TS-31-11",
+        "TS-31-12",
+        "TS-31-13",
+        "TS-31-14",
+        "TS-31-15",
+        "TS-31-16",
+        "TS-31-17",
+        "TS-31-18",
+        "TS-31-19",
+        "TS-31-20"
+      ],
+      "steps": [
+        "Write the listed tests first with GitHub and GitLab httptest stubs and confirm they fail",
+        "Implement PATCH /issues/:n in write_issues.go: parse :n as a positive integer (400 otherwise); decode into pointer/json.RawMessage fields so absent, null and [] are distinguished; validate title non-blank, state in open|closed, labels/assignees at most 100 non-blank entries (400 naming the field); no present non-null field answers 400 'nothing to update'; send only present fields (body \"\" clears), labels/assignees replace the whole set; run the body limit on body; answer 200 with the forge's issue",
+        "Emit hub.forge.issue.update (resource_id n, action update) with metadata fields = sorted names of the changed fields",
+        "Implement POST /issues/:n/close: accept empty body or {comment}; when comment is non-blank after trimming, run the comment limit, post the comment first via PostComment and only then close; each forge request on its own per-call timeout context; a comment failure answers its mapped error and sends no close; a close failure after the comment answers the close's mapped error; already-closed issues answer 200; answer 200 with the issue",
+        "Emit exactly one hub.forge.issue.close event (action close) with comment_url when a comment was posted, also when the close failed; never a separate comment event",
+        "Implement POST /issues/:n/comments: body required non-blank (400 naming body), limit check, answer 201 {\"url\": …}; emit hub.forge.comment.create (resource_id n, action create)",
+        "Confirm :n is the GitHub issue number and the GitLab project iid (TS-31-14); replace the notImplemented actions for these routes; run make test and make lint"
+      ],
+      "touches": [
+        "internal/forge/write_issues.go",
+        "internal/forge/write_issue_update_test.go",
+        "internal/forge/write_issue_close_test.go"
+      ],
+      "depends_on": [
+        2
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 4,
+      "kind": "implement",
+      "title": "Add and remove issue labels",
+      "criteria": [
+        "31-REQ-4"
+      ],
+      "tests": [
+        "TS-31-21",
+        "TS-31-22",
+        "TS-31-23",
+        "TS-31-24",
+        "TS-31-25",
+        "TS-31-26"
+      ],
+      "steps": [
+        "Write the listed tests first with GitHub and GitLab stubs and confirm they fail",
+        "Implement POST /issues/:n/labels in internal/forge/write_labels.go: decode the bare JSON array with encoding/json into []string (an object, a non-string entry, empty array, more than 100 entries or a blank entry answer 400 before any forge request); call AddLabels; answer 204 with no body; map forge refusals through spec 30's mapper; emit hub.forge.label.add (resource_id n, action add, metadata labels = names given)",
+        "Implement DELETE /issues/:n/labels/:name: take the label name from the last path segment, percent-decoded exactly once (first verify whether Echo's c.Param already decodes %2F: a test must show DELETE …/labels/type%2Fbug reaches the forge as type/bug and af:fix unchanged, adding one url.PathUnescape only if Echo leaves it encoded, never double-decoding)",
+        "On a not-found answer from RemoveLabel, call ReadIssue exactly once on a fresh per-call timeout context: issue found → 204; issue not found or other error → the mapped error (404 forge_not_found for a missing issue); no read-back on any other outcome",
+        "Emit hub.forge.label.remove (resource_id n, action remove, metadata label) once per request including the read-back path, with ok false and error_type on failure",
+        "Replace the notImplemented actions for these routes; run make test and make lint"
+      ],
+      "touches": [
+        "internal/forge/write_labels.go",
+        "internal/forge/write_issue_labels_test.go"
+      ],
+      "depends_on": [
+        3
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 5,
+      "kind": "implement",
+      "title": "Ensure a repository label exists",
+      "criteria": [
+        "31-REQ-5"
+      ],
+      "tests": [
+        "TS-31-27",
+        "TS-31-28",
+        "TS-31-29",
+        "TS-31-30",
+        "TS-31-31"
+      ],
+      "steps": [
+        "Write the listed tests first with a stateful GitHub stub that stores created labels and counts lookups and creates; confirm they fail",
+        "Implement POST /labels in write_labels.go: name required non-blank; color optional, must match ^#?[0-9a-fA-F]{6}$ (400 naming color), stored without the leading # and defaulting to ededed; description optional",
+        "Look the label up by name (GetLabel, or ListLabels filtered by name if issuex has no lookup); found → 200 with the label as the forge holds it, no create or update request; not-found classification must use the mapped not-found error, any other lookup error answers its mapped error",
+        "Not found → CreateLabel and answer 201 with the created label; if the create fails, look the label up exactly once more: found → 200 with it, otherwise answer the create's mapped error; every forge request on its own per-call timeout",
+        "Emit one hub.forge.label.create event (resource_id the label name, action create, metadata label and created true only when this call created it, false otherwise, also false on failure)",
+        "Replace the notImplemented action; run make test and make lint"
+      ],
+      "touches": [
+        "internal/forge/write_labels.go",
+        "internal/forge/write_label_create_test.go"
+      ],
+      "depends_on": [
+        4
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 6,
+      "kind": "implement",
+      "title": "Open pull requests and comment on them",
+      "criteria": [
+        "31-REQ-6"
+      ],
+      "tests": [
+        "TS-31-32",
+        "TS-31-33",
+        "TS-31-34",
+        "TS-31-35",
+        "TS-31-36",
+        "TS-31-37"
+      ],
+      "steps": [
+        "Write the listed tests first (GitHub stub; carry_patch workspace with distinct origin and upstream stubs and credentials) and confirm they fail",
+        "Implement POST /pulls in internal/forge/write_pulls.go: title, head, base required non-blank, draft must be a JSON boolean (decode draft as *bool or json.RawMessage so \"yes\" answers 400 naming draft), body optional; run the body limit on body; call CreatePullRequest with head verbatim and draft defaulting to false; answer 201 with the pull request",
+        "Rely on spec 30's target resolution so ?target=upstream on a carry_patch workspace uses upstream_url and the upstream credential, and on a standard workspace answers 400 workspace_mode_mismatch before any forge request or event",
+        "Map a forge refusal (e.g. 422 already exists) through spec 30's mapper (forge_rejected)",
+        "Emit hub.forge.pull_request.create (resource_id new number or empty on failure, action create, metadata head, base, draft; no title or body)",
+        "Implement POST /pulls/:n/comments: body required non-blank (400 naming body), limit check, PostReviewComment, answer 201 {\"url\": …}; emit hub.forge.pull_request.comment (resource_id n, action comment)",
+        "Replace the notImplemented actions; run make test and make lint"
+      ],
+      "touches": [
+        "internal/forge/write_pulls.go",
+        "internal/forge/write_pulls_test.go"
+      ],
+      "depends_on": [
+        5
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 7,
+      "kind": "implement",
+      "title": "Body-size limits and faithful, retry-free forge sending",
+      "criteria": [
+        "31-REQ-7",
+        "31-REQ-8"
+      ],
+      "tests": [
+        "TS-31-38",
+        "TS-31-39",
+        "TS-31-40",
+        "TS-31-41",
+        "TS-31-42",
+        "TS-31-43",
+        "TS-31-44",
+        "TS-31-45",
+        "TS-31-46",
+        "TS-31-47"
+      ],
+      "steps": [
+        "Write the listed tests first and confirm they fail; use fake issuex clients injected through Config.NewClient for TS-31-44 and TS-31-46, httptest stubs for the rest, and a slog handler capturing logs for TS-31-47",
+        "Verify the limit helper covers all six fields (issue create/update body, close comment, issue comment body, pull request body, pull-request comment body) with messages like 'body is 65537 characters; github accepts at most 65536' naming the field; the check runs after client resolution so an unknown forge answers 422 first (TS-31-41); titles, head, base, label names, descriptions and assignees are never length-checked",
+        "Fix any route found counting bytes instead of code points; property test TS-31-40 uses 1- to 4-byte characters exactly at the limit and limit+1 for each field and forge",
+        "Ensure every route sends forge calls through one helper that detaches cancellation (context.WithoutCancel) and gives each call its own context.WithTimeout of spec 30's per-call timeout, with no hub-side retry loop anywhere (TS-31-44: at most one call per method per step; close-with-comment on comment failure makes one comment call and no close call)",
+        "TS-31-45: stub delays its answer, the request context is cancelled mid-flight, the forge still receives the write and exactly one event is recorded",
+        "TS-31-43: stub answers 401, 403, 404, 429 with Retry-After: 30 and 500 in turn and assert spec 30's statuses and error_types, Retry-After passed through, scrubbed messages",
+        "TS-31-47: with a GIT_PAT and a git_url carrying user:pass@, assert no response body, header, log line or event metadata holds the token or user:pass@ for every route and outcome, including forge messages echoing the token; fix any leak by routing messages through spec 30's scrubber",
+        "Run make test and make lint"
+      ],
+      "touches": [
+        "internal/forge/write.go",
+        "internal/forge/write_limits.go",
+        "internal/forge/write_limits_test.go",
+        "internal/forge/write_forge_calls_test.go"
+      ],
+      "depends_on": [
+        6
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 8,
+      "kind": "implement",
+      "title": "Audit event completeness and hub-side rejection invariants across all routes",
+      "criteria": [
+        "31-REQ-1.7",
+        "31-REQ-9.2",
+        "31-REQ-9.4",
+        "31-REQ-9.5"
+      ],
+      "tests": [
+        "TS-31-7",
+        "TS-31-48",
+        "TS-31-49",
+        "TS-31-50",
+        "TS-31-51",
+        "TS-31-52"
+      ],
+      "steps": [
+        "Write the listed tests first and confirm any gap fails; they exercise all nine routes with a recording emitter and forge stubs (including stubs that echo bodies and tokens in error messages)",
+        "Audit every route against the event table of 31-REQ-9.2 (event type, resource_type, resource_id, action) and fix deviations: issue/pull-request create use the new number or an empty string on failure, label.create uses the label name",
+        "Check the metadata rules: target, ok, error_type only on failure (the error_type hub answered), number as a JSON number when known, url without userinfo only when the forge returned one; per-type fields (fields sorted, comment_url, labels, label, created, head/base/draft); no title, body, comment text, token or forge message in any value",
+        "TS-31-48: one event per request for a success, a forge failure and close-with-comment (only hub.forge.issue.close), ActorID = UserID, ActorType = api_key, and the event is already recorded when the client reads the response",
+        "TS-31-7: property test over every write route and rejection class (401, 403, 404, inactive, invalid body, workspace_mode_mismatch, 422 client resolution, credential error, 413) asserting unchanged forge-stub count and recorded-event count",
+        "Run make test and make lint"
+      ],
+      "touches": [
+        "internal/forge/write_events.go",
+        "internal/forge/write_audit_matrix_test.go",
+        "internal/forge/write_rejection_property_test.go"
+      ],
+      "depends_on": [
+        7
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 9,
+      "kind": "implement",
+      "title": "afc write commands: issue, label and pr",
+      "criteria": [
+        "31-REQ-10"
+      ],
+      "tests": [
+        "TS-31-56",
+        "TS-31-57",
+        "TS-31-58",
+        "TS-31-59",
+        "TS-31-60",
+        "TS-31-61"
+      ],
+      "steps": [
+        "Read internal/cli/sandbox_cmd.go, merge_cmd.go, cli_helpers.go, workspace_cmd.go and spec 30's issue/pr parent commands; internal/cli must not import internal/forge or internal/audit (afc builds with CGO_ENABLED=0)",
+        "Write the listed tests first in internal/cli (stub hub recording method, path, query and body; decodeOneDocument; ExitCode) and confirm they fail",
+        "Add the subcommands issue create|update|close|comment|label|unlabel and pr create|comment to the existing parents, and a new LabelCmd() parent with 'create' registered in BuildRootCommand; use the cobra shape of sandbox_cmd.go (SilenceErrors, SilenceUsage, ExactArgs) and apikit.CLIClientFromCmd / DoRequest / CLIPrintResult / CLIHandleError",
+        "Add a body helper in internal/cli: --body-file '-' reads cmd.InOrStdin() verbatim, other values read the named file verbatim (no trimming, do not use readValueFromStdin); --body together with --body-file or an unreadable file is apikit.NewCLIError(2, …)",
+        "Usage errors exit 2 before any request: missing --title, --head, --base or comment body ('--title flag is required' style), issue number not a positive integer, and 'issue update' with nothing set",
+        "Flag mapping: --label and --assignee are StringArrayVar (update help says they replace the issue's set); send only flags with cmd.Flags().Changed, so update --body \"\" sends {\"body\":\"\"}; add ?target= via url.Values only when --target is set; paths through apiPath so a label name or slug is percent-encoded",
+        "label and unlabel send POST …/labels with a bare JSON array and DELETE …/labels/<name> and print map[string]any {status:'labeled',number,labels} / {status:'unlabeled',number,label} on 204; all other commands print the hub response body as one JSON document",
+        "Update docs/cli.md with the new subcommands and afc label; run make test and make lint"
+      ],
+      "touches": [
+        "internal/cli/forge_write_cmd.go",
+        "internal/cli/label_cmd.go",
+        "internal/cli/workspace_cmd.go",
+        "internal/cli/forge_write_cmd_test.go",
+        "docs/cli.md"
+      ],
+      "depends_on": [
+        8
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 10,
+      "kind": "integration",
+      "title": "Verify the write paths end to end, wire-check and update the docs",
+      "tests": [
+        "TS-31-62",
+        "TS-31-63",
+        "TS-31-64",
+        "TS-31-65",
+        "TS-31-66"
+      ],
+      "steps": [
+        "Write TS-31-62..66 as smoke tests in internal/forge (it may import internal/cli; cli never imports forge): a real hub wiring with real routes, workspace store, audit store, audit.NewEmitterWithBroadcast and httptest GitHub/GitLab stubs, the afc command tree (cli.BuildRootCommand) pointed at the hub's httptest URL; confirm they pass",
+        "Trace 31-PATH-1 to 31-PATH-5 through the real code: cmd/af-hub/main.go passes the audit emitter into forge.Config, forge.RegisterRoutes registers the nine write routes, each handler calls the pipeline, issuex client, error mapper and emit helper, and afc commands call the matching routes; confirm each step calls the next and no stub remains (no route still answers 501 through notImplemented)",
+        "For every criterion with a contract (413 body_too_large, event metadata, 204 label answers, 201 {\"url\"} comment answers), confirm the producer's result is consumed by a caller in production code, not only by tests",
+        "Search internal/forge, internal/audit, internal/cli and cmd/af-hub (every file listed in any task's touches) for panic(\"not implemented\"), notImplemented, TODO, and bare 'return nil' on non-trivial paths, and remove them",
+        "Confirm spec 30's entry points (forge.RegisterRoutes, the afc issue and pr parents) are called from production code in cmd/af-hub/main.go and BuildRootCommand",
+        "Update docs/api.md (forge:write scope row, the nine write routes, body_too_large in the error_type table, the nine hub.forge.* events in the Hub Audit Events table), docs/openapi.yaml, docs/permissions.md (forge:write section and endpoint matrix) and docs/architecture.md (forge write path and audit); run make doc, make test and make lint; write no tests for docs"
+      ],
+      "touches": [
+        "internal/forge/smoke_write_test.go",
+        "docs/api.md",
+        "docs/openapi.yaml",
+        "docs/permissions.md",
+        "docs/architecture.md"
+      ],
+      "depends_on": [
+        9
+      ],
+      "done_when": [
+        "make test passes with all five smoke tests green",
+        "no stub markers remain in files touched by this spec"
+      ],
+      "state": "pending"
+    }
+  ]
+}

@@ -1,0 +1,401 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/tasks.v2.json",
+  "spec_id": "30",
+  "spec_name": "forge_client_reads",
+  "schema_version": 2,
+  "test_commands": {
+    "all_tests": "make test",
+    "linter": "make lint",
+    "spec_tests": "go test ./internal/forge/... ./internal/cli/... -count=1"
+  },
+  "dependencies": [],
+  "tasks": [
+    {
+      "id": 1,
+      "kind": "implement",
+      "title": "Add the aflib dependency and enforce the issuex import boundaries",
+      "criteria": [
+        "30-REQ-1"
+      ],
+      "tests": [
+        "TS-30-1",
+        "TS-30-2",
+        "TS-30-3"
+      ],
+      "steps": [
+        "Write TS-30-1..3 in internal/forge/deps_test.go (read go.mod, Makefile, containers/hub/Containerfile and .github/workflows files; run `go list` and `go build` via os/exec) and confirm they fail",
+        "Add `require github.com/agent-fox-dev/aflib v0.0.0` and `replace github.com/agent-fox-dev/aflib => ../aflib` to go.mod next to the apikit and agentkit-go lines; run `go mod tidy` offline-safe (go.sum entries for replaced modules are not needed)",
+        "Create internal/forge/doc.go with the package comment and a blank import of github.com/agent-fox-dev/aflib/issuex so the module is in the build graph; this is the only package allowed to import issuex",
+        "In containers/hub/Containerfile add `COPY --from=aflib . /build/aflib` beside the apikit and agentkit COPYs",
+        "In Makefile target build-hub-container add `--build-context aflib=../aflib`",
+        "In .github/workflows/build-hub-cli.yaml and inc-build-hub.yaml add a 'clone aflib dependency' step (`git clone https://github.com/agent-fox-dev/aflib.git ../aflib`) and `aflib=../aflib` under build-contexts",
+        "Ensure internal/cli and cmd/afc do not import internal/forge (TS-30-3 runs `go list -deps ./cmd/afc` and `CGO_ENABLED=0 go build`)"
+      ],
+      "touches": [
+        "go.mod",
+        "go.sum",
+        "containers/hub/Containerfile",
+        "Makefile",
+        ".github/workflows/build-hub-cli.yaml",
+        ".github/workflows/inc-build-hub.yaml",
+        "internal/forge/doc.go",
+        "internal/forge/deps_test.go"
+      ],
+      "done_when": [
+        "`go build ./...` succeeds with ../aflib checked out as a sibling"
+      ],
+      "state": "pending",
+      "optional": false
+    },
+    {
+      "id": 2,
+      "kind": "implement",
+      "title": "Forge scopes, authorization order, target selection and route skeleton",
+      "criteria": [
+        "30-REQ-2.1",
+        "30-REQ-2.2",
+        "30-REQ-2.3",
+        "30-REQ-2.5",
+        "30-REQ-2.6",
+        "30-REQ-3.3",
+        "30-REQ-3.4"
+      ],
+      "tests": [
+        "TS-30-4",
+        "TS-30-5",
+        "TS-30-6",
+        "TS-30-8",
+        "TS-30-9",
+        "TS-30-13",
+        "TS-30-14"
+      ],
+      "steps": [
+        "Write TS-30-4,5,6,8,9,13,14 in internal/forge (testhelpers_test.go with an X-Test-Auth middleware calling apikit.SetAuthInfo, a minimal workspaces table created like internal/carrypatch/testhelpers_test.go createWorkspacesTable, a counting forge stub and counting resolver/variable closures) and confirm they fail",
+        "permissions.go: `ForgeReadScope`/`ForgeWriteScope` as apikit.Permission{Resource:\"forge\",Action:\"read\"|\"write\"} and `Permissions()` returning exactly [read, write]",
+        "auth.go: standalone isAdmin/isAPIKey/isPAT/hasScope/canReadForge/canWriteForge taking *apikit.AuthInfo, copied from internal/sandboxes/auth.go; forge:write implies forge:read; unknown credential types get false",
+        "config.go: `Config{DB *sql.DB; ResolveOriginAuth, ResolveUpstreamAuth func(slug string)(transport.AuthMethod,error); GetVariable func(ownerType, ownerID, key string)(string,error); Transport http.RoundTripper; NewClient func(issuex.Options)(issuex.Client,error)}`",
+        "routes.go: `RegisterRoutes(api *echo.Group, cfg Config)` registering the ten GET routes under /workspaces/:slug (/forge, /forge/repository, /issues, /issues/:n, /issues/:n/comments, /pulls/:n, /pulls/:n/state, /pulls/:n/files, /pulls/:n/checks, /pulls/:n/reviews)",
+        "Implement `authorize(c)` in order: nil auth -> 401; missing scope -> 403 with message 'PAT requires forge:read scope'; wsaccess.AuthorizeWorkspace -> 404; then a `loadRemotes` SELECT of git_url, workspace_mode, upstream_url (NULL mode treated as standard, NULL upstream as empty)",
+        "Implement target parsing (absent/origin -> origin; upstream only when carry_patch with non-empty upstream_url else 400 error_type workspace_mode_mismatch; anything else including empty -> 400 listing 'origin' and 'upstream'); GET /forge does not take target",
+        "After authorize and target, route handlers answer a temporary 501 via apikit.WriteAPIError; tasks 3-5 replace it with the real operation",
+        "Wire cmd/af-hub/main.go: `extraPerms = append(extraPerms, forge.Permissions()...)` before MountWorkspaceHandlers, and `forge.RegisterRoutes(server.APIGroup(), forge.Config{...})` after it with closures around workspace.ResolveCloneAuth(store, slug) and workspace.ResolveUpstreamAuthMethod(store, slug) and store.GetVariableValue"
+      ],
+      "touches": [
+        "internal/forge/permissions.go",
+        "internal/forge/auth.go",
+        "internal/forge/config.go",
+        "internal/forge/routes.go",
+        "internal/forge/target.go",
+        "internal/forge/testhelpers_test.go",
+        "internal/forge/auth_test.go",
+        "internal/forge/target_test.go",
+        "cmd/af-hub/main.go"
+      ],
+      "depends_on": [
+        1
+      ],
+      "done_when": [
+        "`go build ./cmd/af-hub` succeeds with forge routes mounted"
+      ],
+      "state": "pending",
+      "optional": false
+    },
+    {
+      "id": 3,
+      "kind": "implement",
+      "title": "Build a fresh issuex client per request and serve GET /forge/repository",
+      "criteria": [
+        "30-REQ-3.1",
+        "30-REQ-3.2",
+        "30-REQ-4.1",
+        "30-REQ-4.2",
+        "30-REQ-4.3",
+        "30-REQ-4.4",
+        "30-REQ-4.5",
+        "30-REQ-4.6"
+      ],
+      "tests": [
+        "TS-30-11",
+        "TS-30-12",
+        "TS-30-15",
+        "TS-30-16",
+        "TS-30-17",
+        "TS-30-18",
+        "TS-30-19",
+        "TS-30-20"
+      ],
+      "steps": [
+        "Write TS-30-11,12,15,16,17,18,19,20 (TLS httptest stubs with Config.Transport = ts.Client().Transport, a fake NewClient factory capturing issuex.Options for TS-30-19, a real secrets store for TS-30-15) and confirm they fail",
+        "client.go: `buildClient(ctx, slug, target, remote)` returning the issuex client, the credential kind and the resolved token; origin uses ResolveOriginAuth + FORGE_API_URL, upstream uses ResolveUpstreamAuth + UPSTREAM_FORGE_API_URL with no fallback to FORGE_API_URL",
+        "Read the variable through GetVariable(\"workspace\", slug, NAME): *secrets.NotFoundError means unset, any other error is a 500 (logged without secret values); resolver errors likewise 500",
+        "Validate a set API URL (absolute https with host, no userinfo, query or fragment) else 422 error_type forge_api_url_invalid whose message names the variable and rule but not the value",
+        "Credential kind from the resolver result: *githttp.BasicAuth with Username x-token-auth -> pat, other username -> basic (password is the token), nil -> none (empty token)",
+        "Parse the repo with issuex.ParseRemote(remote); failure -> 422 forge_unknown naming the URL with userinfo stripped; issuex.ErrAmbiguousForge from NewWithOptions (errors.Is) -> 422 forge_unknown naming host and FORGE_API_URL or UPSTREAM_FORGE_API_URL; nothing is cached between calls",
+        "Create the process-wide http.Client in Config setup using Config.Transport or http.DefaultTransport.Clone() (hardening comes in task 7); call NewClient (default issuex.NewWithOptions) with Options{BaseURL, Token, RemoteURL, Repo, HTTPClient}",
+        "errors.go: single `writeForgeError(c, ...)` entry point handling the construction errors here (400/422/500); the issuex-error mapping is added in task 6",
+        "Replace the 501 placeholder of GET /forge/repository with a call to GetRepository and JSON-encode the result; other routes remain placeholders"
+      ],
+      "touches": [
+        "internal/forge/client.go",
+        "internal/forge/errors.go",
+        "internal/forge/handlers_read.go",
+        "internal/forge/client_test.go",
+        "internal/forge/credential_test.go"
+      ],
+      "depends_on": [
+        2
+      ],
+      "done_when": [
+        "`go test ./internal/forge/... -count=1` passes"
+      ],
+      "state": "pending",
+      "optional": false
+    },
+    {
+      "id": 4,
+      "kind": "implement",
+      "title": "Implement the remaining read routes with parameter validation",
+      "criteria": [
+        "30-REQ-2.4",
+        "30-REQ-2.7",
+        "30-REQ-7"
+      ],
+      "tests": [
+        "TS-30-7",
+        "TS-30-10",
+        "TS-30-32",
+        "TS-30-33",
+        "TS-30-34",
+        "TS-30-35",
+        "TS-30-36",
+        "TS-30-37"
+      ],
+      "steps": [
+        "Write TS-30-7,10,32,33,34,35,36,37 (TS-30-32 uses a TLS stub serving minimal GitHub JSON and compares with a direct real issuex client; TS-30-33/36 use a fake issuex.Client through Config.NewClient) and confirm they fail",
+        "Parse `:n` as a positive decimal integer (strconv, reject sign/dot/letters) and answer 400 naming parameter n before any client is built",
+        "Parse GET /issues query: state open|closed|all, sort created|updated, direction asc|desc, limit 1..100 default 30 (always passed), labels split on commas dropping empty items, assignee free text; absent parameters are not passed to issuex; 400 names the offending parameter",
+        "Implement handlers for /issues, /issues/:n (ReadIssue: issue, comments, truncation flag), /issues/:n/comments, /pulls/:n, /pulls/:n/state, /pulls/:n/files, /pulls/:n/checks, /pulls/:n/reviews calling ListIssues, ReadIssue, ListComments, ReadPullRequest, GetPRState, ReadChangedFiles, GetCIChecks, GetPRReviews",
+        "Encode results as issuex types unchanged; normalise nil slices to empty so list routes emit `[]` never `null`",
+        "Emit no audit event from any read handler (no audit import)",
+        "Confirm reads work on archived and clone_status-pending workspaces and never take wslock"
+      ],
+      "touches": [
+        "internal/forge/handlers_read.go",
+        "internal/forge/params.go",
+        "internal/forge/handlers_read_test.go",
+        "internal/forge/params_test.go"
+      ],
+      "depends_on": [
+        3
+      ],
+      "done_when": [
+        "all nine read routes return 200 against the stub"
+      ],
+      "state": "pending",
+      "optional": false
+    },
+    {
+      "id": 5,
+      "kind": "implement",
+      "title": "Implement GET /workspaces/:slug/forge diagnostic",
+      "criteria": [
+        "30-REQ-6"
+      ],
+      "tests": [
+        "TS-30-26",
+        "TS-30-27",
+        "TS-30-28",
+        "TS-30-29",
+        "TS-30-30",
+        "TS-30-31"
+      ],
+      "steps": [
+        "Write TS-30-26..31 (TS-30-26/28 use a counting transport asserting zero requests; TS-30-31 is a property test with generated tokens/usernames/passwords via testing/quick or a table of generated strings) and confirm they fail",
+        "Add a `describeRemote` helper in client.go that, without sending a request, validates the API URL variable (422 forge_api_url_invalid), parses the repo, classifies the forge via the issuex client's forge-kind/API-URL accessor (read aflib/issuex source in ../aflib to find the real accessor name and the repo type fields) and reports forge github|gitlab|unknown",
+        "Report ErrAmbiguousForge as forge \"unknown\" with api_url null and an unparseable remote as repository null, both with HTTP 200",
+        "Repository owner is the full namespace path (group/subgroup), name the last segment",
+        "Credential field is only pat|basic|none from the resolver result; never include a secret value",
+        "Fill `upstream` with the same four fields from upstream_url, the upstream resolver and UPSTREAM_FORGE_API_URL on a carry_patch workspace with non-empty upstream_url, else null",
+        "Replace the GET /forge placeholder with the handler returning {forge, api_url, repository, credential, upstream}"
+      ],
+      "touches": [
+        "internal/forge/handlers_forge.go",
+        "internal/forge/client.go",
+        "internal/forge/handlers_forge_test.go"
+      ],
+      "depends_on": [
+        3
+      ],
+      "done_when": [
+        "GET /forge never makes an outbound request in any test"
+      ],
+      "state": "pending",
+      "optional": false
+    },
+    {
+      "id": 6,
+      "kind": "implement",
+      "title": "Map issuex and transport failures to hub errors with scrubbing and logging",
+      "criteria": [
+        "30-REQ-8",
+        "30-REQ-9"
+      ],
+      "tests": [
+        "TS-30-38",
+        "TS-30-39",
+        "TS-30-40",
+        "TS-30-41",
+        "TS-30-42",
+        "TS-30-43",
+        "TS-30-44",
+        "TS-30-45",
+        "TS-30-46",
+        "TS-30-47"
+      ],
+      "steps": [
+        "Write TS-30-38..47 (TLS stubs for each status class; TS-30-45 property test of the scrub function; TS-30-46/47 capture the log output via log.SetOutput or the package logger) and confirm they fail",
+        "scrub.go: copy the userinfo pattern `(?i)([a-z][a-z0-9+.\\-]*://)[^/\\s?#]*@` from internal/sandboxes/scrub.go; implement scrub(msg, token) = replace token with [redacted], strip URL userinfo (repeat passes), cut to 1024 bytes on a UTF-8 boundary, ensuring the token cannot reappear after the cut",
+        "Inspect ../aflib/issuex for its HTTP error type (status, message, retry-after) and rate-limit signal; use errors.As/errors.Is in a single mapForgeError(err, credKind, token) table: 404 -> 404 forge_not_found; 401 -> 502 forge_unauthenticated (+ hint naming GIT_PAT and GIT_PASSWORD when credential is basic); 403 non-rate-limit -> 502 forge_forbidden; rate limit -> 429 forge_rate_limited with Retry-After whole seconds rounded up (math.Ceil) only when known; other 4xx -> 422 forge_rejected; 5xx or unreadable response -> 502 forge_error",
+        "Map net/DNS/TCP/TLS errors (net.Error, *url.Error, x509 errors) to 502 forge_unreachable and context.DeadlineExceeded to 504 forge_timeout; a redirect-refusal error to 502 forge_error",
+        "Run every message through scrub; also scrub the userinfo from logged text",
+        "Log exactly one line per 5xx/429 answer with slug, target, operation (e.g. ListIssues) and forge status, never token, request body or response body",
+        "Route every handler's issuex error through mapForgeError via the one writeForgeError entry point"
+      ],
+      "touches": [
+        "internal/forge/errors.go",
+        "internal/forge/scrub.go",
+        "internal/forge/errors_test.go",
+        "internal/forge/scrub_test.go"
+      ],
+      "depends_on": [
+        4
+      ],
+      "done_when": [
+        "`go test ./internal/forge/... -count=1` passes"
+      ],
+      "state": "pending",
+      "optional": false
+    },
+    {
+      "id": 7,
+      "kind": "implement",
+      "title": "Harden the shared forge HTTP client: user agent, redirect policy and deadline",
+      "criteria": [
+        "30-REQ-4.7",
+        "30-REQ-5"
+      ],
+      "tests": [
+        "TS-30-21",
+        "TS-30-22",
+        "TS-30-23",
+        "TS-30-24",
+        "TS-30-25"
+      ],
+      "steps": [
+        "Write TS-30-21 (property: generated bearer strings, headers and bodies), 22, 23 (set apikit.Version to 1.2.3 and restore), 24 (two TLS stubs on different hosts/ports) and 25 and confirm they fail",
+        "httpclient.go: build one *http.Client per process (sync.Once or built in RegisterRoutes) with base transport Config.Transport or http.DefaultTransport.Clone()",
+        "Wrap the transport in a round-tripper that clones the request and sets `User-Agent: af-hub/<apikit.Version>` read at request time, overriding any existing value",
+        "Set CheckRedirect to return an error when the redirect target host differs from the original request host; the mapper turns it into 502 forge_error",
+        "Use a package-level `callDeadline = 30 * time.Second` variable (test hook) and wrap each forge call in context.WithTimeout derived from the request context; deadline expiry maps to 504 forge_timeout",
+        "Never copy the incoming Authorization header or body into outbound requests; only the workspace token is sent"
+      ],
+      "touches": [
+        "internal/forge/httpclient.go",
+        "internal/forge/client.go",
+        "internal/forge/httpclient_test.go"
+      ],
+      "depends_on": [
+        6
+      ],
+      "done_when": [
+        "`go test ./internal/forge/... -count=1` passes"
+      ],
+      "state": "pending",
+      "optional": false
+    },
+    {
+      "id": 8,
+      "kind": "implement",
+      "title": "Add afc forge, issue and pr read commands",
+      "criteria": [
+        "30-REQ-10"
+      ],
+      "tests": [
+        "TS-30-48",
+        "TS-30-49",
+        "TS-30-50",
+        "TS-30-51",
+        "TS-30-52"
+      ],
+      "steps": [
+        "Write TS-30-48..52 in internal/cli/forge_cmd_test.go using setupTestEnv, a stub httptest hub recording method/path/raw query, runRootCmd(--endpoint-url, --api-key) and decodeOneDocument, and confirm they fail",
+        "Create internal/cli/forge_cmd.go with newForgeCmd (status), newIssueCmd (list, get) and newPRCmd (get, state, files, checks, reviews) in the style of sandbox_cmd.go: cobra.ExactArgs, SilenceErrors/SilenceUsage, apikit.CLIClientFromCmd, client.DoRequest(GET), apikit.CLIPrintResult, errors via apikit.CLIHandleError",
+        "Build paths with apiPath(\"workspaces\", slug, \"forge\"|\"issues\"|\"pulls\", n[, suffix]); append a query only for flags that are set",
+        "`issue list` flags: --state, --label (StringArray, joined with commas), --assignee, --limit (sent as given, unset left out), --target; `issue get` and `pr *` take --target",
+        "Register the three parents in BuildRootCommand (workspace_cmd.go) via root.AddCommand",
+        "Do not import internal/forge from internal/cli; keep afc buildable with CGO_ENABLED=0"
+      ],
+      "touches": [
+        "internal/cli/forge_cmd.go",
+        "internal/cli/workspace_cmd.go",
+        "internal/cli/forge_cmd_test.go"
+      ],
+      "depends_on": [
+        1
+      ],
+      "done_when": [
+        "`CGO_ENABLED=0 go build ./cmd/afc` succeeds"
+      ],
+      "state": "pending",
+      "optional": false
+    },
+    {
+      "id": 9,
+      "kind": "integration",
+      "title": "Verify the forge read paths end to end and update documentation",
+      "tests": [
+        "TS-30-53",
+        "TS-30-54",
+        "TS-30-55",
+        "TS-30-56"
+      ],
+      "steps": [
+        "Write smoke tests TS-30-53..56 (internal/forge/smoke_test.go for the handler-only paths; a smoke test wiring the real afc BuildRootCommand to a real forge router for TS-30-54/55/56 in a test location that does not make internal/cli import internal/forge in non-test builds) using the real secrets store, real ResolveCloneAuth/ResolveUpstreamAuthMethod, real issuex and TLS stubs, and confirm they pass",
+        "Trace 30-PATH-1..4 through the real code: handler -> authorize -> target -> buildClient -> shared http.Client -> issuex -> mapForgeError -> afc exit code; confirm each step calls the next and no 501 placeholder remains",
+        "For every criterion with a contract, confirm the producer result is consumed in production code (e.g. forge.Permissions appended in cmd/af-hub/main.go, forge.RegisterRoutes called in main.go with the real resolver closures)",
+        "Search every file in the tasks' touches for `TODO`, `panic(\"not implemented\")`, the temporary 501 placeholder and bare `return nil` on non-trivial paths, and remove them",
+        "Write ADR docs/adr/04-hub-is-the-workspaces-forge-client.md",
+        "Update docs/api.md (scopes table, implied permissions, error_type table, new Forge endpoints section, FORGE_API_URL and UPSTREAM_FORGE_API_URL rows in the workspace variables table), docs/openapi.yaml, docs/permissions.md, docs/cli.md (Forge, Issue, PR commands), docs/architecture.md (Forge client section and aflib dependency note) and docs/configuration.md (pointer to the forge variables)",
+        "Update README.md prerequisites (../aflib sibling) and AGENTS.md (layout adds internal/forge; sibling note); run `make doc`",
+        "Run `make test` and `make lint` and confirm both pass"
+      ],
+      "touches": [
+        "internal/forge/smoke_test.go",
+        "internal/cli/forge_smoke_test.go",
+        "docs/adr/04-hub-is-the-workspaces-forge-client.md",
+        "docs/api.md",
+        "docs/openapi.yaml",
+        "docs/permissions.md",
+        "docs/cli.md",
+        "docs/architecture.md",
+        "docs/configuration.md",
+        "README.md",
+        "AGENTS.md"
+      ],
+      "depends_on": [
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8
+      ],
+      "done_when": [
+        "`make test` and `make lint` pass with ../aflib present"
+      ],
+      "state": "pending",
+      "optional": false
+    }
+  ]
+}

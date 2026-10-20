@@ -1,0 +1,762 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/requirements.v2.json",
+  "spec_id": "32",
+  "spec_name": "forge_webhook_ingress",
+  "schema_version": 2,
+  "introduction": "Forge webhook ingress for hub: a public endpoint POST /hooks/forge/:slug verifies GitHub and GitLab webhook deliveries against the workspace secret FORGE_WEBHOOK_SECRET, records each delivery once in a SQLite delivery log, and relays it as hub.forge.* audit events (stored in hub_audit_events and broadcast on the SSE stream). Operators manage the secret and read the delivery log through the API and afc; hub never acts on a delivery and never calls the forge.",
+  "glossary": {
+    "delivery": "One webhook HTTP request sent by a forge (GitHub or GitLab) to hub's ingress endpoint, identified by its delivery id.",
+    "delivery log": "The SQLite table forge_deliveries owned by internal/forge, keyed by (workspace_slug, delivery_id), holding the reduced facts of each verified delivery.",
+    "ingress URL": "server.external_url with any trailing '/' removed, followed by /hooks/forge/<slug>; null when external_url is unset.",
+    "outcome": "The result recorded for a verified delivery: relayed, ignored, repository_mismatch, malformed; duplicate is answered but never recorded as a new row.",
+    "reduction": "Mapping a verified delivery payload to zero or more hub event types and their metadata, plus an outcome.",
+    "relay": "Handing a hub.forge.* HubEvent to forge.Config.Audit after the 202 answer has been flushed.",
+    "target": "Which workspace repository a delivery concerns: origin (parsed from git_url) or upstream (upstream_url of a carry_patch workspace).",
+    "webhook secret": "The workspace-scope secret FORGE_WEBHOOK_SECRET in internal/secrets; used as the HMAC key for GitHub and as the expected X-Gitlab-Token value for GitLab."
+  },
+  "requirements": [
+    {
+      "id": "32-REQ-1",
+      "title": "Setting the webhook secret",
+      "rationale": "An operator needs a secret and an ingress URL to enter into the forge's webhook settings, and the secret must never be shown again.",
+      "criteria": [
+        {
+          "id": "32-REQ-1.1",
+          "pattern": "event_driven",
+          "condition": "an authorized caller sends PUT /api/v1/workspaces/:slug/forge/webhook for an active workspace with no body, an empty object {} or {\"secret\": null}",
+          "system": "forge webhook handler",
+          "action": "generate 32 bytes from crypto/rand, hex-encode them to a 64-character secret, store it as the workspace-scope secret FORGE_WEBHOOK_SECRET and return it once",
+          "contract": "HTTP 200 with body {\"configured\": true, \"url\": <ingress URL or null>, \"secret\": <64 lowercase hex characters>}"
+        },
+        {
+          "id": "32-REQ-1.2",
+          "pattern": "event_driven",
+          "condition": "an authorized caller sends PUT …/forge/webhook for an active workspace with {\"secret\": s} where s is 16 to 255 characters, each in the ASCII range '!' (0x21) to '~' (0x7E)",
+          "system": "forge webhook handler",
+          "action": "store s as the workspace-scope secret FORGE_WEBHOOK_SECRET",
+          "contract": "HTTP 200 with body {\"configured\": true, \"url\": <ingress URL or null>} and no secret key"
+        },
+        {
+          "id": "32-REQ-1.3",
+          "pattern": "unwanted",
+          "condition": "the PUT body is not a JSON object, or secret is not a string or null, or a supplied secret is shorter than 16 or longer than 255 characters or contains a character outside '!' to '~'",
+          "system": "forge webhook handler",
+          "action": "reject the request without storing anything and without repeating the supplied value in the message",
+          "contract": "HTTP 400 via apikit.WriteAPIError whose message names secret and the violated rule; the stored secret is unchanged"
+        },
+        {
+          "id": "32-REQ-1.4",
+          "pattern": "unwanted",
+          "condition": "a PUT …/forge/webhook request fails a check, evaluated in the order: no credential, PAT without forge:write, wsaccess.AuthorizeWorkspace failure, workspace status not active",
+          "system": "forge webhook handler",
+          "action": "stop at the first failing check without reading the body or touching the secrets store",
+          "contract": "HTTP 401; HTTP 403 with a message naming forge:write; HTTP 404 for a missing or not-owned workspace; HTTP 400 \"workspace is not active\""
+        },
+        {
+          "id": "32-REQ-1.5",
+          "pattern": "event_driven",
+          "condition": "a valid PUT is received and FORGE_WEBHOOK_SECRET already exists in the workspace scope, or CreateSecrets returns *secrets.ConflictError because a concurrent request created it",
+          "system": "forge webhook handler",
+          "action": "update the existing secret with UpdateSecret, retrying the update at most once after a ConflictError",
+          "contract": "HTTP 200 as for a fresh secret; exactly one FORGE_WEBHOOK_SECRET entry exists in the workspace scope"
+        },
+        {
+          "id": "32-REQ-1.6",
+          "pattern": "unwanted",
+          "condition": "the secrets store rejects the create because the workspace scope already holds 100 entries, or any other secrets store call fails",
+          "system": "forge webhook handler",
+          "action": "answer with an error and emit no audit event",
+          "contract": "HTTP 400 carrying the store's message for a full scope; HTTP 500 for any other store failure"
+        },
+        {
+          "id": "32-REQ-1.7",
+          "pattern": "ubiquitous",
+          "system": "forge webhook handler",
+          "action": "build the ingress URL as server.external_url with any trailing '/' removed followed by /hooks/forge/<slug>, report it as null when external_url is unset, and store the secret in both cases",
+          "contract": "url field equals e.g. https://hub.example.com/hooks/forge/widgets for external_url https://hub.example.com/; null when unset"
+        },
+        {
+          "id": "32-REQ-1.8",
+          "pattern": "event_driven",
+          "condition": "a PUT …/forge/webhook stores the secret",
+          "system": "forge webhook handler",
+          "action": "emit hub.forge.webhook.set through forge.Config.Audit with workspace set to the slug and metadata {generated: bool}, never including the secret value",
+          "contract": "one hub.forge.webhook.set audit event whose metadata contains only generated"
+        }
+      ]
+    },
+    {
+      "id": "32-REQ-2",
+      "title": "Removing the secret and reporting webhook state",
+      "rationale": "Turning ingress off must always be possible, and operators need to see whether a webhook is configured without ever seeing the secret.",
+      "criteria": [
+        {
+          "id": "32-REQ-2.1",
+          "pattern": "event_driven",
+          "condition": "an authorized caller sends DELETE /api/v1/workspaces/:slug/forge/webhook, whatever the workspace status",
+          "system": "forge webhook handler",
+          "action": "delete FORGE_WEBHOOK_SECRET from the workspace scope when present and emit hub.forge.webhook.unset with metadata {existed: bool}",
+          "contract": "HTTP 204 whether or not the secret existed; existed is false when DeleteSecret returned *secrets.NotFoundError"
+        },
+        {
+          "id": "32-REQ-2.2",
+          "pattern": "unwanted",
+          "condition": "a DELETE …/forge/webhook request has no credential, is a PAT without forge:write, or fails wsaccess.AuthorizeWorkspace",
+          "system": "forge webhook handler",
+          "action": "stop at the first failing check without touching the secrets store",
+          "contract": "HTTP 401, HTTP 403 naming forge:write, or HTTP 404 respectively; a non-NotFound store failure answers HTTP 500"
+        },
+        {
+          "id": "32-REQ-2.3",
+          "pattern": "event_driven",
+          "condition": "a delivery arrives for a workspace whose secret was removed by DELETE …/forge/webhook",
+          "system": "webhook ingress",
+          "action": "refuse the delivery and leave the workspace's existing delivery-log rows in place until they are pruned",
+          "contract": "HTTP 404 identical to the unknown-slug answer; previously recorded rows are still returned by GET …/forge/deliveries"
+        },
+        {
+          "id": "32-REQ-2.4",
+          "pattern": "event_driven",
+          "condition": "an authorized caller sends GET /api/v1/workspaces/:slug/forge",
+          "system": "forge status handler",
+          "action": "add a webhook block to the response defined by 30_forge_client_reads without sending any request to the forge",
+          "contract": "response contains \"webhook\": {\"configured\": bool, \"url\": <ingress URL or null>, \"last_delivery_at\": <UTC timestamp or null>}"
+        },
+        {
+          "id": "32-REQ-2.5",
+          "pattern": "ubiquitous",
+          "system": "forge status handler",
+          "action": "set configured to true exactly when the workspace-scope FORGE_WEBHOOK_SECRET exists, and set last_delivery_at to the latest received_at among the workspace's delivery-log rows of any outcome, or null when there are none",
+          "contract": "configured false and last_delivery_at null for a workspace with no secret and no rows"
+        },
+        {
+          "id": "32-REQ-2.6",
+          "pattern": "unwanted",
+          "condition": "reading the secrets store or the delivery log fails while building GET …/forge",
+          "system": "forge status handler",
+          "action": "answer with an error instead of a partial webhook block",
+          "contract": "HTTP 500 via apikit.WriteAPIError"
+        },
+        {
+          "id": "32-REQ-2.7",
+          "pattern": "ubiquitous",
+          "system": "hub",
+          "action": "for any request other than the PUT …/forge/webhook that generated the value, never include the webhook secret value in a response body, a log line, audit event metadata or a delivery-log row",
+          "contract": "the secret string does not occur in GET …/forge, GET …/forge/deliveries, DELETE responses, captured logs, or hub_audit_events metadata"
+        }
+      ]
+    },
+    {
+      "id": "32-REQ-3",
+      "title": "Ingress endpoint and delivery verification",
+      "rationale": "The ingress is public, so the signature is the only proof that a delivery came from the forge configured with the workspace secret.",
+      "criteria": [
+        {
+          "id": "32-REQ-3.1",
+          "pattern": "ubiquitous",
+          "system": "webhook ingress",
+          "action": "serve POST /hooks/forge/:slug on the Echo root beside /git/..., outside the API group and apikit's bearer authentication, without taking a workspace lock or contacting the forge",
+          "contract": "a request without an Authorization header reaches the handler"
+        },
+        {
+          "id": "32-REQ-3.2",
+          "pattern": "unwanted",
+          "condition": "the slug names no workspace, or the workspace has no workspace-scope FORGE_WEBHOOK_SECRET (org-scoped and user-scoped values are never read)",
+          "system": "webhook ingress",
+          "action": "refuse the delivery before reading the body, writing no row and emitting no event; a database or secrets-store failure during the lookup answers 500 instead",
+          "contract": "HTTP 404 with byte-identical bodies for the unknown-slug and no-secret cases; HTTP 500 on lookup failure"
+        },
+        {
+          "id": "32-REQ-3.3",
+          "pattern": "event_driven",
+          "condition": "a delivery carries X-Hub-Signature-256",
+          "system": "webhook ingress",
+          "action": "treat it as GitHub and accept it only when the header is 'sha256=' followed by 64 hex digits that equal the HMAC-SHA256 of the raw body under the secret, compared with hmac.Equal",
+          "contract": "verification passes only for the exact signature of the received bytes"
+        },
+        {
+          "id": "32-REQ-3.4",
+          "pattern": "event_driven",
+          "condition": "a delivery carries X-Gitlab-Token and no X-Hub-Signature-256",
+          "system": "webhook ingress",
+          "action": "treat it as GitLab and compare the token with the secret using crypto/subtle constant-time comparison before reading the body",
+          "contract": "verification passes only when the token equals the secret"
+        },
+        {
+          "id": "32-REQ-3.5",
+          "pattern": "unwanted",
+          "condition": "a delivery has neither X-Hub-Signature-256 nor X-Gitlab-Token, or its signature is malformed or wrong, or its token is wrong",
+          "system": "webhook ingress",
+          "action": "refuse it, write no delivery-log row, emit no event, and log at warn level with only the slug and the scheme, never a header value or the body",
+          "contract": "HTTP 401 with message \"delivery signature missing or invalid\" in every case; forge_deliveries and hub_audit_events row counts unchanged"
+        },
+        {
+          "id": "32-REQ-3.6",
+          "pattern": "unwanted",
+          "condition": "the delivery body exceeds 1 MiB (1048576 bytes) or apikit's max_body_size",
+          "system": "webhook ingress",
+          "action": "refuse it, write no row and emit no event",
+          "contract": "HTTP 413; the handler's own 413 is written with apikit.WriteAPIErrorWithType and error_type body_too_large"
+        },
+        {
+          "id": "32-REQ-3.7",
+          "pattern": "ubiquitous",
+          "system": "webhook ingress",
+          "action": "read the secret with GetSecretValue(\"workspace\", slug, \"FORGE_WEBHOOK_SECRET\") on every delivery without caching it, so a rotated secret applies from the next delivery",
+          "contract": "after rotation, a delivery signed with the old secret answers 401 and one signed with the new secret is accepted"
+        },
+        {
+          "id": "32-REQ-3.8",
+          "pattern": "state_driven",
+          "condition": "the workspace status is archived and its secret exists",
+          "system": "webhook ingress",
+          "action": "verify, record and relay deliveries exactly as for an active workspace",
+          "contract": "HTTP 202 with the same outcome an active workspace would get"
+        }
+      ]
+    },
+    {
+      "id": "32-REQ-4",
+      "title": "Delivery identity, deduplication and the delivery log",
+      "rationale": "Forges retry deliveries, so each delivery must be recorded and relayed at most once, atomically, in the transactional store.",
+      "criteria": [
+        {
+          "id": "32-REQ-4.1",
+          "pattern": "ubiquitous",
+          "system": "forge.InitSchema",
+          "action": "create the SQLite table forge_deliveries (workspace_slug, delivery_id, forge, event, action, target, outcome, relayed, received_at) with primary key (workspace_slug, delivery_id) and an index on (workspace_slug, received_at), idempotently and without altering existing rows",
+          "contract": "forge.InitSchema(db) returns nil on repeated calls and row counts are unchanged"
+        },
+        {
+          "id": "32-REQ-4.2",
+          "pattern": "event_driven",
+          "condition": "a delivery passes verification",
+          "system": "webhook ingress",
+          "action": "take the delivery id from X-GitHub-Delivery (GitHub) or from Idempotency-Key, else X-Gitlab-Event-UUID (GitLab), take the event name from X-GitHub-Event or X-Gitlab-Event, and store the event name cut to 64 bytes",
+          "contract": "the recorded row's delivery_id and event match these headers"
+        },
+        {
+          "id": "32-REQ-4.3",
+          "pattern": "unwanted",
+          "condition": "a verified delivery lacks the delivery id or the event name, or its delivery id is longer than 255 characters or contains a character outside printable ASCII",
+          "system": "webhook ingress",
+          "action": "refuse it without writing a row or emitting an event",
+          "contract": "HTTP 400 via apikit.WriteAPIError; forge_deliveries row count unchanged"
+        },
+        {
+          "id": "32-REQ-4.4",
+          "pattern": "event_driven",
+          "condition": "a verified delivery with a new (workspace_slug, delivery_id) has been reduced",
+          "system": "webhook ingress",
+          "action": "insert one row with forge github or gitlab, the event, the payload action or \"\", target origin/upstream/NULL, the outcome, relayed as a JSON array of the hub event types to be emitted, and received_at from apikit.NowUTC(), using INSERT … ON CONFLICT DO NOTHING",
+          "contract": "exactly one forge_deliveries row for the delivery"
+        },
+        {
+          "id": "32-REQ-4.5",
+          "pattern": "unwanted",
+          "condition": "the insert affects no row because (workspace_slug, delivery_id) is already recorded",
+          "system": "webhook ingress",
+          "action": "treat the delivery as a duplicate and emit nothing",
+          "contract": "HTTP 202 with body {\"outcome\":\"duplicate\"}; no event and no new row"
+        },
+        {
+          "id": "32-REQ-4.6",
+          "pattern": "unwanted",
+          "condition": "the delivery-log insert fails",
+          "system": "webhook ingress",
+          "action": "emit nothing so that a redelivery is processed in full",
+          "contract": "HTTP 500 via apikit.WriteAPIError; no hub.forge.* event"
+        },
+        {
+          "id": "32-REQ-4.7",
+          "pattern": "ubiquitous",
+          "system": "webhook ingress",
+          "action": "for any number N >= 1 of deliveries with the same workspace and delivery id, including concurrent ones, record exactly one row and relay its events exactly once, answering every other copy with outcome duplicate",
+          "contract": "one row, one set of events, N-1 duplicate answers"
+        }
+      ]
+    },
+    {
+      "id": "32-REQ-5",
+      "title": "Payload parsing, repository binding and non-relayed outcomes",
+      "rationale": "A delivery about another repository must never be relayed as this workspace's, or a consumer would act on the wrong issue.",
+      "criteria": [
+        {
+          "id": "32-REQ-5.1",
+          "pattern": "unwanted",
+          "condition": "a verified delivery body is not a JSON object, or a field the relayed kind needs is missing",
+          "system": "webhook ingress",
+          "action": "record the row with outcome malformed and emit nothing",
+          "contract": "HTTP 400; one forge_deliveries row with outcome malformed"
+        },
+        {
+          "id": "32-REQ-5.2",
+          "pattern": "event_driven",
+          "condition": "a verified delivery's event and action are not in the GitHub or GitLab mapping (for example GitHub ping, pull_request.labeled, issue_comment.edited, GitLab Confidential Issue Hook, Confidential Note Hook, notes on commits or snippets)",
+          "system": "webhook ingress",
+          "action": "record the row with outcome ignored and emit nothing",
+          "contract": "HTTP 202 with body {\"outcome\":\"ignored\"}"
+        },
+        {
+          "id": "32-REQ-5.3",
+          "pattern": "event_driven",
+          "condition": "a delivery of a relayed kind names a repository (GitHub repository.full_name, GitLab project.path_with_namespace) equal, ignoring case, to the origin owner path and name parsed from git_url",
+          "system": "webhook ingress",
+          "action": "bind the delivery to target origin",
+          "contract": "row target and event metadata target are origin"
+        },
+        {
+          "id": "32-REQ-5.4",
+          "pattern": "complex_event",
+          "condition": "a delivery of a relayed kind names a repository that matches only the upstream repository parsed from upstream_url",
+          "guard": "the workspace_mode is carry_patch and upstream_url is set",
+          "system": "webhook ingress",
+          "action": "bind the delivery to target upstream",
+          "contract": "row target and event metadata target are upstream"
+        },
+        {
+          "id": "32-REQ-5.5",
+          "pattern": "unwanted",
+          "condition": "a delivery of a relayed kind names a repository matching neither origin nor (on a carry_patch workspace) upstream, or the workspace remote cannot be parsed",
+          "system": "webhook ingress",
+          "action": "record the row with outcome repository_mismatch and target NULL, and emit nothing",
+          "contract": "HTTP 202 with body {\"outcome\":\"repository_mismatch\"}; no hub.forge.* event"
+        }
+      ]
+    },
+    {
+      "id": "32-REQ-6",
+      "title": "GitHub delivery mapping",
+      "rationale": "Consumers receive one forge-neutral event vocabulary regardless of the forge.",
+      "criteria": [
+        {
+          "id": "32-REQ-6.1",
+          "pattern": "event_driven",
+          "condition": "a bound GitHub issues delivery has action opened, edited, closed, reopened, labeled or unlabeled",
+          "system": "webhook reducer",
+          "action": "produce hub.forge.issue.opened, .edited, .closed, .reopened, .labeled or .unlabeled respectively",
+          "contract": "one event of that type; outcome relayed"
+        },
+        {
+          "id": "32-REQ-6.2",
+          "pattern": "event_driven",
+          "condition": "a bound GitHub issue_comment delivery has action created",
+          "system": "webhook reducer",
+          "action": "produce hub.forge.comment.created with pull_request true when issue.pull_request is present and false otherwise",
+          "contract": "one hub.forge.comment.created event"
+        },
+        {
+          "id": "32-REQ-6.3",
+          "pattern": "event_driven",
+          "condition": "a bound GitHub pull_request delivery has action opened, reopened, synchronize or closed",
+          "system": "webhook reducer",
+          "action": "produce hub.forge.pull_request.opened, .reopened or .synchronize, and for closed produce .merged when pull_request.merged is true and .closed otherwise",
+          "contract": "one pull_request event; a merged pull request never yields .closed"
+        },
+        {
+          "id": "32-REQ-6.4",
+          "pattern": "event_driven",
+          "condition": "a bound GitHub push delivery is received",
+          "system": "webhook reducer",
+          "action": "produce hub.forge.push",
+          "contract": "one hub.forge.push event"
+        }
+      ]
+    },
+    {
+      "id": "32-REQ-7",
+      "title": "GitLab delivery mapping",
+      "rationale": "GitLab reports label and edit changes inside a single update action, which must map to the same events GitHub produces.",
+      "criteria": [
+        {
+          "id": "32-REQ-7.1",
+          "pattern": "event_driven",
+          "condition": "a bound GitLab Issue Hook has object_attributes.action open, close or reopen",
+          "system": "webhook reducer",
+          "action": "produce hub.forge.issue.opened, .closed or .reopened respectively",
+          "contract": "one event of that type"
+        },
+        {
+          "id": "32-REQ-7.2",
+          "pattern": "event_driven",
+          "condition": "a bound GitLab Issue Hook has action update",
+          "system": "webhook reducer",
+          "action": "produce, in this order, hub.forge.issue.edited when changes has title or description, then one .unlabeled per label in changes.labels.previous and not in current, then one .labeled per label in current and not in previous, each group sorted by label name",
+          "contract": "events emitted in that order; a change adding A and removing B yields .unlabeled(B) then .labeled(A)"
+        },
+        {
+          "id": "32-REQ-7.3",
+          "pattern": "unwanted",
+          "condition": "a bound GitLab Issue Hook update has no title, description or label change",
+          "system": "webhook reducer",
+          "action": "produce no event",
+          "contract": "HTTP 202 with body {\"outcome\":\"ignored\"}"
+        },
+        {
+          "id": "32-REQ-7.4",
+          "pattern": "event_driven",
+          "condition": "a bound GitLab Note Hook has noteable_type Issue or MergeRequest and an absent or create action",
+          "system": "webhook reducer",
+          "action": "produce hub.forge.comment.created with number from issue.iid or merge_request.iid and pull_request true for a merge request",
+          "contract": "one hub.forge.comment.created event"
+        },
+        {
+          "id": "32-REQ-7.5",
+          "pattern": "event_driven",
+          "condition": "a bound GitLab Merge Request Hook has action open, close, reopen, merge, or update",
+          "system": "webhook reducer",
+          "action": "produce hub.forge.pull_request.opened, .closed, .reopened or .merged respectively, produce .synchronize for an update with oldrev present, and produce nothing (outcome ignored) for an update without oldrev",
+          "contract": "one pull_request event, or outcome ignored"
+        },
+        {
+          "id": "32-REQ-7.6",
+          "pattern": "event_driven",
+          "condition": "a bound GitLab Push Hook or Tag Push Hook is received",
+          "system": "webhook reducer",
+          "action": "produce hub.forge.push",
+          "contract": "one hub.forge.push event"
+        }
+      ]
+    },
+    {
+      "id": "32-REQ-8",
+      "title": "Event contents and relay",
+      "rationale": "Events must carry enough reduced facts for a consumer to act while never storing the payload, and a slow audit store must not hold the forge's connection open.",
+      "criteria": [
+        {
+          "id": "32-REQ-8.1",
+          "pattern": "ubiquitous",
+          "system": "webhook reducer",
+          "action": "set on every relayed HubEvent Workspace to the slug, ActorType to forge, ActorID to \"\", ResourceType to issue, comment, pull_request or repository (push), ResourceID to the decimal number (GitLab iid) or the ref for a push, and Action to the last segment of the event type",
+          "contract": "HubEvent fields as listed"
+        },
+        {
+          "id": "32-REQ-8.2",
+          "pattern": "ubiquitous",
+          "system": "webhook reducer",
+          "action": "put forge, target, delivery_id and actor (forge login, \"\" when absent) in every event's metadata, adding number/title/url/labels for issue opened/edited/closed/reopened, number/label/labels/url for issue labeled/unlabeled, number/comment_url/pull_request for comments, number/url/head/base/merged for pull requests, and ref/before/after for pushes, and no other payload field",
+          "contract": "metadata keys are exactly the listed set for the kind"
+        },
+        {
+          "id": "32-REQ-8.3",
+          "pattern": "ubiquitous",
+          "system": "webhook reducer",
+          "action": "for any payload, cut title to at most 256 bytes on a UTF-8 boundary and remove userinfo from every URL taken from the payload",
+          "contract": "metadata title is valid UTF-8 of at most 256 bytes; no metadata URL contains user:password@"
+        },
+        {
+          "id": "32-REQ-8.4",
+          "pattern": "ubiquitous",
+          "system": "internal/audit",
+          "action": "declare each delivery event type (hub.forge.issue.opened/edited/closed/reopened/labeled/unlabeled, hub.forge.comment.created, hub.forge.pull_request.opened/closed/merged/reopened/synchronize, hub.forge.push) and hub.forge.webhook.set/unset as an exported constant with a doc comment in internal/audit/types.go",
+          "contract": "each constant's value equals its event type string"
+        },
+        {
+          "id": "32-REQ-8.5",
+          "pattern": "event_driven",
+          "condition": "a verified delivery is recorded with outcome relayed, ignored or repository_mismatch",
+          "system": "webhook ingress",
+          "action": "write and flush the answer before emitting any event, never storing or logging the payload",
+          "contract": "HTTP 202 with body {\"outcome\": \"relayed\" | \"ignored\" | \"repository_mismatch\"}; relayed means at least one event is handed to the emitter"
+        },
+        {
+          "id": "32-REQ-8.6",
+          "pattern": "event_driven",
+          "condition": "the 202 answer for a relayed delivery has been flushed",
+          "system": "webhook ingress",
+          "action": "emit the produced events in order through forge.Config.Audit with context.WithoutCancel, so the broadcast emitter stores them in hub_audit_events and puts them on the SSE stream",
+          "contract": "events visible on GET /api/v1/events?workspace=<slug> and GET /api/v1/audit?workspace=<slug> in production order"
+        },
+        {
+          "id": "32-REQ-8.7",
+          "pattern": "unwanted",
+          "condition": "forge.Config.Audit.Emit returns an error",
+          "system": "webhook ingress",
+          "action": "log the error with slog and continue emitting the remaining events",
+          "contract": "the HTTP 202 answer and the delivery-log row are unchanged"
+        },
+        {
+          "id": "32-REQ-8.8",
+          "pattern": "optional",
+          "condition": "forge.Config.Audit is nil",
+          "system": "webhook ingress",
+          "action": "skip emission while still recording and answering the delivery",
+          "contract": "HTTP 202 with the computed outcome; no panic"
+        }
+      ]
+    },
+    {
+      "id": "32-REQ-9",
+      "title": "Delivery log API and retention",
+      "rationale": "Operators debug webhook setup from the log, and a pruner that is never scheduled is a known trap in this repository.",
+      "criteria": [
+        {
+          "id": "32-REQ-9.1",
+          "pattern": "event_driven",
+          "condition": "an authorized caller sends GET /api/v1/workspaces/:slug/forge/deliveries, whatever the workspace status",
+          "system": "forge deliveries handler",
+          "action": "return the workspace's delivery-log rows newest first by received_at, filtered by since (RFC 3339, inclusive) when given, limited to limit rows (1 to 100, default 30)",
+          "contract": "HTTP 200 with a bare JSON array ([] when empty) of {delivery_id, forge, event, action, target, outcome, relayed, received_at}"
+        },
+        {
+          "id": "32-REQ-9.2",
+          "pattern": "unwanted",
+          "condition": "since is not an RFC 3339 timestamp, or limit is not an integer from 1 to 100",
+          "system": "forge deliveries handler",
+          "action": "reject the request",
+          "contract": "HTTP 400 whose message names since or limit"
+        },
+        {
+          "id": "32-REQ-9.3",
+          "pattern": "unwanted",
+          "condition": "a GET …/forge/deliveries request has no credential, is a PAT holding neither forge:read nor forge:write, or fails wsaccess.AuthorizeWorkspace",
+          "system": "forge deliveries handler",
+          "action": "stop at the first failing check",
+          "contract": "HTTP 401, HTTP 403 naming forge:read, or HTTP 404 respectively"
+        },
+        {
+          "id": "32-REQ-9.4",
+          "pattern": "ubiquitous",
+          "system": "forge.PruneDeliveries",
+          "action": "delete forge_deliveries rows whose received_at is older than an apikit.FormatUTC cutoff of now minus 7 days, and rows whose workspace_slug no longer exists in workspaces",
+          "contract": "returns (rowsDeleted int64, error); rows newer than 7 days of existing workspaces remain"
+        },
+        {
+          "id": "32-REQ-9.5",
+          "pattern": "event_driven",
+          "condition": "forge.StartDeliveryRetention(ctx, db) is called",
+          "system": "delivery retention loop",
+          "action": "run one prune pass immediately, then one every hour, and return when ctx is cancelled",
+          "contract": "the function returns after ctx cancellation; no goroutine is left running"
+        },
+        {
+          "id": "32-REQ-9.6",
+          "pattern": "unwanted",
+          "condition": "a prune pass fails",
+          "system": "delivery retention loop",
+          "action": "log the failure and try again at the next tick without terminating the process",
+          "contract": "the loop keeps running; no panic or os.Exit"
+        },
+        {
+          "id": "32-REQ-9.7",
+          "pattern": "ubiquitous",
+          "system": "cmd/af-hub/main.go",
+          "action": "call forge.InitSchema on the SQLite database at start (fatal on error), mount the ingress on server.Echo(), pass the audit emitter, secrets store and external URL in forge.Config, and start go forge.StartDeliveryRetention(ctx, db) after forge.InitSchema",
+          "contract": "a running af-hub serves POST /hooks/forge/:slug and prunes the delivery log"
+        }
+      ]
+    },
+    {
+      "id": "32-REQ-10",
+      "title": "afc forge webhook and deliveries commands",
+      "rationale": "Operators manage the secret and read the log from the CLI without putting the secret in shell history.",
+      "criteria": [
+        {
+          "id": "32-REQ-10.1",
+          "pattern": "event_driven",
+          "condition": "a user runs afc forge webhook set <slug> --secret s",
+          "system": "afc",
+          "action": "send PUT /api/v1/workspaces/<slug>/forge/webhook with body {\"secret\": s} and print the answer with apikit.CLIPrintResult",
+          "contract": "one JSON document on stdout; exit 0"
+        },
+        {
+          "id": "32-REQ-10.2",
+          "pattern": "event_driven",
+          "condition": "a user runs afc forge webhook set <slug> with --generate or with none of --secret, --from-stdin, --generate",
+          "system": "afc",
+          "action": "send PUT …/forge/webhook with body {}, print the answer, and when it contains a generated secret write one line to stderr saying hub will not show it again",
+          "contract": "one JSON document on stdout containing secret; one warning line on stderr; exit 0"
+        },
+        {
+          "id": "32-REQ-10.3",
+          "pattern": "event_driven",
+          "condition": "a user runs afc forge webhook set <slug> --from-stdin",
+          "system": "afc",
+          "action": "read the secret with readValueFromStdin, dropping one trailing newline, and send it as {\"secret\": value}",
+          "contract": "the request body secret equals stdin minus one trailing newline"
+        },
+        {
+          "id": "32-REQ-10.4",
+          "pattern": "unwanted",
+          "condition": "more than one of --secret, --from-stdin and --generate is given",
+          "system": "afc",
+          "action": "fail before sending any request",
+          "contract": "exit code 2 via apikit.CLIHandleError(apikit.NewCLIError(2, …)); no HTTP request made"
+        },
+        {
+          "id": "32-REQ-10.5",
+          "pattern": "event_driven",
+          "condition": "a user runs afc forge webhook unset <slug> and hub answers 204",
+          "system": "afc",
+          "action": "send DELETE …/forge/webhook and print a synthetic document",
+          "contract": "stdout {\"status\":\"unset\",\"workspace\":\"<slug>\"}; exit 0"
+        },
+        {
+          "id": "32-REQ-10.6",
+          "pattern": "event_driven",
+          "condition": "a user runs afc forge deliveries <slug> [--since t] [--limit n]",
+          "system": "afc",
+          "action": "send GET …/forge/deliveries with only the flags that were set, passed as given, and print the answer",
+          "contract": "query string contains since/limit only when the flag was set; one JSON document on stdout"
+        },
+        {
+          "id": "32-REQ-10.7",
+          "pattern": "unwanted",
+          "condition": "hub answers any of these commands with an error status",
+          "system": "afc",
+          "action": "report the error through apikit.CLIHandleError",
+          "contract": "apikit's exit code for the HTTP status and the hub error message"
+        },
+        {
+          "id": "32-REQ-10.8",
+          "pattern": "ubiquitous",
+          "system": "internal/cli",
+          "action": "register webhook (set, unset) and deliveries under the afc forge parent from 30_forge_client_reads, building paths with apiPath and never importing internal/forge or internal/audit",
+          "contract": "afc still builds with CGO_ENABLED=0"
+        }
+      ]
+    }
+  ],
+  "execution_paths": [
+    {
+      "id": "32-PATH-1",
+      "title": "Operator configures a webhook and a GitHub label delivery reaches the event stream",
+      "steps": [
+        {
+          "actor": "operator",
+          "action": "runs afc forge webhook set widgets"
+        },
+        {
+          "actor": "afc",
+          "action": "sends PUT /api/v1/workspaces/widgets/forge/webhook with {} and prints the configured document with the generated secret and ingress URL"
+        },
+        {
+          "actor": "forge handler",
+          "action": "stores FORGE_WEBHOOK_SECRET in the workspace scope and emits hub.forge.webhook.set {generated: true}"
+        },
+        {
+          "actor": "consumer",
+          "action": "opens GET /api/v1/events?workspace=widgets"
+        },
+        {
+          "actor": "GitHub",
+          "action": "posts an issues labeled delivery to /hooks/forge/widgets signed with X-Hub-Signature-256"
+        },
+        {
+          "actor": "webhook ingress",
+          "action": "verifies the HMAC, binds the repository to origin, inserts one forge_deliveries row and answers 202 {\"outcome\":\"relayed\"}"
+        },
+        {
+          "actor": "audit emitter",
+          "action": "stores hub.forge.issue.labeled with workspace widgets, target origin, number, label and labels in hub_audit_events and broadcasts it"
+        },
+        {
+          "actor": "consumer",
+          "action": "receives the event on the SSE stream and finds it in GET /api/v1/audit?workspace=widgets"
+        }
+      ]
+    },
+    {
+      "id": "32-PATH-2",
+      "title": "A GitLab label change is relayed as unlabeled then labeled",
+      "steps": [
+        {
+          "actor": "GitLab",
+          "action": "posts an Issue Hook update whose changes.labels adds one label and removes another, with X-Gitlab-Token equal to the secret"
+        },
+        {
+          "actor": "webhook ingress",
+          "action": "compares the token in constant time, reads the body, binds project.path_with_namespace to origin and records one row"
+        },
+        {
+          "actor": "webhook ingress",
+          "action": "answers 202 {\"outcome\":\"relayed\"} and flushes it"
+        },
+        {
+          "actor": "audit emitter",
+          "action": "stores hub.forge.issue.unlabeled then hub.forge.issue.labeled for the workspace"
+        }
+      ]
+    },
+    {
+      "id": "32-PATH-3",
+      "title": "A redelivered GitHub delivery is answered as a duplicate",
+      "steps": [
+        {
+          "actor": "GitHub",
+          "action": "posts the same signed delivery with the same X-GitHub-Delivery a second time"
+        },
+        {
+          "actor": "webhook ingress",
+          "action": "verifies it, reduces it, and the ON CONFLICT DO NOTHING insert affects no row"
+        },
+        {
+          "actor": "webhook ingress",
+          "action": "answers 202 {\"outcome\":\"duplicate\"} and emits no event"
+        }
+      ]
+    },
+    {
+      "id": "32-PATH-4",
+      "title": "Operator reads the delivery log and the webhook state",
+      "steps": [
+        {
+          "actor": "operator",
+          "action": "runs afc forge deliveries widgets --limit 10"
+        },
+        {
+          "actor": "afc",
+          "action": "sends GET /api/v1/workspaces/widgets/forge/deliveries?limit=10"
+        },
+        {
+          "actor": "forge deliveries handler",
+          "action": "returns the recorded rows newest first as a bare JSON array"
+        },
+        {
+          "actor": "operator",
+          "action": "reads GET /api/v1/workspaces/widgets/forge and sees webhook.configured true, the URL and last_delivery_at, without the secret"
+        }
+      ]
+    },
+    {
+      "id": "32-PATH-5",
+      "title": "af-hub prunes old and orphaned delivery rows",
+      "steps": [
+        {
+          "actor": "af-hub main",
+          "action": "runs forge.InitSchema and starts go forge.StartDeliveryRetention(ctx, db)"
+        },
+        {
+          "actor": "delivery retention loop",
+          "action": "runs an immediate pass of forge.PruneDeliveries"
+        },
+        {
+          "actor": "forge.PruneDeliveries",
+          "action": "deletes rows older than 7 days and rows of deleted workspaces and returns the count"
+        }
+      ]
+    },
+    {
+      "id": "32-PATH-6",
+      "title": "Operator turns ingress off",
+      "steps": [
+        {
+          "actor": "operator",
+          "action": "runs afc forge webhook unset widgets"
+        },
+        {
+          "actor": "forge handler",
+          "action": "deletes FORGE_WEBHOOK_SECRET, emits hub.forge.webhook.unset {existed: true} and answers 204"
+        },
+        {
+          "actor": "afc",
+          "action": "prints {\"status\":\"unset\",\"workspace\":\"widgets\"}"
+        },
+        {
+          "actor": "GitHub",
+          "action": "posts a signed delivery to /hooks/forge/widgets and receives 404 with no row recorded"
+        }
+      ]
+    }
+  ]
+}

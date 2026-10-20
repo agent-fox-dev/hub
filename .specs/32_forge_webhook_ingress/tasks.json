@@ -1,0 +1,458 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/tasks.v2.json",
+  "spec_id": "32",
+  "spec_name": "forge_webhook_ingress",
+  "schema_version": 2,
+  "test_commands": {
+    "all_tests": "make test",
+    "linter": "make lint",
+    "spec_tests": "go test ./internal/forge/... ./internal/audit/... ./internal/cli/... -count=1"
+  },
+  "dependencies": [
+    {
+      "spec": "30",
+      "reason": "Provides internal/forge (Config, RegisterRoutes, scope helpers, authorize/loadRemotes, repository parsing via describeRemote, GET /forge) and the afc forge parent command that this spec extends"
+    },
+    {
+      "spec": "31",
+      "reason": "Provides forge.Config.Audit, the hub.forge.* event namespace in internal/audit/types.go and the body_too_large error type that the ingress reuses"
+    }
+  ],
+  "tasks": [
+    {
+      "id": 1,
+      "kind": "implement",
+      "title": "Add forge audit event constants, the forge_deliveries schema and the new forge.Config fields",
+      "criteria": [
+        "32-REQ-4.1",
+        "32-REQ-8.4"
+      ],
+      "tests": [
+        "TS-32-46",
+        "TS-32-23"
+      ],
+      "steps": [
+        "Write TS-32-46 (internal/audit, modelled on types_sandbox_test.go; also parse types.go to check each constant has a doc comment) and TS-32-23 (internal/forge, in-memory SQLite) and confirm they fail",
+        "In internal/audit/types.go add documented constants (sandbox-event doc style) EventForgeIssueOpened/Edited/Closed/Reopened/Labeled/Unlabeled, EventForgeCommentCreated, EventForgePullRequestOpened/Closed/Merged/Reopened/Synchronize, EventForgePush, EventForgeWebhookSet, EventForgeWebhookUnset with values hub.forge.issue.opened … hub.forge.webhook.unset; skip any that forge_writes already declared with the same name",
+        "Create internal/forge/schema.go with InitSchema(db *sql.DB) error: CREATE TABLE IF NOT EXISTS forge_deliveries (workspace_slug, delivery_id, forge, event, action, target NULLable, outcome, relayed, received_at, PRIMARY KEY (workspace_slug, delivery_id)) plus CREATE INDEX IF NOT EXISTS on (workspace_slug, received_at), following internal/sandboxes/lease_schema.go",
+        "Extend forge.Config (internal/forge/config.go) with Secrets *secrets.Store and ExternalURL string; add Audit audit.Emitter only if forge_writes has not landed it",
+        "Add shared helper webhookURL(externalURL, slug string) *string (trim trailing '/', null when empty) and the secret key constant FORGE_WEBHOOK_SECRET"
+      ],
+      "touches": [
+        "internal/audit/types.go",
+        "internal/audit/types_forge_test.go",
+        "internal/forge/schema.go",
+        "internal/forge/schema_test.go",
+        "internal/forge/config.go"
+      ],
+      "done_when": [
+        "InitSchema is idempotent and leaves rows alone"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 2,
+      "kind": "implement",
+      "title": "Implement PUT and DELETE /forge/webhook",
+      "criteria": [
+        "32-REQ-1",
+        "32-REQ-2.1",
+        "32-REQ-2.2"
+      ],
+      "tests": [
+        "TS-32-1",
+        "TS-32-2",
+        "TS-32-3",
+        "TS-32-4",
+        "TS-32-5",
+        "TS-32-6",
+        "TS-32-7",
+        "TS-32-8",
+        "TS-32-9",
+        "TS-32-10"
+      ],
+      "steps": [
+        "Write TS-32-1 … TS-32-10 against a real secrets store on in-memory SQLite, a recording emitter (copy recordingEmitter from internal/sandboxes/testhelpers_test.go) and apikit.SetAuthInfo; confirm they fail",
+        "Create internal/forge/webhook_handlers.go; register PUT and DELETE /workspaces/:slug/forge/webhook in forge.RegisterRoutes using the existing authorize helper with canWriteForge (401, 403 naming forge:write, wsaccess 404)",
+        "PUT: after auth, reject non-active workspaces with 400 'workspace is not active' BEFORE reading the body; then parse the optional body (absent, {}, secret null => generate 32 crypto/rand bytes hex-encoded; non-object or non-string secret => 400)",
+        "Validate a supplied secret as 16..255 printable ASCII '!'..'~'; the 400 message names 'secret' and the rule and never repeats the value",
+        "Store: try UpdateSecret; on *secrets.NotFoundError CreateSecrets; on *secrets.ConflictError retry UpdateSecret once; plain scope-full error => 400 with the store message; any other error => 500; no audit event on failure",
+        "Respond 200 {configured:true,url:<webhookURL or null>} and add 'secret' only when generated; emit hub.forge.webhook.set with metadata exactly {generated: bool} via Config.Audit (nil check, context.WithoutCancel, slog on error)",
+        "DELETE: same auth order without the active check; DeleteSecret, treat *secrets.NotFoundError as existed=false, other errors 500; emit hub.forge.webhook.unset {existed: bool}; answer 204 with empty body",
+        "Neither route reads the target query parameter"
+      ],
+      "touches": [
+        "internal/forge/webhook_handlers.go",
+        "internal/forge/webhook_handlers_test.go",
+        "internal/forge/routes.go"
+      ],
+      "depends_on": [
+        1
+      ],
+      "done_when": [
+        "the secret value is never logged or put in audit metadata"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 3,
+      "kind": "implement",
+      "title": "Add the webhook block to GET /forge and the GET /forge/deliveries route",
+      "criteria": [
+        "32-REQ-2.4",
+        "32-REQ-2.5",
+        "32-REQ-2.6",
+        "32-REQ-9.1",
+        "32-REQ-9.2",
+        "32-REQ-9.3"
+      ],
+      "tests": [
+        "TS-32-12",
+        "TS-32-13",
+        "TS-32-51",
+        "TS-32-52",
+        "TS-32-53"
+      ],
+      "steps": [
+        "Write TS-32-12, TS-32-13, TS-32-51, TS-32-52, TS-32-53 and confirm they fail",
+        "In the GET /forge handler (handlers_forge.go from spec 30) add a webhook block: configured from Secrets.GetSecretValue('workspace', slug, FORGE_WEBHOOK_SECRET) (NotFoundError => false, other error => 500), url from webhookURL, last_delivery_at = MAX(received_at) from forge_deliveries for the slug (null when none); any store or log failure answers 500 via apikit.WriteAPIError with no partial block; still send nothing to the forge",
+        "Create internal/forge/deliveries_handler.go: GET /workspaces/:slug/forge/deliveries using authorize with canReadForge (403 message names forge:read; forge:write implies read), no status check",
+        "Parse since (RFC 3339, inclusive, compare as normalized UTC string) and limit (integer 1..100, default 30); a bad value answers 400 naming the parameter",
+        "Query forge_deliveries ORDER BY received_at DESC LIMIT n and return a bare JSON array ([] when empty) of {delivery_id, forge, event, action, target (null when NULL), outcome, relayed (decoded JSON array), received_at}",
+        "Register the route in forge.RegisterRoutes"
+      ],
+      "touches": [
+        "internal/forge/handlers_forge.go",
+        "internal/forge/deliveries_handler.go",
+        "internal/forge/deliveries_handler_test.go",
+        "internal/forge/routes.go"
+      ],
+      "depends_on": [
+        1
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 4,
+      "kind": "implement",
+      "title": "Build the public ingress: lookup, verification, body cap, delivery identity, repository binding and recording",
+      "criteria": [
+        "32-REQ-3",
+        "32-REQ-4.2",
+        "32-REQ-4.3",
+        "32-REQ-4.4",
+        "32-REQ-5.3"
+      ],
+      "tests": [
+        "TS-32-15",
+        "TS-32-16",
+        "TS-32-17",
+        "TS-32-18",
+        "TS-32-19",
+        "TS-32-20",
+        "TS-32-22",
+        "TS-32-24",
+        "TS-32-25",
+        "TS-32-31"
+      ],
+      "steps": [
+        "Write the listed tests: a helper that builds an Echo root with the ingress mounted, real in-memory SQLite (workspaces table, secrets, forge_deliveries), a recording emitter, a signing helper and a transport that fails on any forge request; confirm they fail",
+        "Create internal/forge/ingress.go with MountWebhookIngress(e *echo.Echo, cfg Config) registering POST /hooks/forge/:slug on the Echo root (no bearer auth, no wslock, no forge client)",
+        "Step 1 lookup: load workspace row (git_url, workspace_mode, upstream_url) and Secrets.GetSecretValue('workspace', slug, FORGE_WEBHOOK_SECRET) on every request with no cache; unknown slug and NotFoundError both answer the same 404 bytes; any other error 500; status is ignored",
+        "Step 2-3 scheme: X-Hub-Signature-256 present => GitHub; else X-Gitlab-Token => GitLab, compared with crypto/subtle before reading the body; neither => 401 before the body is read",
+        "Step 4 body: read with a 1 MiB cap (io.LimitReader n+1 and map http.MaxBytesError to 413); handler's own 413 uses apikit.WriteAPIErrorWithType error_type body_too_large",
+        "Step 5 GitHub signature: header must be sha256= plus 64 hex digits, compared with hmac.Equal against HMAC-SHA256 of the raw body; every failure answers 401 'delivery signature missing or invalid', logs slog.Warn with only slug and scheme, writes no row and emits nothing",
+        "Read delivery id (X-GitHub-Delivery; GitLab Idempotency-Key else X-Gitlab-Event-UUID) and event name (X-GitHub-Event / X-Gitlab-Event); missing, id >255 chars or non-printable-ASCII => 400 with nothing recorded; cut event to 64 bytes",
+        "Add a reducer entry point (reduce.go): parse the JSON object, take the repository path (repository.full_name / project.path_with_namespace), compare ignoring case with origin owner/name parsed from git_url (use the spec-30 describeRemote helper) and, on carry_patch with upstream_url, upstream; start with the GitHub issues events so relayed outcomes work",
+        "Insert the delivery row (workspace_slug, delivery_id, forge, event, action, target, outcome, relayed JSON array, received_at apikit.NowUTC()) and answer 202 {outcome}; emit events in order after the answer (Task 5 hardens duplicate and failure paths)"
+      ],
+      "touches": [
+        "internal/forge/ingress.go",
+        "internal/forge/reduce.go",
+        "internal/forge/ingress_test.go",
+        "internal/forge/testhelpers_test.go"
+      ],
+      "depends_on": [
+        1
+      ],
+      "done_when": [
+        "a request without an Authorization header reaches the handler"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 5,
+      "kind": "implement",
+      "title": "Harden ingress deduplication, answer-then-relay, malformed/ignored/mismatch outcomes",
+      "criteria": [
+        "32-REQ-4.5",
+        "32-REQ-4.6",
+        "32-REQ-4.7",
+        "32-REQ-5.1",
+        "32-REQ-5.2",
+        "32-REQ-5.4",
+        "32-REQ-5.5",
+        "32-REQ-8.5",
+        "32-REQ-8.7"
+      ],
+      "tests": [
+        "TS-32-21",
+        "TS-32-26",
+        "TS-32-27",
+        "TS-32-28",
+        "TS-32-29",
+        "TS-32-30",
+        "TS-32-32",
+        "TS-32-33",
+        "TS-32-47",
+        "TS-32-49"
+      ],
+      "steps": [
+        "Write the listed tests (TS-32-47 uses httptest.NewServer and an emitter whose Emit blocks; TS-32-28 posts 1..20 concurrent copies) and confirm they fail",
+        "Insert with INSERT … ON CONFLICT DO NOTHING and use RowsAffected: 0 => answer 202 {outcome:duplicate} and emit nothing; insert error => 500 via apikit.WriteAPIError and emit nothing",
+        "Outcomes: body not a JSON object or missing required field => record outcome malformed and answer 400; unmapped event/action => outcome ignored (202); relayed kinds with no repository match, unparseable remote, upstream on a standard workspace or carry_patch without upstream_url => outcome repository_mismatch with NULL target (202)",
+        "Answer 202 {outcome: relayed|ignored|repository_mismatch}: write the JSON and flush the response (http.Flusher via c.Response()) before emitting; relayed means at least one event handed to the emitter",
+        "Emit events in order through Config.Audit with context.WithoutCancel; on an Emit error slog.Error and continue with the remaining events; the answer and row are unchanged",
+        "Verify rotation (TS-32-21): rotate through PUT /forge/webhook and confirm old signature 401, new 202 (no caching)"
+      ],
+      "touches": [
+        "internal/forge/ingress.go",
+        "internal/forge/reduce.go",
+        "internal/forge/ingress_dedup_test.go"
+      ],
+      "depends_on": [
+        4
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 6,
+      "kind": "implement",
+      "title": "Complete the GitHub mapping and event contents",
+      "criteria": [
+        "32-REQ-6",
+        "32-REQ-8.1",
+        "32-REQ-8.2",
+        "32-REQ-8.3",
+        "32-REQ-8.8"
+      ],
+      "tests": [
+        "TS-32-34",
+        "TS-32-35",
+        "TS-32-36",
+        "TS-32-37",
+        "TS-32-45",
+        "TS-32-50"
+      ],
+      "steps": [
+        "Write the listed tests (TS-32-45 as a property test, e.g. testing/quick or a table of random Unicode titles and userinfo URLs) and confirm they fail",
+        "Create internal/forge/reduce_github.go: issues opened/edited/closed/reopened/labeled/unlabeled, issue_comment created (pull_request true when issue.pull_request present), pull_request opened/reopened/synchronize and closed (merged when pull_request.merged true else closed), push",
+        "Build the HubEvent in one helper: Workspace=slug, ActorType forge, ActorID empty, ResourceType issue/comment/pull_request/repository, ResourceID decimal number or ref for push, Action = last segment of the event type (push for push)",
+        "Metadata always forge, target, delivery_id, actor (sender.login or \"\"); add exactly number,title,url,labels / number,label,labels,url / number,comment_url,pull_request / number,url,head,base,merged / ref,before,after by kind; missing needed fields => malformed",
+        "Add truncateUTF8(title, 256) on a rune boundary and stripUserinfo(url) for every payload URL (reuse the scrub helper of spec 30 if suitable)",
+        "Confirm a nil Config.Audit skips emission without panic (TS-32-50)"
+      ],
+      "touches": [
+        "internal/forge/reduce.go",
+        "internal/forge/reduce_github.go",
+        "internal/forge/reduce_github_test.go"
+      ],
+      "depends_on": [
+        5
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 7,
+      "kind": "implement",
+      "title": "Implement the GitLab mapping and verify relay to SSE and audit query",
+      "criteria": [
+        "32-REQ-7",
+        "32-REQ-8.1",
+        "32-REQ-8.2",
+        "32-REQ-8.6"
+      ],
+      "tests": [
+        "TS-32-38",
+        "TS-32-39",
+        "TS-32-40",
+        "TS-32-41",
+        "TS-32-42",
+        "TS-32-43",
+        "TS-32-44",
+        "TS-32-48"
+      ],
+      "steps": [
+        "Write the listed tests; TS-32-48 uses real DuckDB (audit.OpenDB, audit.InitSchema), audit.NewEmitterWithBroadcast, SSEManager and audit.RegisterAuditQueryRoutes with an open /events?workspace=widgets stream; confirm they fail",
+        "Create internal/forge/reduce_gitlab.go: Issue Hook open/close/reopen; Confidential Issue Hook and Confidential Note Hook ignored; number is object_attributes.iid",
+        "Issue Hook update: edited when changes has title or description, then one unlabeled per label in changes.labels.previous not in current, then one labeled per label in current not in previous, each group sorted by name (label names from title); no change => ignored",
+        "Note Hook with noteable_type Issue or MergeRequest and action absent/create => comment.created (number from issue.iid or merge_request.iid, pull_request true for MR, comment_url from object_attributes.url); other noteables ignored",
+        "Merge Request Hook open/close/reopen/merge => opened/closed/reopened/merged; update with oldrev => synchronize, without oldrev => ignored; Push Hook and Tag Push Hook => push (ResourceID the ref)",
+        "Actor from user.username or user_username; project.path_with_namespace for binding; reuse the shared event builder from task 6",
+        "Verify events emitted in production order reach hub_audit_events, GET /audit and the SSE stream"
+      ],
+      "touches": [
+        "internal/forge/reduce_gitlab.go",
+        "internal/forge/reduce_gitlab_test.go",
+        "internal/forge/relay_integration_test.go"
+      ],
+      "depends_on": [
+        6
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 8,
+      "kind": "implement",
+      "title": "Add delivery retention and wire the forge package into cmd/af-hub/main.go",
+      "criteria": [
+        "32-REQ-9.4",
+        "32-REQ-9.5",
+        "32-REQ-9.6",
+        "32-REQ-9.7"
+      ],
+      "tests": [
+        "TS-32-54",
+        "TS-32-55",
+        "TS-32-56"
+      ],
+      "steps": [
+        "Write TS-32-54, TS-32-55 (injectable ticker/clock hook, a variant whose first pass fails) and TS-32-56 (parse cmd/af-hub/main.go with go/parser and check calls and ordering) and confirm they fail",
+        "Create internal/forge/retention.go: PruneDeliveries(ctx, db) (int64, error) deleting rows with received_at < apikit.FormatUTC(now-7d) and rows whose workspace_slug is not in workspaces, returning the total RowsAffected",
+        "StartDeliveryRetention(ctx, db): one pass immediately, then hourly on a ticker, log failed passes with slog and continue, return on ctx.Done with no leaked goroutine and no os.Exit",
+        "In cmd/af-hub/main.go call forge.InitSchema(database.SqlDB) after secrets.InitSchema (log.Fatal on error), pass the audit emitter, secrets store and server.ExternalURL() in forge.Config for RegisterRoutes, call forge.MountWebhookIngress(server.Echo(), cfg) next to gitserver.MountGitHandlers, and start go forge.StartDeliveryRetention(ctx, database.SqlDB) after InitSchema",
+        "Read main.go first to find the forge.Config construction left by specs 30/31 and extend it rather than duplicating"
+      ],
+      "touches": [
+        "internal/forge/retention.go",
+        "internal/forge/retention_test.go",
+        "cmd/af-hub/main.go",
+        "cmd/af-hub/main_wiring_test.go"
+      ],
+      "depends_on": [
+        2,
+        3,
+        4
+      ],
+      "done_when": [
+        "main.go launches the pruner with go after forge.InitSchema"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 9,
+      "kind": "implement",
+      "title": "Add afc forge webhook set|unset and afc forge deliveries",
+      "criteria": [
+        "32-REQ-10"
+      ],
+      "tests": [
+        "TS-32-57",
+        "TS-32-58",
+        "TS-32-59",
+        "TS-32-60",
+        "TS-32-61",
+        "TS-32-62",
+        "TS-32-63"
+      ],
+      "steps": [
+        "Write TS-32-57 … TS-32-63 in internal/cli using the stub-hub pattern of sandbox_cmd_test.go (decodeOneDocument, ExitCode); confirm they fail",
+        "Create internal/cli/forge_webhook_cmd.go and attach 'webhook' (with set, unset) and 'deliveries' to the afc forge parent from spec 30 (internal/cli/forge_cmd.go)",
+        "set <slug> with --secret, --from-stdin, --generate: use cmd.Flags().Changed to reject more than one with apikit.CLIHandleError(cmd, apikit.NewCLIError(2, '... are mutually exclusive')) before any request; none given behaves as --generate",
+        "Body: --secret => {\"secret\":s}; --from-stdin => readValueFromStdin (drops one trailing newline); --generate/none => {}; PUT via apikit.CLIClientFromCmd and apiPath('workspaces', slug, 'forge', 'webhook'); print with apikit.CLIPrintResult; when the answer has a secret write one line to stderr saying hub will not show it again",
+        "unset: DELETE the same path and print {\"status\":\"unset\",\"workspace\":slug}",
+        "deliveries <slug> [--since t] [--limit n]: build the query with url.Values only for flags that were Changed, passed as given, no client-side validation; GET and print",
+        "Route every error through apikit.CLIHandleError; never import internal/forge or internal/audit and keep CGO_ENABLED=0 builds working"
+      ],
+      "touches": [
+        "internal/cli/forge_webhook_cmd.go",
+        "internal/cli/forge_cmd.go",
+        "internal/cli/forge_webhook_cmd_test.go"
+      ],
+      "depends_on": [
+        1
+      ],
+      "done_when": [
+        "afc builds with CGO_ENABLED=0"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 10,
+      "kind": "implement",
+      "title": "Verify secret confidentiality and ingress shutdown after unset",
+      "criteria": [
+        "32-REQ-2.3",
+        "32-REQ-2.7"
+      ],
+      "tests": [
+        "TS-32-11",
+        "TS-32-14"
+      ],
+      "steps": [
+        "Write TS-32-11 with the API routes and ingress on one Echo instance over a real SQLite database; confirm a post-DELETE delivery answers 404 with the same bytes as an unknown slug, writes no row, and GET deliveries still returns the older row",
+        "Write TS-32-14 as a property test over random valid secrets (generated and supplied): capture slog output with a custom handler, run PUT, GET /forge, GET /forge/deliveries, accepted and rejected GitHub and GitLab deliveries and DELETE, then assert the secret appears only in the PUT response and not in any other response, log line, audit metadata or forge_deliveries row",
+        "Fix any leak found (for example an error message or log attribute that includes the secret or a header value)",
+        "Confirm hub_audit_events is checked through the recording emitter metadata and a real audit store"
+      ],
+      "touches": [
+        "internal/forge/secret_leak_test.go",
+        "internal/forge/unset_ingress_test.go"
+      ],
+      "depends_on": [
+        2,
+        3,
+        5
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 11,
+      "kind": "integration",
+      "title": "Verify the webhook ingress paths end to end and update documentation",
+      "tests": [
+        "TS-32-64",
+        "TS-32-65",
+        "TS-32-66",
+        "TS-32-67",
+        "TS-32-68",
+        "TS-32-69"
+      ],
+      "steps": [
+        "Write the six smoke tests with real components: SQLite, secrets store, DuckDB audit store, SSE manager, broadcast emitter, workspace and forge routes, the ingress and the afc commands against an httptest hub; TS-32-68 drives the main.go startup wiring with a temporary database holding old, recent and orphaned rows",
+        "Trace 32-PATH-1 to 32-PATH-6 through the real code: afc forge webhook set -> PUT handler -> secrets store -> ingress -> reducer -> forge_deliveries -> emitter -> SSE and audit query; confirm each step calls the next and no stub remains",
+        "Confirm every contract producer is consumed in production code: webhookURL by PUT and GET /forge, MountWebhookIngress, forge.InitSchema and forge.StartDeliveryRetention by cmd/af-hub/main.go (the pruner is really started, unlike PurgeExpiredDeletedPatchesWithRefs)",
+        "Confirm /hooks/forge/:slug is reachable without a bearer token on the running binary",
+        "Search every file in the tasks' touches for panic(\"not implemented\"), TODO, and bare return nil on non-trivial paths, and remove any",
+        "Update docs: docs/api.md (webhook routes, deliveries route, webhook block of GET /forge, ingress section, outside-the-API-group sentence, Hub Audit Events table), docs/openapi.yaml, docs/cli.md (afc forge webhook/deliveries and the reserved secret FORGE_WEBHOOK_SECRET), docs/permissions.md, docs/architecture.md, docs/configuration.md (server.external_url); run make doc and make check"
+      ],
+      "touches": [
+        "internal/forge/smoke_test.go",
+        "cmd/af-hub/main.go",
+        "docs/api.md",
+        "docs/openapi.yaml",
+        "docs/cli.md",
+        "docs/permissions.md",
+        "docs/architecture.md",
+        "docs/configuration.md"
+      ],
+      "depends_on": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10
+      ],
+      "done_when": [
+        "`make test` and `make lint` pass",
+        "all six execution paths are live in production code"
+      ],
+      "state": "pending"
+    }
+  ]
+}

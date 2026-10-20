@@ -1,0 +1,750 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/requirements.v2.json",
+  "spec_id": "31",
+  "spec_name": "forge_writes",
+  "schema_version": 2,
+  "introduction": "Hub lets a caller change a workspace's repository on its forge (GitHub or GitLab) through write routes added to internal/forge: create, update and close issues, comment on issues and pull requests, add and remove issue labels, ensure a repository label exists, and open pull requests. Each write uses the per-request issuex client, target resolution and error mapping of spec 30_forge_client_reads, requires the forge:write scope and an active workspace, refuses bodies over the forge's limit before sending them, records one credential-free hub.forge.* audit event per write that reached the forge, and is available to people through matching afc commands.",
+  "glossary": {
+    "body limit": "The maximum length, in Unicode code points, of a body-like text field for the forge of the resolved target: 65,536 for GitHub and 1,000,000 for GitLab.",
+    "forge stub": "An httptest server standing in for the GitHub or GitLab API in tests, recording each request it receives.",
+    "forge write event": "The single hub.forge.* audit event (for example hub.forge.issue.create) recorded through audit.Emitter for a write request that sent at least one request to the forge.",
+    "hub-side rejection": "A refusal hub makes without contacting the forge: 401, 403, 404, 400 (inactive workspace or invalid request), client-resolution failures such as 422 forge_unknown, and 413 body_too_large. It records no audit event.",
+    "removal read-back": "The single ReadIssue call hub makes after the forge answers not-found to a label removal, to tell a missing issue (404 forge_not_found) from a label the issue never carried (204).",
+    "write route": "One of the nine POST/PATCH/DELETE routes under /api/v1/workspaces/:slug added by this spec: /issues, /issues/:n, /issues/:n/close, /issues/:n/comments, /issues/:n/labels, /issues/:n/labels/:name, /labels, /pulls and /pulls/:n/comments."
+  },
+  "requirements": [
+    {
+      "id": "31-REQ-1",
+      "title": "Authorization and pre-checks on write routes",
+      "rationale": "A write changes a repository other people depend on, so only a caller explicitly granted forge:write may make one, only on active workspaces it owns, and every refusal must leave the forge and the audit store untouched.",
+      "criteria": [
+        {
+          "id": "31-REQ-1.1",
+          "pattern": "ubiquitous",
+          "system": "forge write handlers",
+          "action": "evaluate the checks of every write route in this order and answer with the first that fails: no credential (401), missing forge:write scope (403), workspace missing or not owned (404), workspace status not active (400), invalid request including a malformed path number, a bad target or malformed JSON (400), client resolution failure as defined by spec 30 (for example 422 forge_unknown), body over the limit (413)",
+          "contract": "a request failing several checks receives the status of the earliest failing check in this order"
+        },
+        {
+          "id": "31-REQ-1.2",
+          "pattern": "unwanted",
+          "condition": "a PAT that does not hold forge:write, including a PAT holding only forge:read, calls a write route",
+          "system": "forge write handlers",
+          "action": "reject the request before the workspace lookup",
+          "contract": "HTTP 403 error envelope with message \"PAT requires forge:write scope\"; the forge stub receives no request"
+        },
+        {
+          "id": "31-REQ-1.3",
+          "pattern": "unwanted",
+          "condition": "the credential type in apikit.AuthInfo is not admin_token, api_key or pat",
+          "system": "forge write handlers",
+          "action": "deny the write scope check",
+          "contract": "HTTP 403 error envelope; the forge stub receives no request"
+        },
+        {
+          "id": "31-REQ-1.4",
+          "pattern": "event_driven",
+          "condition": "an api_key or admin_token credential calls a write route",
+          "system": "forge write handlers",
+          "action": "pass the scope check without inspecting permissions and continue to wsaccess.AuthorizeWorkspace",
+          "contract": "the response status is neither 401 nor 403"
+        },
+        {
+          "id": "31-REQ-1.5",
+          "pattern": "unwanted",
+          "condition": "wsaccess.AuthorizeWorkspace reports the workspace missing or not owned by the caller",
+          "system": "forge write handlers",
+          "action": "reject the request without resolving credentials",
+          "contract": "HTTP 404 with message \"workspace not found\" on every write route; the forge stub receives no request"
+        },
+        {
+          "id": "31-REQ-1.6",
+          "pattern": "unwanted",
+          "condition": "an authorized caller calls a write route on a workspace whose status is not active, for example archived",
+          "system": "forge write handlers",
+          "action": "reject the request after the ownership check",
+          "contract": "HTTP 400 with message \"workspace is not active\" on every write route; the forge stub receives no request"
+        },
+        {
+          "id": "31-REQ-1.7",
+          "pattern": "ubiquitous",
+          "system": "forge write handlers",
+          "action": "for any write request refused by a hub-side rejection, send no request to the forge and record no audit event",
+          "contract": "the forge stub request count and the recorded event count are both unchanged by the refused request"
+        },
+        {
+          "id": "31-REQ-1.8",
+          "pattern": "event_driven",
+          "condition": "an authorized caller calls a write route on an active workspace whose clone_status is not ready, or while another operation holds the workspace lock",
+          "system": "forge write handlers",
+          "action": "perform the write without consulting clone_status and without acquiring the workspace lock",
+          "contract": "the same success status as for a ready, unlocked workspace"
+        }
+      ]
+    },
+    {
+      "id": "31-REQ-2",
+      "title": "Create and update issues",
+      "rationale": "Agents open and edit issues to drive the agent-fox label protocol, and an edit must touch only what the caller names.",
+      "criteria": [
+        {
+          "id": "31-REQ-2.1",
+          "pattern": "event_driven",
+          "condition": "an authorized caller sends POST /api/v1/workspaces/:slug/issues with a non-blank title and optional body, labels and assignees",
+          "system": "forge write handlers",
+          "action": "create the issue on the forge of the resolved target with the given fields, ignoring unknown JSON fields and sending the workspace's stored credential and never the caller's bearer token",
+          "contract": "HTTP 201 with the issuex issue encoded unchanged; the forge stub receives the GIT_PAT value and not the caller's Authorization header"
+        },
+        {
+          "id": "31-REQ-2.2",
+          "pattern": "unwanted",
+          "condition": "a POST /issues body has a title that is absent or blank after trimming, or labels or assignees with more than 100 entries or an entry blank after trimming",
+          "system": "forge write handlers",
+          "action": "reject the request",
+          "contract": "HTTP 400 whose message names the offending field; the forge stub receives no request"
+        },
+        {
+          "id": "31-REQ-2.3",
+          "pattern": "event_driven",
+          "condition": "an authorized caller sends PATCH /api/v1/workspaces/:slug/issues/:n with at least one of title, body, state, labels or assignees present and non-null",
+          "system": "forge write handlers",
+          "action": "send the forge an update carrying only the present fields, leaving absent or null fields unchanged, clearing the body for body \"\", and replacing the whole label or assignee set for labels or assignees (with [] removing every entry)",
+          "contract": "HTTP 200 with the issue as the forge returns it; the forge stub's update request contains exactly the present fields"
+        },
+        {
+          "id": "31-REQ-2.4",
+          "pattern": "unwanted",
+          "condition": "a PATCH /issues/:n body has a title that is blank after trimming, a state other than open or closed, or labels or assignees violating the 100-entry or non-blank rules",
+          "system": "forge write handlers",
+          "action": "reject the request",
+          "contract": "HTTP 400 whose message names the offending field; the forge stub receives no request"
+        },
+        {
+          "id": "31-REQ-2.5",
+          "pattern": "unwanted",
+          "condition": "a PATCH /issues/:n body has no field to change, such as {} or only null values",
+          "system": "forge write handlers",
+          "action": "reject the request",
+          "contract": "HTTP 400 with message \"nothing to update\"; the forge stub receives no request"
+        },
+        {
+          "id": "31-REQ-2.6",
+          "pattern": "ubiquitous",
+          "system": "forge write handlers",
+          "action": "serve issue create and update on both a GitHub and a GitLab workspace, treating :n on GitLab as the project issue iid",
+          "contract": "PATCH /issues/42 reaches a GitHub stub as issue 42 and a GitLab stub as iid 42, each answering 200"
+        }
+      ]
+    },
+    {
+      "id": "31-REQ-3",
+      "title": "Close an issue and comment on one",
+      "rationale": "Closing with a note and commenting are the commonest agent writes, and a failed comment must never leave an issue closed without its explanation.",
+      "criteria": [
+        {
+          "id": "31-REQ-3.1",
+          "pattern": "event_driven",
+          "condition": "an authorized caller sends POST /issues/:n/close with no body, an empty body, or a comment that is blank after trimming",
+          "system": "forge write handlers",
+          "action": "close the issue without posting a comment, also when the issue is already closed",
+          "contract": "HTTP 200 with the issue as the forge reports it after the close"
+        },
+        {
+          "id": "31-REQ-3.2",
+          "pattern": "event_driven",
+          "condition": "an authorized caller sends POST /issues/:n/close with a comment that is non-empty after trimming",
+          "system": "forge write handlers",
+          "action": "post the comment on the issue first and close the issue only after the comment succeeded",
+          "contract": "HTTP 200 with the closed issue; the forge stub records the comment request before the close request"
+        },
+        {
+          "id": "31-REQ-3.3",
+          "pattern": "unwanted",
+          "condition": "posting the close comment fails at the forge",
+          "system": "forge write handlers",
+          "action": "not send the close request",
+          "contract": "the status and error_type that spec 30's mapping assigns to the comment failure; the forge stub records no close request"
+        },
+        {
+          "id": "31-REQ-3.4",
+          "pattern": "unwanted",
+          "condition": "the close request fails at the forge after the close comment was posted",
+          "system": "forge write handlers",
+          "action": "answer with the close failure and keep the comment's URL for the audit event",
+          "contract": "the mapped status and error_type of the close failure; the hub.forge.issue.close event has ok false and comment_url set"
+        },
+        {
+          "id": "31-REQ-3.5",
+          "pattern": "event_driven",
+          "condition": "an authorized caller sends POST /issues/:n/comments with a body that is non-empty after trimming",
+          "system": "forge write handlers",
+          "action": "post the comment on the issue",
+          "contract": "HTTP 201 with body {\"url\": \"<the comment's URL>\"}"
+        },
+        {
+          "id": "31-REQ-3.6",
+          "pattern": "unwanted",
+          "condition": "a POST /issues/:n/comments body is absent or blank after trimming",
+          "system": "forge write handlers",
+          "action": "reject the request",
+          "contract": "HTTP 400 whose message names body; the forge stub receives no request"
+        }
+      ]
+    },
+    {
+      "id": "31-REQ-4",
+      "title": "Add and remove labels on an issue",
+      "rationale": "Labels are the agent-fox state machine, so adding must keep other labels and removing must give one answer on both forges.",
+      "criteria": [
+        {
+          "id": "31-REQ-4.1",
+          "pattern": "event_driven",
+          "condition": "an authorized caller sends POST /issues/:n/labels with a bare JSON array of 1 to 100 label names, each non-empty after trimming",
+          "system": "forge write handlers",
+          "action": "add the labels to the issue, keeping its other labels, and pass through the forge's answer when a name does not exist in the repository",
+          "contract": "HTTP 204 on success; a forge refusal answers the status and error_type of spec 30's mapping"
+        },
+        {
+          "id": "31-REQ-4.2",
+          "pattern": "unwanted",
+          "condition": "the POST /issues/:n/labels body is a JSON object, an empty array, an array of more than 100 entries, or an array with a non-string or blank entry",
+          "system": "forge write handlers",
+          "action": "reject the request",
+          "contract": "HTTP 400; the forge stub receives no request"
+        },
+        {
+          "id": "31-REQ-4.3",
+          "pattern": "event_driven",
+          "condition": "an authorized caller sends DELETE /issues/:n/labels/:name",
+          "system": "forge write handlers",
+          "action": "remove the label whose name is the last path segment percent-decoded exactly once, so type%2Fbug removes type/bug and af:fix passes unchanged",
+          "contract": "HTTP 204 when the forge confirms the removal; the forge stub receives the decoded name"
+        },
+        {
+          "id": "31-REQ-4.4",
+          "pattern": "complex_event",
+          "condition": "the forge answers not-found to a label removal",
+          "guard": "the removal read-back finds the issue",
+          "system": "forge write handlers",
+          "action": "treat the label as already absent",
+          "contract": "HTTP 204; exactly one ReadIssue request follows the removal"
+        },
+        {
+          "id": "31-REQ-4.5",
+          "pattern": "unwanted",
+          "condition": "the forge answers not-found to a label removal and the removal read-back reports the issue not found",
+          "system": "forge write handlers",
+          "action": "answer the missing issue",
+          "contract": "HTTP 404 with error_type forge_not_found"
+        },
+        {
+          "id": "31-REQ-4.6",
+          "pattern": "ubiquitous",
+          "system": "forge write handlers",
+          "action": "serve label add and label remove on both a GitHub and a GitLab workspace with the same statuses",
+          "contract": "POST /issues/42/labels [\"af:ready\"] and DELETE /issues/42/labels/af:fix each answer 204 on both forge stubs"
+        }
+      ]
+    },
+    {
+      "id": "31-REQ-5",
+      "title": "Ensure a repository label exists",
+      "rationale": "Bootstrapping the label protocol must be safely repeatable and must never alter a label someone already configured.",
+      "criteria": [
+        {
+          "id": "31-REQ-5.1",
+          "pattern": "unwanted",
+          "condition": "a POST /labels body has a name absent or blank after trimming, or a color that is not six hex digits with or without a leading #",
+          "system": "forge write handlers",
+          "action": "reject the request",
+          "contract": "HTTP 400 whose message names the offending field; the forge stub receives no request"
+        },
+        {
+          "id": "31-REQ-5.2",
+          "pattern": "complex_event",
+          "condition": "an authorized caller sends a valid POST /labels",
+          "guard": "the lookup by name finds the label on the forge",
+          "system": "forge write handlers",
+          "action": "answer with the label as the forge holds it, sending no create or update request regardless of differing color or description",
+          "contract": "HTTP 200 with the issuex label; the forge stub records no label-create request"
+        },
+        {
+          "id": "31-REQ-5.3",
+          "pattern": "complex_event",
+          "condition": "an authorized caller sends a valid POST /labels",
+          "guard": "the lookup by name reports the label not found",
+          "system": "forge write handlers",
+          "action": "create the label with the given name, the color without its leading # defaulting to ededed when absent, and the description",
+          "contract": "HTTP 201 with the created issuex label"
+        },
+        {
+          "id": "31-REQ-5.4",
+          "pattern": "unwanted",
+          "condition": "the forge refuses the label create, for example because a concurrent call created the same name",
+          "system": "forge write handlers",
+          "action": "look the label up exactly once more and answer with it when found",
+          "contract": "HTTP 200 with the label when the second lookup finds it; otherwise the status and error_type that spec 30's mapping assigns to the create failure"
+        },
+        {
+          "id": "31-REQ-5.5",
+          "pattern": "event_driven",
+          "condition": "an authorized caller sends POST /labels {\"name\":\"af:triage\"} twice in sequence",
+          "system": "forge write handlers",
+          "action": "create the label on the first call only",
+          "contract": "the first call answers 201, the second 200, and the forge stub records exactly one label-create request across both"
+        }
+      ]
+    },
+    {
+      "id": "31-REQ-6",
+      "title": "Open a pull request and comment on one",
+      "rationale": "Agents deliver work as pull requests, including from a carry-patch fork to its upstream.",
+      "criteria": [
+        {
+          "id": "31-REQ-6.1",
+          "pattern": "event_driven",
+          "condition": "an authorized caller sends POST /pulls with title, head and base each non-empty after trimming, an optional body and an optional boolean draft",
+          "system": "forge write handlers",
+          "action": "open the pull request on the resolved target, passing head verbatim (including GitHub's owner:branch form) and draft defaulting to false",
+          "contract": "HTTP 201 with the issuex pull request encoded unchanged; the forge stub receives head exactly as sent"
+        },
+        {
+          "id": "31-REQ-6.2",
+          "pattern": "complex_event",
+          "condition": "an authorized caller sends POST /pulls?target=upstream",
+          "guard": "the workspace is carry_patch with a non-empty upstream_url",
+          "system": "forge write handlers",
+          "action": "open the pull request on the repository of upstream_url with the upstream credential",
+          "contract": "HTTP 201; the upstream forge stub receives the request with the upstream token and the origin stub receives none"
+        },
+        {
+          "id": "31-REQ-6.3",
+          "pattern": "unwanted",
+          "condition": "POST /pulls?target=upstream is sent for a standard workspace",
+          "system": "forge write handlers",
+          "action": "reject the request through spec 30's target resolution",
+          "contract": "HTTP 400 with error_type workspace_mode_mismatch; no forge request and no audit event"
+        },
+        {
+          "id": "31-REQ-6.4",
+          "pattern": "unwanted",
+          "condition": "a POST /pulls body lacks title, head or base, has one blank after trimming, or has a non-boolean draft",
+          "system": "forge write handlers",
+          "action": "reject the request",
+          "contract": "HTTP 400 whose message names the offending field; the forge stub receives no request"
+        },
+        {
+          "id": "31-REQ-6.5",
+          "pattern": "unwanted",
+          "condition": "the forge refuses the pull request, for example because one already exists for head and base",
+          "system": "forge write handlers",
+          "action": "answer through spec 30's error mapping",
+          "contract": "the mapped status and error_type, for example HTTP 422 forge_rejected for a forge 422"
+        },
+        {
+          "id": "31-REQ-6.6",
+          "pattern": "event_driven",
+          "condition": "an authorized caller sends POST /pulls/:n/comments with a body non-empty after trimming",
+          "system": "forge write handlers",
+          "action": "post the comment on the pull request conversation through issuex PostReviewComment",
+          "contract": "HTTP 201 with body {\"url\": \"<the comment's URL>\"}; an absent or blank body answers HTTP 400 naming body without a forge request"
+        }
+      ]
+    },
+    {
+      "id": "31-REQ-7",
+      "title": "Body-size limits",
+      "rationale": "Hub refuses a body the forge would refuse, before sending it, with a message that tells the caller exactly what to shorten.",
+      "criteria": [
+        {
+          "id": "31-REQ-7.1",
+          "pattern": "unwanted",
+          "condition": "on a GitHub target, an issue body (create or update), a close comment, an issue comment body, a pull request body or a pull-request comment body is longer than 65,536 Unicode code points",
+          "system": "forge write handlers",
+          "action": "reject the request without contacting the forge or recording an event",
+          "contract": "HTTP 413 with error_type body_too_large and a message naming the field, its length, the forge and the limit, for example \"body is 65537 characters; github accepts at most 65536\""
+        },
+        {
+          "id": "31-REQ-7.2",
+          "pattern": "unwanted",
+          "condition": "on a GitLab target, one of the same body-like fields is longer than 1,000,000 Unicode code points",
+          "system": "forge write handlers",
+          "action": "reject the request without contacting the forge or recording an event",
+          "contract": "HTTP 413 with error_type body_too_large naming the field, its length, gitlab and 1000000"
+        },
+        {
+          "id": "31-REQ-7.3",
+          "pattern": "ubiquitous",
+          "system": "forge write handlers",
+          "action": "for any body-like field and forge, count the length in Unicode code points and accept a field whose length equals the limit while refusing one a single code point longer, regardless of how many bytes each code point occupies",
+          "contract": "65,536 four-byte characters on GitHub pass the check; 65,537 one-byte characters answer 413"
+        },
+        {
+          "id": "31-REQ-7.4",
+          "pattern": "event_driven",
+          "condition": "a request carries an oversized body-like field and its target's client cannot be resolved",
+          "system": "forge write handlers",
+          "action": "answer the client-resolution failure, because the limit check runs only after the client is resolved",
+          "contract": "HTTP 422 with error_type forge_unknown rather than 413"
+        },
+        {
+          "id": "31-REQ-7.5",
+          "pattern": "ubiquitous",
+          "system": "forge write handlers",
+          "action": "apply no hub length check to titles, head, base, label names, label colors' descriptions or assignee names, leaving their rejection to the forge",
+          "contract": "a 70,000-character title on GitHub reaches the forge stub"
+        }
+      ]
+    },
+    {
+      "id": "31-REQ-8",
+      "title": "Sending writes to the forge",
+      "rationale": "A write that left hub must be reported faithfully and recorded, and must never be duplicated by hub.",
+      "criteria": [
+        {
+          "id": "31-REQ-8.1",
+          "pattern": "unwanted",
+          "condition": "the forge fails a write request",
+          "system": "forge write handlers",
+          "action": "answer through spec 30's error mapping with the message scrubbed",
+          "contract": "the mapped status and error_type, including HTTP 429 forge_rate_limited with Retry-After passed through"
+        },
+        {
+          "id": "31-REQ-8.2",
+          "pattern": "ubiquitous",
+          "system": "forge write handlers",
+          "action": "invoke each issuex write method at most once per step of a write request, adding no hub-side retry on any failure, including a timeout or an unreachable forge on a create",
+          "contract": "a fake issuex client failing with a 5xx error records exactly one call per step"
+        },
+        {
+          "id": "31-REQ-8.3",
+          "pattern": "event_driven",
+          "condition": "the caller disconnects while a forge write call is in flight",
+          "system": "forge write handlers",
+          "action": "continue the call on the request context with cancellation detached (context.WithoutCancel), bounded by the per-call timeout, and record the audit event",
+          "contract": "the forge stub receives the write and exactly one event is recorded after the client went away"
+        },
+        {
+          "id": "31-REQ-8.4",
+          "pattern": "ubiquitous",
+          "system": "forge write handlers",
+          "action": "give each forge request of a multi-request operation (close with comment, label lookup and create, removal read-back) its own per-call timeout",
+          "contract": "a second request starting after the first used most of its timeout still gets the full per-call timeout"
+        },
+        {
+          "id": "31-REQ-8.5",
+          "pattern": "ubiquitous",
+          "system": "forge write handlers",
+          "action": "for any write outcome, include neither the credential value nor URL userinfo in a response body, a log line or event metadata",
+          "contract": "captured responses, logs and recorded events across success and every error class contain no token and no user:pass@ sequence"
+        }
+      ]
+    },
+    {
+      "id": "31-REQ-9",
+      "title": "One audit event per write",
+      "rationale": "Every change hub makes on a forge must say who asked for it, on what, and how it ended, without storing content or secrets.",
+      "criteria": [
+        {
+          "id": "31-REQ-9.1",
+          "pattern": "event_driven",
+          "condition": "a write request has sent at least one request to the forge",
+          "system": "forge write handlers",
+          "action": "emit exactly one event, whether the write succeeded or failed, synchronously before the response is written, on a context detached from request cancellation, with ActorID set to auth.UserID, ActorType to auth.CredentialType and Workspace to the slug",
+          "contract": "exactly one recorded event per such request; close-with-comment records only hub.forge.issue.close"
+        },
+        {
+          "id": "31-REQ-9.2",
+          "pattern": "ubiquitous",
+          "system": "forge write handlers",
+          "action": "set event type, resource_type, resource_id and action per route: issue create → hub.forge.issue.create/issue/new number (empty on failure)/create; issue update → hub.forge.issue.update/issue/n/update; close → hub.forge.issue.close/issue/n/close; issue comment → hub.forge.comment.create/comment/n/create; label add → hub.forge.label.add/label/n/add; label remove → hub.forge.label.remove/label/n/remove; label ensure → hub.forge.label.create/label/label name/create; pull request create → hub.forge.pull_request.create/pull_request/new number (empty on failure)/create; pull request comment → hub.forge.pull_request.comment/pull_request/n/comment",
+          "contract": "each route's recorded event carries these four fields"
+        },
+        {
+          "id": "31-REQ-9.3",
+          "pattern": "ubiquitous",
+          "system": "forge write handlers",
+          "action": "put in every event's metadata target (origin or upstream), ok (bool), error_type only when ok is false (the error_type hub answered), number as a JSON number when known, and url with userinfo removed when the forge returned an issue, pull-request or comment URL",
+          "contract": "a successful issue create on widgets records {target: origin, ok: true, number: <n>, url: <issue url>} and no error_type"
+        },
+        {
+          "id": "31-REQ-9.4",
+          "pattern": "ubiquitous",
+          "system": "forge write handlers",
+          "action": "add per-type metadata: fields (sorted names of changed fields) on issue.update, comment_url on issue.close when a comment was posted, labels (the names given) on label.add, label on label.remove, label and created (false when it already existed) on label.create, and head, base and draft on pull_request.create",
+          "contract": "PATCH with body and labels records fields [\"body\",\"labels\"]; a second POST /labels records created false"
+        },
+        {
+          "id": "31-REQ-9.5",
+          "pattern": "ubiquitous",
+          "system": "forge write handlers",
+          "action": "for any write request, keep credentials, URL userinfo, titles, bodies, comment text and forge messages out of event metadata",
+          "contract": "no metadata value of any recorded event equals or contains the title, body, comment text, token or forge error message of the request"
+        },
+        {
+          "id": "31-REQ-9.6",
+          "pattern": "state_driven",
+          "condition": "forge.Config carries no audit emitter",
+          "system": "forge write handlers",
+          "action": "perform writes and record nothing",
+          "contract": "the same responses as with an emitter configured"
+        },
+        {
+          "id": "31-REQ-9.7",
+          "pattern": "unwanted",
+          "condition": "the audit emitter returns an error",
+          "system": "forge write handlers",
+          "action": "log the failure with the event type and workspace and leave the response unchanged",
+          "contract": "the write's normal status and body; one error log line naming the event type"
+        },
+        {
+          "id": "31-REQ-9.8",
+          "pattern": "ubiquitous",
+          "system": "hub",
+          "action": "define the nine event types as documented constants in internal/audit/types.go and pass the emitter cmd/af-hub/main.go builds with audit.NewEmitterWithBroadcast to forge.Config, so forge write events land in hub_audit_events and reach the SSE stream",
+          "contract": "after a write, GET /api/v1/audit?workspace=<slug> returns its hub.forge.* event"
+        }
+      ]
+    },
+    {
+      "id": "31-REQ-10",
+      "title": "afc write commands",
+      "rationale": "A person makes the same writes from a terminal with the CLI's usual output and exit-code conventions.",
+      "criteria": [
+        {
+          "id": "31-REQ-10.1",
+          "pattern": "event_driven",
+          "condition": "a user runs afc issue create|update|close|comment, afc label create, or afc pr create|comment with valid arguments",
+          "system": "afc",
+          "action": "send the matching write route (POST /issues, PATCH /issues/<n>, POST /issues/<n>/close, POST /issues/<n>/comments, POST /labels, POST /pulls, POST /pulls/<n>/comments) with segments escaped by apiPath and print the hub's response body through apikit.CLIPrintResult",
+          "contract": "exit code 0 and exactly one JSON document on stdout"
+        },
+        {
+          "id": "31-REQ-10.2",
+          "pattern": "event_driven",
+          "condition": "a user runs afc issue label <slug> <n> <label>... or afc issue unlabel <slug> <n> <label> and hub answers 204",
+          "system": "afc",
+          "action": "send POST /issues/<n>/labels with the labels as a bare JSON array, or DELETE /issues/<n>/labels/<label> with the label percent-encoded, and print a synthetic status document",
+          "contract": "stdout is {\"status\":\"labeled\",\"number\":n,\"labels\":[…]} or {\"status\":\"unlabeled\",\"number\":n,\"label\":\"…\"}; exit code 0"
+        },
+        {
+          "id": "31-REQ-10.3",
+          "pattern": "event_driven",
+          "condition": "a user passes --body-file to a command that takes a body",
+          "system": "afc",
+          "action": "read the body from stdin when the value is - and from the named file otherwise, sending the content verbatim without trimming any trailing newline",
+          "contract": "a file and stdin with the same content send byte-identical body values"
+        },
+        {
+          "id": "31-REQ-10.4",
+          "pattern": "unwanted",
+          "condition": "a user gives both --body and --body-file, a body file that cannot be read, a missing --title, --head, --base or comment body, an issue number that is not a positive integer, or afc issue update with nothing to change",
+          "system": "afc",
+          "action": "fail with a usage error naming the problem, such as \"--title flag is required\", without sending a request",
+          "contract": "exit code 2 via apikit.NewCLIError; the stub hub records no request"
+        },
+        {
+          "id": "31-REQ-10.5",
+          "pattern": "ubiquitous",
+          "system": "afc",
+          "action": "send only the flags the user set, using repeatable string-array flags for --label and --assignee (with help text on update saying they replace the issue's set), sending body \"\" for --body \"\" on update, and adding ?target= only when --target is set",
+          "contract": "afc issue update w 3 --body \"\" sends {\"body\":\"\"} with no query string; --label a,b sends the single label \"a,b\""
+        },
+        {
+          "id": "31-REQ-10.6",
+          "pattern": "unwanted",
+          "condition": "hub answers an afc write command with an error status",
+          "system": "afc",
+          "action": "return the error through apikit.CLIHandleError",
+          "contract": "the non-zero exit code apikit assigns to that status, for example the code for 413 body_too_large"
+        }
+      ]
+    }
+  ],
+  "execution_paths": [
+    {
+      "id": "31-PATH-1",
+      "title": "An API-key caller creates an issue and finds its audit event",
+      "steps": [
+        {
+          "actor": "caller",
+          "action": "sends POST /api/v1/workspaces/widgets/issues {\"title\":\"t\",\"body\":\"b\",\"labels\":[\"af:triage\"]} with an API key bearer token"
+        },
+        {
+          "actor": "forge write handlers",
+          "action": "pass the scope check, authorize the active workspace, validate the body, resolve the origin issuex client and check the body limit"
+        },
+        {
+          "actor": "forge stub",
+          "action": "receives the create-issue request with the workspace's GIT_PAT and without the caller's bearer, and returns the new issue"
+        },
+        {
+          "actor": "forge write handlers",
+          "action": "emit one hub.forge.issue.create event with workspace widgets, target origin, the new number, the issue url and ok true, then answer 201 with the issue"
+        },
+        {
+          "actor": "caller",
+          "action": "queries GET /api/v1/audit?workspace=widgets and receives the hub.forge.issue.create event"
+        }
+      ]
+    },
+    {
+      "id": "31-PATH-2",
+      "title": "A user closes a GitLab issue with a comment through afc",
+      "steps": [
+        {
+          "actor": "user",
+          "action": "runs afc issue close widgets 42 --comment done"
+        },
+        {
+          "actor": "afc",
+          "action": "sends POST /api/v1/workspaces/widgets/issues/42/close {\"comment\":\"done\"}"
+        },
+        {
+          "actor": "forge write handlers",
+          "action": "post the comment on iid 42 and, after it succeeds, close the issue on the GitLab forge stub"
+        },
+        {
+          "actor": "forge write handlers",
+          "action": "emit one hub.forge.issue.close event with comment_url and ok true, then answer 200 with the closed issue"
+        },
+        {
+          "actor": "afc",
+          "action": "prints the closed issue as one JSON document and exits 0"
+        }
+      ]
+    },
+    {
+      "id": "31-PATH-3",
+      "title": "A user ensures a repository label exists twice",
+      "steps": [
+        {
+          "actor": "user",
+          "action": "runs afc label create widgets af:triage twice"
+        },
+        {
+          "actor": "forge write handlers",
+          "action": "look the label up on the first call, find it missing, create it with color ededed and answer 201"
+        },
+        {
+          "actor": "forge write handlers",
+          "action": "look the label up on the second call, find it and answer 200 without a create request"
+        },
+        {
+          "actor": "audit store",
+          "action": "holds two hub.forge.label.create events, the first with created true and the second with created false, while the forge stub recorded one label-create request"
+        }
+      ]
+    },
+    {
+      "id": "31-PATH-4",
+      "title": "A user opens an upstream pull request from a carry-patch fork",
+      "steps": [
+        {
+          "actor": "user",
+          "action": "runs afc pr create fork --title t --head me:feature --base main --target upstream"
+        },
+        {
+          "actor": "afc",
+          "action": "sends POST /api/v1/workspaces/fork/pulls?target=upstream with {title, head, base}"
+        },
+        {
+          "actor": "forge write handlers",
+          "action": "resolve the upstream client from upstream_url and the upstream credential"
+        },
+        {
+          "actor": "forge stub",
+          "action": "receives the create-pull-request request for the upstream repository with head me:feature verbatim and the upstream token"
+        },
+        {
+          "actor": "forge write handlers",
+          "action": "emit one hub.forge.pull_request.create event with target upstream, head, base and draft false, then answer 201"
+        },
+        {
+          "actor": "afc",
+          "action": "prints the pull request as one JSON document and exits 0"
+        }
+      ]
+    },
+    {
+      "id": "31-PATH-5",
+      "title": "A forge failure on a label removal is mapped, audited and reported by afc",
+      "steps": [
+        {
+          "actor": "user",
+          "action": "runs afc issue unlabel widgets 99 af:fix"
+        },
+        {
+          "actor": "forge stub",
+          "action": "answers not-found to the label removal and not-found to the single read-back of issue 99"
+        },
+        {
+          "actor": "forge write handlers",
+          "action": "answer 404 forge_not_found with a scrubbed message and emit one hub.forge.label.remove event with ok false and error_type forge_not_found"
+        },
+        {
+          "actor": "afc",
+          "action": "reports the error through apikit.CLIHandleError and exits with apikit's non-zero code for 404"
+        }
+      ]
+    }
+  ],
+  "external_apis": [
+    {
+      "package": "github.com/agent-fox-dev/aflib/issuex",
+      "version": "v0.0.0 (replace => ../aflib)",
+      "verified": false,
+      "symbols": [
+        {
+          "name": "Client",
+          "import_path": "github.com/agent-fox-dev/aflib/issuex",
+          "signature": "interface assumed to offer CreateIssue, UpdateIssue, CloseIssue (or update with state closed), PostComment, AddLabels, RemoveLabel, GetLabel (or ListLabels), CreateLabel, ReadIssue, CreatePullRequest and PostReviewComment, each taking context.Context",
+          "notes": "Write method names and shapes are assumptions from the PRD; aflib is outside the repository. The implementation pins the real signatures in a compile-time test like internal/sandboxes/imports_test.go."
+        },
+        {
+          "name": "PostReviewComment",
+          "import_path": "github.com/agent-fox-dev/aflib/issuex",
+          "signature": "PostReviewComment(ctx context.Context, number int, body string) (string, error)",
+          "notes": "Named in the input; assumed to return the comment URL."
+        },
+        {
+          "name": "ReadIssue",
+          "import_path": "github.com/agent-fox-dev/aflib/issuex",
+          "signature": "ReadIssue(ctx context.Context, number int) (*issuex.IssueThread, error)",
+          "notes": "Used by the reads spec; reused for the removal read-back."
+        },
+        {
+          "name": "CreateLabel",
+          "import_path": "github.com/agent-fox-dev/aflib/issuex",
+          "signature": "CreateLabel(ctx context.Context, name, color, description string) (*issuex.Label, error)",
+          "notes": "Assumed; with a lookup by name returning a not-found error."
+        }
+      ]
+    },
+    {
+      "package": "github.com/txsvc/apikit",
+      "version": "v0.0.0 (replace => ../apikit)",
+      "verified": false,
+      "symbols": [
+        {
+          "name": "WriteAPIErrorWithType",
+          "import_path": "github.com/txsvc/apikit",
+          "signature": "func WriteAPIErrorWithType(c echo.Context, status int, msg, errorType string) error",
+          "notes": "Seen at call sites in internal/sandboxes/handlers_issue.go."
+        },
+        {
+          "name": "NewCLIError",
+          "import_path": "github.com/txsvc/apikit",
+          "signature": "func NewCLIError(code int, msg string) error",
+          "notes": "Seen in internal/cli/merge_cmd.go and sandbox_cmd.go."
+        },
+        {
+          "name": "CLIHandleError",
+          "import_path": "github.com/txsvc/apikit",
+          "signature": "func CLIHandleError(cmd *cobra.Command, err error) error",
+          "notes": "Seen at call sites in internal/cli."
+        }
+      ]
+    }
+  ]
+}
