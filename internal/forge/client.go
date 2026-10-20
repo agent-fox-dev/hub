@@ -63,19 +63,6 @@ type forgeClient struct {
 	target target
 }
 
-// newHTTPClient builds the one HTTP client every forge call goes through. Its base
-// transport is base or, when that is nil, a clone of http.DefaultTransport, which
-// honours the environment's proxy settings as hub's git transport does.
-func newHTTPClient(base http.RoundTripper) *http.Client {
-	if base == nil {
-		base = http.DefaultTransport
-		if t, ok := base.(*http.Transport); ok {
-			base = t.Clone()
-		}
-	}
-	return &http.Client{Transport: base}
-}
-
 // buildClient builds a fresh issuex client for the request's workspace and target,
 // from what hub holds for it and nothing the request carries but the target. Nothing
 // is cached, so a rotated secret or a changed variable applies to the next call.

@@ -281,7 +281,18 @@ func (e *env) setVar(slug, key, value string) {
 // get calls GET /api/v1<path> with the credential, or without one when auth is nil.
 func (e *env) get(path string, auth *apikit.AuthInfo) *httptest.ResponseRecorder {
 	e.t.Helper()
-	req := httptest.NewRequest(http.MethodGet, "/api/v1"+path, nil)
+	return e.request(path, auth, nil, "")
+}
+
+// request is get with extra request headers and a body.
+func (e *env) request(path string, auth *apikit.AuthInfo, header http.Header, body string) *httptest.ResponseRecorder {
+	e.t.Helper()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1"+path, strings.NewReader(body))
+	for name, values := range header {
+		for _, v := range values {
+			req.Header.Add(name, v)
+		}
+	}
 	if auth != nil {
 		b, err := json.Marshal(auth)
 		if err != nil {

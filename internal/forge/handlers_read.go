@@ -39,7 +39,9 @@ func (h *handlers) serve(operation string, prepare prepareFunc) echo.HandlerFunc
 		if err != nil {
 			return writeForgeError(c, err)
 		}
-		result, err := op(c.Request().Context(), fc)
+		ctx, cancel := context.WithTimeout(withCredential(c.Request().Context(), fc.token), callDeadline)
+		defer cancel()
+		result, err := op(ctx, fc)
 		if err != nil {
 			return h.failCall(c, req, fc, operation, err)
 		}
