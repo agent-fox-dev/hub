@@ -382,8 +382,8 @@ remote gateway, `*gateway.Provider`, has both, and its probe is one `List`. See
 
 ## Forge client
 
-`internal/forge` lets a caller read a workspace's repository, issues and pull
-requests on its forge, GitHub or GitLab, through the hub. The hub is the
+`internal/forge` lets a caller read and write a workspace's repository, issues and
+pull requests on its forge, GitHub or GitLab, through the hub. The hub is the
 workspace's forge client: it uses the git credential it already holds for the
 workspace and never one of the caller's, so a caller needs no forge access of its
 own. The decision is recorded in
@@ -403,13 +403,18 @@ hold this; a test file of `internal/cli` imports it to run `afc` against the rou
 | File | Responsibility |
 |------|----------------|
 | `permissions.go`, `auth.go` | The `forge:read` and `forge:write` scopes (`Permissions`, appended to `extraPerms` in `cmd/af-hub/main.go`) and the standalone auth helpers; `forge:write` implies `forge:read`. |
-| `config.go` | `Config`: the database, the two credential resolvers (`workspace.ResolveCloneAuth` and `ResolveUpstreamAuthMethod`, as closures in `main.go`), `GetVariable`, an optional base `Transport` and an optional `NewClient`. |
-| `routes.go` | `RegisterRoutes`: the ten routes under `/workspaces/:slug`, and `authorize`, the checks they share, in order: 401, 403, 404, then the workspace's `git_url`, `workspace_mode` and `upstream_url`. |
+| `config.go` | `Config`: the database, the two credential resolvers (`workspace.ResolveCloneAuth` and `ResolveUpstreamAuthMethod`, as closures in `main.go`), `GetVariable`, an optional base `Transport`, an optional `NewClient` and the audit emitter `Audit` that `main.go` builds with `audit.NewEmitterWithBroadcast`. |
+| `routes.go` | `RegisterRoutes`: the nineteen routes under `/workspaces/:slug` (ten reads, nine writes), and `authorize`, the checks they share, in order: 401, 403 (the scope of the verb), 404, 400 for a write on a workspace that is not active, then the workspace's `git_url`, `workspace_mode` and `upstream_url`. |
 | `target.go`, `params.go` | `resolveTarget` (`?target=`), `parseNumber` (`:n`) and `parseIssueFilter` (the query of `GET .../issues`): the refusals that come before a client is built. |
 | `client.go` | `buildClient`: a fresh issuex client for one request, from the remote URL, the API URL variable and the credential; `credentialOf` (`pat`, `basic`, `none`); `parseRemote` and `redactRemote`; `describeRemote` for the diagnostic. |
 | `httpclient.go` | The one `*http.Client` of the process: `forgeTransport` (user agent, no environment token for a workspace without a credential), the redirect policy, and `callDeadline` (30 seconds). |
 | `handlers_read.go`, `handlers_forge.go` | `serve`, the handler the nine read routes share, and the routes themselves (`prepare*`, `numbered`, `valueOf`, `listOf`); `diagnostic`, `GET .../forge`. |
-| `errors.go`, `scrub.go` | `mapForgeError`: every issuex and transport failure to one status and `error_type`, with `Retry-After`; `failCall`, which logs a 5xx or 429 answer once; `scrub`: the token and URL userinfo out of a message, cut to 1024 bytes. |
+| `errors.go`, `scrub.go` | `mapForgeError`: every issuex and transport failure to one status and `error_type`, with `Retry-After`; `mapCall`, which logs a 5xx or 429 answer once; `scrub`: the token and URL userinfo out of a message, cut to 1024 bytes. |
+| `write.go` | `write`, the handler of the nine write routes and the steps they share (checks, target, request, client, body limit, call, event, answer); `writeRoute` and `writePlan`, which a route fills in; `writeRun.call`, through which every request to the forge goes; and the JSON field readers of a request body. |
+| `write_issues.go`, `write_labels.go`, `write_pulls.go` | The nine routes: what each reads of its request and what it sends. |
+| `write_limits.go` | The body limits (65,536 on GitHub, 1,000,000 on GitLab, in code points) and the `413 body_too_large` refusal. |
+| `write_events.go` | `emit`: the one `hub.forge.*` event of a write that reached the forge. |
+| `write_raw.go` | The `writer` the routes call, and `rawForge`: the requests issuex cannot make the way a write needs (see below). |
 
 ### A forge read
 
@@ -427,6 +432,46 @@ hold this; a test file of `internal/cli` imports it to run `afc` against the rou
 
 The diagnostic (`GET .../forge`) takes steps 1 and 3 up to the point of the client:
 it sends nothing.
+
+### A forge write
+
+1. `write` applies the checks of `authorize` for the write scope, then resolves the
+   target, reads the body and lets the route check it (`prepare`): all 400s.
+2. `buildClient` builds the client as for a read, but gives it the API URL explicitly
+   (the variable's, else the hub's statement for the host), so that the requests of
+   issuex and the ones the hub sends itself go to one API root. The forge is told
+   (`issuex.DetectForge`); a forge that cannot be told is 422 here.
+3. The route's text fields are measured against the forge's limit (413).
+4. The route's `send` runs, calling the forge through `writeRun.call`: each call has
+   the request's context with the cancellation detached, so that a write the caller
+   leaves is finished and recorded, and a deadline of its own, so that a write with
+   several requests gives each the whole 30 seconds. There is no retry.
+5. `emit` records the event, whether the write succeeded or failed, before the answer is
+   written; a failure goes through `mapCall` first, so that the event can say the
+   `error_type` the hub answers with. A request refused before step 4 records nothing.
+
+### What the writes do themselves
+
+issuex's `Client` has no label lookup; its `CreateLabel` returns no label and counts an
+existing label as a success; its `UpdateIssueRequest` sends only non-empty fields, so it
+cannot clear a body or a set of labels or assignees; GitHub's `RemoveLabel` counts a 404
+as a success, which would hide a missing issue; `CloseIssue` returns no issue and
+`PostReviewComment` returns no URL (and on GitHub posts a review). The hub does
+the following instead (the `writer` interface of `write_raw.go` is how the routes call
+either; a client from `Config.NewClient` that is also a `writer` is used as it is, which
+is how tests put a fake in its place):
+
+- an issue update, a label lookup, a label create, the removal of a label on GitHub and
+  the read of the issue after a not found are `rawForge` requests: through the same HTTP
+  client, with the same token rules, and failing with the `*issuex.HTTPError` that
+  `mapForgeError` already maps. They are not retried at all;
+- a close is a comment (`AddComment`, which returns its URL) and an update with the state
+  `closed`, and a comment on a pull request is `AddComment` on a reference to the pull
+  request, which on both forges posts on its conversation;
+- GitLab assignees are not sent, because GitLab takes user ids and issuex sends none.
+
+These are findings for aflib. The divergences from the spec are in
+`docs/errata/31_forge_writes_divergences.md`.
 
 ### What issuex does not give the hub
 

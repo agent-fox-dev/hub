@@ -208,12 +208,16 @@ other users' workspaces.
 | Endpoint | Access | Ownership |
 |----------|--------|-----------|
 | `GET /api/v1/workspaces/:slug/forge` and the nine read routes (`.../forge/repository`, `.../issues`, `.../issues/:n`, `.../issues/:n/comments`, `.../pulls/:n`, `.../pulls/:n/state`, `.../pulls/:n/files`, `.../pulls/:n/checks`, `.../pulls/:n/reviews`) | allowed | must own the workspace (404 if not); an admin token may read any workspace |
+| the nine write routes (`POST .../issues`, `PATCH .../issues/:n`, `POST .../issues/:n/close`, `POST .../issues/:n/comments`, `POST .../issues/:n/labels`, `DELETE .../issues/:n/labels/:name`, `POST .../labels`, `POST .../pulls`, `POST .../pulls/:n/comments`) | allowed | must own the workspace (404 if not), which must be active (400 if not); an admin token may write to any workspace |
 
-The checks run in this order: no credential is 401; a PAT without `forge:read` or
-`forge:write` (and a credential type the hub does not know) is 403, before the
-workspace is looked up; a workspace that is missing or not the caller's is 404. The
-hub reads the forge with the workspace's own stored git credential, never with the
-caller's.
+For a read the checks run in this order: no credential is 401; a PAT without
+`forge:read` or `forge:write` (and a credential type the hub does not know) is 403,
+before the workspace is looked up; a workspace that is missing or not the caller's is
+404. For a write: no credential is 401; a PAT without `forge:write`, `forge:read` alone
+included, is 403 (`PAT requires forge:write scope`), and so is an unknown credential
+type, before the workspace is looked up; a workspace that is missing or not the
+caller's is 404; one that is not active is 400. The hub reads and writes the forge with
+the workspace's own stored git credential, never with the caller's.
 
 #### Git Endpoints (all API keys, ownership enforced)
 
@@ -682,8 +686,7 @@ them before an operator enables sandboxes.
 
 These 2 permissions are registered by `Permissions()` in
 `hub/internal/forge/permissions.go` and passed to `apikit.Server.MountHandlers()`
-at startup via the `extraPerms` parameter, on every start. `forge:write` is
-registered although no route needs it yet, so that PATs are issued once.
+at startup via the `extraPerms` parameter, on every start.
 
 ### forge:read
 
@@ -701,9 +704,11 @@ registered although no route needs it yet, so that PATs are issued once.
 | | |
 |---|---|
 | **Source** | hub |
-| **Grants** | Reserved for the routes that change a workspace's forge. No route needs it yet. |
-| **Endpoints** | none yet; it passes the scope check of every `forge:read` endpoint |
+| **Grants** | Change a workspace's repository on its forge: create, update and close issues, comment on issues and pull requests, add and remove issue labels, make sure a repository label exists, and open pull requests. The hub uses the workspace's own stored git credential, never the caller's. |
+| **Endpoints** | `POST /api/v1/workspaces/:slug/issues`, `PATCH .../issues/:n`, `POST .../issues/:n/close`, `POST .../issues/:n/comments`, `POST .../issues/:n/labels`, `DELETE .../issues/:n/labels/:name`, `POST .../labels`, `POST .../pulls`, `POST .../pulls/:n/comments`; and every `forge:read` endpoint |
 | **Implies** | `forge:read` |
+| **Ownership** | Enforced, as for `forge:read`. A write also needs the workspace to be active: an archived one is `400 workspace is not active`, after the ownership check. |
+| **Note** | `forge:read` does not grant a write: a PAT holding only `forge:read` gets `403 PAT requires forge:write scope` on every write route, before the workspace is looked up. API keys and admin tokens are not scope-checked. A write that reaches the forge is recorded as a `hub.forge.*` audit event naming the caller; a request the hub refuses on its own is not. |
 
 ---
 

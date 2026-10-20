@@ -389,7 +389,7 @@
         "make test passes with all five smoke tests green",
         "no stub markers remain in files touched by this spec"
       ],
-      "state": "pending"
+      "state": "done"
     }
   ]
 }

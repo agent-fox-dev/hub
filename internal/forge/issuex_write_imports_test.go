@@ -6,14 +6,17 @@ import (
 	"github.com/agent-fox-dev/aflib/issuex"
 )
 
-// The issuex surface the write routes build on. The spec could only assume these
-// signatures; pinning them here verifies the real ones at compile time, and a change in
-// aflib breaks the build of this package.
+// The issuex surface the write routes build on or go around. The spec could only assume
+// these signatures; pinning them here verifies the real ones at compile time, and a change
+// in aflib breaks the build of this package.
 //
-// What issuex does not offer, and the write routes therefore do themselves, is listed in
-// docs/errata/31_forge_writes_divergences.md: a label lookup, a label create that returns
-// the label, an issue update that can send an empty body or an empty set, and a label
-// removal that reports the forge's 404 on GitHub.
+// The write routes call CreateIssue, AddComment (for an issue and for a pull request),
+// AddLabels, RemoveLabel (on GitLab) and CreatePullRequest. What issuex cannot do the way
+// the routes need, the hub does itself (write_raw.go; docs/errata/31_forge_writes_divergences.md):
+// UpdateIssue cannot send an empty body or an empty set, CreateLabel returns no label and
+// there is no lookup of one, RemoveLabel on GitHub hides the forge's 404, CloseIssue returns
+// no issue, and PostReviewComment returns no URL. They are pinned all the same, so that
+// a change that gives issuex what is missing shows here.
 var (
 	_ func(issuex.Client, context.Context, issuex.Repo, issuex.CreateIssueRequest) (issuex.Issue, error)             = issuex.Client.CreateIssue
 	_ func(issuex.Client, context.Context, issuex.IssueRef) (issuex.IssueThread, error)                              = issuex.Client.ReadIssue
