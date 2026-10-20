@@ -380,6 +380,73 @@ provider is therefore one `Reap` call under a 10-second timeout. The client of a
 remote gateway, `*gateway.Provider`, has both, and its probe is one `List`. See
 `docs/errata/25_sandbox_profiles_divergences.md`.
 
+## Forge client
+
+`internal/forge` lets a caller read a workspace's repository, issues and pull
+requests on its forge, GitHub or GitLab, through the hub. The hub is the
+workspace's forge client: it uses the git credential it already holds for the
+workspace and never one of the caller's, so a caller needs no forge access of its
+own. The decision is recorded in
+[ADR 04](adr/04-hub-is-the-workspaces-forge-client.md); the endpoints are in
+[Forge Endpoints](api.md#forge-endpoints) and the commands in
+[Forge Commands](cli.md#forge-commands).
+
+The forge client is the `issuex` package of the sibling module
+[aflib](https://github.com/agent-fox-dev/aflib), expected at `../aflib` and replaced
+in `go.mod` like `../apikit` and `../agentkit-go`; the hub image build and the CI
+workflows supply the checkout in the same way. Only the packages under
+`internal/forge` import `issuex`. `afc` stays a static `CGO_ENABLED=0` binary:
+neither `cmd/afc` nor `internal/cli` imports `internal/forge` in a build (the tests
+`TestIssuexImportedOnlyUnderInternalForge_TS_30_2` and `TestAfcFreeOfInternalForge_TS_30_3`
+hold this; a test file of `internal/cli` imports it to run `afc` against the routes).
+
+| File | Responsibility |
+|------|----------------|
+| `permissions.go`, `auth.go` | The `forge:read` and `forge:write` scopes (`Permissions`, appended to `extraPerms` in `cmd/af-hub/main.go`) and the standalone auth helpers; `forge:write` implies `forge:read`. |
+| `config.go` | `Config`: the database, the two credential resolvers (`workspace.ResolveCloneAuth` and `ResolveUpstreamAuthMethod`, as closures in `main.go`), `GetVariable`, an optional base `Transport` and an optional `NewClient`. |
+| `routes.go` | `RegisterRoutes`: the ten routes under `/workspaces/:slug`, and `authorize`, the checks they share, in order: 401, 403, 404, then the workspace's `git_url`, `workspace_mode` and `upstream_url`. |
+| `target.go`, `params.go` | `resolveTarget` (`?target=`), `parseNumber` (`:n`) and `parseIssueFilter` (the query of `GET .../issues`): the refusals that come before a client is built. |
+| `client.go` | `buildClient`: a fresh issuex client for one request, from the remote URL, the API URL variable and the credential; `credentialOf` (`pat`, `basic`, `none`); `parseRemote` and `redactRemote`; `describeRemote` for the diagnostic. |
+| `httpclient.go` | The one `*http.Client` of the process: `forgeTransport` (user agent, no environment token for a workspace without a credential), the redirect policy, and `callDeadline` (30 seconds). |
+| `handlers_read.go`, `handlers_forge.go` | `serve`, the handler the nine read routes share, and the routes themselves (`prepare*`, `numbered`, `valueOf`, `listOf`); `diagnostic`, `GET .../forge`. |
+| `errors.go`, `scrub.go` | `mapForgeError`: every issuex and transport failure to one status and `error_type`, with `Retry-After`; `failCall`, which logs a 5xx or 429 answer once; `scrub`: the token and URL userinfo out of a message, cut to 1024 bytes. |
+
+### A forge read
+
+1. `authorize` applies the checks in order and reads the workspace's remotes.
+2. `resolveTarget` and the route's own parameters are checked.
+3. `buildClient` reads the remote URL (`git_url` for `origin`, `upstream_url` for
+   `upstream`), finds the repository, reads `FORGE_API_URL` (`UPSTREAM_FORGE_API_URL`
+   for `upstream`), resolves the credential and calls `issuex.NewWithOptions` with the
+   shared HTTP client. Nothing is cached.
+4. The call runs under a context that carries the workspace's token and a 30-second
+   deadline. The transport adds `User-Agent: af-hub/<apikit.Version>`, removes the
+   token headers when the workspace has no credential, and refuses a redirect to
+   another host, port or scheme.
+5. The result is answered as issuex encodes it. A failure goes through `failCall`.
+
+The diagnostic (`GET .../forge`) takes steps 1 and 3 up to the point of the client:
+it sends nothing.
+
+### What issuex does not give the hub
+
+- It has no accessor for the forge or the API URL of a client. The diagnostic takes
+  the forge from `issuex.DetectForge` and states the default API URL itself
+  (`defaultAPIURL`).
+- `issuex.ParseRemote` reads only hosts whose names contain `github` or `gitlab`, so
+  `parseRemote` splits the URL of any other host itself and lets issuex try to classify
+  it. issuex classifies by name only: a host that names neither forge is told apart
+  only by an API URL that does.
+- A client given no token uses the one in the hub's own environment, and the
+  repository it works on, if it is given none, is that of the working directory's git
+  remote. The hub always gives both (the transport removes the headers; the parsed
+  repository is always in the options).
+- `ListIssues` and `ListComments` return a struct with an `incomplete` or `truncated`
+  flag; the routes answer the bare array and drop it.
+
+The divergences from the spec are in
+`docs/errata/30_forge_client_reads_divergences.md`.
+
 ## Git Server
 
 The git server (`internal/gitserver`) provides smart HTTP git endpoints for

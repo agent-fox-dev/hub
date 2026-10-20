@@ -6,10 +6,6 @@
 // workspace's own record: its git_url or, for the upstream target of a carry-patch
 // workspace, its upstream_url, the stored git credential and an optional API URL
 // variable. Only this package, and the packages under it, may import issuex; neither
-// internal/cli nor cmd/afc may import this package, so that the static afc binary
-// stays free of the forge client.
+// internal/cli nor cmd/afc may import this package in a build, so that the static afc
+// binary stays free of the forge client; a test of internal/cli runs afc against the routes.
 package forge
-
-// The module is part of the build graph from here on; the packages that follow
-// import the issuex client itself.
-import _ "github.com/agent-fox-dev/aflib/issuex"

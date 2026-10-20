@@ -394,7 +394,7 @@
       "done_when": [
         "`make test` and `make lint` pass with ../aflib present"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     }
   ]

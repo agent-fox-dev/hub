@@ -36,6 +36,12 @@ listens on `127.0.0.1:8443` unless `[sandbox].listen` says otherwise, and only
 loopback may be plaintext; every lease shows the address as `gateway_url`. See
 [Server Configuration](docs/configuration.md#the-sandbox-gateway).
 
+The hub is also the forge client of its workspaces: a caller reads a workspace's
+repository, issues and pull requests on GitHub or GitLab through the hub
+(`afc forge status`, `afc issue list|get`, `afc pr get|state|files|checks|reviews`),
+and the hub uses the git credential it already holds for the workspace, never the
+caller's. See [Forge Endpoints](docs/api.md#forge-endpoints).
+
 ## Getting Started
 
 ### Prerequisites

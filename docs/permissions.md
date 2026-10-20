@@ -203,6 +203,18 @@ other users' workspaces.
 | `DELETE /api/v1/workspaces/:slug/sandboxes/:id` | allowed | must own the workspace (404 if not) |
 | `GET /api/v1/sandboxes` | **admin tokens only** (403 for an API key) | all workspaces |
 
+#### Forge Endpoints (all API keys)
+
+| Endpoint | Access | Ownership |
+|----------|--------|-----------|
+| `GET /api/v1/workspaces/:slug/forge` and the nine read routes (`.../forge/repository`, `.../issues`, `.../issues/:n`, `.../issues/:n/comments`, `.../pulls/:n`, `.../pulls/:n/state`, `.../pulls/:n/files`, `.../pulls/:n/checks`, `.../pulls/:n/reviews`) | allowed | must own the workspace (404 if not); an admin token may read any workspace |
+
+The checks run in this order: no credential is 401; a PAT without `forge:read` or
+`forge:write` (and a credential type the hub does not know) is 403, before the
+workspace is looked up; a workspace that is missing or not the caller's is 404. The
+hub reads the forge with the workspace's own stored git credential, never with the
+caller's.
+
 #### Git Endpoints (all API keys, ownership enforced)
 
 | Endpoint | Access | Ownership |
@@ -666,6 +678,35 @@ them before an operator enables sandboxes.
 
 ---
 
+## Hub Forge Permissions
+
+These 2 permissions are registered by `Permissions()` in
+`hub/internal/forge/permissions.go` and passed to `apikit.Server.MountHandlers()`
+at startup via the `extraPerms` parameter, on every start. `forge:write` is
+registered although no route needs it yet, so that PATs are issued once.
+
+### forge:read
+
+| | |
+|---|---|
+| **Source** | hub |
+| **Grants** | Read a workspace's repository, issues, comments and pull requests (state, files, CI checks, reviews) on its forge, and see how the hub reaches the forge. The hub uses the workspace's own stored git credential; the response shows its kind, never its value. |
+| **Endpoints** | `GET /api/v1/workspaces/:slug/forge`, `GET .../forge/repository`, `GET .../issues`, `GET .../issues/:n`, `GET .../issues/:n/comments`, `GET .../pulls/:n`, `GET .../pulls/:n/state`, `GET .../pulls/:n/files`, `GET .../pulls/:n/checks`, `GET .../pulls/:n/reviews` |
+| **Implied by** | `forge:write` |
+| **Ownership** | Enforced. The workspace is looked up through `wsaccess.AuthorizeWorkspace`; the caller must own it or hold an admin token, otherwise the answer is `404`. |
+| **Note** | API keys and admin tokens are not scope-checked. The scope is checked before the workspace is looked up, so a PAT without it gets `403` also for a slug that does not exist. Reads work on archived workspaces and on workspaces that are not cloned. |
+
+### forge:write
+
+| | |
+|---|---|
+| **Source** | hub |
+| **Grants** | Reserved for the routes that change a workspace's forge. No route needs it yet. |
+| **Endpoints** | none yet; it passes the scope check of every `forge:read` endpoint |
+| **Implies** | `forge:read` |
+
+---
+
 ## Implied Permissions Summary
 
 | Scope | Implies |
@@ -680,6 +721,7 @@ them before an operator enables sandboxes.
 | `vars:manage` | `vars:read`, `vars:write`, `vars:delete` |
 | `vars:write` | `vars:read` |
 | `sandboxes:write` | `sandboxes:read` |
+| `forge:write` | `forge:read` |
 
 \* The `workspaces:create` and `workspaces:write` implication of
 `workspaces:read` is implemented via `hasReadAccess()` in workspace CRUD
@@ -695,45 +737,47 @@ endpoint checks for the literal `workspaces:write` scope string.
 
 ## Complete Permission List
 
-All 35 registered permission scopes, sorted alphabetically:
+All 37 registered permission scopes, sorted alphabetically:
 
 | # | Scope | Source | Resource | Action |
 |---|-------|--------|----------|--------|
 | 1 | `audit:read` | hub | audit | read |
 | 2 | `audit:write` | hub | audit | write |
-| 3 | `git:read` | hub | git | read |
-| 4 | `git:write` | hub | git | write |
-| 5 | `keys:manage` | apikit | keys | manage |
-| 6 | `keys:read` | apikit | keys | read |
-| 7 | `merges:read` | hub | merges | read |
-| 8 | `merges:write` | hub | merges | write |
-| 9 | `orgs:read` | apikit | orgs | read |
-| 10 | `orgs:write` | apikit | orgs | write |
-| 11 | `patches:read` | hub | patches | read |
-| 12 | `patches:write` | hub | patches | write |
-| 13 | `rebuilds:read` | hub | rebuilds | read |
-| 14 | `rebuilds:write` | hub | rebuilds | write |
-| 15 | `sandboxes:read` | hub | sandboxes | read |
-| 16 | `sandboxes:write` | hub | sandboxes | write |
-| 17 | `secrets:delete` | hub | secrets | delete |
-| 18 | `secrets:list` | hub | secrets | list |
-| 19 | `secrets:manage` | hub | secrets | manage |
-| 20 | `secrets:write` | hub | secrets | write |
-| 21 | `sessions:read` | hub | sessions | read |
-| 22 | `sessions:write` | hub | sessions | write |
-| 23 | `tokens:manage` | apikit | tokens | manage |
-| 24 | `tokens:read` | apikit | tokens | read |
-| 25 | `tokens:write` | apikit | tokens | write |
-| 26 | `users:read` | apikit | users | read |
-| 27 | `vars:delete` | hub | vars | delete |
-| 28 | `vars:manage` | hub | vars | manage |
-| 29 | `vars:read` | hub | vars | read |
-| 30 | `vars:write` | hub | vars | write |
-| 31 | `workspaces:create` | hub | workspaces | create |
-| 32 | `workspaces:delete` | hub | workspaces | delete |
-| 33 | `workspaces:read` | hub | workspaces | read |
-| 34 | `workspaces:sync` | hub | workspaces | sync |
-| 35 | `workspaces:write` | hub | workspaces | write |
+| 3 | `forge:read` | hub | forge | read |
+| 4 | `forge:write` | hub | forge | write |
+| 5 | `git:read` | hub | git | read |
+| 6 | `git:write` | hub | git | write |
+| 7 | `keys:manage` | apikit | keys | manage |
+| 8 | `keys:read` | apikit | keys | read |
+| 9 | `merges:read` | hub | merges | read |
+| 10 | `merges:write` | hub | merges | write |
+| 11 | `orgs:read` | apikit | orgs | read |
+| 12 | `orgs:write` | apikit | orgs | write |
+| 13 | `patches:read` | hub | patches | read |
+| 14 | `patches:write` | hub | patches | write |
+| 15 | `rebuilds:read` | hub | rebuilds | read |
+| 16 | `rebuilds:write` | hub | rebuilds | write |
+| 17 | `sandboxes:read` | hub | sandboxes | read |
+| 18 | `sandboxes:write` | hub | sandboxes | write |
+| 19 | `secrets:delete` | hub | secrets | delete |
+| 20 | `secrets:list` | hub | secrets | list |
+| 21 | `secrets:manage` | hub | secrets | manage |
+| 22 | `secrets:write` | hub | secrets | write |
+| 23 | `sessions:read` | hub | sessions | read |
+| 24 | `sessions:write` | hub | sessions | write |
+| 25 | `tokens:manage` | apikit | tokens | manage |
+| 26 | `tokens:read` | apikit | tokens | read |
+| 27 | `tokens:write` | apikit | tokens | write |
+| 28 | `users:read` | apikit | users | read |
+| 29 | `vars:delete` | hub | vars | delete |
+| 30 | `vars:manage` | hub | vars | manage |
+| 31 | `vars:read` | hub | vars | read |
+| 32 | `vars:write` | hub | vars | write |
+| 33 | `workspaces:create` | hub | workspaces | create |
+| 34 | `workspaces:delete` | hub | workspaces | delete |
+| 35 | `workspaces:read` | hub | workspaces | read |
+| 36 | `workspaces:sync` | hub | workspaces | sync |
+| 37 | `workspaces:write` | hub | workspaces | write |
 
 ---
 
