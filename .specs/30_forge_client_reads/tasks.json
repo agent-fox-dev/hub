@@ -97,7 +97,7 @@
       "done_when": [
         "`go build ./cmd/af-hub` succeeds with forge routes mounted"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     },
     {
