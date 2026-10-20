@@ -296,6 +296,11 @@ func main() {
 	if err := sandboxes.InitSchema(database.SqlDB); err != nil {
 		log.Fatal(err)
 	}
+	// Add lease_expires_at to a lease table that predates it (spec 28). This too
+	// runs at every start, whether or not sandboxes are enabled.
+	if err := sandboxes.MigrateLeaseExpiry(database.SqlDB); err != nil {
+		log.Fatal(err)
+	}
 
 	// Mount merge REST API routes (POST/GET/DELETE /merges, POST /rebase).
 	// Uses NewMergeAPIConfig to wire BatchRebase to the real GitRunner-backed

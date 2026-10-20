@@ -47,13 +47,17 @@ type Lease struct {
 	Labels          map[string]string
 	TTLSeconds      int64
 	ExpiresAt       string
-	CreatedBy       string
-	CreatedAt       string
-	UpdatedAt       string
-	SandboxID       *string
-	Error           *string
-	EndedAt         *string
-	EndReason       *string
+	// LeaseExpiresAt is the deadline for a Create: the earlier of created_at plus
+	// lease_timeout and ExpiresAt. It never changes after the lease is issued, and
+	// it is nil for a row from before the column.
+	LeaseExpiresAt *string
+	CreatedBy      string
+	CreatedAt      string
+	UpdatedAt      string
+	SandboxID      *string
+	Error          *string
+	EndedAt        *string
+	EndReason      *string
 }
 
 // dbtx is what the store needs of a database or a transaction.
@@ -86,7 +90,7 @@ func HashToken(token string) string {
 }
 
 // leaseColumns are the columns a Lease is read from, in scan order.
-const leaseColumns = `id, workspace, profile, purpose, state, image, network, cpus, memory_mb, pids, disk_mb, require_landlock, secrets, optional_secrets, env, labels, ttl_seconds, expires_at, created_by, created_at, updated_at, sandbox_id, error, ended_at, end_reason`
+const leaseColumns = `id, workspace, profile, purpose, state, image, network, cpus, memory_mb, pids, disk_mb, require_landlock, secrets, optional_secrets, env, labels, ttl_seconds, expires_at, lease_expires_at, created_by, created_at, updated_at, sandbox_id, error, ended_at, end_reason`
 
 // rowScanner is a *sql.Row or *sql.Rows.
 type rowScanner interface{ Scan(dest ...any) error }
@@ -98,10 +102,11 @@ func scanLease(row rowScanner) (*Lease, error) {
 		landlock                                   int
 		secretsJSON, optionalJSON, envJSON, labels string
 		sandboxID, errText, endedAt, endReason     sql.NullString
+		leaseExpires                               sql.NullString
 	)
 	if err := row.Scan(&l.ID, &l.Workspace, &l.Profile, &l.Purpose, &l.State, &l.Image, &l.Network,
 		&l.Resources.CPUs, &l.Resources.MemoryMB, &l.Resources.PIDs, &l.Resources.DiskMB,
-		&landlock, &secretsJSON, &optionalJSON, &envJSON, &labels, &l.TTLSeconds, &l.ExpiresAt, &l.CreatedBy,
+		&landlock, &secretsJSON, &optionalJSON, &envJSON, &labels, &l.TTLSeconds, &l.ExpiresAt, &leaseExpires, &l.CreatedBy,
 		&l.CreatedAt, &l.UpdatedAt, &sandboxID, &errText, &endedAt, &endReason); err != nil {
 		return nil, err
 	}
@@ -127,6 +132,7 @@ func scanLease(row rowScanner) (*Lease, error) {
 		l.Labels = map[string]string{}
 	}
 	l.SandboxID, l.Error, l.EndedAt, l.EndReason = nullable(sandboxID), nullable(errText), nullable(endedAt), nullable(endReason)
+	l.LeaseExpiresAt = nullable(leaseExpires)
 	return &l, nil
 }
 
@@ -162,11 +168,11 @@ func (s *LeaseStore) InsertLease(x dbtx, l *Lease, tokenHash string) error {
 		hash = tokenHash
 	}
 	_, err = x.Exec(`INSERT INTO sandbox_leases (`+leaseColumns+`, token_hash)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		l.ID, l.Workspace, l.Profile, l.Purpose, l.State, l.Image, l.Network,
 		l.Resources.CPUs, l.Resources.MemoryMB, l.Resources.PIDs, l.Resources.DiskMB,
 		boolToInt(l.RequireLandlock), string(secretsJSON), string(optionalJSON), string(envJSON), string(labelsJSON),
-		l.TTLSeconds, l.ExpiresAt, l.CreatedBy, l.CreatedAt, l.UpdatedAt,
+		l.TTLSeconds, l.ExpiresAt, l.LeaseExpiresAt, l.CreatedBy, l.CreatedAt, l.UpdatedAt,
 		l.SandboxID, l.Error, l.EndedAt, l.EndReason, hash)
 	return err
 }
@@ -270,13 +276,19 @@ func (s *LeaseStore) RevokeToken(id string) error {
 }
 
 // countLive returns the number of leases that count against capacity: those
-// leased or active whose expires_at is later than now, in every workspace. A
-// lease past its expires_at does not count although nothing has ended it yet,
-// so a caller that crashed cannot hold capacity for good. The timestamps are
-// RFC 3339 UTC strings of one width, so comparing them as text compares time.
+// leased or active whose expires_at is later than now, in every workspace, less
+// the leased ones whose lease_expires_at, when they have one, is at or before
+// now. A lease past its expires_at, or a leased lease past its deadline for a
+// Create, does not count although nothing has ended it yet, so a caller that
+// crashed cannot hold capacity for good and capacity does not wait for a sweep.
+// The timestamps are RFC 3339 UTC strings of one width, so comparing them as
+// text compares time.
 func (s *LeaseStore) countLive(x dbtx, now time.Time) (int, error) {
 	var n int
-	err := x.QueryRow(`SELECT COUNT(*) FROM sandbox_leases WHERE state IN ('leased', 'active') AND expires_at > ?`,
-		apikit.FormatUTC(now)).Scan(&n)
+	stamp := apikit.FormatUTC(now)
+	err := x.QueryRow(`SELECT COUNT(*) FROM sandbox_leases
+		WHERE state IN ('leased', 'active') AND expires_at > ?
+		AND NOT (state = 'leased' AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?)`,
+		stamp, stamp).Scan(&n)
 	return n, err
 }

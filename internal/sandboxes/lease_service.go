@@ -175,6 +175,7 @@ func (s *LeaseService) Issue(ctx context.Context, slug string, auth *apikit.Auth
 		Labels:          maps.Clone(nonNilMap(p.labels)),
 		TTLSeconds:      int64(ttl / time.Second),
 		ExpiresAt:       apikit.FormatUTC(now.Add(ttl)),
+		LeaseExpiresAt:  leaseDeadline(now, s.profiles.LeaseTimeout(), ttl),
 		CreatedBy:       leaseCreator(auth),
 		CreatedAt:       stamp,
 		UpdatedAt:       stamp,
@@ -185,6 +186,14 @@ func (s *LeaseService) Issue(ctx context.Context, slug string, auth *apikit.Auth
 	}
 	s.emitIssued(ctx, auth, lease, ttl)
 	return lease, token, nil
+}
+
+// leaseDeadline is the lease_expires_at of a lease issued at now: the earlier of
+// now plus the lease timeout and now plus the lease's TTL, which is its
+// expires_at. A lease cannot be usable after its own expiry.
+func leaseDeadline(now time.Time, timeout, ttl time.Duration) *string {
+	deadline := apikit.FormatUTC(now.Add(min(timeout, ttl)))
+	return &deadline
 }
 
 // emitIssued records a hub.sandbox.lease event for a lease that has just been

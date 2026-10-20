@@ -30,6 +30,7 @@ type Service struct {
 	maxSandboxes int
 	networkModes []string
 	maxTTL       time.Duration
+	leaseTimeout time.Duration
 	gateway      gatewaySettings
 }
 
@@ -78,6 +79,7 @@ func newService(v *Validated, p sandbox.Provider, check specChecker) (*Service, 
 		maxSandboxes: v.MaxSandboxes,
 		networkModes: slices.Clone(v.NetworkModes),
 		maxTTL:       v.MaxTTL,
+		leaseTimeout: v.LeaseTimeout,
 		gateway:      gatewaySettings{listen: v.Listen, tlsCert: v.TLSCert, tlsKey: v.TLSKey, externalURL: v.ExternalURL},
 	}, nil
 }
@@ -195,6 +197,9 @@ func megabytesToBytes(mb int64) (int64, bool) {
 
 // MaxSandboxes returns the effective limit on live leases.
 func (s *Service) MaxSandboxes() int { return s.maxSandboxes }
+
+// LeaseTimeout returns how long a lease may wait for its Create.
+func (s *Service) LeaseTimeout() time.Duration { return s.leaseTimeout }
 
 // NetworkModes returns the names of the network modes the deployment allows. The
 // slice is a copy.
