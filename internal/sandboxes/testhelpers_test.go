@@ -361,6 +361,15 @@ type recordingProvider struct {
 	reapIDs []string
 	reapErr error
 	reaps   int
+	// reapDelay is how long every Reap takes; reapHang makes it wait for its
+	// context to end. inflight is the number of Reap calls in progress, and
+	// maxInflight the most there have been at once.
+	reapDelay   time.Duration
+	reapHang    bool
+	inflight    int
+	maxInflight int
+	// calls, when set, records every Reap call.
+	calls *callLog
 	// entered receives one value for each Create that waits on block.
 	entered chan struct{}
 }
@@ -389,11 +398,33 @@ func (p *recordingProvider) Capabilities() sandbox.Capabilities {
 	return caps
 }
 
-func (p *recordingProvider) Reap(context.Context) ([]string, error) {
+func (p *recordingProvider) Reap(ctx context.Context) ([]string, error) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	p.reaps++
-	return slices.Clone(p.reapIDs), p.reapErr
+	p.inflight++
+	p.maxInflight = max(p.maxInflight, p.inflight)
+	delay, hang, calls := p.reapDelay, p.reapHang, p.calls
+	ids, err := slices.Clone(p.reapIDs), p.reapErr
+	p.mu.Unlock()
+	defer func() {
+		p.mu.Lock()
+		p.inflight--
+		p.mu.Unlock()
+	}()
+
+	calls.add("Reap")
+	if hang {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	if delay > 0 {
+		select {
+		case <-time.After(delay):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	return ids, err
 }
 
 // setReap makes Reap return ids and err.

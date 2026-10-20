@@ -10,6 +10,28 @@ import (
 	"github.com/agent-fox-dev/hub/internal/audit"
 )
 
+// callLog records the calls of the doubles in the order they were made. A nil
+// log records nothing.
+type callLog struct {
+	mu      sync.Mutex
+	entries []string
+}
+
+func (l *callLog) add(entry string) {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.entries = append(l.entries, entry)
+}
+
+func (l *callLog) all() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return slices.Clone(l.entries)
+}
+
 // fakeBoxes is the Boxes of the expiry tests: a set of boxes that exist, and a
 // record of what was destroyed.
 type fakeBoxes struct {
@@ -22,6 +44,14 @@ type fakeBoxes struct {
 	// destroyed lists the ids passed to Destroy, in call order, failed calls
 	// included.
 	destroyed []string
+	// listHang makes List, and destroyHang the Destroy of those box ids, wait for
+	// their context to end.
+	listHang    bool
+	destroyHang map[string]bool
+	// calls, when set, records every List and Destroy call; before is called
+	// first by each of them.
+	calls  *callLog
+	before func(call string)
 }
 
 func (f *fakeBoxes) add(id string, labels map[string]string) {
@@ -30,24 +60,55 @@ func (f *fakeBoxes) add(id string, labels map[string]string) {
 	f.boxes = append(f.boxes, Box{ID: id, Labels: labels})
 }
 
-func (f *fakeBoxes) List(context.Context) ([]Box, error) {
+func (f *fakeBoxes) List(ctx context.Context) ([]Box, error) {
+	f.mu.Lock()
+	hang, listErr, calls, before := f.listHang, f.listErr, f.calls, f.before
+	f.mu.Unlock()
+	calls.add("List")
+	if before != nil {
+		before("List")
+	}
+	if hang {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	if listErr != nil {
+		return nil, listErr
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.listErr != nil {
-		return nil, f.listErr
-	}
 	return slices.Clone(f.boxes), nil
 }
 
-func (f *fakeBoxes) Destroy(_ context.Context, id string) error {
+func (f *fakeBoxes) Destroy(ctx context.Context, id string) error {
+	f.mu.Lock()
+	f.destroyed = append(f.destroyed, id)
+	hang, calls, before := f.destroyHang[id], f.calls, f.before
+	f.mu.Unlock()
+	calls.add("Destroy " + id)
+	if before != nil {
+		before("Destroy " + id)
+	}
+	if hang {
+		<-ctx.Done()
+		return ctx.Err()
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.destroyed = append(f.destroyed, id)
 	if f.destroyErr != nil {
 		return f.destroyErr
 	}
 	f.boxes = slices.DeleteFunc(f.boxes, func(b Box) bool { return b.ID == id })
 	return nil
+}
+
+// clearLabels makes the listing show no labels.
+func (f *fakeBoxes) clearLabels() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i := range f.boxes {
+		f.boxes[i].Labels = nil
+	}
 }
 
 func (f *fakeBoxes) destroyedIDs() []string {

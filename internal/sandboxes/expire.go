@@ -2,6 +2,7 @@ package sandboxes
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -122,7 +123,17 @@ func (e *ender) destroyBox(ctx context.Context, lease *Lease) {
 		values = append(values, v)
 	}
 	slog.Error("sandbox expiry: destroying a box failed; the lease is ended all the same",
-		"lease_id", lease.ID, "sandbox_id", *lease.SandboxID, "error", scrub(err.Error(), values))
+		"lease_id", lease.ID, "sandbox_id", *lease.SandboxID, "error", callFailure("destroy", e.callTimeout, err, values))
+}
+
+// callFailure is the text of a failed call to the provider, safe to log: a call
+// that ran into its limit says so, and any other error has the given values and
+// the user information of URLs removed.
+func callFailure(call string, limit time.Duration, err error, values []string) string {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Sprintf("%s timed out after %s", call, limit)
+	}
+	return scrub(err.Error(), values)
 }
 
 // emitExpired records that time ended the lease, into state. The box is named
