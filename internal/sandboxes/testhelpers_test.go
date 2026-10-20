@@ -98,6 +98,8 @@ type leaseEnvOptions struct {
 	start time.Time
 	// provider replaces the provider the profile service is checked against.
 	provider sandbox.Provider
+	// noEmitter builds a backend environment with no audit emitter at all.
+	noEmitter bool
 }
 
 // defaultLeaseConfig is a [sandbox] section with a default profile "tools",
@@ -348,7 +350,10 @@ type recordingProvider struct {
 	// the context of the Close ends.
 	closeBlock chan struct{}
 	block      chan struct{}
-	reaps      int
+	// createDelay, when set, is how long every Create takes before it makes the
+	// box.
+	createDelay time.Duration
+	reaps       int
 	// entered receives one value for each Create that waits on block.
 	entered chan struct{}
 }
@@ -387,8 +392,16 @@ func (p *recordingProvider) Reap(context.Context) ([]string, error) {
 func (p *recordingProvider) Create(ctx context.Context, spec sandbox.Spec) (sandbox.Sandbox, error) {
 	p.mu.Lock()
 	p.specs = append(p.specs, cloneSpec(spec))
-	failure, block := p.createErr, p.block
+	failure, block, delay := p.createErr, p.block, p.createDelay
 	p.mu.Unlock()
+
+	if delay > 0 {
+		select {
+		case <-time.After(delay):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
 
 	if block != nil {
 		p.entered <- struct{}{}
@@ -445,6 +458,19 @@ func (p *recordingProvider) live() []string {
 		}
 	}
 	return ids
+}
+
+// liveBoxes lists the boxes made and not closed.
+func (p *recordingProvider) liveBoxes() []*recordedBox {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	var out []*recordedBox
+	for _, b := range p.boxes {
+		if !b.closed {
+			out = append(out, b)
+		}
+	}
+	return out
 }
 
 // recordedBox is a box of the recordingProvider: the local box underneath, the
@@ -519,6 +545,13 @@ func (p *recordingProvider) setCloseErr(err error) {
 	p.closeErr = err
 }
 
+// setCreateDelay makes every Create take d before it makes the box.
+func (p *recordingProvider) setCreateDelay(d time.Duration) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.createDelay = d
+}
+
 // setCloseBlock makes every box's Close wait for ch, or for its context to end;
 // nil lets Close through again.
 func (p *recordingProvider) setCloseBlock(ch chan struct{}) {
@@ -562,6 +595,8 @@ type backendEnv struct {
 	*leaseEnv
 	prov    *recordingProvider
 	emitter *recordingEmitter
+	// sink is what the services emit to: the emitter, or nil for none.
+	sink    audit.Emitter
 	backend *Backend
 }
 
@@ -571,14 +606,17 @@ type backendEnv struct {
 func newBackendEnv(t *testing.T, opts leaseEnvOptions) *backendEnv {
 	t.Helper()
 	env := &backendEnv{prov: newRecordingProvider(), emitter: &recordingEmitter{}}
-	opts.provider, opts.emitter = env.prov, env.emitter
+	if !opts.noEmitter {
+		env.sink = env.emitter
+	}
+	opts.provider, opts.emitter = env.prov, env.sink
 	env.leaseEnv = newLeaseEnv(t, opts)
 	env.backend = newBackend(backendConfig{
 		Service:   env.profile,
 		Store:     env.store,
 		Secrets:   env.secrets,
 		DB:        env.db,
-		Audit:     env.emitter,
+		Audit:     env.sink,
 		Now:       env.clock.Now,
 		Principal: testPrincipal,
 	})
@@ -634,11 +672,17 @@ func (e *backendEnv) eventsOf(eventType string) []audit.HubEvent {
 	return out
 }
 
-// issueToken posts a lease of the body's profile in "widgets" and returns its id
-// and its token.
+// issueToken posts a lease of the body's profile in "widgets" as the owner and
+// returns its id and its token.
 func (e *backendEnv) issueToken(body string) (id, token string) {
 	e.t.Helper()
-	rec := e.post("widgets", body, apiKeyAuth())
+	return e.issueTokenAs(body, apiKeyAuth())
+}
+
+// issueTokenAs is issueToken for any credential.
+func (e *backendEnv) issueTokenAs(body string, auth *apikit.AuthInfo) (id, token string) {
+	e.t.Helper()
+	rec := e.post("widgets", body, auth)
 	if rec.Code != http.StatusCreated {
 		e.t.Fatalf("POST answered %d: %s", rec.Code, rec.Body)
 	}
@@ -656,7 +700,7 @@ type testGateway struct{ *Gateway }
 // context value.
 func (e *backendEnv) startGateway() *testGateway {
 	e.t.Helper()
-	gw, err := StartGateway(e.profile, GatewayDeps{DB: e.db, Secrets: e.secrets, Audit: e.emitter, Now: e.clock.Now})
+	gw, err := StartGateway(e.profile, GatewayDeps{DB: e.db, Secrets: e.secrets, Audit: e.sink, Now: e.clock.Now})
 	if err != nil {
 		e.t.Fatalf("StartGateway: %v", err)
 	}
