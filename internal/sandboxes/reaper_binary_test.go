@@ -213,30 +213,3 @@ func wholeRowsOf(t *testing.T, db *sql.DB, id string) string {
 	t.Helper()
 	return strings.Join(rowTextOf(t, db, id), "|")
 }
-
-// rowTextOf returns every column of a lease row as text.
-func rowTextOf(t *testing.T, db *sql.DB, id string) []string {
-	t.Helper()
-	rows, err := db.Query(`SELECT * FROM sandbox_leases WHERE id = ?`, id)
-	if err != nil {
-		t.Fatalf("reading lease %s: %v", id, err)
-	}
-	defer rows.Close()
-	cols, _ := rows.Columns()
-	if !rows.Next() {
-		t.Fatalf("lease %s not found", id)
-	}
-	values := make([]any, len(cols))
-	ptrs := make([]any, len(cols))
-	for i := range values {
-		ptrs[i] = &values[i]
-	}
-	if err := rows.Scan(ptrs...); err != nil {
-		t.Fatalf("scanning lease %s: %v", id, err)
-	}
-	out := make([]string, len(cols))
-	for i, v := range values {
-		out[i] = fmt.Sprint(v)
-	}
-	return out
-}

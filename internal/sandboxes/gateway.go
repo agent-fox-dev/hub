@@ -159,6 +159,9 @@ func newGateway(svc *Service, deps GatewayDeps, seams gatewaySeams) (*Gateway, e
 		NetworkModes: modes,
 		MaxSandboxes: svc.MaxSandboxes(),
 		MaxTTL:       svc.maxTTL,
+		// gatewayd calls Backend.Reap, which runs the sweep, when it serves and at
+		// this interval, so reap_interval is the longest between two sweeps.
+		ReapInterval: svc.ReapInterval(),
 	})
 	if err != nil {
 		_ = listener.Close()
@@ -280,5 +283,17 @@ func (g *Gateway) Shutdown(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, g.shutdownLimit)
 	defer cancel()
 	err := g.sweeper.Shutdown(ctx)
-	return errors.Join(err, g.server.Shutdown(ctx))
+
+	// gatewayd closes the boxes it still holds before it looks at its context, one
+	// at a time and without a limit, so a provider that hangs would hold the
+	// shutdown past its limit. The stop is left to finish on its own then; the hub
+	// is about to exit.
+	stopped := make(chan error, 1)
+	go func() { stopped <- g.server.Shutdown(ctx) }()
+	select {
+	case stopErr := <-stopped:
+		return errors.Join(err, stopErr)
+	case <-ctx.Done():
+		return errors.Join(err, fmt.Errorf("stopping the gateway: %w", ctx.Err()))
+	}
 }

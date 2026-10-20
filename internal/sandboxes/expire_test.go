@@ -261,10 +261,23 @@ func TestNilMetrics_SameResults_TS_28_51(t *testing.T) {
 		if rec := env.do(http.MethodDelete, "/api/v1/workspaces/widgets/sandboxes/"+c, "", apiKeyAuth()); rec.Code != http.StatusNoContent {
 			t.Fatalf("DELETE answered %d", rec.Code)
 		}
+		// A sweep (which recalibrates the gauge, prunes and reaps) and a recovery run
+		// with the same metrics, or none.
+		d := env.issue(`{"profile":"tools"}`)
+		env.clock.Advance(6 * time.Minute)
+		sweeper := NewSweeper(SweeperConfig{
+			DB: env.db, Provider: env.prov, Boxes: boxes, Audit: env.sink, Metrics: m, Now: env.clock.Now, CallTimeout: time.Second,
+		})
+		if err := sweeper.Sweep(context.Background()); err != nil {
+			t.Fatalf("Sweep: %v", err)
+		}
+		if err := sweeper.RecoverActive(context.Background()); err != nil {
+			t.Fatalf("RecoverActive: %v", err)
+		}
 
-		names := map[string]string{a: "A", b: "B", c: "C"}
+		names := map[string]string{a: "A", b: "B", c: "C", d: "D"}
 		var out []string
-		for _, id := range []string{a, b, c} {
+		for _, id := range []string{a, b, c, d} {
 			l := env.lease(id)
 			out = append(out, fmt.Sprintf("lease %s: %s %s", names[id], l.State, ptrText(l.EndReason)))
 		}
@@ -286,7 +299,7 @@ func TestNilMetrics_SameResults_TS_28_51(t *testing.T) {
 		t.Errorf("with a nil *audit.Metrics the results are\n%s\nwant the same as with metrics\n%s",
 			strings.Join(withoutMetrics, "\n"), strings.Join(withMetrics, "\n"))
 	}
-	if len(withMetrics) < 6 {
+	if len(withMetrics) < 8 {
 		t.Errorf("the scenario produced only %d results: %v", len(withMetrics), withMetrics)
 	}
 }
@@ -368,4 +381,28 @@ func ptrText(p *string) string {
 		return "<nil>"
 	}
 	return *p
+}
+
+// An ending whose context has ended does not complete: hub is stopping, the box may
+// still be there, and the lease stays active for the next start to recover. No
+// event is emitted and no metric recorded.
+// Requirement: 28-REQ-7.5
+func TestEndExpired_EndedContextLeavesTheLeaseActive(t *testing.T) {
+	env := newExpiryEnv(t)
+	active := env.seedActive(1, "box-1")
+	events, gauge := len(env.emitter.recorded()), activeGauge(t, env.metrics, "widgets")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	changed, err := env.ender.endExpired(ctx, active)
+
+	if changed || err == nil {
+		t.Errorf("endExpired with an ended context = (%v, %v); want (false, the context's error)", changed, err)
+	}
+	if s := env.readState(active.ID); s.state != "active" || !s.hash.Valid {
+		t.Errorf("the lease reads %+v; want it left active", s)
+	}
+	if len(env.emitter.recorded()) != events || activeGauge(t, env.metrics, "widgets") != gauge {
+		t.Error("an ending that did not complete emitted an event or changed the gauge")
+	}
 }

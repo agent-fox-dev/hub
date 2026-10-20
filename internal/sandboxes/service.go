@@ -208,7 +208,11 @@ func (s *Service) MaxSandboxes() int { return s.maxSandboxes }
 // refuses every Create with Unavailable, no sweep starts, and every lease that
 // ends does so with the end reason shutdown. It is the one thing about a Service
 // that changes after start, and it changes once.
-func (s *Service) EnterShutdown() { s.shutdown.Store(true) }
+func (s *Service) EnterShutdown() {
+	if s != nil {
+		s.shutdown.Store(true)
+	}
+}
 
 // InShutdown reports whether hub is in shutdown mode. A nil Service, the feature
 // turned off, never is.

@@ -92,12 +92,29 @@ func (b *Backend) closeProviderBox(ctx context.Context, h *handle) error {
 	return nil
 }
 
-// isEnding reports whether a DELETE is ending the lease.
+// isEnding reports whether a caller that records the end itself is destroying the
+// box of the lease.
 func (b *Backend) isEnding(id string) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	_, ending := b.ending[id]
-	return ending
+	return b.ending[id] > 0
+}
+
+// beginEnding marks the lease as being ended by a caller that records the end
+// itself, and returns the function that takes the mark off. Marks are counted: two
+// callers destroying the box of one lease at the same time (a DELETE and a sweep)
+// leave it marked until both are done.
+func (b *Backend) beginEnding(id string) (done func()) {
+	b.mu.Lock()
+	b.ending[id]++
+	b.mu.Unlock()
+	return func() {
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		if b.ending[id]--; b.ending[id] <= 0 {
+			delete(b.ending, id)
+		}
+	}
 }
 
 // endBox destroys the box of a lease for a DELETE and records nothing about the
@@ -118,14 +135,7 @@ func (b *Backend) endBox(ctx context.Context, server *gatewayd.Server, lease *Le
 // nothing to destroy.
 func (b *Backend) destroyBox(ctx context.Context, server *gatewayd.Server, boxID, leaseID string) error {
 	if leaseID != "" {
-		b.mu.Lock()
-		b.ending[leaseID] = struct{}{}
-		b.mu.Unlock()
-		defer func() {
-			b.mu.Lock()
-			delete(b.ending, leaseID)
-			b.mu.Unlock()
-		}()
+		defer b.beginEnding(leaseID)()
 	}
 
 	err := server.Destroy(ctx, boxID)

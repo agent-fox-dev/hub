@@ -3634,7 +3634,7 @@ Every response that shows a lease has exactly these fields.
 | `labels` | object | The caller's labels exactly as given; `{}` when none |
 | `created_by` | string | The caller's user ID, or `admin` for an admin token |
 | `created_at`, `updated_at` | string (RFC 3339 UTC) | When the lease was issued and last changed |
-| `sandbox_id`, `error`, `ended_at`, `end_reason` | string or `null` | `null` until set. `sandbox_id` is the id of the sandbox once the lease is `active`. `error` is the reason a `failed` lease failed; a message that comes from the provider has secret values, fixed environment values and URL user information removed and is cut to 1024 bytes. `end_reason` says why the lease ended: `client` (its holder closed its sandbox through the gateway), `api` (`DELETE`), `expired` (time: a lease that got no `Create` in time, and an `active` lease whose sandbox was destroyed at `expires_at`; `state` tells the two apart), `shutdown` (the hub was shutting down; any ending in that period carries it) or `restart` (the hub found the lease `active` after a crash). A `failed` lease has no `end_reason` |
+| `sandbox_id`, `error`, `ended_at`, `end_reason` | string or `null` | `null` until set. `sandbox_id` is the id of the sandbox once the lease is `active`. `error` is the reason a `failed` lease failed; a message that comes from the provider has secret values, fixed environment values and URL user information removed and is cut to 1024 bytes. `end_reason` says why the lease ended: `client` (its holder closed its sandbox through the gateway), `api` (`DELETE`), `expired` (time: a lease that got no `Create` in time, and an `active` lease whose sandbox was destroyed at `expires_at`; `state` tells the two apart), `shutdown` (the hub shut down: the shutdown itself ended the lease, or `DELETE` or the holder's close did while it was shutting down) or `restart` (the hub found the lease `active` after a crash). A `failed` lease has no `end_reason` |
 
 The profile is copied onto the lease when it is issued, so editing the
 configuration and restarting the hub does not change a lease that exists.
@@ -3772,8 +3772,9 @@ archived workspace.
   message with secret values, fixed environment values and URL user information
   removed. Nothing has changed: the lease is still `active`, its token still
   works, no event was emitted, and the same `DELETE` can be sent again.
-- **A lease that has ended** (`destroyed`, `expired` or `failed`) is left alone:
-  204, no call to the provider, no event, and the original `ended_at` and
+- **A lease that has ended** (`destroyed`, `expired` or `failed`) is left alone, for
+  the 24 hours it is retained (after that it is gone and the answer is 404
+  `sandbox lease not found`): 204, no call to the provider, no event, and the original `ended_at` and
   `end_reason` stay. A retry or a clean-up script is harmless.
 
 If the lease changes state between the hub reading it and updating it (its
@@ -3900,7 +3901,7 @@ query endpoint (`GET /api/v1/audit`). Each event has an `event_type`, an actor
 | `hub.patch.replace` | `patch` | A patch branch is replaced during an `origin`-mode sync (one event per replaced branch; `resource_id` is the branch name, `action` is `replace`, as for the reset-triggered event) | `branch_name`, `replaced_sha`, `origin_sha` |
 | `hub.patch.mirror_failed` | `patch` | A hub-mode mirror of a registered patch branch to the fork failed (one event per failed branch) | `branch_name`, `error` (with any URL userinfo removed) |
 | `hub.patch.reset` | `patch` | A patch branch is reset to the fork's tip via `POST /workspaces/:slug/patches/:id/reset-to-origin` | `branch_name`, `action` (`none`, `created`, `fast_forwarded` or `replaced`), `local_sha` (omitted when no local branch), `origin_sha`, `replaced_sha` (present only for `replaced`) |
-| `hub.sandbox.lease` | `sandbox` | A sandbox lease is issued via `POST /workspaces/:slug/sandboxes` (one event per successful request; `resource_id` is the lease ID, `action` is `lease`; ending a lease emits a `hub.sandbox.destroy` event and no event of this kind) | `lease_id`, `profile`, `purpose`, `ttl` (a Go duration string such as `1h0m0s`), `secret_names`, `optional_secret_names`. Never a secret value, an environment value or the lease token |
+| `hub.sandbox.lease` | `sandbox` | A sandbox lease is issued via `POST /workspaces/:slug/sandboxes` (one event per successful request; `resource_id` is the lease ID, `action` is `lease`; ending a lease emits `hub.sandbox.destroy` or `hub.sandbox.expire` and no event of this kind) | `lease_id`, `profile`, `purpose`, `ttl` (a Go duration string such as `1h0m0s`), `secret_names`, `optional_secret_names`. Never a secret value, an environment value or the lease token |
 | `hub.sandbox.create` | `sandbox` | The sandbox gateway made the sandbox of a lease, which became `active` (`resource_id` is the lease ID, `action` is `create`; actor type `lease` and actor ID the lease's `created_by`) | `lease_id`, `sandbox_id`, `image`, `network` |
 | `hub.sandbox.failed` | `sandbox` | A lease became `failed` because its sandbox could not be created (`action` is `fail`; actor type `lease` and actor ID the lease's `created_by`) | `lease_id`, `error` (scrubbed: no secret value, fixed environment value or URL user information, at most 1024 bytes) |
 | `hub.sandbox.destroy` | `sandbox` | A lease became `destroyed`: its holder closed the sandbox through the gateway (actor type `lease`, actor ID the lease's `created_by`), `DELETE` ended it (the calling credential is the actor), or the hub ended it when it shut down or started after a crash (actor type `system`, empty actor ID). One event per change (`action` is `destroy`) | `lease_id`, `sandbox_id` (`null` when the lease never had a sandbox), `reason` (`client`, `api`, `shutdown` or `restart`; a Close or a `DELETE` while the hub shuts down carries `shutdown`) |

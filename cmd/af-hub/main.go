@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"flag"
 	"log"
@@ -333,31 +334,7 @@ func main() {
 	// It needs the lease table and its migration, the audit emitter and the
 	// metrics, which all exist by now. What fails in it is logged and never stops
 	// hub from starting.
-	var leaseSvc *sandboxes.LeaseService
-	var gateway *sandboxes.Gateway // nil when sandboxes are not configured
-	if sandboxSvc != nil {
-		gateway, err = sandboxes.NewGateway(sandboxSvc, sandboxes.GatewayDeps{
-			DB:      database.SqlDB,
-			Secrets: store,
-			Audit:   auditEmitter,
-			Metrics: metrics,
-		})
-		if err != nil {
-			log.Fatal(err)
-		}
-		if err := gateway.Run(ctx); err != nil {
-			slog.Warn("the sandbox gateway starts all the same, but its start-up work reported failures", "error", err)
-		}
-		leaseSvc = sandboxes.NewLeaseService(sandboxes.LeaseConfig{
-			Service:    sandboxSvc,
-			DB:         database.SqlDB,
-			Secrets:    store,
-			Audit:      auditEmitter,
-			GatewayURL: gateway.URL(),
-			Boxes:      gateway,
-			Metrics:    metrics,
-		})
-	}
+	gateway, leaseSvc := startSandboxes(ctx, sandboxSvc, database.SqlDB, store, auditEmitter, metrics)
 	sandboxes.RegisterLeaseRoutes(server.APIGroup(), leaseSvc)
 
 	// ---------------------------------------------------------------------------
@@ -512,6 +489,32 @@ func main() {
 	}); err != nil {
 		log.Fatal(err)
 	}
+}
+
+// startSandboxes builds the sandbox gateway, lets it do its start-up work and
+// builds the lease service over it. A hub without sandboxes (a nil service) gets a
+// nil gateway and a nil lease service, and nothing is bound or run. A gateway that
+// cannot be built stops the start; what fails in its start-up work is logged.
+func startSandboxes(ctx context.Context, svc *sandboxes.Service, db *sql.DB, store *secrets.Store, emitter audit.Emitter, metrics *audit.Metrics) (*sandboxes.Gateway, *sandboxes.LeaseService) {
+	if svc == nil {
+		return nil, nil
+	}
+	gateway, err := sandboxes.NewGateway(svc, sandboxes.GatewayDeps{DB: db, Secrets: store, Audit: emitter, Metrics: metrics})
+	if err != nil {
+		log.Fatal(err)
+	}
+	if err := gateway.Run(ctx); err != nil {
+		slog.Warn("the sandbox gateway starts all the same, but its start-up work reported failures", "error", err)
+	}
+	return gateway, sandboxes.NewLeaseService(sandboxes.LeaseConfig{
+		Service:    svc,
+		DB:         db,
+		Secrets:    store,
+		Audit:      emitter,
+		GatewayURL: gateway.URL(),
+		Boxes:      gateway,
+		Metrics:    metrics,
+	})
 }
 
 // runServer runs the HTTP server until its start function returns, then the

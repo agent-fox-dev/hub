@@ -200,17 +200,17 @@ func validateMaxSandboxes(c *collector, cfg *Config, v *Validated) {
 // expires_at). maxTTLValid says whether v.MaxTTL can be compared with: a max_ttl
 // that does not parse is reported on its own and does not hide this key.
 func validateLeaseTimeout(c *collector, cfg *Config, v *Validated, maxTTLValid bool) {
-	if cfg.LeaseTimeout == "" {
+	if cfg.LeaseTimeout == nil {
 		return
 	}
-	d, err := time.ParseDuration(cfg.LeaseTimeout)
+	d, err := time.ParseDuration(*cfg.LeaseTimeout)
 	switch {
 	case err != nil:
 		c.addf("sandbox.lease_timeout: %v", err)
 	case d < minLeaseTimeout:
-		c.addf("sandbox.lease_timeout %q must be at least %s", cfg.LeaseTimeout, minLeaseTimeout)
+		c.addf("sandbox.lease_timeout %q must be at least %s", *cfg.LeaseTimeout, minLeaseTimeout)
 	case maxTTLValid && d > v.MaxTTL:
-		c.addf("sandbox.lease_timeout %q must be at most sandbox.max_ttl (%s)", cfg.LeaseTimeout, v.MaxTTL)
+		c.addf("sandbox.lease_timeout %q must be at most sandbox.max_ttl (%s)", *cfg.LeaseTimeout, v.MaxTTL)
 	default:
 		v.LeaseTimeout = d
 	}
@@ -219,15 +219,15 @@ func validateLeaseTimeout(c *collector, cfg *Config, v *Validated, maxTTLValid b
 // validateReapInterval checks reap_interval, when it is set, and stores the
 // effective value in v. It is between 10 seconds and an hour.
 func validateReapInterval(c *collector, cfg *Config, v *Validated) {
-	if cfg.ReapInterval == "" {
+	if cfg.ReapInterval == nil {
 		return
 	}
-	d, err := time.ParseDuration(cfg.ReapInterval)
+	d, err := time.ParseDuration(*cfg.ReapInterval)
 	switch {
 	case err != nil:
 		c.addf("sandbox.reap_interval: %v", err)
 	case d < minReapInterval || d > maxReapInterval:
-		c.addf("sandbox.reap_interval %q must be between %s and %s", cfg.ReapInterval, minReapInterval, maxReapInterval)
+		c.addf("sandbox.reap_interval %q must be between %s and %s", *cfg.ReapInterval, minReapInterval, maxReapInterval)
 	default:
 		v.ReapInterval = d
 	}

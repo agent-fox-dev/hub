@@ -311,14 +311,20 @@ func (e *leaseEnv) countLeases() int {
 // a string that must not be in it.
 func (e *leaseEnv) rowText(id string) []string {
 	e.t.Helper()
-	rows, err := e.db.Query(`SELECT * FROM sandbox_leases WHERE id = ?`, id)
+	return rowTextOf(e.t, e.db, id)
+}
+
+// rowTextOf returns every column of a lease row as text.
+func rowTextOf(t *testing.T, db *sql.DB, id string) []string {
+	t.Helper()
+	rows, err := db.Query(`SELECT * FROM sandbox_leases WHERE id = ?`, id)
 	if err != nil {
-		e.t.Fatalf("reading lease %s: %v", id, err)
+		t.Fatalf("reading lease %s: %v", id, err)
 	}
 	defer rows.Close()
 	cols, _ := rows.Columns()
 	if !rows.Next() {
-		e.t.Fatalf("lease %s not found", id)
+		t.Fatalf("lease %s not found", id)
 	}
 	values := make([]any, len(cols))
 	ptrs := make([]any, len(cols))
@@ -326,7 +332,7 @@ func (e *leaseEnv) rowText(id string) []string {
 		ptrs[i] = &values[i]
 	}
 	if err := rows.Scan(ptrs...); err != nil {
-		e.t.Fatalf("scanning lease %s: %v", id, err)
+		t.Fatalf("scanning lease %s: %v", id, err)
 	}
 	out := make([]string, len(cols))
 	for i, v := range values {

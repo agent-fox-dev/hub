@@ -61,7 +61,17 @@ func (s *Sweeper) RecoverActive(ctx context.Context) error {
 		}
 	}
 	if len(leases) > 0 {
-		slog.Info("sandbox expiry: ended the leases an earlier process left active", "leases", len(leases))
+		// This process holds no handle of those boxes and the provider cannot list or
+		// destroy them: if they are still running they live until their TTL, which is
+		// never later than the lease's expires_at, or until the provider's Reap.
+		boxIDs := make([]string, 0, len(leases))
+		for _, lease := range leases {
+			if lease.SandboxID != nil {
+				boxIDs = append(boxIDs, *lease.SandboxID)
+			}
+		}
+		slog.Warn("sandbox expiry: ended the leases an earlier process left active; their boxes, if any are still running, are out of this process's reach and live until their TTL",
+			"leases", len(leases), "sandbox_ids", boxIDs)
 	}
 	if err := s.metrics.recalibrate(ctx, s.db); err != nil {
 		slog.Error("sandbox expiry: recalibrating the gauge after recovery failed", "error", err)

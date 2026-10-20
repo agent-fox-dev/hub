@@ -178,7 +178,7 @@ func TestBackendCreate_NotLeased_TS_27_22(t *testing.T) {
 // Requirement: 27-REQ-4.4
 func TestBackendCreate_Expired_TS_27_23(t *testing.T) {
 	cfg := defaultLeaseConfig()
-	cfg.LeaseTimeout = "1h"
+	cfg.LeaseTimeout = strPtr("1h")
 	for name, offset := range map[string]time.Duration{
 		"expires_at is now":          0,
 		"expires_at is in the past":  -time.Minute,
@@ -264,7 +264,7 @@ func TestBackendCreate_ProfileGone_TS_27_24(t *testing.T) {
 func TestBackendCreate_BuildsHubsSpec_TS_27_25(t *testing.T) {
 	cfg := defaultLeaseConfig()
 	cfg.Profiles[0].TTL = "2h"
-	cfg.LeaseTimeout = "2h" // the lease's time to Create is its whole TTL, as in spec 27
+	cfg.LeaseTimeout = strPtr("2h") // the lease's time to Create is its whole TTL, as in spec 27
 	env := newBackendEnv(t, leaseEnvOptions{config: cfg})
 	id := env.issue(`{"profile":"tools","ttl":"90m"}`)
 	// 79 minutes and 59.5 seconds are left.

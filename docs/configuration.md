@@ -309,9 +309,11 @@ nobody uses lapses.
 
 - **The deadline for a `Create`.** A lease has a `lease_expires_at`, fixed when it
   is issued: the earlier of `created_at` plus `lease_timeout` and `expires_at`. A
-  `Create` that arrives at or after it, for a lease still `leased`, is refused
-  (`FailedPrecondition`, naming `expired`) without a call to the provider, and the
-  lease is ended as `expired` in the same call. A row from before the column has no
+  `Create` that arrives at or after it, or with less than a second of the lease
+  left, for a lease still `leased`, is refused without a call to the provider (the
+  backend answers `FailedPrecondition` naming `expired`, which gatewayd hands to
+  the client as `Unavailable` with the same message), and the lease is ended as
+  `expired` in the same call. A row from before the column has no
   deadline of its own, and `expires_at` is used.
 - **`expires_at`.** From this moment the lease's token is refused in every state.
 - **The sweep.** At start, then every `reap_interval`, the hub runs a sweep, one at
@@ -323,7 +325,8 @@ nobody uses lapses.
   below); terminal leases that ended more than 24 hours ago are deleted; and the
   `afhub_sandboxes_active` gauge is recalibrated. A step that fails is logged and
   the later ones still run. Each call to the provider is cut off after 30 seconds.
-  The gateway's own periodic reap runs the same sweep.
+  The gateway's own periodic reap, which it makes when it starts serving and every
+  `reap_interval`, runs the same sweep; sweeps never overlap.
 - **Sandboxes of ended leases.** The provider cannot list its sandboxes, so the sweep
   looks at the sandboxes this hub process holds a handle of: those it made and has
   not seen closed, among them one that could not be destroyed when its lease ended.

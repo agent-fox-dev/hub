@@ -36,6 +36,9 @@ func (e *expiryBackendEnv) runGateway(tickers *fakeTickers) *Gateway {
 	// Run's first sweep, and the one gatewayd asks for when it begins to serve: wait
 	// for both, so that neither starts in the middle of a test.
 	waitFor(e.t, "the first two sweeps", func() bool { return e.prov.reapCount()-reaps >= 2 })
+	if err := g.sweeper.Sweep(context.Background()); err != nil { // returns after the one in progress
+		e.t.Fatalf("Sweep: %v", err)
+	}
 	e.svc.gatewayURL = g.URL()
 	e.svc.boxes = g
 	return g
@@ -170,7 +173,16 @@ func TestShutdown_TS_28_35(t *testing.T) {
 		t.Error("the service is not in shutdown mode after the shutdown")
 	}
 
-	// The reaper is stopped and no sweep starts, whatever fires.
+	// The reaper is stopped, whatever the shutdown mode does to sweeps: its loop has
+	// ended and its ticker is released.
+	select {
+	case <-g.sweeper.reaper.done:
+	default:
+		t.Error("the reaper loop is still running after the shutdown")
+	}
+	if tickers.stoppedCount() != 1 {
+		t.Errorf("the reaper's ticker was stopped %d times; want once", tickers.stoppedCount())
+	}
 	tickers.fire()
 	time.Sleep(50 * time.Millisecond)
 	if got := env.prov.reapCount(); got != swept {
@@ -187,12 +199,7 @@ func TestShutdown_TS_28_35(t *testing.T) {
 // gateway2 dials the real client at url with a token.
 func gateway2(t *testing.T, url, token string) *gateway.Provider {
 	t.Helper()
-	p, err := gateway.Dial(context.Background(), url, gateway.Options{Token: token})
-	if err != nil {
-		t.Fatalf("gateway.Dial: %v", err)
-	}
-	t.Cleanup(func() { _ = p.Close() })
-	return p
+	return (&testGateway{&Gateway{url: url}}).dial(t, token)
 }
 
 // TS-28-36: Shutdown leaves every leased lease byte-identical, whatever else is in
@@ -457,6 +464,78 @@ func TestCreatesTotal_RefusalsLeaveItAlone_TS_28_49(t *testing.T) {
 			}
 			if got := counters(env); !slices.Equal(got, before) {
 				t.Errorf("creates_total went from %v to %v; want it unchanged by a refusal", before, got)
+			}
+		})
+	}
+}
+
+// TS-28-33 / TS-28-37 (through the gateway): Shutdown returns when its limit runs out
+// although the provider hangs, leaves the leases whose ending did not complete
+// active, and does not wait for gatewayd either, which closes the boxes it still
+// holds one by one with no limit of its own.
+// Requirements: 28-REQ-7.1, 28-REQ-7.5
+func TestGatewayShutdown_HungProviderReturnsAtTheLimit_TS_28_33(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// before runs once the boxes exist and the provider's Close is blocked.
+		before func(env *expiryBackendEnv, g *Gateway) (release func())
+	}{
+		{"the Destroy of every box hangs", func(*expiryBackendEnv, *Gateway) func() { return func() {} }},
+		{"a sweep holds up the shutdown, so gatewayd closes the boxes itself", func(env *expiryBackendEnv, g *Gateway) func() {
+			env.prov.mu.Lock()
+			env.prov.reapHang = true
+			env.prov.mu.Unlock()
+			ctx, cancel := context.WithCancel(context.Background())
+			swept := make(chan struct{})
+			go func() {
+				defer close(swept)
+				_ = g.sweeper.Sweep(ctx)
+			}()
+			waitFor(t, "the sweep to hang in the provider", func() bool {
+				env.prov.mu.Lock()
+				defer env.prov.mu.Unlock()
+				return env.prov.inflight > 0
+			})
+			return func() {
+				cancel()
+				<-swept
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env := newExpiryBackendEnv(t)
+			g := env.runGateway(&fakeTickers{})
+			var ids []string
+			for range 2 {
+				id, token := env.issueToken(`{"profile":"tools"}`)
+				createVia(t, gateway2(t, g.URL(), token))
+				ids = append(ids, id)
+			}
+			g.shutdownLimit = 150 * time.Millisecond
+			unblock := make(chan struct{})
+			env.prov.setCloseBlock(unblock) // every Close waits for this, or for its context
+			defer close(unblock)
+			release := tc.before(env, g)
+			defer release()
+
+			result := make(chan error, 1)
+			start := time.Now()
+			go func() { result <- g.Shutdown(context.Background()) }()
+			select {
+			case err := <-result:
+				if err == nil {
+					t.Error("Shutdown returned nil although its limit ran out")
+				}
+				if elapsed := time.Since(start); elapsed > 3*time.Second {
+					t.Errorf("Shutdown took %v with a limit of 150ms", elapsed)
+				}
+			case <-time.After(10 * time.Second):
+				t.Fatal("Shutdown did not return within 10 seconds with a limit of 150ms")
+			}
+			for _, id := range ids {
+				if s := env.readState(id); s.state != "active" {
+					t.Errorf("lease %s reads %s; want it left active for the next start", id, s.state)
+				}
 			}
 		})
 	}

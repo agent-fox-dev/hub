@@ -13,7 +13,7 @@ import (
 // leaseExpiryConfig is the default section with the given lease_timeout.
 func leaseExpiryConfig(leaseTimeout string) *Config {
 	cfg := defaultLeaseConfig()
-	cfg.LeaseTimeout = leaseTimeout
+	cfg.LeaseTimeout = &leaseTimeout
 	return cfg
 }
 

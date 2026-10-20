@@ -6250,8 +6250,9 @@ components:
             Why the lease ended: `client` (its holder closed its sandbox through
             the gateway), `api` (DELETE), `expired` (time: a lease that got no
             `Create` in time, or an `active` lease whose sandbox was destroyed at
-            `expires_at`; `state` tells the two apart), `shutdown` (the hub was
-            shutting down; every ending in that period carries it) or `restart`
+            `expires_at`; `state` tells the two apart), `shutdown` (the hub shut
+            down: the shutdown itself ended the lease, or DELETE or the holder's
+            close did while it was shutting down) or `restart`
             (the hub found the lease `active` after a crash). `null` while the
             lease is live and for a `failed` lease.
 

@@ -51,8 +51,10 @@ AgentKit's provider and say what the hub can and cannot clean up.
    sweep logs each step that fails, with the provider's text scrubbed, so gatewayd
    has nothing to log twice. spec 27's `TestBackendReap_ScrubsTheProviderError` was
    changed from "returns the ids and the scrubbed error" to "logs the scrubbed error".
-   gatewayd calls `Reap` as soon as it serves and every ten minutes after, so the
-   sweep also runs on that call; sweeps never overlap.
+   gatewayd calls `Reap` as soon as it serves and then every `ReapInterval`, which
+   `newGateway` sets to `reap_interval` (its own default is ten minutes), so the
+   sweep also runs on that call and no sweep is further from the last than
+   `reap_interval`; sweeps never overlap.
 
 4. **`lease_expires_at` is in the `CREATE TABLE` as well.** Design Decision 5 says
    the column comes from the migration and not from editing the table definition.
@@ -117,8 +119,11 @@ AgentKit's provider and say what the hub can and cannot clean up.
     (`expire.go:68` and `expire.go:97`). `TestShutdown_HungDestroy_TS_28_37` covers a
     `Destroy` that honours its context and one that ignores it.
 
-11. **`lease_timeout`'s default is not compared with `max_ttl`.** 28-REQ-1.3 holds
-    an explicit value to `1s` and `max_ttl`. A deployment with `max_ttl` under five
+11. **`lease_timeout`'s default is not compared with `max_ttl`, and `""` is not the
+    default.** 28-REQ-1.3 holds an explicit value to `1s` and `max_ttl`, and the
+    two keys are `*string` in `Config`, as `max_ttl` is, so that an empty string (what
+    `${NAME}` gives for an unset variable) is refused as unparseable and is not taken
+    for an absent key (`TestLeaseTimeout_Invalid_TS_28_3`). A deployment with `max_ttl` under five
     minutes and no `lease_timeout` would otherwise be refused at start for a value it
     never wrote; the lease deadline is `min(created_at + lease_timeout, expires_at)`
     in any case (`validate.go`, `TestExpiryKeys_Defaults_TS_28_1`).

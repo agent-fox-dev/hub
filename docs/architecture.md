@@ -186,8 +186,9 @@ lease holder ── gateway.Dial(gateway_url, token) ──▶ gatewayd.Server
   the provider. While the hub is shutting down it refuses with `Unavailable` before
   all of this. A lease whose deadline has passed (`lease_expires_at`, or
   `expires_at` for an old row) is refused with `FailedPrecondition` naming
-  `expired`, without a provider call, and ended as `expired` in the same call
-  through the expiry path. The outcome is recorded by the conditional transitions
+  `expired` (gatewayd hands any backend failure that is no refusal to the client as
+  `Unavailable`, with the message), without a provider call, and ended as `expired`
+  in the same call through the expiry path. The outcome is recorded by the conditional transitions
   above, and every `Create` that gets as far as making a box is counted once on
   `afhub_sandbox_creates_total`. A box that arrives for a lease that a `DELETE` or a
   sweep has ended in the meantime is destroyed on the spot.

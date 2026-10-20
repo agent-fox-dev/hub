@@ -47,7 +47,13 @@ func TestSweep_StepOrder_TS_28_16(t *testing.T) {
 	env.clock.Advance(time.Hour)
 
 	presentAtCall := map[string]bool{}
-	env.boxes.before = func(call string) { presentAtCall[call] = env.rowExists(old) }
+	gaugeAtDestroy := -1.0
+	env.boxes.before = func(call string) {
+		presentAtCall[call] = env.rowExists(old)
+		if call == "Destroy box-1" {
+			gaugeAtDestroy = activeGauge(t, env.metrics, "widgets")
+		}
+	}
 
 	env.sweep()
 
@@ -73,6 +79,11 @@ func TestSweep_StepOrder_TS_28_16(t *testing.T) {
 	}
 	if got := activeGauge(t, env.metrics, "widgets"); got != 0 {
 		t.Errorf("the gauge reads %v when the sweep returns; want the table's 0 active leases", got)
+	}
+	// The recalibration is the last step: when the overdue box is destroyed the gauge
+	// has not been recalibrated yet.
+	if gaugeAtDestroy != 7 {
+		t.Errorf("the gauge read %v when the overdue box was destroyed; want its stale 7, recalibrated only at the end", gaugeAtDestroy)
 	}
 }
 

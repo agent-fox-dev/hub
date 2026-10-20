@@ -90,16 +90,17 @@ ttl   = "1h"
 }
 
 // TS-28-3: An unparseable or out-of-range lease_timeout is reported by key,
-// together with every other failure of the section. The second failure is a bad
-// listen address: the spec's example, an unknown runtime, is not something
-// Validate checks.
+// together with every other failure of the section. An empty string cannot be
+// parsed either (it is what ${NAME} gives when the variable is unset), so it is
+// refused and is not the default. The second failure is a bad listen address: the
+// spec's example, an unknown runtime, is not something Validate checks.
 // Requirement: 28-REQ-1.3
 func TestLeaseTimeout_Invalid_TS_28_3(t *testing.T) {
-	for _, bad := range []string{"abc", "999ms", "2h", "0s", "-5m", "1h1ns"} {
+	for _, bad := range []string{"abc", "999ms", "2h", "0s", "-5m", "1h1ns", ""} {
 		t.Run(bad, func(t *testing.T) {
 			cfg := expiryConfig(func(c *Config) {
 				c.MaxTTL = strPtr("1h")
-				c.LeaseTimeout = bad
+				c.LeaseTimeout = strPtr(bad)
 				c.Listen = "nonsense"
 			})
 			_, err := Validate(cfg)
@@ -114,7 +115,7 @@ func TestLeaseTimeout_Invalid_TS_28_3(t *testing.T) {
 	t.Run("a max_ttl that does not parse does not hide the failure", func(t *testing.T) {
 		_, err := Validate(expiryConfig(func(c *Config) {
 			c.MaxTTL = strPtr("bogus")
-			c.LeaseTimeout = "abc"
+			c.LeaseTimeout = strPtr("abc")
 		}))
 		requireFailure(t, err, "sandbox.max_ttl")
 		requireFailure(t, err, "sandbox.lease_timeout")
@@ -123,7 +124,7 @@ func TestLeaseTimeout_Invalid_TS_28_3(t *testing.T) {
 	t.Run("a max_ttl that does not parse leaves a parseable value alone", func(t *testing.T) {
 		_, err := Validate(expiryConfig(func(c *Config) {
 			c.MaxTTL = strPtr("bogus")
-			c.LeaseTimeout = "5h" // above the default max_ttl of 4h, which is not what was written
+			c.LeaseTimeout = strPtr("5h") // above the default max_ttl of 4h, which is not what was written
 		}))
 		requireFailure(t, err, "sandbox.max_ttl")
 		for _, msg := range failures(err) {
@@ -138,10 +139,10 @@ func TestLeaseTimeout_Invalid_TS_28_3(t *testing.T) {
 // together with every other failure of the section.
 // Requirement: 28-REQ-1.4
 func TestReapInterval_Invalid_TS_28_4(t *testing.T) {
-	for _, bad := range []string{"xyz", "9s", "61m", "0s", "-1m", "1h1ns"} {
+	for _, bad := range []string{"xyz", "9s", "61m", "0s", "-1m", "1h1ns", ""} {
 		t.Run(bad, func(t *testing.T) {
 			cfg := expiryConfig(func(c *Config) {
-				c.ReapInterval = bad
+				c.ReapInterval = strPtr(bad)
 				c.Listen = "nonsense"
 			})
 			_, err := Validate(cfg)

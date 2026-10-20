@@ -105,9 +105,10 @@ type Backend struct {
 	// them too, but forgets a box whose Close failed; hub keeps the handle, so
 	// that a DELETE can try again.
 	boxes map[string]*handle
-	// ending are the leases a DELETE is ending. A Close of their boxes only
-	// closes: the DELETE records the end.
-	ending map[string]struct{}
+	// ending counts, by lease id, the callers that are destroying the box of a
+	// lease and will record its end themselves (a DELETE, a sweep, the shutdown).
+	// A Close of the box only closes while the count is above zero.
+	ending map[string]int
 }
 
 func newBackend(cfg backendConfig) *Backend {
@@ -125,7 +126,7 @@ func newBackend(cfg backendConfig) *Backend {
 		sweeper:   cfg.Sweeper,
 		claims:    map[string]struct{}{},
 		boxes:     map[string]*handle{},
-		ending:    map[string]struct{}{},
+		ending:    map[string]int{},
 	}
 	if b.now == nil {
 		b.now = time.Now
@@ -326,12 +327,10 @@ func (b *Backend) createBox(ctx context.Context, lease *Lease, spec sandbox.Spec
 	changed, err := b.store.MarkActive(lease.ID, box.ID())
 	switch {
 	case err != nil:
-		b.forget(h)
-		b.discard(lease, box, "the box of a lease could not be recorded; destroyed it", values)
+		b.discard(h, "the box of a lease could not be recorded; destroying it")
 		return nil, internalError("recording the box of a lease failed", err)
 	case !changed:
-		b.forget(h)
-		b.discard(lease, box, "a box was created for a lease that had ended; destroyed it", values)
+		b.discard(h, "a box was created for a lease that had ended; destroying it")
 		return nil, b.staleLease(lease.ID)
 	}
 	b.emit(ctx, lease, audit.EventSandboxCreate, "create", map[string]any{
@@ -350,23 +349,17 @@ func (b *Backend) remember(h *handle) {
 	b.boxes[h.lease.ID] = h
 }
 
-// forget lets go of a handle whose box nobody will use.
-func (b *Backend) forget(h *handle) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if b.boxes[h.lease.ID] == h {
-		delete(b.boxes, h.lease.ID)
-	}
-}
-
 // discard destroys a box nobody will use, whatever has become of the call that
-// made it, and logs a warning with the lease id and the box id.
-func (b *Backend) discard(lease *Lease, box sandbox.Sandbox, why string, values []string) {
+// made it, and logs a warning with the lease id and the box id. The box is closed
+// through its handle, which is let go of only once the box is gone: a box that
+// cannot be destroyed stays held, and the lease having ended, the next sweep finds
+// it and tries again.
+func (b *Backend) discard(h *handle, why string) {
 	ctx, cancel := context.WithTimeout(context.Background(), discardTimeout)
 	defer cancel()
-	slog.Warn("sandbox gateway: "+why, "lease_id", lease.ID, "sandbox_id", box.ID())
-	if err := box.Close(ctx); err != nil {
-		slog.Error("sandbox gateway: destroying a box failed", "lease_id", lease.ID, "sandbox_id", box.ID(), "error", scrub(err.Error(), values))
+	slog.Warn("sandbox gateway: "+why, "lease_id", h.lease.ID, "sandbox_id", h.ID())
+	if err := b.closeProviderBox(ctx, h); err != nil {
+		slog.Error("sandbox gateway: destroying a box failed", "lease_id", h.lease.ID, "sandbox_id", h.ID(), "error", err)
 	}
 }
 

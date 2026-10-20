@@ -494,3 +494,70 @@ func TestGateway_ListsAndDestroysTheBoxesItHolds(t *testing.T) {
 		}
 	})
 }
+
+// A box made for a lease that has ended meanwhile is destroyed at once; one the
+// provider cannot destroy then stays held, so that the sweep, which lists the held
+// boxes and finds the lease ended, tries it again.
+// Requirement: 28-REQ-3.4
+func TestBackendCreate_DiscardedBoxThatCannotBeDestroyedStaysHeld(t *testing.T) {
+	env := newExpiryBackendEnv(t)
+	id := env.issue(`{"profile":"tools"}`)
+	release := make(chan struct{})
+	env.prov.mu.Lock()
+	env.prov.block = release
+	env.prov.mu.Unlock()
+	env.prov.setCloseErr(errors.New("podman rm failed at https://user:pw@registry.example/x"))
+
+	var wg sync.WaitGroup
+	var createErr error
+	wg.Go(func() { _, createErr = env.create(id, sandbox.Spec{}) })
+	<-env.prov.entered
+	if rec := env.do(http.MethodDelete, "/api/v1/workspaces/widgets/sandboxes/"+id, "", apiKeyAuth()); rec.Code != http.StatusNoContent {
+		t.Fatalf("DELETE answered %d: %s", rec.Code, rec.Body)
+	}
+	close(release)
+	wg.Wait()
+
+	wantCode(t, createErr, codes.FailedPrecondition)
+	held := env.backend.heldBoxes()
+	if len(held) != 1 || held[0].Labels["hub.lease"] != id {
+		t.Fatalf("held boxes = %v; want the box that could not be destroyed, labelled with the ended lease", held)
+	}
+	if live := env.prov.live(); len(live) != 1 {
+		t.Errorf("live boxes %v; want the box still there", live)
+	}
+
+	// The provider recovers; closing the held box lets the handle go.
+	env.prov.setCloseErr(nil)
+	h := env.backend.boxes[id]
+	if err := env.backend.closeProviderBox(context.Background(), h); err != nil {
+		t.Fatalf("closing the held box: %v", err)
+	}
+	if held := env.backend.heldBoxes(); len(held) != 0 {
+		t.Errorf("held boxes = %v after the box was destroyed; want none", held)
+	}
+}
+
+// Two callers destroying the box of one lease at the same time, a DELETE and a
+// sweep, leave the lease marked as being ended until both are done, so that the
+// Close of its box does not record an end of its own.
+func TestBackend_EndingMarksAreCounted(t *testing.T) {
+	env := newBackendEnv(t, leaseEnvOptions{})
+	b := env.backend
+	first, second := b.beginEnding("L"), b.beginEnding("L")
+	if !b.isEnding("L") || b.isEnding("other") {
+		t.Fatal("a lease being ended is not marked, or another one is")
+	}
+	first()
+	if !b.isEnding("L") {
+		t.Error("the mark went when the first caller was done, with the second still destroying the box")
+	}
+	second()
+	if b.isEnding("L") {
+		t.Error("the mark stayed after both callers were done")
+	}
+	second() // a second release changes nothing
+	if b.isEnding("L") {
+		t.Error("the mark came back")
+	}
+}

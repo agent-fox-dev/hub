@@ -2080,8 +2080,9 @@ afc sandbox destroy <workspace-slug> <lease-id>
 
 - Sends `DELETE /api/v1/workspaces/<slug>/sandboxes/<lease-id>`. The hub destroys
   the sandbox of an `active` lease first and answers `204` with no body when the
-  lease is `destroyed`, also for a lease that has ended already. A lease that has
-  no sandbox yet is simply ended.
+  lease is `destroyed`, also for a lease that has ended already and is still
+  retained (for 24 hours; after that the hub has removed it and answers `404
+  sandbox lease not found`). A lease that has no sandbox yet is simply ended.
 - Prints `{"id": "<lease-id>", "status": "destroyed"}` to stdout and a
   confirmation to stderr. A lease that already ended, by time or otherwise, is
   answered the same way and keeps its original `end_reason`.

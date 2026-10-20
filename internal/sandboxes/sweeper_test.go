@@ -419,3 +419,47 @@ func TestSweep_StepFailureDoesNotStopTheRest(t *testing.T) {
 		t.Errorf("the failure was not logged:\n%s", logs)
 	}
 }
+
+// TS-28-42 (through the sweep): a lease that DELETE ends after the sweep has read it,
+// while the sweep destroys its box, is skipped by the sweep: no second event, no
+// second decrement of the gauge, no second observation of the histogram.
+// Requirements: 28-REQ-8.4, 28-REQ-9.2, 28-REQ-4.7
+func TestSweep_LeaseEndedByDeleteMidSweep_TS_28_42(t *testing.T) {
+	env := newSweepEnv(t)
+	t0 := env.clock.Now()
+	id := env.seed(1, "active", seedFields{boxID: "box-1", expires: t0.Add(time.Minute)})
+	if _, err := env.db.Exec(`UPDATE sandbox_leases SET sandbox_id = 'box-1' WHERE id = ?`, id); err != nil {
+		t.Fatal(err)
+	}
+	env.metrics.SandboxesActive.WithLabelValues("widgets").Set(1)
+	env.clock.Advance(time.Hour)
+
+	deleted := false
+	env.boxes.before = func(call string) {
+		if call != "Destroy box-1" || deleted {
+			return
+		}
+		deleted = true // the sweep has read the lease and is destroying its box
+		if rec := env.do(http.MethodDelete, "/api/v1/workspaces/widgets/sandboxes/"+id, "", apiKeyAuth()); rec.Code != http.StatusNoContent {
+			t.Errorf("DELETE answered %d: %s", rec.Code, rec.Body)
+		}
+	}
+
+	env.sweep()
+
+	if !deleted {
+		t.Fatal("the sweep never destroyed the box")
+	}
+	if s := env.readState(id); s.state != "destroyed" || s.endReason != "api" {
+		t.Errorf("the lease reads %s/%s; want DELETE's destroyed/api kept", s.state, s.endReason)
+	}
+	if got := len(eventsOf(env.emitter, audit.EventSandboxExpire)); got != 0 {
+		t.Errorf("%d expire events; the sweep lost the update and must emit none", got)
+	}
+	if got := len(eventsOf(env.emitter, audit.EventSandboxDestroy)); got != 1 {
+		t.Errorf("%d destroy events; want only DELETE's", got)
+	}
+	if count, _ := leaseSeconds(t, env.metrics); count != 1 {
+		t.Errorf("lease_seconds count = %d; want the one observation of DELETE", count)
+	}
+}

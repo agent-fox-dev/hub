@@ -489,30 +489,32 @@ ttl     = "30m"
 
 // cmd/af-hub is the one place the gateway is started and handed to the lease
 // service, and a real box cannot be made by the fake engine the binary tests use,
-// so the wiring that matters for DELETE is checked in the source: the gateway is
-// built after the lease table exists and set running (spec 28: after the recovery
-// of the leases a crash left, and the first sweep) before the HTTP server serves,
-// and the lease service gets its address and its way to destroy boxes.
+// so the wiring that matters for DELETE is checked in the source. In main the lease
+// table exists before startSandboxes is called, and the lease routes are mounted
+// and the server run after it. In startSandboxes the gateway is built, set running
+// (spec 28: after the recovery of the leases a crash left, and the first sweep)
+// and then handed to the lease service with its address and its way to destroy
+// boxes.
 // Path: 27-PATH-1, 27-PATH-3.
 func TestAfHubMain_WiresTheGateway(t *testing.T) {
 	src := readRepoFile(t, "cmd/af-hub/main.go")
-	positions := map[string]int{}
-	for _, token := range []string{
-		"sandboxes.InitSchema(", "sandboxes.NewGateway(", "gateway.Run(ctx)", "GatewayURL: ", "Boxes:", "sandboxes.RegisterLeaseRoutes(", "runServer(server.Start,",
-	} {
-		i := strings.Index(src, token)
-		if i < 0 {
-			t.Fatalf("cmd/af-hub/main.go does not contain %q", token)
-		}
-		positions[token] = i
-	}
-	order := []string{"sandboxes.InitSchema(", "sandboxes.NewGateway(", "gateway.Run(ctx)", "GatewayURL: ", "sandboxes.RegisterLeaseRoutes(", "runServer(server.Start,"}
-	for i := 1; i < len(order); i++ {
-		if positions[order[i-1]] >= positions[order[i]] {
-			t.Errorf("main.go has %q before %q; want the gateway started after the lease table and before the server serves", order[i], order[i-1])
+	inOrder := func(where string, tokens ...string) {
+		t.Helper()
+		last, lastToken := -1, ""
+		for _, token := range tokens {
+			i := strings.Index(src, token)
+			if i < 0 {
+				t.Fatalf("cmd/af-hub/main.go does not contain %q", token)
+			}
+			if i <= last {
+				t.Errorf("%s: main.go has %q before %q; want the reverse", where, token, lastToken)
+			}
+			last, lastToken = i, token
 		}
 	}
-	if positions["Boxes:"] < positions["sandboxes.NewGateway("] || positions["Boxes:"] > positions["sandboxes.RegisterLeaseRoutes("] {
-		t.Error("main.go does not give the lease service the gateway to destroy boxes with before it mounts the routes")
+	inOrder("main", "sandboxes.InitSchema(", "sandboxes.MigrateLeaseExpiry(", "startSandboxes(ctx,", "sandboxes.RegisterLeaseRoutes(", "runServer(server.Start,")
+	inOrder("startSandboxes", "func startSandboxes(", "sandboxes.NewGateway(", "gateway.Run(ctx)", "sandboxes.NewLeaseService(", "GatewayURL: ", "Boxes:")
+	if strings.Index(src, "func startSandboxes(") < strings.Index(src, "runServer(server.Start,") {
+		t.Error("main.go defines startSandboxes before main")
 	}
 }
