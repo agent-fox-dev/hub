@@ -107,6 +107,8 @@ type leaseEnvOptions struct {
 func defaultLeaseConfig() *Config {
 	return &Config{
 		Provider: "podman",
+		// A free port: any test that starts the gateway must not take 8443.
+		Listen: "127.0.0.1:0",
 		Profiles: []ProfileConfig{
 			{
 				Name: "tools", Default: true, Image: "registry.example/tools:1", TTL: "1h",

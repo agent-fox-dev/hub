@@ -29,6 +29,8 @@ type Service struct {
 	profiles     []ValidatedProfile
 	maxSandboxes int
 	networkModes []string
+	maxTTL       time.Duration
+	gateway      gatewaySettings
 }
 
 // Start validates cfg, builds the provider through factory and checks it. A
@@ -70,7 +72,14 @@ func newService(v *Validated, p sandbox.Provider, check specChecker) (*Service, 
 	if len(errs) > 0 {
 		return nil, errors.Join(errs...)
 	}
-	return &Service{provider: p, profiles: slices.Clone(v.Profiles), maxSandboxes: v.MaxSandboxes, networkModes: slices.Clone(v.NetworkModes)}, nil
+	return &Service{
+		provider:     p,
+		profiles:     slices.Clone(v.Profiles),
+		maxSandboxes: v.MaxSandboxes,
+		networkModes: slices.Clone(v.NetworkModes),
+		maxTTL:       v.MaxTTL,
+		gateway:      gatewaySettings{listen: v.Listen, tlsCert: v.TLSCert, tlsKey: v.TLSKey, externalURL: v.ExternalURL},
+	}, nil
 }
 
 // probe shows that the provider reaches its engine.

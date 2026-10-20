@@ -31,6 +31,8 @@ type LeaseConfig struct {
 	Now func() time.Time
 	// Rand is the source of ids and tokens; crypto/rand when nil.
 	Rand io.Reader
+	// GatewayURL is the address lease holders dial, which every lease shows.
+	GatewayURL string
 }
 
 // LeaseService issues, reads and ends leases. It needs no provider: a lease is a
@@ -49,6 +51,8 @@ type LeaseService struct {
 	audit   audit.Emitter
 	now     func() time.Time
 	rand    io.Reader
+	// gatewayURL is where a lease holder dials the gateway.
+	gatewayURL string
 }
 
 // NewLeaseService returns a lease service built from cfg.
@@ -60,6 +64,8 @@ func NewLeaseService(cfg LeaseConfig) *LeaseService {
 		audit:    cfg.Audit,
 		now:      cfg.Now,
 		rand:     cfg.Rand,
+
+		gatewayURL: cfg.GatewayURL,
 	}
 	if s.now == nil {
 		s.now = time.Now
