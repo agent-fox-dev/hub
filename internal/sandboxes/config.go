@@ -42,6 +42,12 @@ type Config struct {
 	TLSKey  string `toml:"tls_key"`
 	// ExternalURL is the URL lease holders dial; empty when absent.
 	ExternalURL string `toml:"external_url"`
+	// LeaseTimeout is how long a lease may wait for its Create, a Go duration
+	// string; nil when absent.
+	LeaseTimeout *string `toml:"lease_timeout"`
+	// ReapInterval is how often the reaper sweeps, a Go duration string; nil when
+	// absent.
+	ReapInterval *string `toml:"reap_interval"`
 	// Profiles are the [[sandbox.profiles]] tables in file order.
 	Profiles []ProfileConfig `toml:"profiles"`
 }

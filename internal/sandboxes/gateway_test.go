@@ -440,3 +440,19 @@ func TestGatewayURL(t *testing.T) {
 		}
 	}
 }
+
+// gatewayd reaps, and so has hub's backend run the sweep, when it serves and at
+// reap_interval: the interval of the configuration, not gatewayd's own ten minutes.
+// Requirement: 28-REQ-5.5
+func TestStartGateway_GatewaydReapsAtReapInterval(t *testing.T) {
+	env, deps := gatewayTestEnv(t, func(c *Config) { c.ReapInterval = strPtr("45s") })
+	var captured gatewayd.Config
+	gw, err := startGateway(env.profile, deps, capturingSeams(&captured))
+	if err != nil {
+		t.Fatalf("startGateway: %v", err)
+	}
+	stopAfter(t, gw)
+	if captured.ReapInterval != 45*time.Second {
+		t.Errorf("gatewayd.Config.ReapInterval = %v; want 45s", captured.ReapInterval)
+	}
+}

@@ -2031,7 +2031,12 @@ afc sandbox list <workspace-slug> [--all]
 
 - Sends `GET /api/v1/workspaces/<slug>/sandboxes`, with `?all=true` for `--all`.
 - Prints the leases as one JSON array, newest first, at most 200. Without `--all`
-  only live leases are listed; `--all` includes the ones that have ended.
+  only live leases (`leased` or `active`) are listed; `--all` includes the ones
+  that have ended (`destroyed`, `expired` or `failed`), each for 24 hours after it
+  ended: the hub removes an ended lease with its first sweep after that (see
+  [Lease lifetime](configuration.md#lease-lifetime)). Every lease shows its
+  `lease_expires_at`, the deadline for its `Create`, and an `end_reason` of
+  `client`, `api`, `expired`, `shutdown` or `restart` once it has ended.
 - The admin-only list of every workspace's leases (`GET /api/v1/sandboxes`) has
   no `afc` command.
 
@@ -2054,7 +2059,8 @@ afc sandbox get <workspace-slug> <lease-id>
 - Sends `GET /api/v1/workspaces/<slug>/sandboxes/<lease-id>` and prints the lease
   as one JSON document. The lease never includes its token.
 - A malformed, unknown or foreign lease ID exits with code 1 and the hub's message
-  `sandbox lease not found`.
+  `sandbox lease not found`; so does the ID of a lease that ended more than 24
+  hours ago, since the hub has removed it.
 
 **Exit Codes:** as for `afc sandbox list`.
 
@@ -2074,10 +2080,12 @@ afc sandbox destroy <workspace-slug> <lease-id>
 
 - Sends `DELETE /api/v1/workspaces/<slug>/sandboxes/<lease-id>`. The hub destroys
   the sandbox of an `active` lease first and answers `204` with no body when the
-  lease is `destroyed`, also for a lease that has ended already. A lease that has
-  no sandbox yet is simply ended.
+  lease is `destroyed`, also for a lease that has ended already and is still
+  retained (for 24 hours; after that the hub has removed it and answers `404
+  sandbox lease not found`). A lease that has no sandbox yet is simply ended.
 - Prints `{"id": "<lease-id>", "status": "destroyed"}` to stdout and a
-  confirmation to stderr.
+  confirmation to stderr. A lease that already ended, by time or otherwise, is
+  answered the same way and keeps its original `end_reason`.
 - If the provider cannot destroy the sandbox the hub answers `502` with
   `error_type: sandbox_provider_error`. The command prints the error envelope,
   exits with code 1 and changes nothing: the lease stays `active` and the same

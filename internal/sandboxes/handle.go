@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"maps"
 	"time"
 
 	"github.com/txsvc/apikit"
@@ -91,16 +92,40 @@ func (b *Backend) closeProviderBox(ctx context.Context, h *handle) error {
 	return nil
 }
 
-// isEnding reports whether a DELETE is ending the lease.
+// isEnding reports whether a caller that records the end itself is destroying the
+// box of the lease.
 func (b *Backend) isEnding(id string) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	_, ending := b.ending[id]
-	return ending
+	return b.ending[id] > 0
+}
+
+// beginEnding marks the lease as being ended by a caller that records the end
+// itself, and returns the function that takes the mark off. Marks are counted: two
+// callers destroying the box of one lease at the same time (a DELETE and a sweep)
+// leave it marked until both are done.
+func (b *Backend) beginEnding(id string) (done func()) {
+	b.mu.Lock()
+	b.ending[id]++
+	b.mu.Unlock()
+	return func() {
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		if b.ending[id]--; b.ending[id] <= 0 {
+			delete(b.ending, id)
+		}
+	}
 }
 
 // endBox destroys the box of a lease for a DELETE and records nothing about the
 // lease: the DELETE does that, with its own actor and its own reason.
+func (b *Backend) endBox(ctx context.Context, server *gatewayd.Server, lease *Lease) error {
+	return b.destroyBox(ctx, server, *lease.SandboxID, lease.ID)
+}
+
+// destroyBox destroys the box with this id, which belongs to the lease with this
+// id, for a caller that records the end of the lease itself, and has the Close of
+// the box record nothing.
 //
 // The box is ended through the gateway, the embedder's way, which also frees its
 // place in the gateway. A box the gateway does not hold is either gone or one
@@ -108,27 +133,46 @@ func (b *Backend) isEnding(id string) bool {
 // failed, and it does not hold one whose Create has not returned yet. Hub closes
 // the handle it holds, and when it holds none the box is gone and there is
 // nothing to destroy.
-func (b *Backend) endBox(ctx context.Context, server *gatewayd.Server, lease *Lease) error {
-	b.mu.Lock()
-	b.ending[lease.ID] = struct{}{}
-	b.mu.Unlock()
-	defer func() {
-		b.mu.Lock()
-		delete(b.ending, lease.ID)
-		b.mu.Unlock()
-	}()
+func (b *Backend) destroyBox(ctx context.Context, server *gatewayd.Server, boxID, leaseID string) error {
+	if leaseID != "" {
+		defer b.beginEnding(leaseID)()
+	}
 
-	err := server.Destroy(ctx, *lease.SandboxID)
+	err := server.Destroy(ctx, boxID)
 	if !errors.Is(err, gatewayd.ErrNotHeld) {
 		return err
 	}
 	b.mu.Lock()
-	h := b.boxes[lease.ID]
+	h := b.boxes[leaseID]
 	b.mu.Unlock()
 	if h == nil {
 		return nil
 	}
 	return b.closeProviderBox(ctx, h)
+}
+
+// heldBoxes lists the boxes hub holds a handle of: those made and not yet closed.
+func (b *Backend) heldBoxes() []Box {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	boxes := make([]Box, 0, len(b.boxes))
+	for _, h := range b.boxes {
+		boxes = append(boxes, Box{ID: h.ID(), Labels: maps.Clone(h.Spec().Labels)})
+	}
+	return boxes
+}
+
+// leaseOfBox returns the id of the lease whose box has this id, and "" when hub
+// holds no such box.
+func (b *Backend) leaseOfBox(boxID string) string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for leaseID, h := range b.boxes {
+		if h.ID() == boxID {
+			return leaseID
+		}
+	}
+	return ""
 }
 
 // expiryMargin is how close to a lease's expires_at a Close is taken to be the end
@@ -138,8 +182,8 @@ func (b *Backend) endBox(ctx context.Context, server *gatewayd.Server, lease *Le
 const expiryMargin = 2 * time.Second
 
 // endByClient moves the lease from active to destroyed with the reason client
-// and emits one destroy event, the first time it is called for the lease. A lease
-// that has ended already is not touched.
+// (shutdown, while hub is shutting down) and emits one destroy event, the first
+// time it is called for the lease. A lease that has ended already is not touched.
 //
 // gatewayd also closes a box when its TTL passes, and a lease that has run out is
 // not the client's doing: marking it is for the sweep that owns expiry, so a Close
@@ -153,7 +197,8 @@ func (b *Backend) endByClient(ctx context.Context, h *handle) {
 	if !expires.After(b.now().Add(expiryMargin)) {
 		return
 	}
-	changed, err := b.store.DestroyLease(h.lease.ID, leaseActive, leaseEndReasonClient)
+	reason := b.service.endReason(leaseEndReasonClient)
+	changed, err := b.store.DestroyLease(h.lease.ID, leaseActive, reason)
 	switch {
 	case err != nil:
 		slog.Error("sandbox gateway: ending a lease failed", "lease_id", h.lease.ID, "error", err)
@@ -161,7 +206,7 @@ func (b *Backend) endByClient(ctx context.Context, h *handle) {
 		b.emit(ctx, h.lease, audit.EventSandboxDestroy, "destroy", map[string]any{
 			"lease_id":   h.lease.ID,
 			"sandbox_id": h.ID(),
-			"reason":     leaseEndReasonClient,
+			"reason":     reason,
 		})
 	}
 }

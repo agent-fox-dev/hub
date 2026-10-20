@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"flag"
 	"log"
@@ -296,6 +297,11 @@ func main() {
 	if err := sandboxes.InitSchema(database.SqlDB); err != nil {
 		log.Fatal(err)
 	}
+	// Add lease_expires_at to a lease table that predates it (spec 28). This too
+	// runs at every start, whether or not sandboxes are enabled.
+	if err := sandboxes.MigrateLeaseExpiry(database.SqlDB); err != nil {
+		log.Fatal(err)
+	}
 
 	// Mount merge REST API routes (POST/GET/DELETE /merges, POST /rebase).
 	// Uses NewMergeAPIConfig to wire BatchRebase to the real GitRunner-backed
@@ -318,29 +324,17 @@ func main() {
 	// emitter and the address of the gateway to show on every lease. A hub without
 	// sandboxes passes a nil service, and the routes answer sandboxes_disabled.
 	//
-	// With sandboxes on, the sandbox gateway (spec 27) is started first, on its
-	// own listener and before the HTTP server serves anything: a lease is worth
+	// With sandboxes on, the sandbox gateway (spec 27) is built first, on its own
+	// listener and before the HTTP server serves anything: a lease is worth
 	// nothing unless a gateway serves it. A key pair that cannot be loaded or an
 	// address that cannot be bound stops the start.
-	var leaseSvc *sandboxes.LeaseService
-	if sandboxSvc != nil {
-		gateway, err := sandboxes.StartGateway(sandboxSvc, sandboxes.GatewayDeps{
-			DB:      database.SqlDB,
-			Secrets: store,
-			Audit:   auditEmitter,
-		})
-		if err != nil {
-			log.Fatal(err)
-		}
-		leaseSvc = sandboxes.NewLeaseService(sandboxes.LeaseConfig{
-			Service:    sandboxSvc,
-			DB:         database.SqlDB,
-			Secrets:    store,
-			Audit:      auditEmitter,
-			GatewayURL: gateway.URL(),
-			Boxes:      gateway,
-		})
-	}
+	//
+	// Run (spec 28) then ends the leases a crashed process left active, does one
+	// sweep, starts the reaper, and only then lets the gateway accept connections.
+	// It needs the lease table and its migration, the audit emitter and the
+	// metrics, which all exist by now. What fails in it is logged and never stops
+	// hub from starting.
+	gateway, leaseSvc := startSandboxes(ctx, sandboxSvc, database.SqlDB, store, auditEmitter, metrics)
 	sandboxes.RegisterLeaseRoutes(server.APIGroup(), leaseSvc)
 
 	// ---------------------------------------------------------------------------
@@ -485,9 +479,52 @@ func main() {
 	server.Echo().Use(metrics.PrometheusMiddleware())
 	server.Echo().GET("/metrics", echo.WrapHandler(metrics.MetricsHandler()))
 
-	if err := server.Start(); err != nil {
+	// When Start returns, the sandbox shutdown runs while both databases are still
+	// open: they close in the deferred calls above, which run after this. A hub
+	// without sandboxes has no gateway, and the shutdown does nothing.
+	if err := runServer(server.Start, func() {
+		if err := gateway.Shutdown(context.Background()); err != nil {
+			slog.Error("the sandbox shutdown did not finish; the leases still active are ended at the next start", "error", err)
+		}
+	}); err != nil {
 		log.Fatal(err)
 	}
+}
+
+// startSandboxes builds the sandbox gateway, lets it do its start-up work and
+// builds the lease service over it. A hub without sandboxes (a nil service) gets a
+// nil gateway and a nil lease service, and nothing is bound or run. A gateway that
+// cannot be built stops the start; what fails in its start-up work is logged.
+func startSandboxes(ctx context.Context, svc *sandboxes.Service, db *sql.DB, store *secrets.Store, emitter audit.Emitter, metrics *audit.Metrics) (*sandboxes.Gateway, *sandboxes.LeaseService) {
+	if svc == nil {
+		return nil, nil
+	}
+	gateway, err := sandboxes.NewGateway(svc, sandboxes.GatewayDeps{DB: db, Secrets: store, Audit: emitter, Metrics: metrics})
+	if err != nil {
+		log.Fatal(err)
+	}
+	if err := gateway.Run(ctx); err != nil {
+		slog.Warn("the sandbox gateway starts all the same, but its start-up work reported failures", "error", err)
+	}
+	return gateway, sandboxes.NewLeaseService(sandboxes.LeaseConfig{
+		Service:    svc,
+		DB:         db,
+		Secrets:    store,
+		Audit:      emitter,
+		GatewayURL: gateway.URL(),
+		Boxes:      gateway,
+		Metrics:    metrics,
+	})
+}
+
+// runServer runs the HTTP server until its start function returns, then the
+// sandbox shutdown, and returns what the server returned. The shutdown runs when
+// the server failed as well, since a log.Fatal after it would skip the deferred
+// closes of the databases and the shutdown with them.
+func runServer(start func() error, shutdown func()) error {
+	err := start()
+	shutdown()
+	return err
 }
 
 // ===========================================================================

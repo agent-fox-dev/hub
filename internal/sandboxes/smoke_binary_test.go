@@ -76,6 +76,14 @@ func (b *syncBuffer) String() string {
 // writes.
 func startAfHub(t *testing.T, bin string, env *afHubEnv) *syncBuffer {
 	t.Helper()
+	_, out, _ := startAfHubProcess(t, bin, env)
+	return out
+}
+
+// startAfHubProcess is startAfHub for a test that stops the process itself: it also
+// returns the process and a channel that is closed when it has exited.
+func startAfHubProcess(t *testing.T, bin string, env *afHubEnv) (*exec.Cmd, *syncBuffer, <-chan struct{}) {
+	t.Helper()
 	cmd := exec.Command(bin)
 	cmd.Dir = env.dataDir
 	cmd.Env = append(os.Environ(),
@@ -107,13 +115,13 @@ func startAfHub(t *testing.T, bin string, env *afHubEnv) *syncBuffer {
 		if resp, err := http.Get(url); err == nil {
 			resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
-				return out
+				return cmd, out, exited
 			}
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
 	t.Fatalf("af-hub did not become healthy:\n%s", out)
-	return nil
+	return nil, nil, nil
 }
 
 // TS-25-57 (smoke): An invalid sandbox section refuses start with every

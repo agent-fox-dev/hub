@@ -101,6 +101,8 @@ type leaseEnvOptions struct {
 	// noEmitter builds a backend environment with no audit emitter at all. An
 	// emitter given in emitter is used in place of the recording one.
 	noEmitter bool
+	// metrics receives the sandbox metrics; nil records none.
+	metrics *audit.Metrics
 }
 
 // defaultLeaseConfig is a [sandbox] section with a default profile "tools",
@@ -185,6 +187,7 @@ func newLeaseEnv(t *testing.T, opts leaseEnvOptions) *leaseEnv {
 	}
 	svc := NewLeaseService(LeaseConfig{
 		Service: profileSvc, DB: db, Secrets: lister, Audit: opts.emitter, Now: clock.Now, Rand: opts.rand,
+		Metrics: opts.metrics,
 	})
 
 	e := echo.New()
@@ -192,7 +195,7 @@ func newLeaseEnv(t *testing.T, opts leaseEnvOptions) *leaseEnv {
 	api.Use(testAuthMiddleware())
 	RegisterLeaseRoutes(api, svc)
 
-	env := &leaseEnv{t: t, db: db, store: NewLeaseStore(db, clock.Now), svc: svc, profile: profileSvc, secrets: store, clock: clock, echo: e}
+	env := &leaseEnv{t: t, db: db, store: NewLeaseStore(db, clock.Now).WithMetrics(opts.metrics), svc: svc, profile: profileSvc, secrets: store, clock: clock, echo: e}
 	env.addWorkspace("widgets", leaseOwner, "", "active")
 	env.plantSecret("workspace", "widgets", "GIT_PAT", "PLANTED-VALUE-123")
 	return env
@@ -308,14 +311,20 @@ func (e *leaseEnv) countLeases() int {
 // a string that must not be in it.
 func (e *leaseEnv) rowText(id string) []string {
 	e.t.Helper()
-	rows, err := e.db.Query(`SELECT * FROM sandbox_leases WHERE id = ?`, id)
+	return rowTextOf(e.t, e.db, id)
+}
+
+// rowTextOf returns every column of a lease row as text.
+func rowTextOf(t *testing.T, db *sql.DB, id string) []string {
+	t.Helper()
+	rows, err := db.Query(`SELECT * FROM sandbox_leases WHERE id = ?`, id)
 	if err != nil {
-		e.t.Fatalf("reading lease %s: %v", id, err)
+		t.Fatalf("reading lease %s: %v", id, err)
 	}
 	defer rows.Close()
 	cols, _ := rows.Columns()
 	if !rows.Next() {
-		e.t.Fatalf("lease %s not found", id)
+		t.Fatalf("lease %s not found", id)
 	}
 	values := make([]any, len(cols))
 	ptrs := make([]any, len(cols))
@@ -323,7 +332,7 @@ func (e *leaseEnv) rowText(id string) []string {
 		ptrs[i] = &values[i]
 	}
 	if err := rows.Scan(ptrs...); err != nil {
-		e.t.Fatalf("scanning lease %s: %v", id, err)
+		t.Fatalf("scanning lease %s: %v", id, err)
 	}
 	out := make([]string, len(cols))
 	for i, v := range values {
@@ -358,6 +367,15 @@ type recordingProvider struct {
 	reapIDs []string
 	reapErr error
 	reaps   int
+	// reapDelay is how long every Reap takes; reapHang makes it wait for its
+	// context to end. inflight is the number of Reap calls in progress, and
+	// maxInflight the most there have been at once.
+	reapDelay   time.Duration
+	reapHang    bool
+	inflight    int
+	maxInflight int
+	// calls, when set, records every Reap call.
+	calls *callLog
 	// entered receives one value for each Create that waits on block.
 	entered chan struct{}
 }
@@ -386,11 +404,33 @@ func (p *recordingProvider) Capabilities() sandbox.Capabilities {
 	return caps
 }
 
-func (p *recordingProvider) Reap(context.Context) ([]string, error) {
+func (p *recordingProvider) Reap(ctx context.Context) ([]string, error) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	p.reaps++
-	return slices.Clone(p.reapIDs), p.reapErr
+	p.inflight++
+	p.maxInflight = max(p.maxInflight, p.inflight)
+	delay, hang, calls := p.reapDelay, p.reapHang, p.calls
+	ids, err := slices.Clone(p.reapIDs), p.reapErr
+	p.mu.Unlock()
+	defer func() {
+		p.mu.Lock()
+		p.inflight--
+		p.mu.Unlock()
+	}()
+
+	calls.add("Reap")
+	if hang {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	if delay > 0 {
+		select {
+		case <-time.After(delay):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	return ids, err
 }
 
 // setReap makes Reap return ids and err.
@@ -606,6 +646,8 @@ type backendEnv struct {
 	*leaseEnv
 	prov    *recordingProvider
 	emitter *recordingEmitter
+	// metrics receives the sandbox metrics of the gateway; nil records none.
+	metrics *audit.Metrics
 	// sink is what the services emit to: the emitter, or nil for none.
 	sink    audit.Emitter
 	backend *Backend
@@ -616,7 +658,7 @@ type backendEnv struct {
 // the emitter.
 func newBackendEnv(t *testing.T, opts leaseEnvOptions) *backendEnv {
 	t.Helper()
-	env := &backendEnv{prov: newRecordingProvider(), emitter: &recordingEmitter{}}
+	env := &backendEnv{prov: newRecordingProvider(), emitter: &recordingEmitter{}, metrics: opts.metrics}
 	switch {
 	case opts.emitter != nil:
 		env.sink = opts.emitter
@@ -633,6 +675,10 @@ func newBackendEnv(t *testing.T, opts leaseEnvOptions) *backendEnv {
 		Audit:     env.sink,
 		Now:       env.clock.Now,
 		Principal: testPrincipal,
+		Metrics:   opts.metrics,
+		Sweeper: NewSweeper(SweeperConfig{
+			DB: env.db, Provider: env.prov, Boxes: &fakeBoxes{}, Audit: env.sink, Metrics: opts.metrics, Now: env.clock.Now,
+		}),
 	})
 	t.Cleanup(func() {
 		// A test may leave the provider failing or blocked; the boxes are closed
@@ -712,13 +758,26 @@ type testGateway struct{ *Gateway }
 // address and destroys boxes through it, and shuts it down when the test ends.
 // Its backend reads the principal the way production does, from gatewayd's own
 // context value.
+//
+// gatewayd reaps as soon as it serves, and hub's backend answers that with a
+// sweep. The helper waits until that sweep has run, so that it cannot start in the
+// middle of a test and end a lease the test has just made.
 func (e *backendEnv) startGateway() *testGateway {
 	e.t.Helper()
-	gw, err := StartGateway(e.profile, GatewayDeps{DB: e.db, Secrets: e.secrets, Audit: e.sink, Now: e.clock.Now})
+	reaps := e.prov.reapCount()
+	gw, err := StartGateway(e.profile, GatewayDeps{DB: e.db, Secrets: e.secrets, Audit: e.sink, Now: e.clock.Now, Metrics: e.metrics})
 	if err != nil {
 		e.t.Fatalf("StartGateway: %v", err)
 	}
 	stopAfter(e.t, gw)
+	for deadline := time.Now().Add(10 * time.Second); e.prov.reapCount() == reaps; time.Sleep(time.Millisecond) {
+		if time.Now().After(deadline) {
+			e.t.Fatal("the gateway did not reap when it started serving")
+		}
+	}
+	if err := gw.sweeper.Sweep(context.Background()); err != nil { // sweeps do not overlap, so this returns after the first
+		e.t.Fatalf("Sweep: %v", err)
+	}
 	e.svc.gatewayURL = gw.URL()
 	e.svc.boxes = gw
 	return &testGateway{gw}

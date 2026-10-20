@@ -226,7 +226,11 @@ paths:
         `afhub_agent_tokens_total`, `afhub_audit_events_total`,
         `afhub_audit_table_rows`, `afhub_retention_errors_total`,
         `afhub_retention_last_run_timestamp_seconds`, `afhub_sse_connections`,
-        and `afhub_jobqueue_depth`.
+        `afhub_jobqueue_depth`, `afhub_sandboxes_active` (gauge by
+        `workspace`: leases in state `active`), `afhub_sandbox_creates_total`
+        (counter by `result`, `created` or `failed`) and
+        `afhub_sandbox_lease_seconds` (histogram: seconds from issue to
+        destruction of a lease that became `destroyed`).
 
         The `path` label carries the Echo route template (for example
         `/api/v1/sessions/:id`) rather than the resolved URI, to bound
@@ -2455,7 +2459,11 @@ paths:
         lease. Hub confirms that every secret the profile requires exists in
         the workspace's resolution chain (workspace, then the org when the
         workspace owner belongs to it, then the owner's user scope) by key
-        name, never reading a value, and enforces `[sandbox].max_sandboxes`.
+        name, never reading a value, and enforces `[sandbox].max_sandboxes`
+        (a `leased` lease past its `lease_expires_at` no longer counts).
+        `lease_expires_at` in the answer is the deadline for the holder's
+        `Create`: the earlier of `created_at` plus `[sandbox].lease_timeout`
+        and `expires_at`.
 
         The response is the only one that ever carries the lease `token`;
         hub keeps its SHA-256 only. No sandbox is created here: the holder
@@ -2521,8 +2529,9 @@ paths:
       description: |
         Newest `created_at` first, at most 200, as a bare array. Only live
         leases (`leased` or `active`) are returned unless `all` is
-        true. Works on an archived workspace. Never carries a token, its hash
-        or an environment value.
+        true; a terminal lease (`destroyed`, `expired` or `failed`) is listed for
+        24 hours after it ended. Works on an archived workspace. Never carries a
+        token, its hash or an environment value.
       x-required-scopes: ["sandboxes:read", "sandboxes:write"]
       parameters:
         - $ref: "#/components/parameters/SandboxLeaseAll"
@@ -2562,7 +2571,10 @@ paths:
       tags: [Sandboxes]
       operationId: getSandboxLease
       summary: Get one sandbox lease
-      description: Returns the lease in any state. Works on an archived workspace.
+      description: >-
+        Returns the lease in any state. A terminal lease can be read for 24
+        hours after it ended and is then removed (`sandbox lease not found`).
+        Works on an archived workspace.
       x-required-scopes: ["sandboxes:read", "sandboxes:write"]
       responses:
         "200":
@@ -2592,8 +2604,8 @@ paths:
       operationId: endSandboxLease
       summary: End a sandbox lease
       description: |
-        Ends a live lease: `destroyed` with `end_reason` `api`, its token
-        revoked in the same update, so that the next call to the gateway with it
+        Ends a live lease: `destroyed` with `end_reason` `api` (`shutdown`
+        while the hub is shutting down), its token revoked in the same update, so that the next call to the gateway with it
         is refused.
 
         A `leased` lease has no sandbox and is moved without a call to the
@@ -2603,7 +2615,9 @@ paths:
         already gone counts as destroyed. After the hub has been restarted it no
         longer holds the sandbox of a lease that was `active` before, so the lease
         is ended without destroying that sandbox, which lives until the TTL the
-        provider enforces. When the provider fails the answer is
+        provider enforces (the next start ends a lease that was `active` at a
+        crash anyway, with `end_reason` `restart`). When the provider fails the
+        answer is
         502 `sandbox_provider_error` with the provider's message scrubbed of
         secret values, fixed environment values and URL user information, and
         nothing has changed (the lease is still `active`, its token still works,
@@ -2613,8 +2627,8 @@ paths:
         already keeps its `ended_at` and `end_reason`, calls no provider and
         emits nothing, so a retry is harmless. Works on an archived workspace.
         Each change into `destroyed` emits one `hub.sandbox.destroy` event with
-        the id of the sandbox (`null` when there was none), `reason: "api"` and
-        the calling credential as the actor.
+        the id of the sandbox (`null` when there was none), `reason: "api"` (or
+        `"shutdown"`) and the calling credential as the actor.
       x-required-scopes: ["sandboxes:write"]
       responses:
         "204":
@@ -6133,6 +6147,7 @@ components:
         - state
         - gateway_url
         - expires_at
+        - lease_expires_at
         - image
         - network
         - resources
@@ -6161,8 +6176,10 @@ components:
           type: string
           description: >-
             `leased` (issued, no sandbox yet), `active` (the sandbox was created),
-            `destroyed`, or `failed` (the sandbox could not be created).
-            `expired` is reserved for a later release.
+            `destroyed`, `expired` (no `Create` before `lease_expires_at`, or the
+            lease's time ran out) or `failed` (the sandbox could not be created).
+            `destroyed`, `expired` and `failed` are terminal: such a lease stays
+            readable for 24 hours after `ended_at` and is then removed.
           enum: [leased, active, destroyed, expired, failed]
         gateway_url:
           type: string
@@ -6174,7 +6191,18 @@ components:
         expires_at:
           type: string
           format: date-time
-          description: '`created_at` plus the lease TTL; the sandbox lifetime ends here.'
+          description: >-
+            `created_at` plus the lease TTL; the sandbox lifetime ends here, and
+            the lease's token is refused from this moment in every state.
+        lease_expires_at:
+          type: [string, "null"]
+          format: date-time
+          description: >-
+            The deadline for the lease's `Create`: the earlier of `created_at`
+            plus `[sandbox].lease_timeout` and `expires_at`. It never changes.
+            A lease still `leased` at this moment lapses to `expired`. `null`
+            for a lease issued before the field existed, which lapses at
+            `expires_at`.
         image:
           type: string
         network:
@@ -6218,7 +6246,15 @@ components:
           format: date-time
         end_reason:
           type: [string, "null"]
-          description: '`client` for a lease whose holder closed its sandbox through the gateway, `api` for one ended by DELETE.'
+          description: >-
+            Why the lease ended: `client` (its holder closed its sandbox through
+            the gateway), `api` (DELETE), `expired` (time: a lease that got no
+            `Create` in time, or an `active` lease whose sandbox was destroyed at
+            `expires_at`; `state` tells the two apart), `shutdown` (the hub shut
+            down: the shutdown itself ended the lease, or DELETE or the holder's
+            close did while it was shutting down) or `restart`
+            (the hub found the lease `active` after a crash). `null` while the
+            lease is live and for a `failed` lease.
 
     SandboxLeaseIssued:
       description: The lease and its token. Only the POST that issued the lease returns the token.

@@ -7,7 +7,9 @@ import "database/sql"
 // migration (SQLite cannot alter a CHECK constraint). token_hash is unique and
 // nullable: it is cleared when the lease ends. The JSON columns hold the
 // profile snapshot's lists and maps and the caller's labels. No column holds a
-// secret value or a plaintext token.
+// secret value or a plaintext token. lease_expires_at is the deadline by which a
+// leased lease must get its Create; it is NULL for a row from before the column
+// existed, which MigrateLeaseExpiry adds to such a table.
 const leaseSchemaSQL = `CREATE TABLE IF NOT EXISTS sandbox_leases (
 	id               TEXT PRIMARY KEY,
 	workspace        TEXT NOT NULL,
@@ -28,6 +30,7 @@ const leaseSchemaSQL = `CREATE TABLE IF NOT EXISTS sandbox_leases (
 	labels           TEXT NOT NULL DEFAULT '{}',
 	ttl_seconds      INTEGER NOT NULL,
 	expires_at       TEXT NOT NULL,
+	lease_expires_at TEXT,
 	created_by       TEXT NOT NULL,
 	created_at       TEXT NOT NULL,
 	updated_at       TEXT NOT NULL,

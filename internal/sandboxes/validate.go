@@ -22,8 +22,19 @@ const (
 	defaultMaxTTL       = 4 * time.Hour
 	defaultNetwork      = "none"
 	defaultMaxSandboxes = 16
+	// defaultLeaseTimeout is how long a lease may wait for its Create, and
+	// defaultReapInterval how often the reaper sweeps, when the keys are absent.
+	defaultLeaseTimeout = 5 * time.Minute
+	defaultReapInterval = 10 * time.Minute
 	// defaultListen is the address of the sandbox gateway when listen is absent.
 	defaultListen = "127.0.0.1:8443"
+)
+
+// The bounds of lease_timeout (its upper bound is max_ttl) and reap_interval.
+const (
+	minLeaseTimeout = time.Second
+	minReapInterval = 10 * time.Second
+	maxReapInterval = time.Hour
 )
 
 // defaultNetworkModes returns network_modes when the key is absent: a sandbox
@@ -57,7 +68,11 @@ type Validated struct {
 	TLSCert     string
 	TLSKey      string
 	ExternalURL string
-	Profiles    []ValidatedProfile
+	// LeaseTimeout is how long a lease may wait for its Create, and ReapInterval
+	// how often the reaper sweeps.
+	LeaseTimeout time.Duration
+	ReapInterval time.Duration
+	Profiles     []ValidatedProfile
 }
 
 // Resources are a profile's resource bounds. Zero means the provider's
@@ -109,6 +124,8 @@ func Validate(cfg *Config) (*Validated, error) {
 		MaxTTL:       defaultMaxTTL,
 		NetworkModes: defaultNetworkModes(),
 		MaxSandboxes: defaultMaxSandboxes,
+		LeaseTimeout: defaultLeaseTimeout,
+		ReapInterval: defaultReapInterval,
 	}
 	if v.EngineBinary == "" {
 		v.EngineBinary = defaultEngineBinary
@@ -119,6 +136,8 @@ func Validate(cfg *Config) (*Validated, error) {
 	validateNetworkModes(&c, cfg, v)
 	validateMaxSandboxes(&c, cfg, v)
 	validateGateway(&c, cfg, v)
+	validateLeaseTimeout(&c, cfg, v, maxTTLValid)
+	validateReapInterval(&c, cfg, v)
 	validateProfiles(&c, cfg, v, maxTTLValid)
 
 	if len(c.errs) > 0 {
@@ -172,6 +191,46 @@ func validateMaxSandboxes(c *collector, cfg *Config, v *Validated) {
 		return
 	}
 	v.MaxSandboxes = int(n)
+}
+
+// validateLeaseTimeout checks lease_timeout, when it is set, and stores the
+// effective value in v. It is at least a second and at most max_ttl; the default
+// is not held to max_ttl, so that a deployment with a short max_ttl and no
+// lease_timeout still starts (a lease's deadline is also bounded by its
+// expires_at). maxTTLValid says whether v.MaxTTL can be compared with: a max_ttl
+// that does not parse is reported on its own and does not hide this key.
+func validateLeaseTimeout(c *collector, cfg *Config, v *Validated, maxTTLValid bool) {
+	if cfg.LeaseTimeout == nil {
+		return
+	}
+	d, err := time.ParseDuration(*cfg.LeaseTimeout)
+	switch {
+	case err != nil:
+		c.addf("sandbox.lease_timeout: %v", err)
+	case d < minLeaseTimeout:
+		c.addf("sandbox.lease_timeout %q must be at least %s", *cfg.LeaseTimeout, minLeaseTimeout)
+	case maxTTLValid && d > v.MaxTTL:
+		c.addf("sandbox.lease_timeout %q must be at most sandbox.max_ttl (%s)", *cfg.LeaseTimeout, v.MaxTTL)
+	default:
+		v.LeaseTimeout = d
+	}
+}
+
+// validateReapInterval checks reap_interval, when it is set, and stores the
+// effective value in v. It is between 10 seconds and an hour.
+func validateReapInterval(c *collector, cfg *Config, v *Validated) {
+	if cfg.ReapInterval == nil {
+		return
+	}
+	d, err := time.ParseDuration(*cfg.ReapInterval)
+	switch {
+	case err != nil:
+		c.addf("sandbox.reap_interval: %v", err)
+	case d < minReapInterval || d > maxReapInterval:
+		c.addf("sandbox.reap_interval %q must be between %s and %s", *cfg.ReapInterval, minReapInterval, maxReapInterval)
+	default:
+		v.ReapInterval = d
+	}
 }
 
 // validateGateway checks the four keys of the sandbox gateway and stores the

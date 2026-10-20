@@ -42,12 +42,18 @@ func internalError(what string, cause error) error {
 	return &statusError{code: codes.Internal, msg: "internal error"}
 }
 
+// sweeping runs a sweep.
+type sweeping interface {
+	Sweep(ctx context.Context) error
+}
+
 // leaseRepo is what the backend needs of the lease store.
 type leaseRepo interface {
 	GetLease(id string) (*Lease, error)
 	MarkActive(id, sandboxID string) (bool, error)
 	FailLease(id, message string) (bool, error)
 	DestroyLease(id, from, reason string) (bool, error)
+	ExpireLease(id, reason string) (bool, error)
 }
 
 // backendConfig is what the wrapping backend is built from.
@@ -66,6 +72,10 @@ type backendConfig struct {
 	// Principal reads the principal of a call from its context;
 	// gatewayd.PrincipalFromContext when nil. Tests supply their own.
 	Principal func(context.Context) (string, bool)
+	// Metrics receives the sandbox metrics; nil records none.
+	Metrics *audit.Metrics
+	// Sweeper runs the sweep when gatewayd reaps.
+	Sweeper sweeping
 }
 
 // Backend is the sandbox.Provider hub gives gatewayd. It makes a lease usable:
@@ -81,6 +91,12 @@ type Backend struct {
 	audit     audit.Emitter
 	now       func() time.Time
 	principal func(context.Context) (string, bool)
+	// ender ends a lease whose deadline for a Create has passed. It destroys no
+	// box: a leased lease has none.
+	ender   *ender
+	metrics metricsRecorder
+	// sweeper runs the sweep when gatewayd reaps.
+	sweeper sweeping
 
 	mu sync.Mutex
 	// claims are the leases with a Create in flight.
@@ -89,9 +105,10 @@ type Backend struct {
 	// them too, but forgets a box whose Close failed; hub keeps the handle, so
 	// that a DELETE can try again.
 	boxes map[string]*handle
-	// ending are the leases a DELETE is ending. A Close of their boxes only
-	// closes: the DELETE records the end.
-	ending map[string]struct{}
+	// ending counts, by lease id, the callers that are destroying the box of a
+	// lease and will record its end themselves (a DELETE, a sweep, the shutdown).
+	// A Close of the box only closes while the count is above zero.
+	ending map[string]int
 }
 
 func newBackend(cfg backendConfig) *Backend {
@@ -104,9 +121,12 @@ func newBackend(cfg backendConfig) *Backend {
 		audit:     cfg.Audit,
 		now:       cfg.Now,
 		principal: cfg.Principal,
+		ender:     newEnder(cfg.Store, cfg.Audit, nil, providerCallTimeout),
+		metrics:   metricsRecorder{m: cfg.Metrics},
+		sweeper:   cfg.Sweeper,
 		claims:    map[string]struct{}{},
 		boxes:     map[string]*handle{},
-		ending:    map[string]struct{}{},
+		ending:    map[string]int{},
 	}
 	if b.now == nil {
 		b.now = time.Now
@@ -153,25 +173,48 @@ const discardTimeout = 30 * time.Second
 // principal gatewayd authenticated; the caller's spec contributes only its
 // working directory and its labels.
 //
-// A lease that cannot be created from (not leased, expired) is refused with
-// FailedPrecondition and left as it is. A lease whose profile is gone, whose
-// spec cannot be built or whose required secrets exist nowhere fails. A store
-// error leaves the lease leased, so the caller can try again. If the provider
-// fails, the lease fails with the provider's message, scrubbed.
+// A lease that cannot be created from (not leased) is refused with
+// FailedPrecondition and left as it is. A leased lease whose deadline for a Create
+// has passed is refused the same way and ended as expired in the same call, with
+// no provider call. A lease whose profile is gone, whose spec cannot be built or
+// whose required secrets exist nowhere fails. A store error leaves the lease
+// leased, so the caller can try again. If the provider fails, the lease fails with
+// the provider's message, scrubbed.
+//
+// While hub is shutting down every Create is refused with Unavailable, before
+// anything is read or counted.
+//
+// Every Create that gets as far as making a box is counted once, as created when
+// the lease becomes active and as failed when it does not. A refusal before that
+// is not counted.
 func (b *Backend) Create(ctx context.Context, caller sandbox.Spec) (sandbox.Sandbox, error) {
 	id, ok := b.principal(ctx)
 	if !ok {
 		return nil, &statusError{code: codes.Unauthenticated, msg: "the call carries no principal"}
+	}
+	if b.service.InShutdown() {
+		return nil, &statusError{code: codes.Unavailable, msg: "hub is shutting down and creates no more sandboxes"}
 	}
 	if !b.claim(id) {
 		return nil, failedPrecondition("a Create for lease %s is already in progress", id)
 	}
 	defer b.release(id)
 
-	lease, remaining, err := b.creatable(id)
+	lease, remaining, err := b.creatable(ctx, id)
 	if err != nil {
 		return nil, err
 	}
+	box, err := b.makeBox(ctx, lease, caller, remaining)
+	if err != nil {
+		b.metrics.createResult(createFailed)
+		return nil, err
+	}
+	b.metrics.createResult(createCreated)
+	return box, nil
+}
+
+// makeBox makes the box of a lease that can be created from.
+func (b *Backend) makeBox(ctx context.Context, lease *Lease, caller sandbox.Spec, remaining time.Duration) (sandbox.Sandbox, error) {
 	if !b.hasProfile(lease.Profile) {
 		msg := fmt.Sprintf("profile %q is no longer configured", lease.Profile)
 		return nil, b.failLease(ctx, lease, msg, failedPrecondition("%s", msg))
@@ -190,8 +233,10 @@ func (b *Backend) Create(ctx context.Context, caller sandbox.Spec) (sandbox.Sand
 // creatable loads the lease and returns it with the time it has left, in whole
 // seconds, when a box can be made for it: it is leased and its time is not up.
 // The time left is the TTL of the box. Less than a second is no TTL at all, since
-// a zero TTL is an hour to a provider, so it counts as expired.
-func (b *Backend) creatable(id string) (*Lease, time.Duration, error) {
+// a zero TTL is an hour to a provider, so it counts as expired. A lease past its
+// deadline for a Create (lease_expires_at, or expires_at for a lease from before
+// that column) is ended as expired before the refusal is returned.
+func (b *Backend) creatable(ctx context.Context, id string) (*Lease, time.Duration, error) {
 	lease, err := b.store.GetLease(id)
 	switch {
 	case errors.Is(err, ErrLeaseNotFound):
@@ -205,11 +250,32 @@ func (b *Backend) creatable(id string) (*Lease, time.Duration, error) {
 	if err != nil {
 		return nil, 0, internalError("a lease has an expires_at that cannot be read", err)
 	}
-	remaining := expires.Sub(b.now()).Truncate(time.Second)
-	if remaining <= 0 {
-		return nil, 0, failedPrecondition("lease %s has expired", id)
+	deadline := expires
+	if lease.LeaseExpiresAt != nil {
+		if deadline, err = apikit.ParseUTC(*lease.LeaseExpiresAt); err != nil {
+			return nil, 0, internalError("a lease has a lease_expires_at that cannot be read", err)
+		}
+	}
+	now := b.now()
+	remaining := expires.Sub(now).Truncate(time.Second)
+	if !deadline.After(now) || remaining <= 0 {
+		return nil, 0, b.expireLate(ctx, lease)
 	}
 	return lease, remaining, nil
+}
+
+// expireLate ends a leased lease whose time is up, through the expiry path, and
+// returns the refusal of the Create. If another path has ended the lease first,
+// nothing is changed and the refusal names the state it is in.
+func (b *Backend) expireLate(ctx context.Context, lease *Lease) error {
+	changed, err := b.ender.endExpired(ctx, lease)
+	switch {
+	case err != nil:
+		return internalError("expiring a lease failed", err)
+	case !changed:
+		return b.staleLease(lease.ID)
+	}
+	return failedPrecondition("lease %s has expired", lease.ID)
 }
 
 // addSecrets reads the secrets of the lease and puts them in the environment of
@@ -261,12 +327,10 @@ func (b *Backend) createBox(ctx context.Context, lease *Lease, spec sandbox.Spec
 	changed, err := b.store.MarkActive(lease.ID, box.ID())
 	switch {
 	case err != nil:
-		b.forget(h)
-		b.discard(lease, box, "the box of a lease could not be recorded; destroyed it", values)
+		b.discard(h, "the box of a lease could not be recorded; destroying it")
 		return nil, internalError("recording the box of a lease failed", err)
 	case !changed:
-		b.forget(h)
-		b.discard(lease, box, "a box was created for a lease that had ended; destroyed it", values)
+		b.discard(h, "a box was created for a lease that had ended; destroying it")
 		return nil, b.staleLease(lease.ID)
 	}
 	b.emit(ctx, lease, audit.EventSandboxCreate, "create", map[string]any{
@@ -285,23 +349,17 @@ func (b *Backend) remember(h *handle) {
 	b.boxes[h.lease.ID] = h
 }
 
-// forget lets go of a handle whose box nobody will use.
-func (b *Backend) forget(h *handle) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if b.boxes[h.lease.ID] == h {
-		delete(b.boxes, h.lease.ID)
-	}
-}
-
 // discard destroys a box nobody will use, whatever has become of the call that
-// made it, and logs a warning with the lease id and the box id.
-func (b *Backend) discard(lease *Lease, box sandbox.Sandbox, why string, values []string) {
+// made it, and logs a warning with the lease id and the box id. The box is closed
+// through its handle, which is let go of only once the box is gone: a box that
+// cannot be destroyed stays held, and the lease having ended, the next sweep finds
+// it and tries again.
+func (b *Backend) discard(h *handle, why string) {
 	ctx, cancel := context.WithTimeout(context.Background(), discardTimeout)
 	defer cancel()
-	slog.Warn("sandbox gateway: "+why, "lease_id", lease.ID, "sandbox_id", box.ID())
-	if err := box.Close(ctx); err != nil {
-		slog.Error("sandbox gateway: destroying a box failed", "lease_id", lease.ID, "sandbox_id", box.ID(), "error", scrub(err.Error(), values))
+	slog.Warn("sandbox gateway: "+why, "lease_id", h.lease.ID, "sandbox_id", h.ID())
+	if err := b.closeProviderBox(ctx, h); err != nil {
+		slog.Error("sandbox gateway: destroying a box failed", "lease_id", h.lease.ID, "sandbox_id", h.ID(), "error", err)
 	}
 }
 
@@ -343,24 +401,22 @@ func (b *Backend) Capabilities() sandbox.Capabilities {
 	return caps
 }
 
-// Reap passes through to the provider. It is the gateway's own work, which it does
-// when it starts and at an interval, with no principal; the error text of the
-// provider is scrubbed before it leaves the backend. The sweep of leases whose
-// boxes are gone is not the backend's.
+// Reap runs the sweep. gatewayd calls it when it starts serving and at an interval,
+// with no principal, and the sweep begins with the provider's own Reap, so the
+// provider's work is done and the leases' time limits are enforced by the same
+// call. The sweep logs its failures, scrubbed, and Reap returns nothing.
 //
 // gatewayd also answers a Reap call that a client makes with its token, with the
-// lease as the principal. That is not a lease holder's to ask: it would hand it
-// the ids of other leases' boxes and the provider's error text, and let it make
-// the provider work at will. A call with a principal does nothing.
+// lease as the principal. That is not a lease holder's to ask: it would let it
+// start sweeps across the whole hub, and hand it the ids of other leases' boxes
+// and the provider's error text. A call with a principal does nothing.
 func (b *Backend) Reap(ctx context.Context) ([]string, error) {
 	if _, ok := b.principal(ctx); ok {
 		return nil, nil
 	}
-	ids, err := b.provider.Reap(ctx)
-	if err != nil {
-		return ids, errors.New(scrub(err.Error(), nil))
-	}
-	return ids, nil
+	// The sweep logs what fails in it; the caller gets nothing to log twice.
+	_ = b.sweeper.Sweep(ctx)
+	return nil, nil
 }
 
 var _ sandbox.Provider = (*Backend)(nil)

@@ -229,7 +229,7 @@ func TestGetOne_NotFound_TS_26_46(t *testing.T) {
 
 // leaseFields are the keys of a rendered lease and the keys of its resources.
 var (
-	leaseFields = []string{"id", "workspace", "profile", "purpose", "state", "gateway_url", "expires_at", "image", "network", "resources",
+	leaseFields = []string{"id", "workspace", "profile", "purpose", "state", "gateway_url", "expires_at", "lease_expires_at", "image", "network", "resources",
 		"require_landlock", "secrets", "optional_secrets", "labels", "created_by", "created_at", "updated_at",
 		"sandbox_id", "error", "ended_at", "end_reason"}
 	resourceFields = []string{"cpus", "memory_mb", "pids", "disk_mb"}

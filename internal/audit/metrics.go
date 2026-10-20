@@ -40,6 +40,11 @@ type Metrics struct {
 	RetentionErrorsTotal      *prometheus.CounterVec
 	RetentionLastRunTimestamp prometheus.Gauge
 	AuditTableRows            *prometheus.GaugeVec
+
+	// Sandbox metrics (recorded by internal/sandboxes)
+	SandboxesActive     *prometheus.GaugeVec
+	SandboxCreatesTotal *prometheus.CounterVec
+	SandboxLeaseSeconds prometheus.Histogram
 }
 
 // activeMetrics holds the Metrics instance used by package-level recorders
@@ -157,8 +162,35 @@ func NewMetrics() *Metrics {
 	m.AuditEventsTotal.WithLabelValues("", "")
 	m.RetentionErrorsTotal.WithLabelValues("")
 	m.AuditTableRows.WithLabelValues("")
+	m.addSandboxMetrics()
 
 	return m
+}
+
+// addSandboxMetrics creates the three sandbox collectors, registers them and
+// pre-initialises their series, so that they are listed from start like the rest.
+func (m *Metrics) addSandboxMetrics() {
+	m.SandboxesActive = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "afhub_sandboxes_active",
+		Help: "Sandbox leases in state active, which have a box.",
+	}, []string{"workspace"})
+
+	m.SandboxCreatesTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "afhub_sandbox_creates_total",
+		Help: "Sandbox creates the gateway accepted, by result (created or failed).",
+	}, []string{"result"})
+
+	m.SandboxLeaseSeconds = prometheus.NewHistogram(prometheus.HistogramOpts{
+		Name:    "afhub_sandbox_lease_seconds",
+		Help:    "Seconds from issue to destruction of a sandbox lease.",
+		Buckets: []float64{60, 300, 600, 1200, 1800, 3600, 7200, 14400, 28800},
+	})
+
+	m.Registry.MustRegister(m.SandboxesActive, m.SandboxCreatesTotal, m.SandboxLeaseSeconds)
+
+	m.SandboxesActive.WithLabelValues("")
+	m.SandboxCreatesTotal.WithLabelValues("created")
+	m.SandboxCreatesTotal.WithLabelValues("failed")
 }
 
 // MetricsHandler returns an http.Handler that serves Prometheus metrics
