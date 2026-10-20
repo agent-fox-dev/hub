@@ -192,6 +192,9 @@ func TestMetricsEndpoint_AllMetricsPresentOnStartup(t *testing.T) {
 		"afhub_retention_errors_total",
 		"afhub_retention_last_run_timestamp_seconds",
 		"afhub_audit_table_rows",
+		"afhub_sandboxes_active",
+		"afhub_sandbox_creates_total",
+		"afhub_sandbox_lease_seconds",
 	}
 	for _, metric := range expectedMetrics {
 		if !strings.Contains(body, metric) {

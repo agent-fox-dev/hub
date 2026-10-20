@@ -40,6 +40,11 @@ type Metrics struct {
 	RetentionErrorsTotal      *prometheus.CounterVec
 	RetentionLastRunTimestamp prometheus.Gauge
 	AuditTableRows            *prometheus.GaugeVec
+
+	// Sandbox metrics (recorded by internal/sandboxes)
+	SandboxesActive     *prometheus.GaugeVec
+	SandboxCreatesTotal *prometheus.CounterVec
+	SandboxLeaseSeconds prometheus.Histogram
 }
 
 // activeMetrics holds the Metrics instance used by package-level recorders
@@ -131,6 +136,22 @@ func NewMetrics() *Metrics {
 			Name: "afhub_audit_table_rows",
 			Help: "Row count per audit table.",
 		}, []string{"table"}),
+
+		SandboxesActive: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "afhub_sandboxes_active",
+			Help: "Sandbox leases in state active, which have a box.",
+		}, []string{"workspace"}),
+
+		SandboxCreatesTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "afhub_sandbox_creates_total",
+			Help: "Sandbox creates the gateway accepted, by result (created or failed).",
+		}, []string{"result"}),
+
+		SandboxLeaseSeconds: prometheus.NewHistogram(prometheus.HistogramOpts{
+			Name:    "afhub_sandbox_lease_seconds",
+			Help:    "Seconds from issue to destruction of a sandbox lease.",
+			Buckets: []float64{60, 300, 600, 1200, 1800, 3600, 7200, 14400, 28800},
+		}),
 	}
 
 	reg.MustRegister(
@@ -144,6 +165,9 @@ func NewMetrics() *Metrics {
 		m.RetentionErrorsTotal,
 		m.RetentionLastRunTimestamp,
 		m.AuditTableRows,
+		m.SandboxesActive,
+		m.SandboxCreatesTotal,
+		m.SandboxLeaseSeconds,
 	)
 
 	// Pre-initialize all Vec metrics with placeholder label values so they
@@ -157,6 +181,9 @@ func NewMetrics() *Metrics {
 	m.AuditEventsTotal.WithLabelValues("", "")
 	m.RetentionErrorsTotal.WithLabelValues("")
 	m.AuditTableRows.WithLabelValues("")
+	m.SandboxesActive.WithLabelValues("")
+	m.SandboxCreatesTotal.WithLabelValues("created")
+	m.SandboxCreatesTotal.WithLabelValues("failed")
 
 	return m
 }

@@ -39,6 +39,16 @@ const EventSandboxFailed = "hub.sandbox.failed"
 // created_by; a DELETE event has the actor of the HTTP credential.
 const EventSandboxDestroy = "hub.sandbox.destroy"
 
+// EventSandboxExpire is the hub audit event emitted once for every lease that
+// time ends: a leased lease that got no Create before its lease deadline, and
+// an active lease whose box is destroyed at its expires_at. ResourceType is
+// "sandbox", ResourceID the lease ID and Action "expire". The actor is the
+// system: ActorType "system" and an empty ActorID. Metadata: lease_id, state
+// ("expired" for a lease that never had a box, "destroyed" for one whose box
+// was destroyed) and sandbox_id, present only when a box was destroyed. Such
+// an ending emits no EventSandboxDestroy.
+const EventSandboxExpire = "hub.sandbox.expire"
+
 // EventRebuildFollowup is the hub audit event emitted when a carry-patch
 // rebuild enqueues a follow-up rebuild because a patch tip or the upstream
 // base moved during the run. Metadata: stale_patches ([]string),

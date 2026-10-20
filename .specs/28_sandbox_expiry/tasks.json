@@ -56,7 +56,7 @@
         "internal/audit/metrics_endpoint_test.go",
         "internal/audit/sandbox_metrics_test.go"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 2,
