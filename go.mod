@@ -4,6 +4,7 @@ go 1.27
 
 require (
 	github.com/BurntSushi/toml v1.6.0
+	github.com/agent-fox-dev/aflib v0.0.0
 	github.com/agent-fox-dev/agentkit-go/sandbox v0.0.0
 	github.com/agent-fox-dev/agentkit-go/sandbox/gatewayd v0.0.0
 	github.com/go-git/go-git/v5 v5.19.3
@@ -99,6 +100,8 @@ require (
 )
 
 replace github.com/txsvc/apikit => ../apikit
+
+replace github.com/agent-fox-dev/aflib => ../aflib
 
 replace github.com/agent-fox-dev/agentkit-go => ../agentkit-go
 

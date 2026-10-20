@@ -44,7 +44,7 @@
       "done_when": [
         "`go build ./...` succeeds with ../aflib checked out as a sibling"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     },
     {
