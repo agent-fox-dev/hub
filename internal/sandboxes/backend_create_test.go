@@ -167,30 +167,36 @@ func TestBackendCreate_NotLeased_TS_27_22(t *testing.T) {
 	}
 }
 
-// TS-27-23: Create on a leased lease that has expired is refused without a state
-// change. A lease with less than a second left is expired too: its TTL, cut to
-// whole seconds, would be zero, which a provider reads as an hour.
+// TS-27-23: Create on a leased lease that has expired is refused. A lease with
+// less than a second left is expired too: its TTL, cut to whole seconds, would be
+// zero, which a provider reads as an hour.
+//
+// Spec 28 (28-REQ-3.1) ends such a lease as expired in the same call, where spec 27
+// left it as it was, so the lease reads expired afterwards. The lease timeout is
+// the profile's whole hour in these tests, so that the deadline for a Create is the
+// lease's expires_at and these cases are about the time the lease has left.
 // Requirement: 27-REQ-4.4
 func TestBackendCreate_Expired_TS_27_23(t *testing.T) {
+	cfg := defaultLeaseConfig()
+	cfg.LeaseTimeout = "1h"
 	for name, offset := range map[string]time.Duration{
 		"expires_at is now":          0,
 		"expires_at is in the past":  -time.Minute,
 		"less than a second is left": 500 * time.Millisecond,
 	} {
 		t.Run(name, func(t *testing.T) {
-			env := newBackendEnv(t, leaseEnvOptions{})
+			env := newBackendEnv(t, leaseEnvOptions{config: cfg})
 			id := env.issue(`{"profile":"tools"}`)
 			expires, _ := apikit.ParseUTC(env.lease(id).ExpiresAt)
 			env.clock.Advance(expires.Sub(env.clock.Now()) - offset)
-			before := *env.lease(id)
 
 			_, err := env.create(id, sandbox.Spec{})
 			wantCode(t, err, codes.FailedPrecondition)
 			if !strings.Contains(err.Error(), "expired") {
 				t.Errorf("error %q does not say the lease has expired", err)
 			}
-			if after := *env.lease(id); !reflect.DeepEqual(before, after) || after.State != "leased" {
-				t.Errorf("the lease changed: %+v -> %+v", before, after)
+			if after := env.lease(id); after.State != "expired" || after.EndReason == nil || *after.EndReason != "expired" {
+				t.Errorf("the lease reads %s/%v; want it ended as expired by the Create", after.State, after.EndReason)
 			}
 			if n := env.prov.creates(); n != 0 {
 				t.Errorf("provider Create calls = %d; want 0", n)
@@ -199,7 +205,7 @@ func TestBackendCreate_Expired_TS_27_23(t *testing.T) {
 	}
 
 	t.Run("a second left is a one second TTL", func(t *testing.T) {
-		env := newBackendEnv(t, leaseEnvOptions{})
+		env := newBackendEnv(t, leaseEnvOptions{config: cfg})
 		id := env.issue(`{"profile":"tools"}`)
 		expires, _ := apikit.ParseUTC(env.lease(id).ExpiresAt)
 		env.clock.Advance(expires.Sub(env.clock.Now()) - time.Second)
@@ -258,6 +264,7 @@ func TestBackendCreate_ProfileGone_TS_27_24(t *testing.T) {
 func TestBackendCreate_BuildsHubsSpec_TS_27_25(t *testing.T) {
 	cfg := defaultLeaseConfig()
 	cfg.Profiles[0].TTL = "2h"
+	cfg.LeaseTimeout = "2h" // the lease's time to Create is its whole TTL, as in spec 27
 	env := newBackendEnv(t, leaseEnvOptions{config: cfg})
 	id := env.issue(`{"profile":"tools","ttl":"90m"}`)
 	// 79 minutes and 59.5 seconds are left.

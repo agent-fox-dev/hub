@@ -640,6 +640,8 @@ type backendEnv struct {
 	*leaseEnv
 	prov    *recordingProvider
 	emitter *recordingEmitter
+	// metrics receives the sandbox metrics of the gateway; nil records none.
+	metrics *audit.Metrics
 	// sink is what the services emit to: the emitter, or nil for none.
 	sink    audit.Emitter
 	backend *Backend
@@ -650,7 +652,7 @@ type backendEnv struct {
 // the emitter.
 func newBackendEnv(t *testing.T, opts leaseEnvOptions) *backendEnv {
 	t.Helper()
-	env := &backendEnv{prov: newRecordingProvider(), emitter: &recordingEmitter{}}
+	env := &backendEnv{prov: newRecordingProvider(), emitter: &recordingEmitter{}, metrics: opts.metrics}
 	switch {
 	case opts.emitter != nil:
 		env.sink = opts.emitter
@@ -667,6 +669,10 @@ func newBackendEnv(t *testing.T, opts leaseEnvOptions) *backendEnv {
 		Audit:     env.sink,
 		Now:       env.clock.Now,
 		Principal: testPrincipal,
+		Metrics:   opts.metrics,
+		Sweeper: NewSweeper(SweeperConfig{
+			DB: env.db, Provider: env.prov, Boxes: &fakeBoxes{}, Audit: env.sink, Metrics: opts.metrics, Now: env.clock.Now,
+		}),
 	})
 	t.Cleanup(func() {
 		// A test may leave the provider failing or blocked; the boxes are closed
@@ -746,13 +752,26 @@ type testGateway struct{ *Gateway }
 // address and destroys boxes through it, and shuts it down when the test ends.
 // Its backend reads the principal the way production does, from gatewayd's own
 // context value.
+//
+// gatewayd reaps as soon as it serves, and hub's backend answers that with a
+// sweep. The helper waits until that sweep has run, so that it cannot start in the
+// middle of a test and end a lease the test has just made.
 func (e *backendEnv) startGateway() *testGateway {
 	e.t.Helper()
-	gw, err := StartGateway(e.profile, GatewayDeps{DB: e.db, Secrets: e.secrets, Audit: e.sink, Now: e.clock.Now})
+	reaps := e.prov.reapCount()
+	gw, err := StartGateway(e.profile, GatewayDeps{DB: e.db, Secrets: e.secrets, Audit: e.sink, Now: e.clock.Now, Metrics: e.metrics})
 	if err != nil {
 		e.t.Fatalf("StartGateway: %v", err)
 	}
 	stopAfter(e.t, gw)
+	for deadline := time.Now().Add(10 * time.Second); e.prov.reapCount() == reaps; time.Sleep(time.Millisecond) {
+		if time.Now().After(deadline) {
+			e.t.Fatal("the gateway did not reap when it started serving")
+		}
+	}
+	if err := gw.sweeper.Sweep(context.Background()); err != nil { // sweeps do not overlap, so this returns after the first
+		e.t.Fatalf("Sweep: %v", err)
+	}
 	e.svc.gatewayURL = gw.URL()
 	e.svc.boxes = gw
 	return &testGateway{gw}

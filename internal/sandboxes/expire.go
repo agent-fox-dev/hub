@@ -37,13 +37,19 @@ type Boxes interface {
 // only then emits its event. An ending that lost the update, because another
 // path got there first, emits nothing and the store records no metric for it.
 type ender struct {
-	store       *LeaseStore
+	store       leaseEnder
 	audit       audit.Emitter
 	boxes       Boxes
 	callTimeout time.Duration
 }
 
-func newEnder(store *LeaseStore, emitter audit.Emitter, boxes Boxes, callTimeout time.Duration) *ender {
+// leaseEnder is what the endings need of the lease store.
+type leaseEnder interface {
+	ExpireLease(id, reason string) (bool, error)
+	DestroyLease(id, from, reason string) (bool, error)
+}
+
+func newEnder(store leaseEnder, emitter audit.Emitter, boxes Boxes, callTimeout time.Duration) *ender {
 	return &ender{store: store, audit: emitter, boxes: boxes, callTimeout: callTimeout}
 }
 

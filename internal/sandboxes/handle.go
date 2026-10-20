@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"maps"
 	"time"
 
 	"github.com/txsvc/apikit"
@@ -101,6 +102,13 @@ func (b *Backend) isEnding(id string) bool {
 
 // endBox destroys the box of a lease for a DELETE and records nothing about the
 // lease: the DELETE does that, with its own actor and its own reason.
+func (b *Backend) endBox(ctx context.Context, server *gatewayd.Server, lease *Lease) error {
+	return b.destroyBox(ctx, server, *lease.SandboxID, lease.ID)
+}
+
+// destroyBox destroys the box with this id, which belongs to the lease with this
+// id, for a caller that records the end of the lease itself, and has the Close of
+// the box record nothing.
 //
 // The box is ended through the gateway, the embedder's way, which also frees its
 // place in the gateway. A box the gateway does not hold is either gone or one
@@ -108,27 +116,53 @@ func (b *Backend) isEnding(id string) bool {
 // failed, and it does not hold one whose Create has not returned yet. Hub closes
 // the handle it holds, and when it holds none the box is gone and there is
 // nothing to destroy.
-func (b *Backend) endBox(ctx context.Context, server *gatewayd.Server, lease *Lease) error {
-	b.mu.Lock()
-	b.ending[lease.ID] = struct{}{}
-	b.mu.Unlock()
-	defer func() {
+func (b *Backend) destroyBox(ctx context.Context, server *gatewayd.Server, boxID, leaseID string) error {
+	if leaseID != "" {
 		b.mu.Lock()
-		delete(b.ending, lease.ID)
+		b.ending[leaseID] = struct{}{}
 		b.mu.Unlock()
-	}()
+		defer func() {
+			b.mu.Lock()
+			delete(b.ending, leaseID)
+			b.mu.Unlock()
+		}()
+	}
 
-	err := server.Destroy(ctx, *lease.SandboxID)
+	err := server.Destroy(ctx, boxID)
 	if !errors.Is(err, gatewayd.ErrNotHeld) {
 		return err
 	}
 	b.mu.Lock()
-	h := b.boxes[lease.ID]
+	h := b.boxes[leaseID]
 	b.mu.Unlock()
 	if h == nil {
 		return nil
 	}
 	return b.closeProviderBox(ctx, h)
+}
+
+// heldBoxes lists the boxes hub holds a handle of: those made and not yet closed.
+func (b *Backend) heldBoxes() []Box {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	boxes := make([]Box, 0, len(b.boxes))
+	for _, h := range b.boxes {
+		boxes = append(boxes, Box{ID: h.ID(), Labels: maps.Clone(h.Spec().Labels)})
+	}
+	return boxes
+}
+
+// leaseOfBox returns the id of the lease whose box has this id, and "" when hub
+// holds no such box.
+func (b *Backend) leaseOfBox(boxID string) string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for leaseID, h := range b.boxes {
+		if h.ID() == boxID {
+			return leaseID
+		}
+	}
+	return ""
 }
 
 // expiryMargin is how close to a lease's expires_at a Close is taken to be the end

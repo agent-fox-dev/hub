@@ -42,6 +42,7 @@ type GatewayDeps struct {
 type Gateway struct {
 	server  *gatewayd.Server
 	backend *Backend
+	sweeper *Sweeper
 	url     string
 }
 
@@ -117,7 +118,15 @@ func startGateway(svc *Service, deps GatewayDeps, seams gatewaySeams) (*Gateway,
 		now = time.Now
 	}
 	store := NewLeaseStore(deps.DB, now).WithMetrics(deps.Metrics)
-	backend := newBackend(backendConfig{Service: svc, Store: store, Secrets: deps.Secrets, DB: deps.DB, Audit: deps.Audit, Now: now})
+	// The gateway is the sweeper's Boxes, so it exists before its server does.
+	g := &Gateway{}
+	sweeper := NewSweeper(SweeperConfig{
+		DB: deps.DB, Provider: svc.Provider(), Boxes: g, Audit: deps.Audit, Metrics: deps.Metrics, Now: now,
+	})
+	backend := newBackend(backendConfig{
+		Service: svc, Store: store, Secrets: deps.Secrets, DB: deps.DB, Audit: deps.Audit, Now: now,
+		Metrics: deps.Metrics, Sweeper: sweeper,
+	})
 	server, err := seams.newServer(gatewayd.Config{
 		Backend:      backend,
 		Authenticate: NewLeaseAuthenticator(store, now),
@@ -131,11 +140,8 @@ func startGateway(svc *Service, deps GatewayDeps, seams gatewaySeams) (*Gateway,
 		return nil, fmt.Errorf("sandbox gateway: %w", err)
 	}
 
-	g := &Gateway{
-		server:  server,
-		backend: backend,
-		url:     gatewayURL(settings.externalURL, tlsConfig != nil, listener.Addr()),
-	}
+	g.server, g.backend, g.sweeper = server, backend, sweeper
+	g.url = gatewayURL(settings.externalURL, tlsConfig != nil, listener.Addr())
 	go func() {
 		if err := seams.serve(server, listener); err != nil {
 			slog.Error("sandbox gateway: the gateway stopped serving, and hub cannot issue leases nobody can use", "error", err)
@@ -197,3 +203,17 @@ func (g *Gateway) DestroyBox(ctx context.Context, lease *Lease) error {
 	}
 	return g.backend.endBox(ctx, g.server, lease)
 }
+
+// List lists the boxes hub holds: those the gateway made and has not seen closed.
+// The provider cannot list its boxes, so a box of an earlier process is not here.
+func (g *Gateway) List(context.Context) ([]Box, error) {
+	return g.backend.heldBoxes(), nil
+}
+
+// Destroy destroys the box with this id, the way DELETE destroys the box of a
+// lease. A box hub does not hold is gone, and counts as destroyed.
+func (g *Gateway) Destroy(ctx context.Context, id string) error {
+	return g.backend.destroyBox(ctx, g.server, id, g.backend.leaseOfBox(id))
+}
+
+var _ Boxes = (*Gateway)(nil)

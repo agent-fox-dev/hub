@@ -24,6 +24,21 @@ func (r metricsRecorder) activated(workspace string) {
 	r.m.SandboxesActive.WithLabelValues(workspace).Inc()
 }
 
+// The results afhub_sandbox_creates_total counts.
+const (
+	createCreated = "created"
+	createFailed  = "failed"
+)
+
+// createResult counts a Create the gateway accepted for a leased lease, by how it
+// turned out.
+func (r metricsRecorder) createResult(result string) {
+	if r.m == nil {
+		return
+	}
+	r.m.SandboxCreatesTotal.WithLabelValues(result).Inc()
+}
+
 // ended records the ending of a live lease of the workspace into target, which
 // the store has just made. A lease that had a box (wasActive) is one box fewer.
 // A lease that becomes destroyed, for any reason, is observed once with the time

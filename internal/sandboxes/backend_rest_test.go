@@ -387,23 +387,26 @@ func TestHandleClose_AfterTheLeaseWasEnded(t *testing.T) {
 	}
 }
 
-// The periodic reap of the gateway has no principal and goes to the provider; the
-// error text it gets back is scrubbed like any other before it leaves the backend.
-// Requirements: 27-REQ-7.7, 27-REQ-9.3
+// The periodic reap of the gateway has no principal and runs the sweep, whose
+// first step is the provider's Reap; the error text the provider gives back is
+// scrubbed like any other, and goes to the log, since spec 28 has the sweep log its
+// failures and Reap return nothing.
+// Requirements: 27-REQ-7.7, 27-REQ-9.3, 28-REQ-5.5
 func TestBackendReap_ScrubsTheProviderError(t *testing.T) {
 	env := newBackendEnv(t, leaseEnvOptions{})
 	env.prov.setReap([]string{"left-over"}, errors.New("podman rm failed at https://user:pw@registry.example/x"))
 	before := env.prov.reapCount()
+	logs := captureDefaultLog(t)
 
 	ids, err := env.backend.Reap(context.Background())
 	if got := env.prov.reapCount() - before; got != 1 {
 		t.Errorf("provider Reap calls = %d; want 1", got)
 	}
-	if !reflect.DeepEqual(ids, []string{"left-over"}) {
-		t.Errorf("ids = %v; want the provider's", ids)
+	if len(ids) != 0 || err != nil {
+		t.Errorf("Reap = (%v, %v); want nothing: the sweep logs what the provider says", ids, err)
 	}
-	if err == nil || strings.Contains(err.Error(), "user:pw") || !strings.Contains(err.Error(), "podman rm failed") {
-		t.Errorf("error = %v; want the provider's text with the user information removed", err)
+	if out := logs.String(); !strings.Contains(out, "podman rm failed") || strings.Contains(out, "user:pw") {
+		t.Errorf("the log does not hold the provider's text with the user information removed:\n%s", out)
 	}
 }
 
