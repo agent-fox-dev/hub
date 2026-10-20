@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/agent-fox-dev/hub/internal/secrets"
 )
@@ -29,6 +30,10 @@ const (
 	// defaultListen is the address of the sandbox gateway when listen is absent.
 	defaultListen = "127.0.0.1:8443"
 )
+
+// minGatewayTokenLength is the fewest characters gateway_token may have: a short
+// token is weak, and scrubbing it from text would mangle ordinary words.
+const minGatewayTokenLength = 16
 
 // The bounds of lease_timeout (its upper bound is max_ttl) and reap_interval.
 const (
@@ -132,11 +137,12 @@ func Validate(cfg *Config) (*Validated, error) {
 		LeaseTimeout: defaultLeaseTimeout,
 		ReapInterval: defaultReapInterval,
 	}
-	if v.EngineBinary == "" {
+	if v.EngineBinary == "" && cfg.Provider != providerGateway {
 		v.EngineBinary = defaultEngineBinary
 	}
 
 	validateProvider(&c, cfg)
+	validateProviderKeys(&c, cfg)
 	maxTTLValid := validateMaxTTL(&c, cfg, v)
 	validateNetworkModes(&c, cfg, v)
 	validateMaxSandboxes(&c, cfg, v)
@@ -158,9 +164,40 @@ func validateProvider(c *collector, cfg *Config) {
 	switch cfg.Provider {
 	case providerPodman, providerGateway:
 	case "":
-		c.addf("sandbox.provider is required (accepted values: %q)", providerPodman)
+		c.addf("sandbox.provider is required (accepted values: %q, %q)", providerPodman, providerGateway)
 	default:
-		c.addf("sandbox.provider %q is not supported (accepted values: %q)", cfg.Provider, providerPodman)
+		c.addf("sandbox.provider %q is not supported (accepted values: %q, %q)", cfg.Provider, providerPodman, providerGateway)
+	}
+}
+
+// validateProviderKeys refuses the keys that belong to the other provider: the
+// engine binary, the runtime and the user namespace under provider "gateway", and
+// the gateway's address and token under provider "podman". A key that would do
+// nothing is not ignored, since an operator who sets runtime = "krun" would
+// believe in an isolation a remote gateway does not give. The failure names the
+// key and never repeats a value.
+func validateProviderKeys(c *collector, cfg *Config) {
+	var keys []struct{ name, value string }
+	var only string
+	switch cfg.Provider {
+	case providerGateway:
+		only = providerPodman
+		keys = []struct{ name, value string }{
+			{"sandbox.engine_binary", cfg.EngineBinary},
+			{"sandbox.runtime", cfg.Runtime},
+			{"sandbox.userns", cfg.UserNS},
+		}
+	case providerPodman:
+		only = providerGateway
+		keys = []struct{ name, value string }{
+			{"sandbox.gateway_url", cfg.GatewayURL},
+			{"sandbox.gateway_token", cfg.GatewayToken},
+		}
+	}
+	for _, key := range keys {
+		if key.value != "" {
+			c.addf("%s applies only to sandbox.provider %q", key.name, only)
+		}
 	}
 }
 
@@ -387,11 +424,18 @@ func validateGatewayToken(c *collector, cfg *Config, v *Validated) {
 	if cfg.Provider != providerGateway {
 		return
 	}
-	if cfg.GatewayToken == "" {
+	token := cfg.GatewayToken
+	if token == "" {
 		c.addf("sandbox.gateway_token is required when sandbox.provider is %q", providerGateway)
 		return
 	}
-	v.GatewayToken = newRedacted(cfg.GatewayToken)
+	if utf8.RuneCountInString(token) < minGatewayTokenLength {
+		c.addf("sandbox.gateway_token must be at least %d characters long", minGatewayTokenLength)
+	}
+	if strings.ContainsFunc(token, func(r rune) bool { return r < 0x21 || r > 0x7E }) {
+		c.addf("sandbox.gateway_token must contain only printable ASCII without spaces (0x21 to 0x7E)")
+	}
+	v.GatewayToken = newRedacted(token)
 }
 
 // validateNetworkModes checks network_modes and stores the effective list in
