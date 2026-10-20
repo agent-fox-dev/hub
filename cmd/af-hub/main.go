@@ -290,6 +290,13 @@ func main() {
 		log.Fatal(err)
 	}
 
+	// Create the sandbox lease table at every start, whether or not sandboxes
+	// are enabled, so that turning them off and on again keeps the history
+	// (spec 26).
+	if err := sandboxes.InitSchema(database.SqlDB); err != nil {
+		log.Fatal(err)
+	}
+
 	// Mount merge REST API routes (POST/GET/DELETE /merges, POST /rebase).
 	// Uses NewMergeAPIConfig to wire BatchRebase to the real GitRunner-backed
 	// implementation (12-REQ-12).
@@ -305,6 +312,21 @@ func main() {
 	// Mount the sandbox profile listing. The route exists even when sandboxes
 	// are not configured (a nil service) and then answers sandboxes_disabled.
 	sandboxes.RegisterRoutes(server.APIGroup(), sandboxSvc)
+
+	// Mount the lease routes (spec 26). The lease service needs the validated
+	// profiles, the database, the secrets store (for secret names only) and the
+	// audit emitter. A hub without sandboxes passes a nil service, and the routes
+	// answer sandboxes_disabled.
+	var leaseSvc *sandboxes.LeaseService
+	if sandboxSvc != nil {
+		leaseSvc = sandboxes.NewLeaseService(sandboxes.LeaseConfig{
+			Service: sandboxSvc,
+			DB:      database.SqlDB,
+			Secrets: store,
+			Audit:   auditEmitter,
+		})
+	}
+	sandboxes.RegisterLeaseRoutes(server.APIGroup(), leaseSvc)
 
 	// ---------------------------------------------------------------------------
 	// Carry-patch HTTP routes (spec 16)

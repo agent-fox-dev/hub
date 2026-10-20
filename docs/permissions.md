@@ -198,6 +198,10 @@ other users' workspaces.
 | Endpoint | Access | Ownership |
 |----------|--------|-----------|
 | `GET /api/v1/sandbox-profiles` | allowed | none; every authorised caller sees the same list |
+| `POST /api/v1/workspaces/:slug/sandboxes` | allowed | must own the workspace (404 if not), which must be active |
+| `GET /api/v1/workspaces/:slug/sandboxes`, `GET .../sandboxes/:id` | allowed | must own the workspace (404 if not) |
+| `DELETE /api/v1/workspaces/:slug/sandboxes/:id` | allowed | must own the workspace (404 if not) |
+| `GET /api/v1/sandboxes` | **admin tokens only** (403 for an API key) | all workspaces |
 
 #### Git Endpoints (all API keys, ownership enforced)
 
@@ -644,20 +648,21 @@ them before an operator enables sandboxes.
 | | |
 |---|---|
 | **Source** | hub |
-| **Grants** | List the deployment's sandbox profiles: names, images, resources, network, TTL, secret names and env key names, never a value |
-| **Endpoints** | `GET /api/v1/sandbox-profiles` |
+| **Grants** | List the deployment's sandbox profiles (names, images, resources, network, TTL, secret names and env key names, never a value), and list and read sandbox leases |
+| **Endpoints** | `GET /api/v1/sandbox-profiles`, `GET /api/v1/workspaces/:slug/sandboxes`, `GET /api/v1/workspaces/:slug/sandboxes/:id` |
 | **Implied by** | `sandboxes:write` |
-| **Ownership** | None. Every authorised caller sees the same list, whatever their workspaces, user or organisation. |
-| **Note** | API keys and admin tokens are not scope-checked. Without a `[sandbox]` section the endpoint answers `404` with `error_type: sandboxes_disabled` to every authenticated caller, before the scope is checked. |
+| **Ownership** | Profiles: none, every authorised caller sees the same list. Leases: enforced. The workspace is looked up through `wsaccess.AuthorizeWorkspace`; the caller must own it or hold an admin token, otherwise the answer is `404`. The scope check comes first, so a PAT without the scope gets `403` even for a workspace that does not exist. |
+| **Note** | API keys and admin tokens are not scope-checked. Without a `[sandbox]` section every sandbox route answers `404` with `error_type: sandboxes_disabled` to every authenticated caller, before the scope is checked. `GET /api/v1/sandboxes` (every workspace's leases) needs an admin token: a PAT holding both scopes gets `403`. |
 
 ### sandboxes:write
 
 | | |
 |---|---|
 | **Source** | hub |
-| **Grants** | Reserved for creating and releasing sandbox leases (spec `sandbox_leases`). It grants no endpoint of its own yet. |
-| **Endpoints** | *(none yet)* |
+| **Grants** | Issue sandbox leases and end them. The lease token is returned only in the response that issues the lease. |
+| **Endpoints** | `POST /api/v1/workspaces/:slug/sandboxes`, `DELETE /api/v1/workspaces/:slug/sandboxes/:id` |
 | **Implies** | `sandboxes:read` |
+| **Ownership** | Enforced, as for the lease reads. Issuing needs an active workspace; ending works on an archived one. |
 
 ---
 

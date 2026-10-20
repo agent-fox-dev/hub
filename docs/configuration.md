@@ -141,6 +141,7 @@ the hub is restarted.
 | `userns` | string | `""` | Passed to the engine as `--userns=<value>` when set. |
 | `max_ttl` | string | `"4h"` | The longest lifetime a profile may ask for, as a Go duration (`"90m"`, `"4h"`). Must be greater than zero. |
 | `network_modes` | list of strings | `["none"]` | The network modes profiles may use. Entries must be non-empty and unique, and each must be a mode the provider honours: `"none"` and `"unrestricted"` for Podman and Docker. A sandbox has no network unless the operator allows one. An empty list is accepted but leaves no mode for any profile, so every profile is then refused. |
+| `max_sandboxes` | integer | `16` | The most sandbox leases that may be live at once, across all workspaces. A lease counts while it is `leased` or `active` and its `expires_at` is in the future. At the limit `POST /api/v1/workspaces/:slug/sandboxes` answers `409` with `error_type: sandbox_capacity`. Must be a whole number of at least `1`. |
 
 #### [[sandbox.profiles]]
 
@@ -189,7 +190,10 @@ When the keys and profiles pass, the hub builds the provider from
    `sandbox.CheckSpec` must accept against the provider's capabilities. A
    refusal names the profile and carries `CheckSpec`'s text.
 
-The hub never creates a sandbox at start. After a successful start it logs one
+The hub never creates a sandbox at start. Callers obtain leases, not sandboxes,
+with `POST /api/v1/workspaces/:slug/sandboxes` (see
+[Sandbox Lease Endpoints](api.md#sandbox-lease-endpoints)); the lease table is
+created at every start, whether or not the section is present. After a successful start it logs one
 info line with the provider name and the profile names, and nothing else from
 the section.
 

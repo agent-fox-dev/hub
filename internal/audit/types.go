@@ -5,6 +5,14 @@ package audit
 
 import "errors"
 
+// EventSandboxLease is the hub audit event emitted when a sandbox lease is
+// issued (POST /workspaces/:slug/sandboxes). ResourceType is "sandbox",
+// ResourceID the lease ID and Action "lease". Metadata: lease_id, profile,
+// purpose, ttl (a Go duration string), secret_names and optional_secret_names,
+// never a secret value, an environment value or the lease token. Ending a
+// lease emits no event of this kind.
+const EventSandboxLease = "hub.sandbox.lease"
+
 // EventRebuildFollowup is the hub audit event emitted when a carry-patch
 // rebuild enqueues a follow-up rebuild because a patch tip or the upstream
 // base moved during the run. Metadata: stale_patches ([]string),

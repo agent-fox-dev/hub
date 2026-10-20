@@ -18,6 +18,7 @@ const (
 	defaultEngineBinary = "podman"
 	defaultMaxTTL       = 4 * time.Hour
 	defaultNetwork      = "none"
+	defaultMaxSandboxes = 16
 )
 
 // defaultNetworkModes returns network_modes when the key is absent: a sandbox
@@ -44,6 +45,8 @@ type Validated struct {
 	UserNS       string
 	MaxTTL       time.Duration
 	NetworkModes []string
+	// MaxSandboxes is the effective limit on live leases.
+	MaxSandboxes int
 	Profiles     []ValidatedProfile
 }
 
@@ -95,6 +98,7 @@ func Validate(cfg *Config) (*Validated, error) {
 		UserNS:       cfg.UserNS,
 		MaxTTL:       defaultMaxTTL,
 		NetworkModes: defaultNetworkModes(),
+		MaxSandboxes: defaultMaxSandboxes,
 	}
 	if v.EngineBinary == "" {
 		v.EngineBinary = defaultEngineBinary
@@ -103,6 +107,7 @@ func Validate(cfg *Config) (*Validated, error) {
 	validateProvider(&c, cfg)
 	maxTTLValid := validateMaxTTL(&c, cfg, v)
 	validateNetworkModes(&c, cfg, v)
+	validateMaxSandboxes(&c, cfg, v)
 	validateProfiles(&c, cfg, v, maxTTLValid)
 
 	if len(c.errs) > 0 {
@@ -142,6 +147,20 @@ func validateMaxTTL(c *collector, cfg *Config, v *Validated) bool {
 	}
 	v.MaxTTL = d
 	return true
+}
+
+// validateMaxSandboxes checks max_sandboxes, a whole number of at least 1, and
+// stores the effective limit in v.
+func validateMaxSandboxes(c *collector, cfg *Config, v *Validated) {
+	if cfg.MaxSandboxes == nil {
+		return
+	}
+	n, ok := wholeNumber(*cfg.MaxSandboxes)
+	if !ok || n < 1 {
+		c.addf("sandbox.max_sandboxes must be a whole number of 1 or more (got %v)", *cfg.MaxSandboxes)
+		return
+	}
+	v.MaxSandboxes = int(n)
 }
 
 // validateNetworkModes checks network_modes and stores the effective list in

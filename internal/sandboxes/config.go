@@ -30,6 +30,10 @@ type Config struct {
 	MaxTTL *string `toml:"max_ttl"`
 	// NetworkModes lists the network modes profiles may use; nil when absent.
 	NetworkModes []string `toml:"network_modes"`
+	// MaxSandboxes is the number of leases that may be live at once. It is a
+	// float so that a value that is not a whole number reaches validation;
+	// nil when absent.
+	MaxSandboxes *float64 `toml:"max_sandboxes"`
 	// Profiles are the [[sandbox.profiles]] tables in file order.
 	Profiles []ProfileConfig `toml:"profiles"`
 }

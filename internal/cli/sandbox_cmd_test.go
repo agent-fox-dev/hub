@@ -2,9 +2,14 @@ package cli
 
 import (
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -164,8 +169,10 @@ func TestSandboxProfilesCmd_ReportsHubErrors_TS_25_51(t *testing.T) {
 	}
 }
 
-// TS-25-52: BuildRootCommand registers the sandbox group, whose only
-// subcommand is profiles.
+// TS-25-52: BuildRootCommand registers the sandbox group. It had one
+// subcommand, profiles, when spec 25 was implemented; spec 26 adds create,
+// destroy, get and list (26-REQ-10), so the group's subcommands are now exactly
+// these five.
 // Requirement: 25-REQ-9.4
 func TestBuildRootCommand_SandboxGroup_TS_25_52(t *testing.T) {
 	sandbox, _, err := BuildRootCommand().Find([]string{"sandbox"})
@@ -176,7 +183,371 @@ func TestBuildRootCommand_SandboxGroup_TS_25_52(t *testing.T) {
 	for _, sub := range sandbox.Commands() {
 		names = append(names, sub.Name())
 	}
-	if !reflect.DeepEqual(names, []string{"profiles"}) {
-		t.Errorf("sandbox subcommands = %v; want [profiles]", names)
+	slices.Sort(names)
+	if want := []string{"create", "destroy", "get", "list", "profiles"}; !slices.Equal(names, want) {
+		t.Errorf("sandbox subcommands = %v; want %v", names, want)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Spec 26: afc sandbox create, list, get and destroy
+// ---------------------------------------------------------------------------
+
+// leaseToken and leaseBody are what a hub answers to a successful create.
+const (
+	leaseTokenText = "sbl_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+	leaseIDText    = "sbx_0123456789abcdef0123456789abcdef"
+)
+
+var leaseBodyText = `{"id":"` + leaseIDText + `","workspace":"widgets","profile":"tools","purpose":"","state":"leased","expires_at":"2030-01-02T04:04:05Z","image":"img","network":"none","resources":{"cpus":0,"memory_mb":0,"pids":0,"disk_mb":0},"require_landlock":false,"secrets":[],"optional_secrets":[],"labels":{},"created_by":"u1","created_at":"2030-01-02T03:04:05Z","updated_at":"2030-01-02T03:04:05Z","sandbox_id":null,"error":null,"ended_at":null,"end_reason":null}`
+
+// leaseHubRequest is one request a stub hub received.
+type leaseHubRequest struct {
+	Method, Path, Query, Auth, Body string
+}
+
+// leaseHub is a stub hub that records every request in full and answers
+// through handler.
+type leaseHub struct {
+	*httptest.Server
+	mu   sync.Mutex
+	reqs []leaseHubRequest
+}
+
+func newLeaseHub(t *testing.T, handler func(w http.ResponseWriter, r leaseHubRequest)) *leaseHub {
+	t.Helper()
+	hub := &leaseHub{}
+	hub.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		rec := leaseHubRequest{r.Method, r.URL.Path, r.URL.RawQuery, r.Header.Get("Authorization"), string(raw)}
+		hub.mu.Lock()
+		hub.reqs = append(hub.reqs, rec)
+		hub.mu.Unlock()
+		handler(w, rec)
+	}))
+	t.Cleanup(hub.Close)
+	return hub
+}
+
+func (h *leaseHub) requests() []leaseHubRequest {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return slices.Clone(h.reqs)
+}
+
+// respond writes a JSON answer.
+func respond(w http.ResponseWriter, status int, body string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_, _ = io.WriteString(w, body)
+}
+
+// createdHub answers a POST with a 201 lease that carries the token, and a
+// DELETE with a 204.
+func createdHub(t *testing.T) *leaseHub {
+	return newLeaseHub(t, func(w http.ResponseWriter, r leaseHubRequest) {
+		switch r.Method {
+		case http.MethodPost:
+			respond(w, http.StatusCreated, strings.TrimSuffix(leaseBodyText, "}")+`,"token":"`+leaseTokenText+`"}`)
+		case http.MethodDelete:
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			respond(w, http.StatusOK, leaseBodyText)
+		}
+	})
+}
+
+// runLease runs afc against hub.
+func runLease(t *testing.T, hub *leaseHub, args ...string) (stdout, stderr string, err error) {
+	t.Helper()
+	setupTestEnv(t)
+	full := append([]string{"--endpoint-url", hub.URL, "--api-key", "test-api-key"}, args...)
+	return runRootCmd(t, full...)
+}
+
+// postedBody decodes the body of the one POST a hub received.
+func postedBody(t *testing.T, hub *leaseHub) map[string]any {
+	t.Helper()
+	reqs := hub.requests()
+	if len(reqs) == 0 || reqs[0].Method != http.MethodPost {
+		t.Fatalf("requests = %+v; want a POST first", reqs)
+	}
+	var body map[string]any
+	if err := json.Unmarshal([]byte(reqs[0].Body), &body); err != nil {
+		t.Fatalf("the POST body is not a JSON object: %v\n%s", err, reqs[0].Body)
+	}
+	return body
+}
+
+// TS-26-55: afc sandbox create --token-file writes the token to a 0600 file and
+// leaves it out of stdout.
+// Requirement: 26-REQ-3.1
+func TestSandboxCreate_TokenFile_TS_26_55(t *testing.T) {
+	hub := createdHub(t)
+	path := filepath.Join(t.TempDir(), "token")
+	// A file that exists, with wider permissions and old content, is truncated
+	// and narrowed.
+	if err := os.WriteFile(path, []byte("old content that is longer than the token, for sure, yes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout, stderr, err := runLease(t, hub, "sandbox", "create", "widgets", "--profile", "tools", "--label", "k=v", "--label", "a=b=c", "--token-file", path)
+	if err != nil {
+		t.Fatalf("afc sandbox create returned error: %v\nstdout: %s\nstderr: %s", err, stdout, stderr)
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("the token file is missing: %v", err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Errorf("token file mode = %v; want 0600", info.Mode().Perm())
+	}
+	if got, _ := os.ReadFile(path); string(got) != leaseTokenText {
+		t.Errorf("token file holds %q; want exactly the token with no trailing newline", got)
+	}
+
+	doc, ok := decodeOneDocument(t, stdout).(map[string]any)
+	if !ok || doc["id"] != leaseIDText {
+		t.Fatalf("stdout is not the lease: %q", stdout)
+	}
+	if _, has := doc["token"]; has {
+		t.Errorf("stdout has a token key: %q", stdout)
+	}
+	if strings.Contains(stdout+stderr, leaseTokenText) {
+		t.Errorf("the token reached stdout or stderr:\nstdout: %s\nstderr: %s", stdout, stderr)
+	}
+
+	reqs := hub.requests()
+	if len(reqs) != 1 || reqs[0].Method != http.MethodPost || reqs[0].Path != "/api/v1/workspaces/widgets/sandboxes" || reqs[0].Auth != "Bearer test-api-key" {
+		t.Fatalf("requests = %+v; want one authenticated POST /api/v1/workspaces/widgets/sandboxes", reqs)
+	}
+	body := postedBody(t, hub)
+	labels, _ := body["labels"].(map[string]any)
+	if body["profile"] != "tools" || len(labels) != 2 || labels["k"] != "v" || labels["a"] != "b=c" {
+		t.Errorf("POST body = %v; want profile tools and labels {k: v, a: b=c}", body)
+	}
+	for _, key := range []string{"purpose", "ttl"} {
+		if _, has := body[key]; has {
+			t.Errorf("POST body has %s although no flag set it: %v", key, body)
+		}
+	}
+}
+
+// Without --token-file the whole lease, token included, is printed, and stderr
+// warns that the token will not be shown again. Flags that are set reach the
+// server, and --ttl is passed on unparsed.
+// Requirement: 26-REQ-10 (the create command)
+func TestSandboxCreate_PrintsTokenAndWarns(t *testing.T) {
+	hub := createdHub(t)
+	stdout, stderr, err := runLease(t, hub, "sandbox", "create", "widgets", "--purpose", "triage", "--ttl", "soon")
+	if err != nil {
+		t.Fatalf("afc sandbox create returned error: %v", err)
+	}
+	doc, _ := decodeOneDocument(t, stdout).(map[string]any)
+	if doc["token"] != leaseTokenText || doc["state"] != "leased" {
+		t.Errorf("stdout = %q; want the lease with its token", stdout)
+	}
+	if !strings.Contains(stderr, "not be shown again") || strings.Contains(stderr, leaseTokenText) {
+		t.Errorf("stderr = %q; want a warning that the token will not be shown again, without the token", stderr)
+	}
+	body := postedBody(t, hub)
+	if body["purpose"] != "triage" || body["ttl"] != "soon" {
+		t.Errorf("POST body = %v; want purpose triage and ttl soon, unparsed", body)
+	}
+	if _, has := body["profile"]; has {
+		t.Errorf("POST body has a profile although --profile was not set: %v", body)
+	}
+}
+
+// A label without '=', a repeated label key and a token file that cannot be
+// opened all exit 2 before any request is sent.
+// Requirement: 26-REQ-10 (the create command)
+func TestSandboxCreate_RefusedBeforeAnyRequest(t *testing.T) {
+	for name, args := range map[string][]string{
+		"label without =":      {"--label", "novalue"},
+		"repeated label key":   {"--label", "k=1", "--label", "k=2"},
+		"token file in a void": {"--token-file", filepath.Join(t.TempDir(), "no", "such", "dir", "token")},
+		"token file is a dir":  {"--token-file", t.TempDir()},
+	} {
+		t.Run(name, func(t *testing.T) {
+			hub := createdHub(t)
+			stdout, _, err := runLease(t, hub, append([]string{"sandbox", "create", "widgets"}, args...)...)
+			if err == nil {
+				t.Fatalf("afc sandbox create accepted the invocation; stdout: %s", stdout)
+			}
+			if code := ExitCode(err); code != 2 {
+				t.Errorf("exit code = %d; want 2", code)
+			}
+			if n := len(hub.requests()); n != 0 {
+				t.Errorf("the hub saw %d requests; want none", n)
+			}
+		})
+	}
+}
+
+// If the token cannot be written after the lease was issued, afc releases the
+// lease with a best-effort DELETE and exits non-zero naming the file. The token
+// never falls back to stdout, and the message claims a release only when the hub
+// confirmed it.
+// Requirement: 26-REQ-10 (the create command)
+func TestSandboxCreate_FailedTokenWriteRollsBack(t *testing.T) {
+	prev := writeTokenFile
+	writeTokenFile = func(*os.File, string) error { return errors.New("disk full") }
+	t.Cleanup(func() { writeTokenFile = prev })
+
+	for name, tc := range map[string]struct {
+		deleteStatus int
+		want, reject string
+	}{
+		"the release succeeds": {http.StatusNoContent, "was released", "could not be released"},
+		"the release fails":    {http.StatusInternalServerError, "could not be released; end it with: afc sandbox destroy widgets " + leaseIDText, "was released"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			hub := newLeaseHub(t, func(w http.ResponseWriter, r leaseHubRequest) {
+				if r.Method == http.MethodDelete {
+					if tc.deleteStatus == http.StatusNoContent {
+						w.WriteHeader(tc.deleteStatus)
+					} else {
+						respond(w, tc.deleteStatus, `{"error":{"code":500,"message":"boom"}}`)
+					}
+					return
+				}
+				respond(w, http.StatusCreated, strings.TrimSuffix(leaseBodyText, "}")+`,"token":"`+leaseTokenText+`"}`)
+			})
+			path := filepath.Join(t.TempDir(), "token")
+			stdout, stderr, err := runLease(t, hub, "sandbox", "create", "widgets", "--token-file", path)
+			if err == nil || ExitCode(err) == 0 {
+				t.Fatalf("afc sandbox create succeeded although the token could not be written (exit %d)", ExitCode(err))
+			}
+
+			reqs := hub.requests()
+			if len(reqs) != 2 || reqs[1].Method != http.MethodDelete || reqs[1].Path != "/api/v1/workspaces/widgets/sandboxes/"+leaseIDText {
+				t.Fatalf("requests = %+v; want the POST and then a DELETE of the new lease", reqs)
+			}
+			out := stdout + stderr + err.Error()
+			for _, want := range []string{path, tc.want} {
+				if !strings.Contains(out, want) {
+					t.Errorf("output does not contain %q:\n%s", want, out)
+				}
+			}
+			if strings.Contains(out, tc.reject) {
+				t.Errorf("output contains %q although that did not happen:\n%s", tc.reject, out)
+			}
+			if strings.Contains(stdout+stderr, leaseTokenText) {
+				t.Errorf("the token reached stdout or stderr after the failed write:\n%s\n%s", stdout, stderr)
+			}
+		})
+	}
+}
+
+// When the hub refuses the create, afc exits non-zero, writes no token and
+// reports the refusal.
+// Requirement: 26-REQ-10 (the create command)
+func TestSandboxCreate_HubRefusal(t *testing.T) {
+	hub := newLeaseHub(t, func(w http.ResponseWriter, r leaseHubRequest) {
+		respond(w, http.StatusUnprocessableEntity, `{"error":{"code":422,"message":"required secrets not found: GIT_PAT (searched scopes: workspace, user)","error_type":"secret_missing"}}`)
+	})
+	path := filepath.Join(t.TempDir(), "token")
+	stdout, _, err := runLease(t, hub, "sandbox", "create", "widgets", "--token-file", path)
+	if err == nil || ExitCode(err) != 1 {
+		t.Fatalf("exit code = %d (%v); want 1", ExitCode(err), err)
+	}
+	if !strings.Contains(stdout, "GIT_PAT") {
+		t.Errorf("stdout = %q; want the hub's message", stdout)
+	}
+	if got, _ := os.ReadFile(path); len(got) != 0 {
+		t.Errorf("the token file holds %q after a refused create", got)
+	}
+}
+
+// afc sandbox list and get send the reads and print what the hub answers.
+// Requirement: 26-REQ-10
+func TestSandboxListAndGet(t *testing.T) {
+	hub := newLeaseHub(t, func(w http.ResponseWriter, r leaseHubRequest) {
+		if strings.HasSuffix(r.Path, leaseIDText) {
+			respond(w, http.StatusOK, leaseBodyText)
+			return
+		}
+		respond(w, http.StatusOK, "["+leaseBodyText+"]")
+	})
+
+	stdout, _, err := runLease(t, hub, "sandbox", "list", "widgets")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if list, ok := decodeOneDocument(t, stdout).([]any); !ok || len(list) != 1 {
+		t.Errorf("list printed %q; want a one-element array", stdout)
+	}
+	if _, _, err := runLease(t, hub, "sandbox", "list", "widgets", "--all"); err != nil {
+		t.Fatalf("list --all: %v", err)
+	}
+	stdout, _, err = runLease(t, hub, "sandbox", "get", "widgets", leaseIDText)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if doc, ok := decodeOneDocument(t, stdout).(map[string]any); !ok || doc["id"] != leaseIDText {
+		t.Errorf("get printed %q; want the lease", stdout)
+	}
+
+	reqs := hub.requests()
+	want := []leaseHubRequest{
+		{http.MethodGet, "/api/v1/workspaces/widgets/sandboxes", "", "Bearer test-api-key", ""},
+		{http.MethodGet, "/api/v1/workspaces/widgets/sandboxes", "all=true", "Bearer test-api-key", ""},
+		{http.MethodGet, "/api/v1/workspaces/widgets/sandboxes/" + leaseIDText, "", "Bearer test-api-key", ""},
+	}
+	if !reflect.DeepEqual(reqs, want) {
+		t.Errorf("requests = %+v\nwant       %+v", reqs, want)
+	}
+
+	// Arguments are checked before any request.
+	before := len(hub.requests())
+	for _, args := range [][]string{{"list"}, {"list", "a", "b"}, {"get", "widgets"}, {"get", "a", "b", "c"}, {"create"}, {"destroy", "widgets"}} {
+		_, _, err := runLease(t, hub, append([]string{"sandbox"}, args...)...)
+		if err == nil || ExitCode(err) != 2 {
+			t.Errorf("afc sandbox %v: error %v, exit %d; want a usage error with exit 2", args, err, ExitCode(err))
+		}
+	}
+	if len(hub.requests()) != before {
+		t.Error("a usage error sent a request")
+	}
+}
+
+// TS-26-56: afc sandbox destroy sends DELETE and prints the synthetic status
+// document, with a confirmation on stderr.
+// Requirement: 26-REQ-8.1
+func TestSandboxDestroy_TS_26_56(t *testing.T) {
+	hub := newLeaseHub(t, func(w http.ResponseWriter, r leaseHubRequest) { w.WriteHeader(http.StatusNoContent) })
+
+	stdout, stderr, err := runLease(t, hub, "sandbox", "destroy", "widgets", "sbx_x")
+	if err != nil {
+		t.Fatalf("afc sandbox destroy returned error: %v", err)
+	}
+	want := map[string]any{"status": "destroyed", "id": "sbx_x"}
+	if got := decodeOneDocument(t, stdout); !reflect.DeepEqual(got, want) {
+		t.Errorf("stdout = %v; want %v", got, want)
+	}
+	if !strings.Contains(stderr, "sbx_x") {
+		t.Errorf("stderr = %q; want a confirmation naming the lease", stderr)
+	}
+	reqs := hub.requests()
+	if len(reqs) != 1 || reqs[0].Method != http.MethodDelete || reqs[0].Path != "/api/v1/workspaces/widgets/sandboxes/sbx_x" {
+		t.Errorf("requests = %+v; want one DELETE /api/v1/workspaces/widgets/sandboxes/sbx_x", reqs)
+	}
+}
+
+// A hub error on destroy is reported through apikit with its exit code and no
+// status document.
+// Requirement: 26-REQ-8.1
+func TestSandboxDestroy_HubError(t *testing.T) {
+	hub := newLeaseHub(t, func(w http.ResponseWriter, r leaseHubRequest) {
+		respond(w, http.StatusNotFound, `{"error":{"code":404,"message":"sandbox lease not found"}}`)
+	})
+	stdout, _, err := runLease(t, hub, "sandbox", "destroy", "widgets", "sbx_x")
+	if err == nil || ExitCode(err) != 1 {
+		t.Fatalf("exit code = %d (%v); want 1", ExitCode(err), err)
+	}
+	if strings.Contains(stdout, `"destroyed"`) || !strings.Contains(stdout, "sandbox lease not found") {
+		t.Errorf("stdout = %q; want the hub's error and no status document", stdout)
 	}
 }

@@ -2438,6 +2438,217 @@ paths:
                   message: sandboxes are not enabled on this hub
                   error_type: sandboxes_disabled
 
+  /api/v1/workspaces/{slug}/sandboxes:
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceSlug"
+    post:
+      tags: [Sandboxes]
+      operationId: issueSandboxLease
+      summary: Issue a sandbox lease
+      description: |
+        Issues a lease: a caller's right to one sandbox in the workspace. The
+        profile (the named one, or the configured default) is copied onto the
+        lease. Hub confirms that every secret the profile requires exists in
+        the workspace's resolution chain (workspace, then the org when the
+        workspace owner belongs to it, then the owner's user scope) by key
+        name, never reading a value, and enforces `[sandbox].max_sandboxes`.
+
+        The response is the only one that ever carries the lease `token`;
+        hub keeps its SHA-256 only. No sandbox is created.
+
+        Checks run in order: 401, `sandboxes_disabled`, 403 for a PAT without
+        `sandboxes:write`, 404 for a workspace that is missing or not owned
+        (admin tokens pass), 400 when the workspace is not active, then the
+        body.
+      x-required-scopes: ["sandboxes:write"]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SandboxLeaseRequest"
+      responses:
+        "201":
+          description: The lease and its token.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SandboxLeaseIssued"
+        "400":
+          description: >-
+            Malformed body, an unknown field, an unknown profile, a bad `ttl`,
+            `purpose` or `labels`, or a workspace that is not active.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/MissingScope"
+        "404":
+          description: 'Sandboxes are not enabled (`error_type: sandboxes_disabled`), or the workspace does not exist or is not owned by the caller.'
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: '`[sandbox].max_sandboxes` live leases exist already (`error_type: sandbox_capacity`).'
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: "A secret the profile requires exists in no searched scope (`error_type: secret_missing`)."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+    get:
+      tags: [Sandboxes]
+      operationId: listSandboxLeases
+      summary: List the workspace's sandbox leases
+      description: |
+        Newest `created_at` first, at most 200, as a bare array. Only live
+        leases (`leased`, later also `active`) are returned unless `all` is
+        true. Works on an archived workspace. Never carries a token, its hash
+        or an environment value.
+      x-required-scopes: ["sandboxes:read", "sandboxes:write"]
+      parameters:
+        - $ref: "#/components/parameters/SandboxLeaseAll"
+      responses:
+        "200":
+          description: The leases, `[]` when there are none.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/SandboxLease"
+        "400":
+          description: '`all` cannot be parsed as a boolean.'
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/MissingScope"
+        "404":
+          description: 'Sandboxes are not enabled (`error_type: sandboxes_disabled`), or the workspace does not exist or is not owned by the caller.'
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /api/v1/workspaces/{slug}/sandboxes/{id}:
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceSlug"
+      - $ref: "#/components/parameters/SandboxLeaseId"
+    get:
+      tags: [Sandboxes]
+      operationId: getSandboxLease
+      summary: Get one sandbox lease
+      description: Returns the lease in any state. Works on an archived workspace.
+      x-required-scopes: ["sandboxes:read", "sandboxes:write"]
+      responses:
+        "200":
+          description: The lease.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SandboxLease"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/MissingScope"
+        "404":
+          description: >-
+            Sandboxes are not enabled (`error_type: sandboxes_disabled`), the
+            workspace does not exist or is not owned by the caller, or the lease
+            id is malformed, unknown or another workspace's (`sandbox lease not
+            found`, without saying which).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+    delete:
+      tags: [Sandboxes]
+      operationId: endSandboxLease
+      summary: End a sandbox lease
+      description: |
+        Moves a live lease to `destroyed` with `end_reason` `api` and revokes
+        its token in one update. Answers 204 whether or not it changed
+        anything: a lease that has ended already keeps its `ended_at` and
+        `end_reason`, so a retry is harmless. Works on an archived workspace.
+        Emits no audit event.
+      x-required-scopes: ["sandboxes:write"]
+      responses:
+        "204":
+          description: The lease is ended.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/MissingScope"
+        "404":
+          description: As for the get operation.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /api/v1/sandboxes:
+    get:
+      tags: [Sandboxes]
+      operationId: listAllSandboxLeases
+      summary: List the leases of every workspace
+      description: |
+        Admin tokens only. The same representation, order, cap of 200 and `all`
+        behaviour as the workspace list.
+      x-required-scopes: []
+      parameters:
+        - $ref: "#/components/parameters/SandboxLeaseAll"
+      responses:
+        "200":
+          description: The leases, `[]` when there are none.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/SandboxLease"
+        "400":
+          description: '`all` cannot be parsed as a boolean.'
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: The credential is not an admin token, even an API key or a PAT holding both sandbox scopes.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: 'Sandboxes are not enabled (`error_type: sandboxes_disabled`).'
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
   # ---------------------------------------------------------------------------
   # Agent sessions
   # ---------------------------------------------------------------------------
@@ -4884,6 +5095,26 @@ components:
       schema:
         $ref: "#/components/schemas/Slug"
 
+    SandboxLeaseId:
+      name: id
+      in: path
+      required: true
+      description: The lease ID, `sbx_` and 32 lowercase hex characters.
+      schema:
+        type: string
+        pattern: "^sbx_[0-9a-f]{32}$"
+
+    SandboxLeaseAll:
+      name: all
+      in: query
+      required: false
+      description: >-
+        Include leases that have ended. Anything `strconv.ParseBool` accepts
+        (`1`, `t`, `T`, `TRUE`, `true`, `True`, `0`, `f`, `F`, `FALSE`, `false`,
+        `False`); other values, an empty one included, answer 400.
+      schema:
+        type: string
+
     OrgSlug:
       name: slug
       in: path
@@ -5324,6 +5555,8 @@ components:
                 - no_active_patches
                 - concurrent_rebuild
                 - sandboxes_disabled
+                - sandbox_capacity
+                - secret_missing
                 - workspace_mismatch
                 - workspace_access_denied
                 - workspace_archived
@@ -5814,6 +6047,134 @@ components:
             format: uuid
 
     # -- Rerere ----------------------------------------------------------------
+
+    SandboxLeaseRequest:
+      type: object
+      description: >-
+        The POST body. Every field is optional, an empty body counts as `{}`, and
+        any other field is refused.
+      additionalProperties: false
+      properties:
+        profile:
+          type: string
+          description: Profile name, exact and case-sensitive. Defaults to the configured default profile.
+        purpose:
+          type: string
+          description: At most 64 characters, no control character. Defaults to an empty string.
+          maxLength: 64
+        ttl:
+          type: string
+          description: >-
+            A Go duration such as `30m`, from `1m` up to the profile's TTL.
+            Defaults to the profile's TTL. Fractions of a second are cut off.
+          example: 30m
+        labels:
+          type: object
+          description: >-
+            At most 16 pairs. A key is 1 to 63 characters from `A-Za-z0-9._-`,
+            starts and ends with a letter or digit, and is not `lease` or
+            `workspace` in any case. A value has at most 256 bytes and no
+            control character.
+          maxProperties: 16
+          additionalProperties:
+            type: string
+            maxLength: 256
+
+    SandboxLease:
+      type: object
+      description: >-
+        A caller's right to one sandbox, with the profile copied at issue. It
+        never carries the token, the token's hash or an environment value.
+      required:
+        - id
+        - workspace
+        - profile
+        - purpose
+        - state
+        - expires_at
+        - image
+        - network
+        - resources
+        - require_landlock
+        - secrets
+        - optional_secrets
+        - labels
+        - created_by
+        - created_at
+        - updated_at
+        - sandbox_id
+        - error
+        - ended_at
+        - end_reason
+      properties:
+        id:
+          type: string
+          pattern: "^sbx_[0-9a-f]{32}$"
+        workspace:
+          type: string
+        profile:
+          type: string
+        purpose:
+          type: string
+        state:
+          type: string
+          description: '`leased` or `destroyed` in this release; `active`, `expired` and `failed` are reserved.'
+          enum: [leased, active, destroyed, expired, failed]
+        expires_at:
+          type: string
+          format: date-time
+          description: '`created_at` plus the lease TTL.'
+        image:
+          type: string
+        network:
+          type: string
+        resources:
+          $ref: "#/components/schemas/SandboxResources"
+        require_landlock:
+          type: boolean
+        secrets:
+          type: array
+          items:
+            type: string
+        optional_secrets:
+          type: array
+          items:
+            type: string
+        labels:
+          type: object
+          additionalProperties:
+            type: string
+        created_by:
+          type: string
+          description: The caller's user ID, or `admin` for an admin token.
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        sandbox_id:
+          type: [string, "null"]
+        error:
+          type: [string, "null"]
+        ended_at:
+          type: [string, "null"]
+          format: date-time
+        end_reason:
+          type: [string, "null"]
+          description: '`api` for a lease its holder ended.'
+
+    SandboxLeaseIssued:
+      description: The lease and its token. Only the POST that issued the lease returns the token.
+      allOf:
+        - $ref: "#/components/schemas/SandboxLease"
+        - type: object
+          required: [token]
+          properties:
+            token:
+              type: string
+              description: '`sbl_` and 44 characters of unpadded URL-safe base64 (33 random bytes). Shown once; hub keeps its SHA-256.'
+              pattern: "^sbl_[A-Za-z0-9_-]{44}$"
 
     SandboxProfileListResponse:
       type: object

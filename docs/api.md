@@ -59,8 +59,8 @@ they can access. The following scopes are available for workspace operations:
 | `sessions:write` | Open, close, and report token usage on agent sessions | POST /api/v1/sessions, POST /api/v1/sessions/:id/complete, POST /api/v1/sessions/:id/usage |
 | `audit:read` | Query audit events, view transcripts, and connect to SSE stream | GET /api/v1/audit, GET /api/v1/workspaces/:slug/runs/:run_id/transcript, GET /api/v1/events |
 | `audit:write` | Ingest agent audit events, traces, and session outcomes | POST endpoints under /api/v1/workspaces/:slug/runs/:run_id/ |
-| `sandboxes:read` | List the deployment's sandbox profiles | GET /api/v1/sandbox-profiles |
-| `sandboxes:write` | Reserved for sandbox leases; implies `sandboxes:read` | GET /api/v1/sandbox-profiles (no write endpoint yet) |
+| `sandboxes:read` | List the deployment's sandbox profiles; list and read sandbox leases | GET /api/v1/sandbox-profiles, GET /api/v1/workspaces/:slug/sandboxes, GET /api/v1/workspaces/:slug/sandboxes/:id |
+| `sandboxes:write` | Issue and end sandbox leases; implies `sandboxes:read` | POST /api/v1/workspaces/:slug/sandboxes, DELETE /api/v1/workspaces/:slug/sandboxes/:id (plus all `sandboxes:read` endpoints) |
 
 ### Implied Permissions
 
@@ -81,7 +81,8 @@ they can access. The following scopes are available for workspace operations:
 - `vars:write` implies `vars:read` — a PAT with write scope can also list and
   read variable values.
 - `sandboxes:write` implies `sandboxes:read` — a PAT with write scope can also
-  list sandbox profiles.
+  list sandbox profiles and read leases. `sandboxes:read` does not allow
+  issuing or ending a lease.
 
 ### Scopes Checked Literally
 
@@ -196,7 +197,9 @@ The `error_type` field is omitted when not applicable. Known error types:
 | `missing_on_origin` | POST /api/v1/workspaces/:slug/patches/:id/reset-to-origin | The patch branch does not exist on the fork |
 | `ref_changed` | POST /api/v1/workspaces/:slug/patches/:id/reset-to-origin | The patch branch was modified by another operation between the SHA resolution and the compare-and-swap write; retry |
 | `workspace_busy` | archive, sync, reclone, rollback, batch rebase, rerere forget, reset-to-origin | Another operation currently holds the workspace lock; retry later. A rebuild holds the lock only in its fetch phase and final phase, so sync, rollback, rerere forget and batch rebase are rejected only then; archive and reclone are rejected for the whole rebuild |
-| `sandboxes_disabled` | GET /api/v1/sandbox-profiles | The hub has no `[sandbox]` section in its `config.toml`, so sandboxes are not enabled. Answered with 404 to every authenticated caller before any scope is checked |
+| `sandboxes_disabled` | GET /api/v1/sandbox-profiles and every sandbox lease route | The hub has no `[sandbox]` section in its `config.toml`, so sandboxes are not enabled. Answered with 404 to every authenticated caller before any scope is checked |
+| `sandbox_capacity` | POST /api/v1/workspaces/:slug/sandboxes | The deployment's `max_sandboxes` limit on live leases is reached |
+| `secret_missing` | POST /api/v1/workspaces/:slug/sandboxes | A secret the profile requires exists in no searched scope of the workspace |
 
 ---
 
@@ -3567,6 +3570,193 @@ list, whatever their workspaces, user or organisation.
 
 ---
 
+## Sandbox Lease Endpoints
+
+A **lease** is a caller's right to one sandbox in a workspace. When a lease is
+issued the hub fixes the sandbox's shape from a configured profile (see
+[Sandbox Profile Endpoints](#sandbox-profile-endpoints)), confirms that the
+secrets the profile requires exist for the workspace, enforces the deployment's
+limit on live leases and hands back a **token**, a bearer credential for that one
+sandbox. The token is returned once, in the response that issues the lease, and
+the hub keeps only its SHA-256. This release records leases: no sandbox is
+created, and ending a lease only revokes its token.
+
+A lease is in state `leased` or `destroyed`; `active`, `expired` and `failed`
+are reserved for later releases. A lease never carries its token, the token's
+hash or the profile's environment values in any response but the issuing `POST`,
+which carries the token only.
+
+The lease routes check a request in this order, and the first failing check
+answers:
+
+1. No credential: 401.
+2. The hub has no `[sandbox]` section: 404 with `error_type: sandboxes_disabled`,
+   for every authenticated caller.
+3. A PAT without the scope the route needs: 403, before the workspace is looked
+   up. `POST` and `DELETE` need `sandboxes:write`; the `GET` routes need
+   `sandboxes:read` or `sandboxes:write`.
+4. A workspace that does not exist or that the caller does not own: 404
+   `workspace not found`, the same for both. Admin tokens may act on any existing
+   workspace.
+5. `POST` only: a workspace that is not active: 400 `workspace is not active`.
+
+### The lease representation
+
+Every response that shows a lease has exactly these fields.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | string | `sbx_` and 32 lowercase hex characters |
+| `workspace` | string | The workspace slug |
+| `profile` | string | The profile the lease was issued from |
+| `purpose` | string | The caller's purpose text, `""` when none |
+| `state` | string | `leased` or `destroyed` |
+| `expires_at` | string (RFC 3339 UTC) | `created_at` plus the lease's TTL |
+| `image` | string | The profile's image, as it was at issue |
+| `network` | string | The profile's network mode |
+| `resources` | object | `cpus` (number), `memory_mb`, `pids`, `disk_mb` (integers); `0` means the provider's default |
+| `require_landlock` | boolean | Whether the sandbox must confine its agent with Landlock |
+| `secrets` | array of string | Names of the secrets that were required; `[]` when none |
+| `optional_secrets` | array of string | Names of the optional secrets; `[]` when none |
+| `labels` | object | The caller's labels exactly as given; `{}` when none |
+| `created_by` | string | The caller's user ID, or `admin` for an admin token |
+| `created_at`, `updated_at` | string (RFC 3339 UTC) | When the lease was issued and last changed |
+| `sandbox_id`, `error`, `ended_at`, `end_reason` | string or `null` | `null` until set; `end_reason` is `api` for a lease its holder ended |
+
+The profile is copied onto the lease when it is issued, so editing the
+configuration and restarting the hub does not change a lease that exists.
+
+### POST /api/v1/workspaces/:slug/sandboxes
+
+Issue a lease in a workspace.
+
+**Authentication:** API Key, Admin Token, or PAT with `sandboxes:write`.
+
+**Request body:** a JSON object, optional as a whole (an empty body counts as
+`{}`). A field other than these four is refused, so that a caller cannot believe
+it set an image or an environment. Field names are matched exactly (`PROFILE` is
+not `profile`), and anything after the object is refused.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `profile` | string | Profile name, matched exactly and case-sensitively. Defaults to the profile marked `default` in the configuration |
+| `purpose` | string | At most 64 characters and no control character. Defaults to `""` |
+| `ttl` | string | A Go duration such as `30m`: at least `1m` and at most the profile's TTL. Defaults to the profile's TTL. Fractions of a second are cut off |
+| `labels` | object | At most 16 pairs of strings. A key is 1 to 63 characters from `A-Za-z0-9._-`, starts and ends with a letter or digit, and is not `lease` or `workspace` in any case. A value has at most 256 bytes and no control character |
+
+**Response (success):** HTTP 201 Created, the lease representation plus `token`.
+
+```json
+{
+  "id": "sbx_3f2a9c0e7b1d4c5a8e6f0b2d1c3a4e5f",
+  "workspace": "widgets",
+  "profile": "tools",
+  "purpose": "triage",
+  "state": "leased",
+  "expires_at": "2030-01-02T04:04:05Z",
+  "image": "registry.example.com/tools:1",
+  "network": "none",
+  "resources": {"cpus": 1, "memory_mb": 512, "pids": 100, "disk_mb": 0},
+  "require_landlock": true,
+  "secrets": ["GIT_PAT"],
+  "optional_secrets": [],
+  "labels": {"team": "red"},
+  "created_by": "user-1",
+  "created_at": "2030-01-02T03:04:05Z",
+  "updated_at": "2030-01-02T03:04:05Z",
+  "sandbox_id": null,
+  "error": null,
+  "ended_at": null,
+  "end_reason": null,
+  "token": "sbl_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+}
+```
+
+`token` is `sbl_` and 44 characters (33 random bytes in unpadded URL-safe base64),
+48 characters in all.
+
+**Required secrets.** Before the lease is stored the hub confirms that every
+secret the profile requires exists in at least one scope of the workspace's
+resolution chain, in order: the workspace, the workspace's org (only when the
+workspace has one and its owner is a member of it), and the workspace owner's
+user scope, never the caller's. Names match ignoring case. The hub reads key
+names only and never a secret value. Optional secrets are not checked. When
+some are missing the answer is 422 `secret_missing` and no lease is stored; its
+message names every missing key in the profile's order and the scope types
+searched, and no owner or org identifier, for example
+`required secrets not found: A_KEY, C_KEY (searched scopes: workspace, user)`.
+
+**Capacity.** `[sandbox].max_sandboxes` (default 16) limits the leases that are
+live at once. A lease counts while it is `leased` and its `expires_at` is in the
+future, in every workspace. At the limit the answer is 409 `sandbox_capacity`,
+for example `sandbox capacity reached: at most 2 leases may be live at once
+(max_sandboxes)`. The count and the insert are serialised, so concurrent
+requests never exceed the limit.
+
+**Error Codes:**
+
+| Status | Condition |
+|--------|-----------|
+| 400 | Malformed JSON, a body that cannot be read, or a body that is not an object; an unknown field (the message names it); an unknown profile, or no profile when none is the default (the message lists the profiles in configuration order); a `ttl` that does not parse, is under `1m` or is over the profile's TTL (the message names that TTL); a bad `purpose`; bad `labels` (the message names the label key); a workspace that is not active |
+| 401 | Unauthenticated request |
+| 403 | PAT lacks `sandboxes:write` scope |
+| 404 | Sandboxes are not enabled (`error_type: sandboxes_disabled`); the workspace does not exist or is not owned by the caller |
+| 409 | `max_sandboxes` is reached (`error_type: sandbox_capacity`) |
+| 413 | The body is larger than the server accepts |
+| 422 | A required secret exists in no searched scope (`error_type: secret_missing`) |
+| 500 | A database or random-source failure; nothing is stored |
+
+### GET /api/v1/workspaces/:slug/sandboxes
+
+List the workspace's leases, newest `created_at` first, at most 200, as a bare
+JSON array (`[]` when there are none). Only live leases (`leased`, and `active`
+in later releases) are returned unless `?all=true` also asks for those that have
+ended. `all` accepts what Go's `strconv.ParseBool` accepts (`1`, `t`, `T`, `TRUE`,
+`true`, `True`, `0`, `f`, `F`, `FALSE`, `false`, `False`); anything else, an empty
+value included, is 400. Works on an archived workspace.
+
+**Authentication:** API Key, Admin Token, or PAT with `sandboxes:read` or
+`sandboxes:write`.
+
+**Error Codes:** 400 (`all` cannot be parsed), 401, 403 (PAT without either
+scope), 404 (`sandboxes_disabled`, or workspace not found).
+
+### GET /api/v1/workspaces/:slug/sandboxes/:id
+
+Return one lease of the workspace, in any state. Works on an archived workspace.
+
+**Authentication:** as for the list.
+
+**Error Codes:** 401, 403, 404 (`sandboxes_disabled`; workspace not found; or
+`sandbox lease not found` for an `id` that is malformed, unknown or belongs to
+another workspace, without saying which).
+
+### DELETE /api/v1/workspaces/:slug/sandboxes/:id
+
+End a lease and revoke its token. A `leased` lease becomes `destroyed`, with
+`end_reason` `api` and `ended_at` and `updated_at` set to now; its token stops
+working at once. Answers 204 with no body. Ending a lease that has ended already
+also answers 204 and changes nothing, so a retry is harmless. Works on an
+archived workspace. No audit event is emitted.
+
+**Authentication:** API Key, Admin Token, or PAT with `sandboxes:write`.
+
+**Error Codes:** 401, 403, 404 (`sandboxes_disabled`; workspace not found; or
+`sandbox lease not found`, as above).
+
+### GET /api/v1/sandboxes
+
+List the leases of every workspace, in the same representation, order, cap and
+`?all=true` behaviour as the workspace list.
+
+**Authentication:** Admin Token only.
+
+**Error Codes:** 400 (`all` cannot be parsed), 401, 403 (any credential but an
+admin token, including an API key or a PAT holding both scopes), 404
+(`sandboxes_disabled`).
+
+---
+
 ## Hub Audit Events
 
 The hub emits structured audit events for significant operations. These events
@@ -3582,6 +3772,7 @@ query endpoint (`GET /api/v1/audit`). Each event has an `event_type`, an actor
 | `hub.patch.replace` | `patch` | A patch branch is replaced during an `origin`-mode sync (one event per replaced branch; `resource_id` is the branch name, `action` is `replace`, as for the reset-triggered event) | `branch_name`, `replaced_sha`, `origin_sha` |
 | `hub.patch.mirror_failed` | `patch` | A hub-mode mirror of a registered patch branch to the fork failed (one event per failed branch) | `branch_name`, `error` (with any URL userinfo removed) |
 | `hub.patch.reset` | `patch` | A patch branch is reset to the fork's tip via `POST /workspaces/:slug/patches/:id/reset-to-origin` | `branch_name`, `action` (`none`, `created`, `fast_forwarded` or `replaced`), `local_sha` (omitted when no local branch), `origin_sha`, `replaced_sha` (present only for `replaced`) |
+| `hub.sandbox.lease` | `sandbox` | A sandbox lease is issued via `POST /workspaces/:slug/sandboxes` (one event per successful request; `resource_id` is the lease ID, `action` is `lease`; ending a lease emits no event) | `lease_id`, `profile`, `purpose`, `ttl` (a Go duration string such as `1h0m0s`), `secret_names`, `optional_secret_names`. Never a secret value, an environment value or the lease token |
 
 A nil audit emitter skips emission. An emit error is logged without affecting
 the response. In `hub` mode no `hub.patch.sync` or `hub.patch.replace` events

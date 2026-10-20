@@ -25,8 +25,9 @@ type specChecker func(sandbox.Capabilities, sandbox.Spec) (sandbox.Spec, error)
 // Service is the validated sandbox definition and the provider it was checked
 // against. It is built once at start and read-only afterwards.
 type Service struct {
-	provider sandbox.Provider
-	profiles []ValidatedProfile
+	provider     sandbox.Provider
+	profiles     []ValidatedProfile
+	maxSandboxes int
 }
 
 // Start validates cfg, builds the provider through factory and checks it. A
@@ -68,7 +69,7 @@ func newService(v *Validated, p sandbox.Provider, check specChecker) (*Service, 
 	if len(errs) > 0 {
 		return nil, errors.Join(errs...)
 	}
-	return &Service{provider: p, profiles: slices.Clone(v.Profiles)}, nil
+	return &Service{provider: p, profiles: slices.Clone(v.Profiles), maxSandboxes: v.MaxSandboxes}, nil
 }
 
 // probe shows that the provider reaches its engine.
@@ -181,6 +182,9 @@ func megabytesToBytes(mb int64) (int64, bool) {
 	}
 	return mb * bytesPerMB, true
 }
+
+// MaxSandboxes returns the effective limit on live leases.
+func (s *Service) MaxSandboxes() int { return s.maxSandboxes }
 
 // Provider returns the provider the service was built with.
 func (s *Service) Provider() sandbox.Provider { return s.provider }
