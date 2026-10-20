@@ -30,14 +30,14 @@ func RegisterRoutes(api *echo.Group, cfg Config) {
 
 	api.GET("/workspaces/:slug/forge", h.route(false))
 	api.GET("/workspaces/:slug/forge/repository", h.serve(prepareRepository))
-	api.GET("/workspaces/:slug/issues", h.route(true))
-	api.GET("/workspaces/:slug/issues/:n", h.route(true))
-	api.GET("/workspaces/:slug/issues/:n/comments", h.route(true))
-	api.GET("/workspaces/:slug/pulls/:n", h.route(true))
-	api.GET("/workspaces/:slug/pulls/:n/state", h.route(true))
-	api.GET("/workspaces/:slug/pulls/:n/files", h.route(true))
-	api.GET("/workspaces/:slug/pulls/:n/checks", h.route(true))
-	api.GET("/workspaces/:slug/pulls/:n/reviews", h.route(true))
+	api.GET("/workspaces/:slug/issues", h.serve(prepareIssues))
+	api.GET("/workspaces/:slug/issues/:n", h.serve(numbered(false, readIssue)))
+	api.GET("/workspaces/:slug/issues/:n/comments", h.serve(numbered(false, readComments)))
+	api.GET("/workspaces/:slug/pulls/:n", h.serve(numbered(true, valueOf(issuex.Client.ReadPullRequest))))
+	api.GET("/workspaces/:slug/pulls/:n/state", h.serve(numbered(true, valueOf(issuex.Client.GetPRState))))
+	api.GET("/workspaces/:slug/pulls/:n/files", h.serve(numbered(true, listOf(issuex.Client.ReadChangedFiles))))
+	api.GET("/workspaces/:slug/pulls/:n/checks", h.serve(numbered(true, listOf(issuex.Client.GetCIChecks))))
+	api.GET("/workspaces/:slug/pulls/:n/reviews", h.serve(numbered(true, listOf(issuex.Client.GetPRReviews))))
 }
 
 // request is what the checks every forge route shares establish about a request.

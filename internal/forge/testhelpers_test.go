@@ -435,3 +435,150 @@ func (c *countingTransport) RoundTrip(*http.Request) (*http.Response, error) {
 	c.n.Add(1)
 	return nil, io.ErrUnexpectedEOF
 }
+
+// ---------------------------------------------------------------------------
+// A GitHub fixture and a recording client
+// ---------------------------------------------------------------------------
+
+// githubFixture answers the requests of the nine read routes with minimal GitHub
+// JSON for acme/widgets: two issues and a pull request in the issue list, one issue,
+// two comments, one pull request whose head is abc123, one changed file, one check
+// run and one review.
+func githubFixture(w http.ResponseWriter, r *http.Request) {
+	const (
+		user = `{"login":"alice"}`
+		when = `"2026-01-02T03:04:05Z"`
+		pr   = `{"number":1,"title":"Add widgets","body":"body","state":"open","html_url":"https://github.com/acme/widgets/pull/1","draft":false,"merged":false,"user":` + user +
+			`,"head":{"ref":"feature","sha":"abc123"},"base":{"ref":"main","sha":"def456"},"created_at":` + when + `,"updated_at":` + when + `}`
+		issue = `{"number":1,"title":"Widgets break","body":"it breaks","state":"open","html_url":"https://github.com/acme/widgets/issues/1","user":` + user +
+			`,"labels":[{"name":"af:triage"}],"created_at":` + when + `,"updated_at":` + when + `}`
+		other = `{"number":2,"title":"Second","body":"","state":"open","html_url":"https://github.com/acme/widgets/issues/2","user":` + user +
+			`,"labels":[],"created_at":` + when + `,"updated_at":` + when + `}`
+		asPR = `{"number":3,"title":"A pull request","state":"open","user":` + user + `,"pull_request":{"url":"x"},"created_at":` + when + `,"updated_at":` + when + `}`
+	)
+	body := map[string]string{
+		"/repos/acme/widgets":                           githubRepositoryBody,
+		"/repos/acme/widgets/issues":                    `[` + issue + `,` + other + `,` + asPR + `]`,
+		"/repos/acme/widgets/issues/1":                  issue,
+		"/repos/acme/widgets/issues/1/comments":         `[{"id":10,"body":"first","user":` + user + `,"created_at":` + when + `,"updated_at":` + when + `},{"id":11,"body":"second","user":` + user + `,"created_at":` + when + `,"updated_at":` + when + `}]`,
+		"/repos/acme/widgets/pulls/1":                   pr,
+		"/repos/acme/widgets/pulls/1/files":             `[{"filename":"a.go","status":"modified","additions":3,"deletions":1}]`,
+		"/repos/acme/widgets/commits/abc123/check-runs": `{"total_count":1,"check_runs":[{"name":"build","status":"completed","conclusion":"success","html_url":"https://ci.example/1","output":{"title":"ok","summary":"all green"}}]}`,
+		"/repos/acme/widgets/pulls/1/reviews":           `[{"user":` + user + `,"state":"APPROVED","body":"lgtm","submitted_at":` + when + `}]`,
+	}[r.URL.Path]
+	if body == "" {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	io.WriteString(w, body)
+}
+
+// recordingClient is an issuex client that records the arguments of the read methods
+// and answers each with an empty result: nil slices, so that a route's handling of an
+// empty list is seen. The methods the routes do not use panic.
+type recordingClient struct {
+	issuex.Client
+
+	mu     sync.Mutex
+	calls  []string
+	repo   issuex.Repo
+	ref    issuex.IssueRef
+	filter issuex.IssueFilter
+}
+
+func (r *recordingClient) note(call string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls = append(r.calls, call)
+}
+
+func (r *recordingClient) called() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.calls...)
+}
+
+func (r *recordingClient) GetRepository(_ context.Context, repo issuex.Repo) (issuex.Repository, error) {
+	r.note("GetRepository")
+	r.mu.Lock()
+	r.repo = repo
+	r.mu.Unlock()
+	return issuex.Repository{}, nil
+}
+
+func (r *recordingClient) ListIssues(_ context.Context, repo issuex.Repo, f issuex.IssueFilter) (issuex.IssueList, error) {
+	r.note("ListIssues")
+	r.mu.Lock()
+	r.repo, r.filter = repo, f
+	r.mu.Unlock()
+	return issuex.IssueList{}, nil
+}
+
+func (r *recordingClient) ReadIssue(_ context.Context, ref issuex.IssueRef) (issuex.IssueThread, error) {
+	r.note("ReadIssue")
+	r.mu.Lock()
+	r.ref = ref
+	r.mu.Unlock()
+	return issuex.IssueThread{}, nil
+}
+
+func (r *recordingClient) ListComments(_ context.Context, ref issuex.IssueRef) (issuex.CommentList, error) {
+	r.note("ListComments")
+	r.mu.Lock()
+	r.ref = ref
+	r.mu.Unlock()
+	return issuex.CommentList{}, nil
+}
+
+func (r *recordingClient) ReadPullRequest(_ context.Context, ref issuex.IssueRef) (issuex.PullRequest, error) {
+	r.note("ReadPullRequest")
+	r.mu.Lock()
+	r.ref = ref
+	r.mu.Unlock()
+	return issuex.PullRequest{}, nil
+}
+
+func (r *recordingClient) GetPRState(_ context.Context, ref issuex.IssueRef) (issuex.PRState, error) {
+	r.note("GetPRState")
+	r.mu.Lock()
+	r.ref = ref
+	r.mu.Unlock()
+	return issuex.PRState{}, nil
+}
+
+func (r *recordingClient) ReadChangedFiles(_ context.Context, ref issuex.IssueRef) ([]issuex.ChangedFile, error) {
+	r.note("ReadChangedFiles")
+	r.mu.Lock()
+	r.ref = ref
+	r.mu.Unlock()
+	return nil, nil
+}
+
+func (r *recordingClient) GetCIChecks(_ context.Context, ref issuex.IssueRef) ([]issuex.CheckRun, error) {
+	r.note("GetCIChecks")
+	r.mu.Lock()
+	r.ref = ref
+	r.mu.Unlock()
+	return nil, nil
+}
+
+func (r *recordingClient) GetPRReviews(_ context.Context, ref issuex.IssueRef) ([]issuex.Review, error) {
+	r.note("GetPRReviews")
+	r.mu.Lock()
+	r.ref = ref
+	r.mu.Unlock()
+	return nil, nil
+}
+
+// useClient makes the routes use rc, and counts the clients built in *built.
+func useClient(rc *recordingClient, built *atomic.Int64) func(*Config) {
+	return func(cfg *Config) {
+		cfg.NewClient = func(issuex.Options) (issuex.Client, error) {
+			if built != nil {
+				built.Add(1)
+			}
+			return rc, nil
+		}
+	}
+}

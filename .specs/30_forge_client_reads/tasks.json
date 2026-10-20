@@ -191,7 +191,7 @@
       "done_when": [
         "all nine read routes return 200 against the stub"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     },
     {

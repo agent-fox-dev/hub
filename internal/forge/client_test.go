@@ -65,16 +65,22 @@ func TestUpstreamTargetUsesUpstreamOnly_TS_30_12(t *testing.T) {
 	e.setVar("fork", "FORGE_API_URL", stubA.URL)
 	e.setVar("fork", "UPSTREAM_FORGE_API_URL", stubB.URL)
 
-	rec := e.get("/workspaces/fork/forge/repository?target=upstream", apiKeyAuth())
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d; want 200\n%s", rec.Code, rec.Body)
-	}
-	reqs := stubB.received()
-	if len(reqs) != 1 {
-		t.Fatalf("stub B received %d requests; want 1", len(reqs))
-	}
-	if reqs[0].Path != "/repos/up/widgets" || bearer(reqs[0]) != "upstream-token" {
-		t.Errorf("stub B saw %s with token %q; want /repos/up/widgets with the upstream token", reqs[0].Path, bearer(reqs[0]))
+	for _, tc := range []struct{ route, path string }{
+		{"/forge/repository", "/repos/up/widgets"},
+		{"/pulls/1/state", "/repos/up/widgets/pulls/1"},
+	} {
+		before := len(stubB.received())
+		rec := e.get("/workspaces/fork"+tc.route+"?target=upstream", apiKeyAuth())
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s: status = %d; want 200\n%s", tc.route, rec.Code, rec.Body)
+		}
+		reqs := stubB.received()
+		if len(reqs) != before+1 {
+			t.Fatalf("%s: stub B received %d requests; want %d", tc.route, len(reqs), before+1)
+		}
+		if last := reqs[len(reqs)-1]; last.Path != tc.path || bearer(last) != "upstream-token" {
+			t.Errorf("%s: stub B saw %s with token %q; want %s with the upstream token", tc.route, last.Path, bearer(last), tc.path)
+		}
 	}
 	if n := stubA.count(); n != 0 {
 		t.Errorf("stub A (FORGE_API_URL) received %d requests; want none", n)
@@ -89,7 +95,7 @@ func TestUpstreamTargetUsesUpstreamOnly_TS_30_12(t *testing.T) {
 		carryPatch("https://git.other.example/up/widgets")(r)
 	})
 	e.setVar("fork2", "FORGE_API_URL", stubA.URL)
-	rec = e.get("/workspaces/fork2/forge/repository?target=upstream", apiKeyAuth())
+	rec := e.get("/workspaces/fork2/forge/repository?target=upstream", apiKeyAuth())
 	if rec.Code != http.StatusUnprocessableEntity || decodeError(t, rec).ErrorType != "forge_unknown" {
 		t.Errorf("status = %d, body %s; want 422 forge_unknown", rec.Code, rec.Body)
 	}
