@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -59,7 +60,7 @@ func newAfHubEnv(t *testing.T, sandboxSection string) *afHubEnv {
 
 	// The sandbox gateway takes a free port: its default is 8443, which another
 	// hub or another test may hold.
-	if strings.HasPrefix(sandboxSection, "[sandbox]\n") {
+	if strings.HasPrefix(sandboxSection, "[sandbox]\n") && !regexp.MustCompile(`(?m)^listen\s*=`).MatchString(sandboxSection) {
 		sandboxSection = strings.Replace(sandboxSection, "[sandbox]\n", "[sandbox]\nlisten = \"127.0.0.1:0\"\n", 1)
 	}
 

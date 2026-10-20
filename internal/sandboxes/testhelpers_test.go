@@ -98,7 +98,8 @@ type leaseEnvOptions struct {
 	start time.Time
 	// provider replaces the provider the profile service is checked against.
 	provider sandbox.Provider
-	// noEmitter builds a backend environment with no audit emitter at all.
+	// noEmitter builds a backend environment with no audit emitter at all. An
+	// emitter given in emitter is used in place of the recording one.
 	noEmitter bool
 }
 
@@ -606,7 +607,10 @@ type backendEnv struct {
 func newBackendEnv(t *testing.T, opts leaseEnvOptions) *backendEnv {
 	t.Helper()
 	env := &backendEnv{prov: newRecordingProvider(), emitter: &recordingEmitter{}}
-	if !opts.noEmitter {
+	switch {
+	case opts.emitter != nil:
+		env.sink = opts.emitter
+	case !opts.noEmitter:
 		env.sink = env.emitter
 	}
 	opts.provider, opts.emitter = env.prov, env.sink

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"time"
 
 	"github.com/txsvc/apikit"
 
@@ -130,20 +131,26 @@ func (b *Backend) endBox(ctx context.Context, server *gatewayd.Server, lease *Le
 	return b.closeProviderBox(ctx, h)
 }
 
+// expiryMargin is how close to a lease's expires_at a Close is taken to be the end
+// of the box's own time and not the client's doing. The box's TTL is the time the
+// lease had left cut down to whole seconds, so gatewayd, which closes a box when
+// its TTL ends, closes it up to a second before expires_at.
+const expiryMargin = 2 * time.Second
+
 // endByClient moves the lease from active to destroyed with the reason client
 // and emits one destroy event, the first time it is called for the lease. A lease
 // that has ended already is not touched.
 //
-// gatewayd also closes a box when its TTL passes, and an expired lease is not the
-// client's doing: marking it is for the sweep that owns expiry, so a Close after
-// the lease's time is up ends nothing.
+// gatewayd also closes a box when its TTL passes, and a lease that has run out is
+// not the client's doing: marking it is for the sweep that owns expiry, so a Close
+// in the last moments of the lease's time, or after it, ends nothing.
 func (b *Backend) endByClient(ctx context.Context, h *handle) {
 	expires, err := apikit.ParseUTC(h.lease.ExpiresAt)
 	if err != nil {
 		slog.Error("sandbox gateway: a lease has an expires_at that cannot be read", "lease_id", h.lease.ID, "error", err)
 		return
 	}
-	if !expires.After(b.now()) {
+	if !expires.After(b.now().Add(expiryMargin)) {
 		return
 	}
 	changed, err := b.store.DestroyLease(h.lease.ID, leaseActive, leaseEndReasonClient)

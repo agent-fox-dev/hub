@@ -313,6 +313,56 @@ func TestHandleClose_AfterExpiryChangesNothing(t *testing.T) {
 	}
 }
 
+// gatewayd closes a box when its TTL ends. The TTL is the time the lease had left
+// cut down to whole seconds, so that Close comes up to a second before the
+// lease's expires_at, and it is no client's doing either.
+func TestHandleClose_AtTheBoxsOwnTTLChangesNothing(t *testing.T) {
+	for name, early := range map[string]time.Duration{
+		"a second before": time.Second,
+		"just before":     50 * time.Millisecond,
+		"at the time":     0,
+	} {
+		t.Run(name, func(t *testing.T) {
+			env := newBackendEnv(t, leaseEnvOptions{})
+			id := env.issue(`{"profile":"tools"}`)
+			sb, err := env.create(id, sandbox.Spec{})
+			if err != nil {
+				t.Fatalf("Create: %v", err)
+			}
+			expires, _ := apikitParse(t, env.lease(id).ExpiresAt)
+			env.clock.Advance(expires.Sub(env.clock.Now()) - early)
+			before := *env.lease(id)
+
+			if err := sb.Close(context.Background()); err != nil {
+				t.Fatalf("Close: %v", err)
+			}
+			if after := *env.lease(id); !reflect.DeepEqual(before, after) || after.State != "active" {
+				t.Errorf("the lease changed: %+v -> %+v", before, after)
+			}
+			if n := len(env.eventsOf(audit.EventSandboxDestroy)); n != 0 {
+				t.Errorf("hub.sandbox.destroy events = %d; want 0", n)
+			}
+		})
+	}
+
+	t.Run("well before is the client's", func(t *testing.T) {
+		env := newBackendEnv(t, leaseEnvOptions{})
+		id := env.issue(`{"profile":"tools"}`)
+		sb, err := env.create(id, sandbox.Spec{})
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		expires, _ := apikitParse(t, env.lease(id).ExpiresAt)
+		env.clock.Advance(expires.Sub(env.clock.Now()) - 10*time.Second)
+		if err := sb.Close(context.Background()); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+		if lease := env.lease(id); lease.State != "destroyed" || lease.EndReason == nil || *lease.EndReason != "client" {
+			t.Errorf("lease state %q, end_reason %v; want destroyed by the client", lease.State, lease.EndReason)
+		}
+	})
+}
+
 // A Close after a DELETE ended the lease closes the box and records nothing a
 // second time.
 func TestHandleClose_AfterTheLeaseWasEnded(t *testing.T) {
