@@ -27,12 +27,15 @@ type recordingEmitter struct {
 	mu     sync.Mutex
 	events []audit.HubEvent
 	err    error
+	// ctxErr is the error of the context of each Emit, nil for a live one.
+	ctxErr []error
 }
 
-func (r *recordingEmitter) Emit(_ context.Context, event audit.HubEvent) error {
+func (r *recordingEmitter) Emit(ctx context.Context, event audit.HubEvent) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.events = append(r.events, event)
+	r.ctxErr = append(r.ctxErr, ctx.Err())
 	return r.err
 }
 

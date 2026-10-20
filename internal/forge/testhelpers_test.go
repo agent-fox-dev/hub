@@ -188,6 +188,13 @@ func (s *forgeStub) received() []recordedRequest {
 
 func (s *forgeStub) count() int { return len(s.received()) }
 
+// forget drops the requests recorded so far, for a test that sends requests too large to keep.
+func (s *forgeStub) forget() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.requests = nil
+}
+
 // ---------------------------------------------------------------------------
 // The test environment
 // ---------------------------------------------------------------------------
