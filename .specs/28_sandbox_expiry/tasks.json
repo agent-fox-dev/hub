@@ -85,7 +85,7 @@
         "internal/sandboxes/validate.go",
         "internal/sandboxes/config_expiry_test.go"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 3,
