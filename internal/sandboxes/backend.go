@@ -2,6 +2,7 @@ package sandboxes
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -53,6 +54,10 @@ type backendConfig struct {
 	// Service holds the provider and the validated profiles.
 	Service *Service
 	Store   leaseRepo
+	// Secrets reads secret values, and DB holds the workspace tables the scope
+	// chain is read from.
+	Secrets SecretReader
+	DB      *sql.DB
 	// Audit receives the gateway's events; nil means none.
 	Audit audit.Emitter
 	// Now is the clock; time.Now when nil.
@@ -70,6 +75,8 @@ type Backend struct {
 	provider  sandbox.Provider
 	service   *Service
 	store     leaseRepo
+	secrets   SecretReader
+	db        *sql.DB
 	audit     audit.Emitter
 	now       func() time.Time
 	principal func(context.Context) (string, bool)
@@ -84,6 +91,8 @@ func newBackend(cfg backendConfig) *Backend {
 		provider:  cfg.Service.Provider(),
 		service:   cfg.Service,
 		store:     cfg.Store,
+		secrets:   cfg.Secrets,
+		db:        cfg.DB,
 		audit:     cfg.Audit,
 		now:       cfg.Now,
 		principal: cfg.Principal,
@@ -135,13 +144,18 @@ func (b *Backend) hasProfile(name string) bool {
 	return false
 }
 
+// discardTimeout bounds the destruction of a box that was created for nothing.
+const discardTimeout = 30 * time.Second
+
 // Create makes the box of the lease the call is made under. The lease is the
 // principal gatewayd authenticated; the caller's spec contributes only its
 // working directory and its labels.
 //
 // A lease that cannot be created from (not leased, expired) is refused with
-// FailedPrecondition and left as it is. A lease whose profile is gone, or whose
-// spec cannot be built, fails.
+// FailedPrecondition and left as it is. A lease whose profile is gone, whose
+// spec cannot be built or whose required secrets exist nowhere fails. A store
+// error leaves the lease leased, so the caller can try again. If the provider
+// fails, the lease fails with the provider's message, scrubbed.
 func (b *Backend) Create(ctx context.Context, caller sandbox.Spec) (sandbox.Sandbox, error) {
 	id, ok := b.principal(ctx)
 	if !ok {
@@ -152,42 +166,125 @@ func (b *Backend) Create(ctx context.Context, caller sandbox.Spec) (sandbox.Sand
 	}
 	defer b.release(id)
 
-	lease, err := b.store.GetLease(id)
-	switch {
-	case errors.Is(err, ErrLeaseNotFound):
-		return nil, &statusError{code: codes.NotFound, msg: fmt.Sprintf("lease %s not found", id)}
-	case err != nil:
-		return nil, internalError("reading a lease failed", err)
-	case lease.State != leaseLeased:
-		return nil, failedPrecondition("lease %s is %s: only a leased lease can create its box", id, lease.State)
-	}
-
-	// The lease's expiry is the box's TTL, in whole seconds. Less than a second
-	// is no TTL at all: a zero TTL is an hour to a provider.
-	expires, err := apikit.ParseUTC(lease.ExpiresAt)
+	lease, remaining, err := b.creatable(id)
 	if err != nil {
-		return nil, internalError("a lease has an expires_at that cannot be read", err)
+		return nil, err
 	}
-	remaining := expires.Sub(b.now()).Truncate(time.Second)
-	if remaining <= 0 {
-		return nil, failedPrecondition("lease %s has expired", id)
-	}
-
 	if !b.hasProfile(lease.Profile) {
-		return nil, b.failLease(ctx, lease, fmt.Sprintf("profile %q is no longer configured", lease.Profile))
+		msg := fmt.Sprintf("profile %q is no longer configured", lease.Profile)
+		return nil, b.failLease(ctx, lease, msg, failedPrecondition("%s", msg))
 	}
 	spec, err := buildSpec(lease, caller, b.provider.Capabilities(), remaining)
 	if err != nil {
-		return nil, b.failLease(ctx, lease, err.Error())
+		return nil, b.failLease(ctx, lease, err.Error(), failedPrecondition("%s", err.Error()))
 	}
-	return b.provider.Create(ctx, spec)
+	values, err := b.addSecrets(ctx, lease, &spec)
+	if err != nil {
+		return nil, err
+	}
+	return b.createBox(ctx, lease, spec, values)
+}
+
+// creatable loads the lease and returns it with the time it has left, in whole
+// seconds, when a box can be made for it: it is leased and its time is not up.
+// The time left is the TTL of the box. Less than a second is no TTL at all, since
+// a zero TTL is an hour to a provider, so it counts as expired.
+func (b *Backend) creatable(id string) (*Lease, time.Duration, error) {
+	lease, err := b.store.GetLease(id)
+	switch {
+	case errors.Is(err, ErrLeaseNotFound):
+		return nil, 0, &statusError{code: codes.NotFound, msg: fmt.Sprintf("lease %s not found", id)}
+	case err != nil:
+		return nil, 0, internalError("reading a lease failed", err)
+	case lease.State != leaseLeased:
+		return nil, 0, failedPrecondition("lease %s is %s: only a leased lease can create its box", id, lease.State)
+	}
+	expires, err := apikit.ParseUTC(lease.ExpiresAt)
+	if err != nil {
+		return nil, 0, internalError("a lease has an expires_at that cannot be read", err)
+	}
+	remaining := expires.Sub(b.now()).Truncate(time.Second)
+	if remaining <= 0 {
+		return nil, 0, failedPrecondition("lease %s has expired", id)
+	}
+	return lease, remaining, nil
+}
+
+// addSecrets reads the secrets of the lease and puts them in the environment of
+// spec, next to the fixed environment. This is when the values are read, not
+// when the lease was issued, so a value rotated in between is the one injected.
+// The values live in memory for the length of the call and nowhere else.
+//
+// It returns every value that must stay out of any text derived from the
+// provider's errors: those of the secrets and those of the fixed environment.
+func (b *Backend) addSecrets(ctx context.Context, lease *Lease, spec *sandbox.Spec) ([]string, error) {
+	resolved, err := resolveSecrets(b.secrets, b.db, lease.Workspace, lease.Secrets, lease.OptionalSecrets)
+	var missing *secretMissingError
+	switch {
+	case errors.As(err, &missing):
+		return nil, b.failLease(ctx, lease, missing.Error(), failedPrecondition("%s", missing.Error()))
+	case err != nil:
+		return nil, internalError("resolving the secrets of a lease failed", err)
+	}
+	values := make([]string, 0, len(resolved)+len(lease.Env))
+	for name, value := range resolved {
+		spec.Env[name] = value
+		values = append(values, value)
+	}
+	for _, value := range lease.Env {
+		values = append(values, value)
+	}
+	return values, nil
+}
+
+// createBox asks the provider for the box and records the outcome on the lease.
+//
+// If the provider fails, the lease fails with the scrubbed message, one failed
+// event is emitted and the caller gets the scrubbed error. If it succeeds, the
+// lease goes from leased to active with the id of the box and one create event
+// is emitted. If the lease is not leased by then, a DELETE ended it while the
+// provider worked: the new box is destroyed at once, no create event is emitted
+// and the call fails.
+func (b *Backend) createBox(ctx context.Context, lease *Lease, spec sandbox.Spec, values []string) (sandbox.Sandbox, error) {
+	box, err := b.provider.Create(ctx, spec)
+	if err != nil {
+		msg := scrub(err.Error(), values)
+		return nil, b.failLease(ctx, lease, msg, errors.New(msg))
+	}
+	changed, err := b.store.MarkActive(lease.ID, box.ID())
+	switch {
+	case err != nil:
+		b.discard(lease, box, "the box of a lease could not be recorded; destroyed it", values)
+		return nil, internalError("recording the box of a lease failed", err)
+	case !changed:
+		b.discard(lease, box, "a box was created for a lease that had ended; destroyed it", values)
+		return nil, b.staleLease(lease.ID)
+	}
+	b.emit(ctx, lease, audit.EventSandboxCreate, "create", map[string]any{
+		"lease_id":   lease.ID,
+		"sandbox_id": box.ID(),
+		"image":      lease.Image,
+		"network":    lease.Network,
+	})
+	return box, nil
+}
+
+// discard destroys a box nobody will use, whatever has become of the call that
+// made it, and logs a warning with the lease id and the box id.
+func (b *Backend) discard(lease *Lease, box sandbox.Sandbox, why string, values []string) {
+	ctx, cancel := context.WithTimeout(context.Background(), discardTimeout)
+	defer cancel()
+	slog.Warn("sandbox gateway: "+why, "lease_id", lease.ID, "sandbox_id", box.ID())
+	if err := box.Close(ctx); err != nil {
+		slog.Error("sandbox gateway: destroying a box failed", "lease_id", lease.ID, "sandbox_id", box.ID(), "error", scrub(err.Error(), values))
+	}
 }
 
 // failLease ends a lease that cannot create its box: leased to failed with the
-// message as its error, one failed event, and FailedPrecondition with the same
-// message. If the lease is not leased any more, a DELETE got there first, and
-// nothing changes.
-func (b *Backend) failLease(ctx context.Context, lease *Lease, message string) error {
+// message as its error, and one failed event. It returns result, the error the
+// caller gets. If the lease is not leased any more, a DELETE got there first,
+// nothing changes and the caller gets the state the lease is in.
+func (b *Backend) failLease(ctx context.Context, lease *Lease, message string, result error) error {
 	changed, err := b.store.FailLease(lease.ID, message)
 	switch {
 	case err != nil:
@@ -196,7 +293,7 @@ func (b *Backend) failLease(ctx context.Context, lease *Lease, message string) e
 		return b.staleLease(lease.ID)
 	}
 	b.emit(ctx, lease, audit.EventSandboxFailed, "fail", map[string]any{"lease_id": lease.ID, "error": message})
-	return failedPrecondition("%s", message)
+	return result
 }
 
 // staleLease is the error for a lease that is no longer in the state the call

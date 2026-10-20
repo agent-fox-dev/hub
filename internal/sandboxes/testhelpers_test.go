@@ -496,6 +496,8 @@ func newBackendEnv(t *testing.T, opts leaseEnvOptions) *backendEnv {
 	env.backend = newBackend(backendConfig{
 		Service:   env.profile,
 		Store:     env.store,
+		Secrets:   env.secrets,
+		DB:        env.db,
 		Audit:     env.emitter,
 		Now:       env.clock.Now,
 		Principal: testPrincipal,
