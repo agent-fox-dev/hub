@@ -50,7 +50,7 @@
       "done_when": [
         "every one of the nine routes answers 401/403/404/400 per the check order and sends no forge request for those"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 2,

@@ -23,7 +23,7 @@ type prepareFunc func(c echo.Context) (readOp, *refusal)
 // parameters, and only then builds the client and calls the forge.
 func (h *handlers) serve(operation string, prepare prepareFunc) echo.HandlerFunc {
 	return func(c echo.Context) error {
-		req, err := h.authorize(c)
+		req, err := h.authorize(c, readAccess)
 		if req == nil {
 			return err
 		}

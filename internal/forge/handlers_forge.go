@@ -18,7 +18,7 @@ type forgeInfo struct {
 // diagnostic serves GET /workspaces/:slug/forge. It sends nothing to the forge, takes
 // no target, and answers with the kind of the credential and never its value.
 func (h *handlers) diagnostic(c echo.Context) error {
-	req, err := h.authorize(c)
+	req, err := h.authorize(c, readAccess)
 	if req == nil {
 		return err
 	}
