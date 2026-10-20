@@ -96,6 +96,21 @@ lets the embedder end any sandbox the server holds.
   ceilings before the backend runs. The hub's backend returns the more exact
   codes, and the divergences are listed in
   `docs/errata/27_sandbox_gateway_divergences.md`.
+- **The provider may be a remote gateway, which makes the hub a gateway over a
+  gateway.** With `provider = "gateway"` the hub's backend is a client of an
+  `agentkit-gateway` elsewhere, under one token the hub holds, and the hub's own
+  gateway still stands in front of it. Callers see the same API, leases and
+  guarantees and are kept from the remote, its address and its token: the token,
+  the `gateway_url` and its host are scrubbed from the text of every provider error
+  the hub stores, logs, emits or returns, and from the capability notes it reports,
+  the hub dials the remote itself so that a failed call says why and not where, and
+  a lease's `gateway_url` is the hub's own. What it cannot scrub is a TLS failure on
+  `https` in a call gatewayd relays to the sandbox, which names the host. The cost is that the hub is a single point
+  of the remote's credential, that every lease shares that credential on the remote
+  (the remote cannot tell leases apart), and that the remote's limits and outages
+  show up as failed leases and `502`s rather than as anything a caller could act on
+  (`docs/configuration.md`, `docs/architecture.md`). The relay between the two
+  gateways needs `agentkit-go` to pass the sandbox id on.
 - **`afc` is unchanged and stays static.** The gRPC stack comes in with the
   gateway; neither `cmd/afc` nor `internal/cli` imports it, and a test pins that.
 

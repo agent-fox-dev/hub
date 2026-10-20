@@ -219,7 +219,7 @@ func (b *Backend) makeBox(ctx context.Context, lease *Lease, caller sandbox.Spec
 		msg := fmt.Sprintf("profile %q is no longer configured", lease.Profile)
 		return nil, b.failLease(ctx, lease, msg, failedPrecondition("%s", msg))
 	}
-	spec, err := buildSpec(lease, caller, b.provider.Capabilities(), remaining)
+	spec, err := buildSpec(lease, caller, b.service.Capabilities(), remaining)
 	if err != nil {
 		return nil, b.failLease(ctx, lease, err.Error(), failedPrecondition("%s", err.Error()))
 	}
@@ -284,7 +284,8 @@ func (b *Backend) expireLate(ctx context.Context, lease *Lease) error {
 // The values live in memory for the length of the call and nowhere else.
 //
 // It returns every value that must stay out of any text derived from the
-// provider's errors: those of the secrets and those of the fixed environment.
+// provider's errors: those of the secrets and of the fixed environment, and the
+// token, the URL and the host of a remote gateway.
 func (b *Backend) addSecrets(ctx context.Context, lease *Lease, spec *sandbox.Spec) ([]string, error) {
 	resolved, err := resolveSecrets(b.secrets, b.db, lease.Workspace, lease.Secrets, lease.OptionalSecrets)
 	var missing *secretMissingError
@@ -302,7 +303,7 @@ func (b *Backend) addSecrets(ctx context.Context, lease *Lease, spec *sandbox.Sp
 	for _, value := range lease.Env {
 		values = append(values, value)
 	}
-	return values, nil
+	return append(values, b.service.scrubValues()...), nil
 }
 
 // createBox asks the provider for the box and records the outcome on the lease.
@@ -317,7 +318,7 @@ func (b *Backend) createBox(ctx context.Context, lease *Lease, spec sandbox.Spec
 	box, err := b.provider.Create(ctx, spec)
 	if err != nil {
 		msg := scrub(err.Error(), values)
-		return nil, b.failLease(ctx, lease, msg, errors.New(msg))
+		return nil, b.failLease(ctx, lease, msg, b.service.remoteFailure("create", err, msg))
 	}
 	// The handle is held before the lease reads active: from then on a DELETE finds
 	// the lease active, asks the gateway for a box it has not recorded yet, and
@@ -391,9 +392,10 @@ func (b *Backend) staleLease(id string) error {
 
 // Capabilities is the provider's, with the network modes cut down to those
 // network_modes allows, in the provider's order. The provider's own capabilities
-// are not changed.
+// are not changed. For the remote gateway they are the snapshot taken at start,
+// so this makes no call to it.
 func (b *Backend) Capabilities() sandbox.Capabilities {
-	caps := b.provider.Capabilities()
+	caps := b.service.Capabilities()
 	allowed := b.service.NetworkModes()
 	caps.Network = slices.DeleteFunc(slices.Clone(caps.Network), func(mode sandbox.NetworkMode) bool {
 		return !slices.Contains(allowed, mode.String())

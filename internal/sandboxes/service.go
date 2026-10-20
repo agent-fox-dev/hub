@@ -4,13 +4,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"math"
+	"net/url"
 	"slices"
+	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/agent-fox-dev/agentkit-go/sandbox"
+	"github.com/agent-fox-dev/agentkit-go/sandbox/gateway"
 )
 
 // probeTimeout bounds the one call that shows the provider is reachable.
@@ -27,7 +31,15 @@ type specChecker func(sandbox.Capabilities, sandbox.Spec) (sandbox.Spec, error)
 // against. It is built once at start and read-only afterwards, except for the
 // shutdown mode (see EnterShutdown).
 type Service struct {
-	provider     sandbox.Provider
+	provider sandbox.Provider
+	// remote is the client of the remote gateway, nil for any other provider.
+	remote RemoteClient
+	// remoteScrub are the values that stay out of every text derived from the
+	// remote's errors: hub's token for it, the gateway_url string and its host.
+	remoteScrub []string
+	// caps is the snapshot of the remote gateway's capabilities, read once at
+	// start; nil for a provider that is not remote, which is asked every time.
+	caps         *sandbox.Capabilities
 	profiles     []ValidatedProfile
 	maxSandboxes int
 	networkModes []string
@@ -37,21 +49,87 @@ type Service struct {
 	gateway      gatewaySettings
 	// shutdown is set when hub starts to shut down.
 	shutdown atomic.Bool
+	// closeOnce and closeErr make Close close the remote client once.
+	closeOnce sync.Once
+	closeErr  error
 }
 
-// Start validates cfg, builds the provider through factory and checks it. A
-// static failure is returned before the factory is called, so the engine is
-// never contacted for a configuration that cannot work.
-func Start(cfg *Config, factory ProviderFactory) (*Service, error) {
+// Start validates cfg, builds the provider and checks it. A static failure is
+// returned before any factory is called, so neither an engine nor a remote
+// gateway is contacted for a configuration that cannot work.
+//
+// Provider "podman" is built through factory. Provider "gateway" is built through
+// the factory of WithGatewayFactory, gateway.Dial by default, and never through
+// factory: no engine is run for it.
+func Start(cfg *Config, factory ProviderFactory, opts ...StartOption) (*Service, error) {
 	v, err := Validate(cfg)
 	if err != nil {
 		return nil, err
+	}
+	if v.Provider == providerGateway {
+		return startRemote(v, newStartOptions(opts).gateway)
 	}
 	p, err := BuildProvider(v, factory)
 	if err != nil {
 		return nil, err
 	}
 	return New(v, p)
+}
+
+// startRemote builds the client of the remote gateway and checks it. The factory
+// and the one List that proves the remote answers and accepts hub's token share
+// one probeTimeout, and nothing is created on the remote. The client is closed
+// when start is refused, since it holds a connection.
+func startRemote(v *Validated, factory GatewayFactory) (*Service, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
+	defer cancel()
+
+	client, err := factory(ctx, v.GatewayURL, gateway.Options{Token: v.GatewayToken.reveal()})
+	if err == nil && client == nil {
+		err = errors.New("the gateway factory returned no client")
+	}
+	if err != nil {
+		return nil, remoteStartFailure(ctx, v, err)
+	}
+	if _, err := client.List(ctx); err != nil {
+		closeRemote(client)
+		return nil, remoteStartFailure(ctx, v, err)
+	}
+	// The remote's capabilities are read here, once, and kept for the life of the
+	// process: a remote that is down must not make hub's gateway wait or report no
+	// modes, and a change on the remote takes effect when hub restarts.
+	caps := client.Capabilities()
+	// The gateway client writes the remote's host and limits into the notes, and
+	// hub's gateway serves the capabilities to every lease holder.
+	caps.Notes = scrub(caps.Notes, remoteScrubValues(v))
+	svc, err := assemble(v, client, caps, sandbox.CheckSpec)
+	if err != nil {
+		closeRemote(client)
+		return nil, err
+	}
+	svc.caps, svc.remote, svc.remoteScrub = &caps, client, remoteScrubValues(v)
+	return svc, nil
+}
+
+// remoteStartFailure is the error of a remote that cannot be used: it names the
+// three keys that decide which remote hub talks to, and holds the client's text
+// with the token replaced and the user information of URLs removed. The text is
+// built from the scrubbed string and wraps nothing, so the token cannot be got
+// back from the chain.
+func remoteStartFailure(ctx context.Context, v *Validated, err error) error {
+	text := scrub(err.Error(), []string{v.GatewayToken.reveal()})
+	if ctx.Err() != nil {
+		text = fmt.Sprintf("no answer within %s: %s", probeTimeout, text)
+	}
+	return fmt.Errorf("sandbox: sandbox.provider %q cannot use the remote gateway at sandbox.gateway_url %q with sandbox.gateway_token: %s", v.Provider, v.GatewayURL, text)
+}
+
+// closeRemote closes a client that is being given up. Its error is dropped: start
+// is being refused already, and says why.
+func closeRemote(client RemoteClient) {
+	if closer, ok := client.(io.Closer); ok {
+		_ = closer.Close()
+	}
 }
 
 // New probes p once, checks every network mode of v against its capabilities
@@ -67,8 +145,12 @@ func newService(v *Validated, p sandbox.Provider, check specChecker) (*Service, 
 	if err := probe(v, p); err != nil {
 		return nil, err
 	}
+	return assemble(v, p, p.Capabilities(), check)
+}
 
-	caps := p.Capabilities()
+// assemble checks the network modes and the profiles against the capabilities of
+// a provider that has passed its probe, and builds the service.
+func assemble(v *Validated, p sandbox.Provider, caps sandbox.Capabilities, check specChecker) (*Service, error) {
 	errs := checkNetworkModes(v, caps)
 	for _, profile := range v.Profiles {
 		if err := checkProfile(profile, caps, check); err != nil {
@@ -236,6 +318,64 @@ func (s *Service) LeaseTimeout() time.Duration { return s.leaseTimeout }
 // NetworkModes returns the names of the network modes the deployment allows. The
 // slice is a copy.
 func (s *Service) NetworkModes() []string { return slices.Clone(s.networkModes) }
+
+// Capabilities returns what the provider honours. For the remote gateway that is
+// the snapshot taken at start, a copy the caller may change, and the remote is
+// not asked; for any other provider it is the provider's own answer.
+func (s *Service) Capabilities() sandbox.Capabilities {
+	if s.caps == nil {
+		return s.provider.Capabilities()
+	}
+	caps := *s.caps
+	caps.Network = slices.Clone(caps.Network)
+	return caps
+}
+
+// scrubValues are the values besides the secrets and the environment of a lease
+// that must stay out of any text derived from the provider's errors, which is any
+// text stored on a lease, logged, emitted, or returned to a gateway or HTTP
+// caller. For the remote gateway they are hub's token, the configured gateway_url
+// string and the URL's host, as url.Host gives it; for any other provider there
+// are none. The slice is a copy.
+func (s *Service) scrubValues() []string {
+	if s == nil {
+		return nil
+	}
+	return slices.Clone(s.remoteScrub)
+}
+
+// remoteScrubValues are the scrub values of the remote gateway v describes.
+func remoteScrubValues(v *Validated) []string {
+	values := []string{v.GatewayToken.reveal(), v.GatewayURL}
+	if u, err := url.Parse(v.GatewayURL); err == nil && u.Host != "" {
+		values = append(values, u.Host)
+		// A DNS or TLS error names the host without its port.
+		if u.Hostname() != u.Host {
+			values = append(values, u.Hostname())
+		}
+	}
+	return values
+}
+
+// Close closes the client of the remote gateway, once, if the client can be closed.
+// The client first destroys the boxes it still holds, so hub calls Close after it
+// has destroyed every active box itself (see Gateway.Shutdown). A service that is
+// not remote has nothing to close, and neither has a client without a Close. The
+// error of the first Close is returned by every call.
+func (s *Service) Close() error {
+	if s == nil || s.remote == nil {
+		return nil
+	}
+	s.closeOnce.Do(func() {
+		if closer, ok := s.remote.(io.Closer); ok {
+			if err := closer.Close(); err != nil {
+				// The client's text names the remote like any other of its errors.
+				s.closeErr = errors.New(scrub(err.Error(), s.scrubValues()))
+			}
+		}
+	})
+	return s.closeErr
+}
 
 // Provider returns the provider the service was built with.
 func (s *Service) Provider() sandbox.Provider { return s.provider }

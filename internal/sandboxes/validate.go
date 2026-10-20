@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/agent-fox-dev/hub/internal/secrets"
 )
@@ -30,6 +31,10 @@ const (
 	defaultListen = "127.0.0.1:8443"
 )
 
+// minGatewayTokenLength is the fewest characters gateway_token may have: a short
+// token is weak, and scrubbing it from text would mangle ordinary words.
+const minGatewayTokenLength = 16
+
 // The bounds of lease_timeout (its upper bound is max_ttl) and reap_interval.
 const (
 	minLeaseTimeout = time.Second
@@ -41,8 +46,8 @@ const (
 // has no network unless the operator allows one.
 func defaultNetworkModes() []string { return []string{defaultNetwork} }
 
-// providerPodman is the only provider this build accepts; providerGateway is
-// recognised only to refuse it with a clear message.
+// The two providers: the container engine on hub's own host, and a remote
+// agentkit-gateway.
 const (
 	providerPodman  = "podman"
 	providerGateway = "gateway"
@@ -72,6 +77,11 @@ type Validated struct {
 	// how often the reaper sweeps.
 	LeaseTimeout time.Duration
 	ReapInterval time.Duration
+	// GatewayURL and GatewayToken are the address of the remote agentkit-gateway
+	// and hub's token for it, set under provider "gateway". The token is held in a
+	// value that prints as [redacted].
+	GatewayURL   string
+	GatewayToken RedactedString
 	Profiles     []ValidatedProfile
 }
 
@@ -127,15 +137,18 @@ func Validate(cfg *Config) (*Validated, error) {
 		LeaseTimeout: defaultLeaseTimeout,
 		ReapInterval: defaultReapInterval,
 	}
-	if v.EngineBinary == "" {
+	if v.EngineBinary == "" && cfg.Provider != providerGateway {
 		v.EngineBinary = defaultEngineBinary
 	}
 
 	validateProvider(&c, cfg)
+	validateProviderKeys(&c, cfg)
 	maxTTLValid := validateMaxTTL(&c, cfg, v)
 	validateNetworkModes(&c, cfg, v)
 	validateMaxSandboxes(&c, cfg, v)
 	validateGateway(&c, cfg, v)
+	validateGatewayURL(&c, cfg, v)
+	validateGatewayToken(&c, cfg, v)
 	validateLeaseTimeout(&c, cfg, v, maxTTLValid)
 	validateReapInterval(&c, cfg, v)
 	validateProfiles(&c, cfg, v, maxTTLValid)
@@ -149,13 +162,42 @@ func Validate(cfg *Config) (*Validated, error) {
 // validateProvider checks provider.
 func validateProvider(c *collector, cfg *Config) {
 	switch cfg.Provider {
-	case providerPodman:
+	case providerPodman, providerGateway:
 	case "":
-		c.addf("sandbox.provider is required (accepted values: %q)", providerPodman)
-	case providerGateway:
-		c.addf("sandbox.provider %q: the gateway provider is not supported by this build (accepted values: %q)", cfg.Provider, providerPodman)
+		c.addf("sandbox.provider is required (accepted values: %q, %q)", providerPodman, providerGateway)
 	default:
-		c.addf("sandbox.provider %q is not supported (accepted values: %q)", cfg.Provider, providerPodman)
+		c.addf("sandbox.provider %q is not supported (accepted values: %q, %q)", cfg.Provider, providerPodman, providerGateway)
+	}
+}
+
+// validateProviderKeys refuses the keys that belong to the other provider: the
+// engine binary, the runtime and the user namespace under provider "gateway", and
+// the gateway's address and token under provider "podman". A key that would do
+// nothing is not ignored, since an operator who sets runtime = "krun" would
+// believe in an isolation a remote gateway does not give. The failure names the
+// key and never repeats a value.
+func validateProviderKeys(c *collector, cfg *Config) {
+	var keys []struct{ name, value string }
+	var only string
+	switch cfg.Provider {
+	case providerGateway:
+		only = providerPodman
+		keys = []struct{ name, value string }{
+			{"sandbox.engine_binary", cfg.EngineBinary},
+			{"sandbox.runtime", cfg.Runtime},
+			{"sandbox.userns", cfg.UserNS},
+		}
+	case providerPodman:
+		only = providerGateway
+		keys = []struct{ name, value string }{
+			{"sandbox.gateway_url", cfg.GatewayURL},
+			{"sandbox.gateway_token", cfg.GatewayToken},
+		}
+	}
+	for _, key := range keys {
+		if key.value != "" {
+			c.addf("%s applies only to sandbox.provider %q", key.name, only)
+		}
 	}
 }
 
@@ -285,6 +327,12 @@ func isLoopback(addr string) bool {
 	if err != nil {
 		return false
 	}
+	return isLoopbackHost(host)
+}
+
+// isLoopbackHost reports whether host, a name or an address without a port, is
+// localhost or a literal loopback IP address. No name is resolved.
+func isLoopbackHost(host string) bool {
 	if host == "localhost" {
 		return true
 	}
@@ -314,6 +362,80 @@ func validateExternalURL(c *collector, raw string) {
 	case u.Path != "" && u.Path != "/":
 		c.addf("sandbox.external_url must not have a path other than /")
 	}
+}
+
+// validateGatewayURL checks gateway_url, the address of the remote gateway, under
+// provider "gateway" and stores it in v. It is an absolute https URL, or an http
+// URL to a loopback host, with a host, a port from 1 to 65535 if it has one, no
+// user information, query or fragment, and a path that is empty or /. The first
+// rule it breaks is reported. A failure never repeats the value, which may hold
+// user information: it names the rule, and the plaintext rule shows the scheme and
+// the host alone.
+func validateGatewayURL(c *collector, cfg *Config, v *Validated) {
+	if cfg.Provider != providerGateway {
+		return
+	}
+	v.GatewayURL = cfg.GatewayURL
+	raw := cfg.GatewayURL
+	if raw == "" {
+		c.addf("sandbox.gateway_url is required when sandbox.provider is %q", providerGateway)
+		return
+	}
+	u, err := url.Parse(raw)
+	switch {
+	case err != nil && strings.Contains(err.Error(), "invalid port"):
+		c.addf("sandbox.gateway_url: the port must be a number from 1 to 65535")
+	case err != nil:
+		c.addf("sandbox.gateway_url is not a valid URL")
+	case u.Scheme != "http" && u.Scheme != "https":
+		c.addf("sandbox.gateway_url must be an absolute URL whose scheme is https (or http for a loopback host)")
+	case u.Opaque != "":
+		c.addf("sandbox.gateway_url must have the form scheme://host")
+	case u.Hostname() == "":
+		c.addf("sandbox.gateway_url must name a host")
+	case !validGatewayPort(u):
+		c.addf("sandbox.gateway_url: the port must be a number from 1 to 65535")
+	case u.Scheme == "http" && !isLoopbackHost(u.Hostname()):
+		c.addf("sandbox.gateway_url %q is plaintext http to a host that is not loopback (localhost or a loopback IP address): use https", u.Scheme+"://"+u.Host)
+	case u.User != nil:
+		c.addf("sandbox.gateway_url must not contain user information")
+	case strings.ContainsAny(raw, "?#"):
+		c.addf("sandbox.gateway_url must not have a query or a fragment")
+	case u.Path != "" && u.Path != "/":
+		c.addf("sandbox.gateway_url must not have a path other than /")
+	}
+}
+
+// validGatewayPort reports whether u has no port, or one from 1 to 65535. An
+// empty port after the colon is not one.
+func validGatewayPort(u *url.URL) bool {
+	port := u.Port()
+	if port == "" {
+		return !strings.HasSuffix(u.Host, ":")
+	}
+	n, err := strconv.Atoi(port)
+	return err == nil && n >= 1 && n <= 65535
+}
+
+// validateGatewayToken checks gateway_token, hub's token for the remote gateway,
+// under provider "gateway" and stores it in v as a RedactedString. No failure
+// repeats the value or any part of it.
+func validateGatewayToken(c *collector, cfg *Config, v *Validated) {
+	if cfg.Provider != providerGateway {
+		return
+	}
+	token := cfg.GatewayToken
+	if token == "" {
+		c.addf("sandbox.gateway_token is required when sandbox.provider is %q", providerGateway)
+		return
+	}
+	if utf8.RuneCountInString(token) < minGatewayTokenLength {
+		c.addf("sandbox.gateway_token must be at least %d characters long", minGatewayTokenLength)
+	}
+	if strings.ContainsFunc(token, func(r rune) bool { return r < 0x21 || r > 0x7E }) {
+		c.addf("sandbox.gateway_token must contain only printable ASCII without spaces (0x21 to 0x7E)")
+	}
+	v.GatewayToken = newRedacted(token)
 }
 
 // validateNetworkModes checks network_modes and stores the effective list in

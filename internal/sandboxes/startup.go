@@ -21,7 +21,7 @@ import (
 // so that the first-boot admin token never depends on the sandbox
 // configuration and a bad section stops the start before a queue, a worker or
 // a route exists.
-func Init(logger *slog.Logger, path string, factory ProviderFactory) (*Service, error) {
+func Init(logger *slog.Logger, path string, factory ProviderFactory, opts ...StartOption) (*Service, error) {
 	cfg, err := LoadConfig(path)
 	var unknown *unknownKeysError
 	switch {
@@ -37,7 +37,7 @@ func Init(logger *slog.Logger, path string, factory ProviderFactory) (*Service, 
 		return nil, nil
 	}
 
-	svc, err := Start(cfg, factory)
+	svc, err := Start(cfg, factory, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("sandbox: cannot enable sandboxes with the configuration in %s:\n%w", path, err)
 	}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"time"
 
 	"github.com/agent-fox-dev/hub/internal/audit"
@@ -42,6 +43,9 @@ type ender struct {
 	audit       audit.Emitter
 	boxes       Boxes
 	callTimeout time.Duration
+	// extra are values besides a lease's environment that stay out of the log:
+	// those of Service.scrubValues.
+	extra []string
 }
 
 // leaseEnder is what the endings need of the lease store.
@@ -50,8 +54,8 @@ type leaseEnder interface {
 	DestroyLease(id, from, reason string) (bool, error)
 }
 
-func newEnder(store leaseEnder, emitter audit.Emitter, boxes Boxes, callTimeout time.Duration) *ender {
-	return &ender{store: store, audit: emitter, boxes: boxes, callTimeout: callTimeout}
+func newEnder(store leaseEnder, emitter audit.Emitter, boxes Boxes, callTimeout time.Duration, extra ...string) *ender {
+	return &ender{store: store, audit: emitter, boxes: boxes, callTimeout: callTimeout, extra: extra}
 }
 
 // endExpired is the expiry path. A leased lease, which has no box, becomes
@@ -133,7 +137,7 @@ func (e *ender) destroyBox(ctx context.Context, lease *Lease) {
 	if err == nil {
 		return
 	}
-	values := make([]string, 0, len(lease.Env))
+	values := slices.Clone(e.extra)
 	for _, v := range lease.Env {
 		values = append(values, v)
 	}

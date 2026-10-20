@@ -57,7 +57,8 @@ func main() {
 	// invalid section stops the start before any of them is set up. The result
 	// is nil when sandboxes are not configured; the routes then answer
 	// sandboxes_disabled.
-	sandboxSvc, err := sandboxes.Init(slog.Default(), apikit.ConfigPath(), sandboxes.PodmanFactory)
+	sandboxSvc, err := sandboxes.Init(slog.Default(), apikit.ConfigPath(), sandboxes.PodmanFactory,
+		sandboxes.WithGatewayFactory(sandboxes.DialGateway))
 	if err != nil {
 		log.Fatal(err)
 	}

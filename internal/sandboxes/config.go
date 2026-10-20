@@ -20,7 +20,7 @@ import (
 // Keys whose absence must be told apart from a zero value are pointers or
 // slices that stay nil when the key is absent.
 type Config struct {
-	// Provider selects the provider; "podman" is the only accepted value.
+	// Provider selects the provider: "podman" or "gateway".
 	Provider string `toml:"provider"`
 	// EngineBinary, Runtime and UserNS are passed to the Podman provider.
 	EngineBinary string `toml:"engine_binary"`
@@ -48,6 +48,10 @@ type Config struct {
 	// ReapInterval is how often the reaper sweeps, a Go duration string; nil when
 	// absent.
 	ReapInterval *string `toml:"reap_interval"`
+	// GatewayURL and GatewayToken locate and open the remote agentkit-gateway that
+	// provider "gateway" runs the sandboxes on; empty when absent.
+	GatewayURL   string `toml:"gateway_url"`
+	GatewayToken string `toml:"gateway_token"`
 	// Profiles are the [[sandbox.profiles]] tables in file order.
 	Profiles []ProfileConfig `toml:"profiles"`
 }

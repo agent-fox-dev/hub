@@ -10,15 +10,17 @@ run and what shape they take. It builds one AgentKit sandbox provider from the
 provider can honour, and publishes the profiles read-only. The lease record
 (below) is built on top of it, the sandbox gateway (below) is what creates a
 sandbox for a lease, and the expiry machinery (below) puts a time limit on every
-lease and cleans up after a shutdown or a crash. A remote provider is a later
-spec.
+lease and cleans up after a shutdown or a crash. The provider is either a container
+engine on the hub's own host or a remote `agentkit-gateway` (below).
 
 | File | Responsibility |
 |------|----------------|
 | `config.go` | `LoadConfig`: reads the `[sandbox]` table from the file apikit loads, expands `${NAME}` in the section only, refuses unknown keys with their full path. |
 | `validate.go` | `Validate`: every static rule for the deployment keys and profiles, collected into one joined error. Uses `secrets.ValidateKey` for secret and env names. |
-| `provider.go` | `ProviderFactory` (the shape of `podman.New`), `PodmanFactory`, `BuildProvider`. |
-| `service.go` | `Service`, `Start`, `New`: probes the provider once, checks `network_modes` and turns each profile into a `sandbox.Spec` that `sandbox.CheckSpec` must accept. Keeps the provider and the validated profiles in memory. |
+| `provider.go` | `ProviderFactory` (the shape of `podman.New`), `PodmanFactory`, `BuildProvider`; `GatewayFactory` (the shape of `gateway.Dial`), `DialGateway`, `RemoteClient` and the `StartOption` `WithGatewayFactory`. |
+| `redact.go` | `RedactedString`: the type the validated `gateway_token` is kept in, which prints as `[redacted]` under every verb, `slog` and JSON. |
+| `service.go` | `Service`, `Start`, `New`: builds the provider (`startRemote` for provider `gateway`), probes it once, checks `network_modes` and turns each profile into a `sandbox.Spec` that `sandbox.CheckSpec` must accept. Keeps the provider, the capability snapshot of a remote gateway, the scrub values and the validated profiles in memory; `Close` closes the remote client. |
+| `errors_remote.go` | `isNotFound` and `isRemoteRefusal`, and `Service.remoteFailure`: a remote not-found counts as destroyed, and a remote that refuses the hub's token is answered `Unavailable`. |
 | `startup.go` | `Init`: the one call `cmd/af-hub` makes. Loads, validates, starts and logs. |
 | `permissions.go`, `auth.go` | The `sandboxes:read` and `sandboxes:write` scopes and the standalone auth helpers. |
 | `handlers.go` | `RegisterRoutes` and `GET /api/v1/sandbox-profiles`, built from the in-memory profiles. |
@@ -43,9 +45,12 @@ up:
 2. `Init` loads the section from `apikit.ConfigPath()`. No section means the
    feature is off: `Init` returns a nil service after one info log line.
 3. Otherwise `Start` validates the section; static failures are returned
-   before the provider is built or the engine is contacted. Then
-   `BuildProvider` builds the Podman provider, `New` probes it, and each
-   profile is checked against its capabilities.
+   before the provider is built or the engine or the remote gateway is
+   contacted. Then, for provider `podman`, `BuildProvider` builds the Podman
+   provider, `New` probes it, and each profile is checked against its
+   capabilities; for provider `gateway`, `startRemote` dials the remote, probes it
+   with one `List` and checks each profile against the capabilities it read (see
+   [The remote gateway provider](#the-remote-gateway-provider)).
 4. Any failure is fatal: the process exits before a queue, a worker or a
    listener exists.
 5. `sandboxes.Permissions()` is appended to the scopes registered with apikit
@@ -229,6 +234,75 @@ Where the gateway differs from what its spec expected of AgentKit (no provider
 `List` or `Destroy`, the codes gatewayd answers with, the handle's `Close`) is in
 `docs/errata/27_sandbox_gateway_divergences.md`.
 
+### The remote gateway provider
+
+With `provider = "gateway"` the provider that `Start` builds is the client of a
+remote `agentkit-gateway`, and nothing else in the package knows the difference but
+a few places named below. The hub becomes a gateway over a gateway:
+
+```
+lease holder ──lease token──▶ hub's gatewayd ──▶ Backend ──hub's one token──▶ remote gatewayd ──▶ its backend
+                              (lease authenticator)   │ RemoteClient (gateway.Provider)
+                                                      └── lease store, secrets, audit
+```
+
+- **Building it.** `startRemote` calls the `GatewayFactory` (`DialGateway`, which is
+  `gateway.Dial`, in production) with the validated `gateway_url` and the token
+  revealed from its `RedactedString`, then makes one `List`, both under one
+  `probeTimeout` of 10 seconds. Nothing is created. A failure becomes an error that
+  begins `sandbox:` and names the three keys, with the client's text scrubbed of
+  the token and of URL user information; the client is closed when the start is
+  refused. `Start` takes the factory as a `StartOption`, so the Podman path and its
+  callers are unchanged.
+- **One shared token.** Every lease's sandbox is made on the remote under the hub's
+  one `gateway_token`. A lease token never leaves the hub, and the remote sees only
+  the hub's. A lease's `gateway_url` is the hub's own gateway.
+- **The capability snapshot.** `startRemote` reads the client's `Capabilities()` once
+  and keeps it in `Service.caps`. `Service.Capabilities` returns a copy of it, and
+  the backend (the spec of a box, `Capabilities`) and the gateway (its network
+  modes) use that and never the client, so a remote that is down delays and empties
+  nothing, and a change on the remote waits for a restart. A provider that is not
+  remote is asked every time, as before.
+- **Where the remote's failures show up.** At start, as a refused start. At a
+  `Create`, as a `failed` lease with the scrubbed message; a remote that refuses the
+  hub's token is answered `Unavailable` and logs one error naming
+  `sandbox.gateway_token` (`remoteFailure`, also for the sweep's `Reap`). At a destroy, in the one place a box
+  is destroyed for the caller's `Close`, `DELETE`, the sweep and the shutdown
+  (`closeProviderBox`): a remote not-found, as gatewayd's `ErrNotHeld` or a gRPC
+  `NotFound`, counts as destroyed; any other failure is the usual 502, or a lease
+  that stays `active`. In the sweep, as logged steps that run again.
+- **Destroying again.** AgentKit's attached sandbox tears down once, so its `Close`
+  answers `nil` after a failed one. The handle remembers a failed close
+  (`closeFailed`), and a later try destroys the box by id through the client's
+  `Destroy`, which can be repeated and which the remote answers OK for a box it does
+  not have. The sweep, `DELETE` and the shutdown all go through it.
+- **Scrubbing.** `Service.scrubValues` gives the token, the `gateway_url` string, its
+  host with the port and its host name alone to every site that turns provider text
+  into output, besides a lease's secrets and fixed environment: the failure of a
+  `Create`, the error of a box's `Close`, `DELETE`'s 502, the expiry path's log, the
+  sweep's `Reap`, listing and orphan destroy, and the error of `Service.Close`. The
+  capability snapshot has its notes scrubbed once, since the gateway client writes
+  the remote's host and limits into them and hub's gateway serves them to every
+  holder. gatewayd relays the status of a call to a sandbox's agent as it is, which
+  hub cannot scrub, so `DialGateway` gives the client a dialer (`dialWithoutAddress`)
+  whose failures say why and not where; what is left is a TLS failure on `https`,
+  which names the host.
+- **No redial, no retry.** The client reconnects by itself, with gRPC's backoff (from
+  about a second up to two minutes between attempts, during which a call fails at
+  once); the hub adds no redial, monitor or circuit breaker, and calls the remote's
+  `Create` once per caller `Create`.
+- **Closing.** `Gateway.Shutdown` closes the client last, through `Service.Close`,
+  after it has destroyed the box of every active lease through it, within the
+  shutdown limit.
+
+The relay of the holder's calls to the sandbox needs `gatewayd` to send the backend
+sandbox's own `agentkit-sandbox-id` to the next gateway, which `agentkit-go`
+supports since its pull request 150; with an older checkout every `Create` through
+the hub fails at the agent handshake. Where this differs from the spec (the
+factory's signature, the probe, the snapshot, the destroy by id, the lease that a
+sweep ends while the remote is down) is in
+`docs/errata/29_sandbox_gateway_provider_divergences.md`.
+
 ### Lease lifetime: the sweep, recovery, shutdown and retention
 
 Every lease has two deadlines and the hub enforces both, whether or not a sweep has
@@ -301,8 +375,9 @@ they supply `../apikit`. `afc` stays a static `CGO_ENABLED=0` binary: neither
 `cmd/afc` nor `internal/cli` imports `internal/sandboxes`, any AgentKit
 package or gRPC.
 
-`sandbox.Provider` has no `List` or `Destroy`; the start-up probe is therefore
-one `Reap` call under a 10-second timeout. See
+`sandbox.Provider` has no `List` or `Destroy`; the start-up probe of the Podman
+provider is therefore one `Reap` call under a 10-second timeout. The client of a
+remote gateway, `*gateway.Provider`, has both, and its probe is one `List`. See
 `docs/errata/25_sandbox_profiles_divergences.md`.
 
 ## Git Server

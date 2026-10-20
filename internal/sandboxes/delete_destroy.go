@@ -74,7 +74,7 @@ func (s *LeaseService) destroyBox(ctx context.Context, lease *Lease) error {
 		for _, v := range lease.Env {
 			values = append(values, v)
 		}
-		return &providerError{msg: scrub(err.Error(), values)}
+		return &providerError{msg: scrub(err.Error(), append(values, s.profiles.scrubValues()...))}
 	}
 	return nil
 }
