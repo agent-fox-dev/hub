@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -91,6 +92,86 @@ func prepareRemoveLabel(c echo.Context, _ []byte) (*writePlan, *refusal) {
 				return nil, err
 			}
 			return &writeAnswer{status: http.StatusNoContent}, nil
+		},
+	}, nil
+}
+
+// ensureLabel is POST /workspaces/:slug/labels.
+var ensureLabel = writeRoute{
+	operation: "EnsureLabel",
+	event:     eventKind{audit.EventForgeLabelCreate, "label", "create"},
+	prepare:   prepareEnsureLabel,
+}
+
+// defaultLabelColor is the color of a label the request gives none for: GitLab needs one to
+// create a label, and this is GitHub's default.
+const defaultLabelColor = "ededed"
+
+// labelColor is six hex digits, with or without one leading #.
+var labelColor = regexp.MustCompile(`^#?[0-9a-fA-F]{6}$`)
+
+// prepareEnsureLabel reads {name, color?, description?} and makes sure the repository has a
+// label of that name. The label is looked up first: one that exists is answered 200 as the
+// forge holds it, and is never changed, whatever color and description the request has,
+// so that making sure of a label twice is harmless. A label that is not there is created and
+// answered 201. A create the forge refuses is followed by one more lookup, which finds the
+// label another call created in the meantime and answers it 200; if it is still not there,
+// the answer is the create's error.
+func prepareEnsureLabel(_ echo.Context, data []byte) (*writePlan, *refusal) {
+	b, ref := parseBody(data)
+	if ref != nil {
+		return nil, ref
+	}
+	name, ref := b.required("name")
+	if ref != nil {
+		return nil, ref
+	}
+	color, present, ref := b.text("color")
+	if ref != nil {
+		return nil, ref
+	}
+	if !present {
+		color = defaultLabelColor
+	} else if !labelColor.MatchString(color) {
+		return nil, badRequest("color must be six hex digits, with or without a leading #")
+	}
+	description, _, ref := b.text("description")
+	if ref != nil {
+		return nil, ref
+	}
+	label := issuex.Label{Name: name, Color: strings.TrimPrefix(color, "#"), Description: description}
+
+	return &writePlan{
+		resourceID: name, extra: map[string]any{"label": name, "created": false},
+		send: func(w *writeRun) (*writeAnswer, error) {
+			lookup := func() (found issuex.Label, err error) {
+				err = w.call(func(ctx context.Context) (err error) {
+					found, err = w.api.GetLabel(ctx, w.fc.repo, name)
+					return err
+				})
+				return found, err
+			}
+			found, err := lookup()
+			if err == nil {
+				return &writeAnswer{status: http.StatusOK, body: found}, nil
+			}
+			if !issuex.IsNotFound(err) {
+				return nil, err
+			}
+
+			var created issuex.Label
+			createErr := w.call(func(ctx context.Context) (err error) {
+				created, err = w.api.MakeLabel(ctx, w.fc.repo, label)
+				return err
+			})
+			if createErr == nil {
+				w.set("created", true)
+				return &writeAnswer{status: http.StatusCreated, body: created}, nil
+			}
+			if found, err := lookup(); err == nil {
+				return &writeAnswer{status: http.StatusOK, body: found}, nil
+			}
+			return nil, createErr
 		},
 	}, nil
 }

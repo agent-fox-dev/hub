@@ -45,7 +45,7 @@ func RegisterRoutes(api *echo.Group, cfg Config) {
 	api.POST("/workspaces/:slug/issues/:n/comments", h.write(commentOnIssue))
 	api.POST("/workspaces/:slug/issues/:n/labels", h.write(addLabels))
 	api.DELETE("/workspaces/:slug/issues/:n/labels/:name", h.write(removeLabel))
-	api.POST("/workspaces/:slug/labels", h.write(notImplemented))
+	api.POST("/workspaces/:slug/labels", h.write(ensureLabel))
 	api.POST("/workspaces/:slug/pulls", h.write(notImplemented))
 	api.POST("/workspaces/:slug/pulls/:n/comments", h.write(notImplemented))
 }

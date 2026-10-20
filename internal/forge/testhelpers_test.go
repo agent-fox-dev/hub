@@ -158,6 +158,7 @@ func newForgeStub(t *testing.T) *forgeStub {
 	}
 	s.Server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
+		r.Body = io.NopCloser(bytes.NewReader(body)) // for a handler that reads it too
 		s.mu.Lock()
 		s.requests = append(s.requests, recordedRequest{
 			Method: r.Method, Path: r.URL.Path, EscapedPath: r.URL.EscapedPath(), Query: r.URL.RawQuery,

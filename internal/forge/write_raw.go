@@ -26,6 +26,8 @@ type writer interface {
 	AddLabels(ctx context.Context, ref issuex.IssueRef, labels []string) error
 	DropLabel(ctx context.Context, ref issuex.IssueRef, label string) error
 	CheckIssue(ctx context.Context, ref issuex.IssueRef) error
+	GetLabel(ctx context.Context, repo issuex.Repo, name string) (issuex.Label, error)
+	MakeLabel(ctx context.Context, repo issuex.Repo, label issuex.Label) (issuex.Label, error)
 }
 
 // writerFor is the writer for a client built for a write: issuex's client for what it
@@ -72,6 +74,34 @@ func (f forgeWriter) DropLabel(ctx context.Context, ref issuex.IssueRef, label s
 // there does not need.
 func (f forgeWriter) CheckIssue(ctx context.Context, ref issuex.IssueRef) error {
 	return f.raw.do(ctx, http.MethodGet, f.raw.issuePath(ref), nil, nil)
+}
+
+// GetLabel looks a repository label up by name. issuex has no lookup of a label.
+func (f forgeWriter) GetLabel(ctx context.Context, repo issuex.Repo, name string) (issuex.Label, error) {
+	var raw wireLabel
+	if err := f.raw.do(ctx, http.MethodGet, f.raw.labelsPath(repo)+"/"+url.PathEscape(name), nil, &raw); err != nil {
+		return issuex.Label{}, err
+	}
+	return raw.label(), nil
+}
+
+// MakeLabel creates a repository label and returns it as the forge holds it, which
+// issuex's CreateLabel does not: it returns no label, and a label that exists is a success
+// to it, so that its caller cannot tell a label it made from one that was there.
+func (f forgeWriter) MakeLabel(ctx context.Context, repo issuex.Repo, label issuex.Label) (issuex.Label, error) {
+	color := label.Color
+	if f.raw.forge == issuex.ForgeTypeGitLab {
+		color = "#" + color
+	}
+	payload := map[string]any{"name": label.Name, "color": color}
+	if label.Description != "" {
+		payload["description"] = label.Description
+	}
+	var raw wireLabel
+	if err := f.raw.do(ctx, http.MethodPost, f.raw.labelsPath(repo), payload, &raw); err != nil {
+		return issuex.Label{}, err
+	}
+	return raw.label(), nil
 }
 
 // issueUpdate is what PATCH /issues/:n sets. A nil field is left as it is; a field that is
@@ -172,6 +202,25 @@ func (r rawForge) updateIssue(ctx context.Context, ref issuex.IssueRef, update i
 		return issuex.Issue{}, err
 	}
 	return raw.issue(), nil
+}
+
+// labelsPath is the path of a repository's labels in the forge's API.
+func (r rawForge) labelsPath(repo issuex.Repo) string {
+	if r.forge == issuex.ForgeTypeGitLab {
+		return "/projects/" + gitlabProject(repo) + "/labels"
+	}
+	return fmt.Sprintf("/repos/%s/%s/labels", url.PathEscape(repo.Owner), url.PathEscape(repo.Name))
+}
+
+// wireLabel is a label as GitHub and GitLab answer it; a missing description is null.
+type wireLabel struct {
+	Name        string `json:"name"`
+	Color       string `json:"color"`
+	Description string `json:"description"`
+}
+
+func (l wireLabel) label() issuex.Label {
+	return issuex.Label{Name: l.Name, Color: l.Color, Description: l.Description}
 }
 
 // gitlabProject is a GitLab project's path as one URL segment.
