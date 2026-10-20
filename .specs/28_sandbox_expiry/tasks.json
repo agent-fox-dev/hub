@@ -427,7 +427,7 @@
       "done_when": [
         "`make test` and `make lint` pass offline with no container engine"
       ],
-      "state": "pending"
+      "state": "done"
     }
   ]
 }

@@ -24,21 +24,15 @@ func timeTicker(d time.Duration) (<-chan time.Time, func()) {
 	return t.C, t.Stop
 }
 
-// Reaper is the loop that sweeps every reap_interval.
-type Reaper struct {
+// reaperLoop is the loop that sweeps every reap_interval.
+type reaperLoop struct {
 	cancel context.CancelFunc
 	done   chan struct{}
 }
 
-// Stop cancels the loop and waits until it has ended, which includes a sweep in
-// progress. Stopping again does nothing.
-func (r *Reaper) Stop() {
-	r.cancel()
-	<-r.done
-}
-
-// stop is Stop with a limit: it returns when the loop has ended or ctx has.
-func (r *Reaper) stop(ctx context.Context) {
+// stop cancels the loop and waits until it has ended, which includes a sweep in
+// progress, or until ctx has. Stopping again does nothing.
+func (r *reaperLoop) stop(ctx context.Context) {
 	r.cancel()
 	select {
 	case <-r.done:
@@ -77,14 +71,14 @@ func (s *Sweeper) RecoverActive(ctx context.Context) error {
 }
 
 // StartReaper runs one sweep and then starts the loop that sweeps once for every
-// tick of the reap interval, until ctx is cancelled or the Reaper is stopped. The
-// first sweep is done when StartReaper returns, so that the caller can rely on it;
-// its error is returned together with the running Reaper, which is never nil. No
-// sweep starts after the context ends.
-func (s *Sweeper) StartReaper(ctx context.Context) (*Reaper, error) {
+// tick of the reap interval, until ctx is cancelled or Shutdown stops it. The first
+// sweep is done when StartReaper returns, so that the caller can rely on it; its
+// error is returned, and the loop runs all the same. No sweep starts after the
+// context ends.
+func (s *Sweeper) StartReaper(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	ticks, stop := s.tickers(s.interval)
-	reaper := &Reaper{cancel: cancel, done: make(chan struct{})}
+	reaper := &reaperLoop{cancel: cancel, done: make(chan struct{})}
 	s.setReaper(reaper)
 
 	err := s.Sweep(ctx)
@@ -104,7 +98,7 @@ func (s *Sweeper) StartReaper(ctx context.Context) (*Reaper, error) {
 			}
 		}
 	}()
-	return reaper, err
+	return err
 }
 
 // RunStartup does the start-up work of the feature: it ends the leases an earlier
@@ -114,26 +108,14 @@ func (s *Sweeper) StartReaper(ctx context.Context) (*Reaper, error) {
 // with ctx or with StopReaper.
 func (s *Sweeper) RunStartup(ctx context.Context) error {
 	recoveryErr := s.RecoverActive(ctx)
-	_, sweepErr := s.StartReaper(ctx)
-	return errors.Join(recoveryErr, sweepErr)
+	return errors.Join(recoveryErr, s.StartReaper(ctx))
 }
 
-// setReaper remembers the running reaper, so that it can be stopped.
-func (s *Sweeper) setReaper(r *Reaper) {
+// setReaper remembers the running reaper, so that Shutdown can stop it.
+func (s *Sweeper) setReaper(r *reaperLoop) {
 	s.reaperMu.Lock()
 	defer s.reaperMu.Unlock()
 	s.reaper = r
-}
-
-// StopReaper stops the reaper if one is running, and waits for a sweep in
-// progress. It does nothing when none was started.
-func (s *Sweeper) StopReaper() {
-	s.reaperMu.Lock()
-	r := s.reaper
-	s.reaperMu.Unlock()
-	if r != nil {
-		r.Stop()
-	}
 }
 
 // Shutdown is the sandbox part of hub's shutdown. It puts hub in shutdown mode,
@@ -151,10 +133,10 @@ func (s *Sweeper) Shutdown(ctx context.Context) error {
 	s.service.EnterShutdown()
 
 	s.reaperMu.Lock()
-	reaper := s.reaper
+	loop := s.reaper
 	s.reaperMu.Unlock()
-	if reaper != nil {
-		reaper.stop(ctx)
+	if loop != nil {
+		loop.stop(ctx)
 	}
 	// A sweep that gatewayd started is not the reaper's. Sweeps never overlap, so
 	// holding the lock for a moment waits for it, and none starts after.

@@ -3,9 +3,15 @@ package sandboxes
 import (
 	"database/sql"
 	"fmt"
+	"io"
+	"net/http"
 	"path/filepath"
+	"strings"
+	"syscall"
 	"testing"
 	"time"
+
+	"github.com/agent-fox-dev/hub/internal/audit"
 )
 
 // seedAfHubLeases creates the lease table in the hub's database, as hub does at
@@ -46,11 +52,11 @@ func seedAfHubLeases(t *testing.T, env *afHubEnv) *sql.DB {
 	return db
 }
 
-// TS-28-57 (part): af-hub, started with sandboxes on over the leases of a crashed
+// TS-28-57 (smoke): af-hub, started with sandboxes on over the leases of a crashed
 // process, ends the active lease as destroyed with end_reason restart, leaves the
 // leased one alone, prunes the lease that ended long ago and keeps the recent one,
-// all before it answers its first request.
-// Requirements: 28-REQ-5.1, 28-REQ-6.2
+// and reports no active box on /metrics, all before it answers its first request.
+// Path: 28-PATH-5. Requirements: 28-REQ-5.1, 28-REQ-6.2, 28-REQ-9.3
 func TestAfHubBinary_RecoversAtStart(t *testing.T) {
 	bin := buildAfHub(t)
 	engine, _ := writeFakeEngine(t)
@@ -67,6 +73,21 @@ ttl   = "1h"
 	db := seedAfHubLeases(t, env)
 
 	output := startAfHub(t, bin, env)
+
+	resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/metrics", env.port))
+	if err != nil {
+		t.Fatalf("GET /metrics: %v", err)
+	}
+	metrics, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if !strings.Contains(string(metrics), "# TYPE afhub_sandboxes_active gauge") {
+		t.Errorf("/metrics does not list afhub_sandboxes_active:\n%s", metrics)
+	}
+	for _, line := range strings.Split(string(metrics), "\n") {
+		if strings.HasPrefix(line, "afhub_sandboxes_active{") && !strings.HasSuffix(line, " 0") {
+			t.Errorf("/metrics has %q after recovery; want no active box", line)
+		}
+	}
 
 	states := map[string]string{}
 	rows, err := db.Query(`SELECT id, state, COALESCE(end_reason, '') FROM sandbox_leases`)
@@ -112,4 +133,110 @@ func TestAfHubBinary_DisabledLeavesLeasesAlone_TS_28_29(t *testing.T) {
 	if after := wholeRows(t, db); after != before {
 		t.Errorf("the lease table changed although sandboxes are off:\n%s\nwant\n%s", after, before)
 	}
+}
+
+// TS-28-56 (smoke): When the server's Start returns, af-hub destroys the box of every
+// active lease and ends it with end_reason shutdown, records the event, leaves a
+// leased lease alone, and does so while both databases are still open, within twenty
+// seconds. A box cannot be made by the fake engine of the binary tests, so the lease
+// of the box is written into the database while the hub runs, as the gateway would
+// have written it, and the hub is stopped with SIGTERM.
+// Path: 28-PATH-4. Requirements: 28-REQ-7.1, 28-REQ-7.3, 28-REQ-7.4
+func TestAfHubBinary_ShutdownEndsActiveLeases_TS_28_56(t *testing.T) {
+	bin := buildAfHub(t)
+	engine, _ := writeFakeEngine(t)
+	env := newAfHubEnv(t, fmt.Sprintf(`[sandbox]
+provider      = "podman"
+engine_binary = %q
+
+[[sandbox.profiles]]
+name  = "alpha"
+image = "registry.example/alpha:1"
+ttl   = "1h"
+`, engine))
+	bootstrapAfHub(t, bin, env)
+	cmd, output, exited := startAfHubProcess(t, bin, env)
+
+	db, err := sql.Open("sqlite", filepath.Join(env.dataDir, "afhub.db")+"?_pragma=busy_timeout(10000)")
+	if err != nil {
+		t.Fatalf("opening the hub's database: %v", err)
+	}
+	defer db.Close()
+	insertRawLease(t, db, leaseID(1), "widgets", "active", HashToken(testToken(1)))
+	insertRawLease(t, db, leaseID(2), "widgets", "leased", HashToken(testToken(2)))
+	if _, err := db.Exec(`UPDATE sandbox_leases SET sandbox_id = 'box-1' WHERE id = ?`, leaseID(1)); err != nil {
+		t.Fatal(err)
+	}
+	leasedBefore := wholeRowsOf(t, db, leaseID(2))
+
+	start := time.Now()
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatalf("signalling af-hub: %v", err)
+	}
+	select {
+	case <-exited:
+	case <-time.After(30 * time.Second):
+		t.Fatalf("af-hub did not stop within 30 seconds of SIGTERM:\n%s", output)
+	}
+	if elapsed := time.Since(start); elapsed > ShutdownLimit+5*time.Second {
+		t.Errorf("af-hub took %v to stop; want it inside the shutdown limit", elapsed)
+	}
+
+	var state, reason string
+	if err := db.QueryRow(`SELECT state, COALESCE(end_reason, '') FROM sandbox_leases WHERE id = ?`, leaseID(1)).Scan(&state, &reason); err != nil {
+		t.Fatal(err)
+	}
+	if state != "destroyed" || reason != "shutdown" {
+		t.Errorf("the active lease reads %s/%s after SIGTERM; want destroyed/shutdown\nhub output:\n%s", state, reason, output)
+	}
+	if after := wholeRowsOf(t, db, leaseID(2)); after != leasedBefore {
+		t.Errorf("the leased lease changed:\n%s\n->\n%s", leasedBefore, after)
+	}
+
+	auditDB, err := audit.OpenDB(filepath.Join(env.dataDir, "audit.duckdb"))
+	if err != nil {
+		t.Fatalf("opening the audit database: %v", err)
+	}
+	defer auditDB.Close()
+	var actorType, actorID, metadata string
+	if err := auditDB.QueryRow(`SELECT actor_type, actor_id, metadata FROM hub_audit_events WHERE event_type = ? AND resource_id = ?`,
+		audit.EventSandboxDestroy, leaseID(1)).Scan(&actorType, &actorID, &metadata); err != nil {
+		t.Fatalf("reading the destroy event: %v\nhub output:\n%s", err, output)
+	}
+	if actorType != "system" || actorID != "" || !strings.Contains(metadata, `"reason":"shutdown"`) {
+		t.Errorf("event by %q/%q with metadata %s; want the system, no actor id and reason shutdown", actorType, actorID, metadata)
+	}
+}
+
+// wholeRowsOf returns every column of one lease row as a string.
+func wholeRowsOf(t *testing.T, db *sql.DB, id string) string {
+	t.Helper()
+	return strings.Join(rowTextOf(t, db, id), "|")
+}
+
+// rowTextOf returns every column of a lease row as text.
+func rowTextOf(t *testing.T, db *sql.DB, id string) []string {
+	t.Helper()
+	rows, err := db.Query(`SELECT * FROM sandbox_leases WHERE id = ?`, id)
+	if err != nil {
+		t.Fatalf("reading lease %s: %v", id, err)
+	}
+	defer rows.Close()
+	cols, _ := rows.Columns()
+	if !rows.Next() {
+		t.Fatalf("lease %s not found", id)
+	}
+	values := make([]any, len(cols))
+	ptrs := make([]any, len(cols))
+	for i := range values {
+		ptrs[i] = &values[i]
+	}
+	if err := rows.Scan(ptrs...); err != nil {
+		t.Fatalf("scanning lease %s: %v", id, err)
+	}
+	out := make([]string, len(cols))
+	for i, v := range values {
+		out[i] = fmt.Sprint(v)
+	}
+	return out
 }

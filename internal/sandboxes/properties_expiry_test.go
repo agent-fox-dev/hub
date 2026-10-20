@@ -76,10 +76,7 @@ func newPropEnv(t *testing.T, seed uint64) *propEnv {
 	}
 	e.logs = captureDefaultLog(t)
 
-	base := env.prov.reapCount()
 	e.gw = e.runGateway(e.tickers)
-	// Run's first sweep and the one gatewayd asks for at its start.
-	waitFor(t, "the first sweeps", func() bool { return env.prov.reapCount()-base >= 2 })
 	return e
 }
 

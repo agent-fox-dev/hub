@@ -29,9 +29,13 @@ func (e *expiryBackendEnv) runGateway(tickers *fakeTickers) *Gateway {
 	}
 	g.sweeper.tickers = tickers.make
 	stopAfter(e.t, g)
+	reaps := e.prov.reapCount()
 	if err := g.Run(context.Background()); err != nil {
 		e.t.Fatalf("Run: %v", err)
 	}
+	// Run's first sweep, and the one gatewayd asks for when it begins to serve: wait
+	// for both, so that neither starts in the middle of a test.
+	waitFor(e.t, "the first two sweeps", func() bool { return e.prov.reapCount()-reaps >= 2 })
 	e.svc.gatewayURL = g.URL()
 	e.svc.boxes = g
 	return g

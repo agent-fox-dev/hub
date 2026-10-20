@@ -68,6 +68,10 @@ func (r metricsRecorder) ended(workspace, createdAt, endedAt string, wasActive b
 // gauge, which drops every stale label, and sets one value per workspace from
 // a count of its active leases. The table is read first, so that a failed read
 // leaves the gauge as it was.
+//
+// A gauge with no series is not listed on /metrics at all. When no workspace has an
+// active lease the "" placeholder of NewMetrics is set again, at 0, so that the
+// metric stays listed, as it is from the start.
 func (r metricsRecorder) recalibrate(ctx context.Context, db *sql.DB) error {
 	if r.m == nil {
 		return nil
@@ -93,6 +97,9 @@ func (r metricsRecorder) recalibrate(ctx context.Context, db *sql.DB) error {
 	r.m.SandboxesActive.Reset()
 	for workspace, n := range counts {
 		r.m.SandboxesActive.WithLabelValues(workspace).Set(float64(n))
+	}
+	if len(counts) == 0 {
+		r.m.SandboxesActive.WithLabelValues("")
 	}
 	return nil
 }

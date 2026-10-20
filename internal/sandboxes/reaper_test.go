@@ -209,8 +209,7 @@ func TestStartReaper_TS_28_26(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	reaper, err := env.sweeper.StartReaper(ctx)
-	if err != nil {
+	if err := env.sweeper.StartReaper(ctx); err != nil {
 		t.Fatalf("StartReaper: %v", err)
 	}
 	if got := reaps(); got != 1 {
@@ -223,7 +222,7 @@ func TestStartReaper_TS_28_26(t *testing.T) {
 	waitFor(t, "three sweeps on three ticks", func() bool { return reaps() == 4 })
 
 	cancel()
-	reaper.Stop()
+	env.sweeper.reaper.stop(context.Background()) // joins the loop
 	tickers.fire()
 	time.Sleep(50 * time.Millisecond)
 	if got := reaps(); got != 4 {
@@ -248,7 +247,9 @@ func TestRunStartup_ErrorsDoNotStopStartup_TS_28_27(t *testing.T) {
 	base := env.prov.reapCount()
 	logs := captureDefaultLog(t)
 
-	err := env.sweeper.RunStartup(context.Background())
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	err := env.sweeper.RunStartup(ctx)
 
 	if err == nil || !strings.Contains(err.Error(), "reap") || !strings.Contains(err.Error(), "list") {
 		t.Errorf("RunStartup returned %v; want the failures of the first sweep", err)
@@ -264,7 +265,8 @@ func TestRunStartup_ErrorsDoNotStopStartup_TS_28_27(t *testing.T) {
 	// The reaper runs all the same.
 	tickers.fire()
 	waitFor(t, "a sweep on the tick", func() bool { return env.prov.reapCount()-base == 2 })
-	env.sweeper.StopReaper()
+	cancel()
+	env.sweeper.reaper.stop(context.Background())
 }
 
 // TS-28-47: The gauge is recalibrated from the table after restart recovery and at
@@ -298,6 +300,9 @@ func TestGauge_RecalibratedAfterRecoveryAndSweeps_TS_28_47(t *testing.T) {
 		if _, ok := series(env, "stale"); ok {
 			t.Error("the stale label survived the sweep")
 		}
+		if _, ok := series(env, ""); ok {
+			t.Error("the placeholder series is set although workspaces have active leases")
+		}
 	})
 
 	t.Run("after recovery", func(t *testing.T) {
@@ -314,6 +319,10 @@ func TestGauge_RecalibratedAfterRecoveryAndSweeps_TS_28_47(t *testing.T) {
 		}
 		if count, _ := leaseSeconds(t, env.metrics); count != 3 {
 			t.Errorf("lease_seconds count = %d; want the 3 destroyed leases observed", count)
+		}
+		// With no workspace left the gauge keeps its placeholder, so /metrics still lists it.
+		if v, ok := series(env, ""); !ok || v != 0 {
+			t.Errorf("the placeholder series = (%v, %v) after recovery; want it kept at 0 so that the metric stays listed", v, ok)
 		}
 	})
 }

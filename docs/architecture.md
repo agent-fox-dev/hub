@@ -8,8 +8,10 @@ This document describes the high-level architecture of af-hub.
 run and what shape they take. It builds one AgentKit sandbox provider from the
 `[sandbox]` section of `config.toml`, checks every profile against what that
 provider can honour, and publishes the profiles read-only. The lease record
-(below) is built on top of it, and the sandbox gateway (below) is what creates
-a sandbox for a lease. Expiry and a remote provider are later specs.
+(below) is built on top of it, the sandbox gateway (below) is what creates a
+sandbox for a lease, and the expiry machinery (below) puts a time limit on every
+lease and cleans up after a shutdown or a crash. A remote provider is a later
+spec.
 
 | File | Responsibility |
 |------|----------------|
@@ -20,13 +22,15 @@ a sandbox for a lease. Expiry and a remote provider are later specs.
 | `startup.go` | `Init`: the one call `cmd/af-hub` makes. Loads, validates, starts and logs. |
 | `permissions.go`, `auth.go` | The `sandboxes:read` and `sandboxes:write` scopes and the standalone auth helpers. |
 | `handlers.go` | `RegisterRoutes` and `GET /api/v1/sandbox-profiles`, built from the in-memory profiles. |
-| `lease_schema.go`, `lease.go`, `store_query.go`, `lease_transitions.go` | The `sandbox_leases` table (`InitSchema`), the `Lease` type and the `LeaseStore`: insert, read, list, `LookupByToken`, and the conditional transitions `MarkActive`, `FailLease`, `DestroyLease`, `EndLease`. |
+| `lease_schema.go`, `lease_migrate.go`, `lease.go`, `store_query.go`, `lease_transitions.go` | The `sandbox_leases` table (`InitSchema`), `MigrateLeaseExpiry` (adds `lease_expires_at` to a table from before it), the `Lease` type and the `LeaseStore`: insert, read, list, `LookupByToken`, and the conditional transitions `MarkActive`, `FailLease`, `ExpireLease`, `DestroyLease`, `EndLease`. |
 | `lease_service.go`, `lease_validate.go`, `token.go` | `LeaseService.Issue`: request validation, the required-secret check, id and token generation, the capacity count and the insert. |
 | `secretcheck.go` | `ResolutionChain` and `CheckRequiredSecrets`: which scopes a workspace's secrets are searched in, and a check that lists names only. |
 | `routes.go`, `handlers_issue.go`, `handlers_read.go`, `handlers_delete.go`, `delete_destroy.go`, `render.go` | `RegisterLeaseRoutes`: the five lease routes, the checks they share (`begin`, `authorize`), the lease representation (with `gateway_url`) and how `DELETE` ends a lease and its sandbox. |
-| `gateway.go` | `StartGateway`: loads the key pair, binds `listen`, builds the `gatewayd.Server` and serves it; `Gateway.DestroyBox`. |
+| `gateway.go` | `NewGateway`: loads the key pair, binds `listen`, builds the `gatewayd.Server`, the backend and the sweeper without serving; `Gateway.Run` (start-up work, then serving), `Gateway.Shutdown`, `Gateway.DestroyBox`, and `List` and `Destroy`, which make the gateway the `Boxes` of the sweep. `StartGateway` is `NewGateway` and serving at once. |
 | `gateway_auth.go` | `NewLeaseAuthenticator`: the function gatewayd calls for every RPC to turn a lease token into a principal. |
 | `backend.go`, `create_spec.go`, `secret_resolve.go`, `handle.go`, `events.go`, `scrub.go` | The wrapping backend, the `sandbox.Provider` hub gives gatewayd: `Create` and its outcomes, the spec built from the lease, the secrets read when the sandbox is created, the handle around the provider's sandbox, the audit events and the scrubber for provider errors. |
+| `expire.go`, `metrics.go` | The `Boxes` seam, and the `ender`: the expiry path, `endDestroyed` for shutdown and restart, and the events they emit; the recorder of the three sandbox metrics. |
+| `sweeper.go`, `reaper.go` | `Sweeper.Sweep` and its steps; restart recovery (`RecoverActive`), the reaper loop (`StartReaper`, `RunStartup`) and `Sweeper.Shutdown`. |
 
 ### Start-up order
 
@@ -48,12 +52,19 @@ up:
    on every start, and `RegisterRoutes` mounts the listing with the service,
    or with a nil service when the feature is off. A nil service answers
    `404 sandboxes_disabled`.
-6. Later, after the lease table exists and before `server.Start()`, `StartGateway`
-   binds the gateway's listener and starts serving it, and the lease service is
-   built with the gateway's URL and the gateway itself, which it destroys boxes
-   through. A key pair that cannot be loaded or an address that cannot be bound
-   is fatal, like any other failure of the section. A hub without sandboxes
-   binds nothing.
+6. Later, after the lease table and `MigrateLeaseExpiry`, the audit emitter and
+   the metrics exist and before `server.Start()`, `NewGateway` binds the gateway's
+   listener and builds the server, and `Gateway.Run` ends the leases a crash left
+   `active`, runs one sweep, starts the reaper and only then serves the listener.
+   The lease service is built with the gateway's URL and the gateway itself, which
+   it destroys boxes through. A key pair that cannot be loaded or an address that
+   cannot be bound is fatal, like any other failure of the section; what fails in
+   `Run` is logged and is not. A hub without sandboxes binds nothing and runs none
+   of it.
+7. `server.Start()` blocks until apikit shuts the server down on SIGTERM or SIGINT.
+   When it returns, `runServer` calls `Gateway.Shutdown` (a no-op on a hub without
+   sandboxes) before `main` returns, so before the deferred closes of the audit
+   database and the SQLite database run.
 
 The service holds no database handle and no secrets store, and the listing
 reads nothing but the profiles in memory, so it keeps answering when the
@@ -68,20 +79,30 @@ names and the fixed environment). The table is created by `sandboxes.InitSchema`
 at every start, right after `secrets.InitSchema`, whether or not sandboxes are
 enabled, so switching them off and on again keeps the history. Its `state`
 column allows all five states (`leased`, `active`, `destroyed`, `expired`,
-`failed`) because SQLite cannot alter a `CHECK`. All but `expired` are reachable:
+`failed`) because SQLite cannot alter a `CHECK`. The column `lease_expires_at`, the
+deadline for a `Create`, is in the table for a new database and added by
+`MigrateLeaseExpiry` to one from before it (checked with `PRAGMA table_info`, so a
+second run changes nothing; old rows stay NULL), which `cmd/af-hub` calls right
+after `InitSchema` at every start. All five states are reachable:
 
 ```
 leased ── Create succeeds ─────────────────▶ active
   │                                            │
   │                                            ├── DELETE ───────────────────▶ destroyed  (end_reason api)
-  │                                            └── Close through the gateway ▶ destroyed  (end_reason client)
+  │                                            ├── Close through the gateway ▶ destroyed  (end_reason client)
+  │                                            ├── expires_at passes, sweep ─▶ destroyed  (end_reason expired)
+  │                                            ├── hub shuts down ───────────▶ destroyed  (end_reason shutdown)
+  │                                            └── hub starts after a crash ─▶ destroyed  (end_reason restart)
   ├── DELETE ───────────────────────────────────────────────────────────────▶ destroyed  (end_reason api)
+  ├── lease_expires_at passes: late Create, or sweep ───────────────────────▶ expired    (end_reason expired)
   └── Create cannot proceed (profile gone, required secret missing,
       spec cannot be built, provider failed) ────────────────────────────────▶ failed     (error set)
 ```
 
 Every transition is one conditional `UPDATE` on the state the caller expects to
-find, and `destroyed` and `failed` are terminal. Two callers racing for the same
+find, and `destroyed`, `expired` and `failed` are terminal. While the hub is
+shutting down every ending that a caller would give `api` or `client` carries
+`shutdown` instead. Two callers racing for the same
 lease cannot both win: the one that finds zero rows changed reads the lease again
 and acts on what it is now.
 
@@ -101,20 +122,31 @@ service answers `404 sandboxes_disabled`. Issuing a lease, in `Issue`:
    SHA-256 is stored.
 4. Under one lock in the process and in one transaction, the live leases are
    counted (`leased` or `active` with `expires_at` in the future, across
-   workspaces) and the lease is inserted unless `max_sandboxes` is reached. The
+   workspaces, less the `leased` ones whose `lease_expires_at` is at or before now)
+   and the lease is inserted, with `lease_expires_at` (the earlier of `created_at`
+   plus `lease_timeout` and `expires_at`, never changed afterwards), unless
+   `max_sandboxes` is reached. The
    secret check runs before the transaction: reading secrets inside it would need
    a second connection. `apikit.OpenDatabase` begins transactions `IMMEDIATE`;
    the lock keeps the limit with a handle whose transactions are deferred.
 5. One `hub.sandbox.lease` audit event is emitted after the commit.
 
-Every ending of a lease (`failed` and `destroyed` alike) goes through one
-statement in `lease.go`, `endLease`: it sets the terminal state, `ended_at`,
+Every ending of a lease (`failed`, `expired` and `destroyed` alike) goes through
+one statement in `lease.go`, `endLease`: it sets the terminal state, `ended_at`,
 `updated_at`, the end reason or the error text, and clears the token hash, for a
-lease that is in a state the caller names. `EndLease`, `FailLease` and
-`DestroyLease` are thin callers of it, and a test pins that no other production
-code clears a token hash. Clearing the hash is what revokes a token, so ending a
-lease and revoking its token are the same act. `MarkActive` (leased to active,
-recording the sandbox id) leaves the token alone.
+lease that is in a state the caller names. `EndLease`, `FailLease`, `ExpireLease`
+and `DestroyLease` are thin callers of it, and a test pins that no other
+production code clears a token hash. Clearing the hash is what revokes a token, so
+ending a lease and revoking its token are the same act. `MarkActive` (leased to
+active, recording the sandbox id) leaves the token alone.
+
+The store also records the sandbox metrics (`metrics.go`), at the one place a lease
+changes state. `endLease` returns the row it changed, in the same statement: a lease
+with a `sandbox_id` had a box, so the ending takes one off `afhub_sandboxes_active`,
+and one that becomes `destroyed` is observed on `afhub_sandbox_lease_seconds`;
+`MarkActive` adds one. Only a transition that changed a row records anything, so an
+ending that lost a race to another path records nothing, and a store without
+metrics (a nil `*audit.Metrics`) records nothing.
 
 `LeaseStore.LookupByToken` (a presented token to its live lease, or
 `ErrLeaseNotFound` without saying why) is what the gateway authenticates with.
@@ -149,19 +181,26 @@ lease holder ── gateway.Dial(gateway_url, token) ──▶ gatewayd.Server
   principal, so a lease sees only its own sandbox.
 - **The backend** implements `sandbox.Provider`, which has only `Capabilities`,
   `Create` and `Reap`. `Create` claims the lease in a set in the process (one
-  `Create` at a time), loads it, refuses one that is not `leased` or whose time is
-  up, builds the spec from the lease alone (`buildSpec`), reads the secrets
-  (`resolveSecrets`) and asks the provider. The outcome is recorded by the
-  conditional transitions above. A box that arrives for a lease that a `DELETE`
-  has ended in the meantime is destroyed on the spot.
+  `Create` at a time), loads it, refuses one that is not `leased`, builds the spec
+  from the lease alone (`buildSpec`), reads the secrets (`resolveSecrets`) and asks
+  the provider. While the hub is shutting down it refuses with `Unavailable` before
+  all of this. A lease whose deadline has passed (`lease_expires_at`, or
+  `expires_at` for an old row) is refused with `FailedPrecondition` naming
+  `expired`, without a provider call, and ended as `expired` in the same call
+  through the expiry path. The outcome is recorded by the conditional transitions
+  above, and every `Create` that gets as far as making a box is counted once on
+  `afhub_sandbox_creates_total`. A box that arrives for a lease that a `DELETE` or a
+  sweep has ended in the meantime is destroyed on the spot.
 - **The handle** is what `Create` returns: the provider's sandbox with two
   differences. `Spec` redacts the environment values, because the gateway sends
   the spec back to the caller. `Close` is the client destroy path: gatewayd calls
   it when the holder destroys its sandbox (and also at the sandbox's TTL, when it
-  prunes a box that is no longer live, and at shutdown), and it ends the lease with the reason `client` unless a `DELETE` is
-  ending it or the lease's time is up (within two seconds of `expires_at`, since
-  the box's TTL is the lease's time cut to whole seconds and gatewayd closes the
-  box a moment early). The handle has an `Unwrap`, without which
+  prunes a box that is no longer live, and when gatewayd stops), and it ends the
+  lease with the reason `client` (`shutdown` while the hub shuts down) unless a
+  `DELETE` or the expiry machinery is ending it or the lease's time is up (within
+  two seconds of `expires_at`, since the box's TTL is the lease's time cut to whole
+  seconds and gatewayd closes the box a moment early; the next sweep ends such a
+  lease as `expired`). The handle has an `Unwrap`, without which
   gatewayd could not relay the holder's calls to the sandbox's agent.
 - **`DELETE`** ends a lease through `LeaseService.destroyLease`. For an `active`
   lease it asks the gateway to destroy the box first (`Gateway.DestroyBox`): the
@@ -172,24 +211,81 @@ lease holder ── gateway.Dial(gateway_url, token) ──▶ gatewayd.Server
   that handle when the gateway no longer holds the box. A box neither holds is
   taken to be gone, which is not true of one made by a process that has since been
   restarted.
-- **Reap.** The backend's `Reap` passes through to the provider for the gateway's
-  own periodic call, with the error text scrubbed; with a principal, a lease
-  holder's call, it does nothing.
+- **Reap.** The backend's `Reap` runs the sweep (below) for the gateway's own
+  periodic call, the one with no principal; with a principal, a lease holder's
+  call, it does nothing. It returns nothing: the sweep logs what fails in it.
 - **Scrubbing.** Provider error text is scrubbed (`scrub`) before it is stored on
   a lease, put in an event, logged or returned: every secret value and fixed
   environment value becomes `[redacted]`, URL user information is removed, and
   only then is the text cut to 1024 bytes on a UTF-8 boundary.
 - **Events** are emitted in one place (`events.go`; `delete_destroy.go` for
-  `DELETE`): `hub.sandbox.create`, `hub.sandbox.failed` and `hub.sandbox.destroy`.
-  A nil emitter skips emission and an emit error is logged and changes no outcome.
-
-The gateway never calls `Server.Shutdown`: destroying the boxes when the hub
-stops, and marking leases that run out, belong to the expiry work. Until then a
-box left behind is bounded by the TTL the provider enforces.
+  `DELETE`; `expire.go` for the endings by time, shutdown and restart):
+  `hub.sandbox.create`, `hub.sandbox.failed`, `hub.sandbox.destroy` and
+  `hub.sandbox.expire`. A nil emitter skips emission and an emit error is logged and
+  changes no outcome.
 
 Where the gateway differs from what its spec expected of AgentKit (no provider
 `List` or `Destroy`, the codes gatewayd answers with, the handle's `Close`) is in
 `docs/errata/27_sandbox_gateway_divergences.md`.
+
+### Lease lifetime: the sweep, recovery, shutdown and retention
+
+Every lease has two deadlines and the hub enforces both, whether or not a sweep has
+run. The authenticator refuses a token past `expires_at` in any state, and the
+backend refuses a `Create` past `lease_expires_at` and ends the lease on the spot.
+The sweep and the reaper tidy up what nobody asked about:
+
+```
+Gateway.Run (start)         RecoverActive ─▶ StartReaper: Sweep, then Sweep every reap_interval ─▶ serve
+gatewayd, Backend.Reap      Sweep                                (no principal)
+Gateway.Shutdown (stop)     shutdown mode ─▶ stop the reaper ─▶ end the active leases ─▶ gatewayd Shutdown
+```
+
+- **The sweep** (`Sweeper.Sweep`) is one function that never runs twice at once and
+  reads the injected clock. It runs, in order, the provider's `Reap`; the lapse of
+  every `leased` lease past its deadline; the destruction of the box of every
+  `active` lease past `expires_at`; the removal of the boxes of ended leases
+  (orphans); the pruning of terminal leases that ended more than 24 hours ago; and
+  the recalibration of `afhub_sandboxes_active` from a `GROUP BY` of the table
+  (`Reset`, then one `Set` per workspace; with no active lease the `""`
+  placeholder is set again, so the metric stays listed). A failing step is logged
+  and the later ones run. Every call to the provider has a 30-second limit.
+- **The endings** go through the `ender` (`expire.go`). The expiry path ends a
+  `leased` lease as `expired`, or destroys the box of an `active` one and ends it
+  as `destroyed`, with the reason `expired` and one `hub.sandbox.expire` event;
+  `endDestroyed` does the same with the reason `shutdown` or `restart` and one
+  `hub.sandbox.destroy` event by the system. Each is conditioned on the state the
+  caller read, so a lease another path has ended is skipped without an event or a
+  metric, and a box that cannot be destroyed does not keep the lease: revoking the
+  token does not wait for a provider call, and the failure is logged, scrubbed. A
+  context that has ended does keep it: the lease stays for the next start.
+- **The boxes** are reached through the `Boxes` interface (`List`, `Destroy`),
+  because AgentKit's `sandbox.Provider` can do neither. The gateway implements it
+  over what the hub holds: the handles of the boxes it made and has not seen closed.
+  So the orphan step finds a box only in this process (for example one whose
+  destruction failed), a box of an earlier process is beyond it, and it lives until
+  its TTL or until the provider's `Reap` removes it.
+- **Restart recovery** (`RecoverActive`) ends every lease an earlier process left
+  `active` as `destroyed` with the reason `restart`, before the gateway serves, then
+  recalibrates the gauge. The sweep's first run follows, and then the reaper
+  (`StartReaper`: a goroutine on a ticker of `reap_interval`).
+- **Shutdown** (`Gateway.Shutdown`, within `ShutdownLimit`, 20 seconds) sets the
+  shutdown flag of the `Service`, after which the gateway refuses every `Create`
+  with `Unavailable`, no sweep starts, and `DELETE` and the client's `Close` end
+  with `shutdown`; stops the reaper and waits for a sweep in progress; destroys the
+  boxes of all `active` leases at once; and stops gatewayd, which closes any box it
+  still holds. Leases in `leased` are not touched. When the limit runs out the
+  leases not yet ended stay `active` for recovery. A second call, or a call on a hub
+  without sandboxes, does nothing.
+- **Retention** is a fixed 24 hours from `ended_at` (`updated_at` when it is NULL),
+  applied by the sweep.
+- **Metrics** (`afhub_sandboxes_active`, `afhub_sandbox_creates_total`,
+  `afhub_sandbox_lease_seconds`) are collectors of `audit.Metrics`, passed to the
+  store, the backend and the sweeper as a `*audit.Metrics` that may be nil.
+
+Where this differs from the spec (the `Boxes` seam in place of the provider's `List`
+and `Destroy`, where the lifecycle methods live) is in
+`docs/errata/28_sandbox_expiry_divergences.md`.
 
 ### AgentKit dependency
 

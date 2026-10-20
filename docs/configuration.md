@@ -148,7 +148,9 @@ the hub is restarted.
 | `userns` | string | `""` | Passed to the engine as `--userns=<value>` when set. |
 | `max_ttl` | string | `"4h"` | The longest lifetime a profile may ask for, as a Go duration (`"90m"`, `"4h"`). Must be greater than zero. |
 | `network_modes` | list of strings | `["none"]` | The network modes profiles may use. Entries must be non-empty and unique, and each must be a mode the provider honours: `"none"` and `"unrestricted"` for Podman and Docker. A sandbox has no network unless the operator allows one. An empty list is accepted but leaves no mode for any profile, so every profile is then refused. |
-| `max_sandboxes` | integer | `16` | The most sandbox leases that may be live at once, across all workspaces. A lease counts while it is `leased` or `active` and its `expires_at` is in the future. At the limit `POST /api/v1/workspaces/:slug/sandboxes` answers `409` with `error_type: sandbox_capacity`. Must be a whole number of at least `1`. The gateway holds at most this many sandboxes too. |
+| `max_sandboxes` | integer | `16` | The most sandbox leases that may be live at once, across all workspaces. A lease counts while it is `leased` or `active` and its `expires_at` is in the future; a `leased` lease also stops counting when its `lease_expires_at` (see `lease_timeout`) is at or before now. At the limit `POST /api/v1/workspaces/:slug/sandboxes` answers `409` with `error_type: sandbox_capacity`. Must be a whole number of at least `1`. The gateway holds at most this many sandboxes too. |
+| `lease_timeout` | string | `"5m"` | How long a lease may wait for its `Create`, as a Go duration. Every lease gets a `lease_expires_at`, the earlier of its `created_at` plus this and its `expires_at`; a lease that is still `leased` then lapses (see [Lease lifetime](#lease-lifetime)). At least `1s` and at most `max_ttl`. The default is not compared with `max_ttl`, so a deployment with a short `max_ttl` and no `lease_timeout` still starts; its leases are bounded by their `expires_at` all the same. |
+| `reap_interval` | string | `"10m"` | How often the reaper sweeps the leases, as a Go duration. At least `10s` and at most `1h`. Nothing depends on it for correctness: the gateway checks the deadlines itself, and a sweep only tidies up. A lease that ended stays readable for 24 hours and is removed by the first sweep after that, so it disappears between 24 hours and 24 hours plus `reap_interval` after it ended. |
 | `listen` | string | `"127.0.0.1:8443"` | The address of the sandbox gateway, `host:port`. The port is a number from `0` to `65535`, and `0` picks a free port. The address is on loopback when the host is `localhost` or a literal IP address that is a loopback address; an empty host, `0.0.0.0`, `::` and any other name are not. No name is resolved. |
 | `tls_cert`, `tls_key` | string | `""` | Paths of the gateway's certificate and private key (PEM). Both are set or neither is; the message names the one that is missing. With neither the gateway speaks plaintext. |
 | `external_url` | string | `""` | The address lease holders dial, when it is not the address hub listens on, for example behind a proxy. An absolute `http` or `https` URL with a host and nothing else but an optional `/`: no user information, query, fragment or other path. The AgentKit client dials plaintext only for `localhost` and loopback addresses, so an `http` URL for any other host is accepted here and refused by the client: use `https`. |
@@ -219,9 +221,9 @@ else from the section.
 
 #### The sandbox gateway
 
-After the checks above, the hub starts the gateway, before its HTTP server
+After the checks above, the hub builds the gateway, before its HTTP server
 serves anything and after the lease table exists. A hub without a `[sandbox]`
-section binds nothing.
+section binds nothing and does none of the work below.
 
 1. If `tls_cert` and `tls_key` are set, it loads the key pair once. A failure
    stops the start with `sandbox.tls_cert and sandbox.tls_key: cannot load the
@@ -229,10 +231,14 @@ section binds nothing.
    that is renewed is picked up at the next start.
 2. It binds `listen`. A failure stops the start with `sandbox.listen "<address>":
    cannot bind the sandbox gateway:` and the bind error.
-3. It serves an AgentKit gateway on the listener for as long as the process
-   lives, over TLS when a key pair is set. If the gateway stops serving with an
-   error, the hub logs it once and exits with status 1, since it would otherwise
-   go on issuing leases nobody can use.
+3. It ends the leases a crashed process left `active`, runs one sweep and
+   starts the reaper (see [Lease lifetime](#lease-lifetime)). A failure in any of
+   it is logged and never stops the start.
+4. It serves an AgentKit gateway on the listener for as long as the process
+   lives, over TLS when a key pair is set. The listener is bound at step 2 but
+   serves only now, so no connection is accepted before step 3 has finished. If
+   the gateway stops serving with an error, the hub logs it once and exits with
+   status 1, since it would otherwise go on issuing leases nobody can use.
 
 The address a lease holder dials is `external_url` when set, otherwise `https://`
 (when TLS is configured) or `http://` followed by the address the listener is
@@ -249,7 +255,7 @@ sb, err := p.Create(ctx, sandbox.Spec{})
 
 - **One sandbox per lease.** The first `Create` under a token makes the lease
   `active`; a second one is refused. A token stops working the moment its lease
-  is `destroyed` or `failed`, or past its `expires_at`, on the very next call,
+  is `destroyed`, `expired` or `failed`, or past its `expires_at`, on the very next call,
   the calls relayed to a sandbox that exists included.
 - **The lease decides what the sandbox is.** The image, network, resources,
   Landlock setting and fixed `env` are those of the lease, which copied them from
@@ -276,12 +282,18 @@ Things to know when operating it:
   `network_modes` without `"none"`, a client has to ask for a TTL and a network
   that fit. A client built from a development checkout of AgentKit has no default
   image and refuses an empty `Image`; the hub ignores whatever it is.
-- **Stopping the hub does not stop the sandboxes.** The hub does not shut the
-  gateway down, so a sandbox that is left when the process exits lives until the
-  TTL the provider enforces. The reap the gateway runs when the hub starts, and
-  every ten minutes after, removes what has passed its own expiry. A restarted hub
-  no longer holds the sandboxes of the process before it: a `DELETE` of a lease
-  that was `active` then ends the lease and leaves its sandbox to that TTL.
+- **Stopping the hub destroys the sandboxes it holds.** When the HTTP server
+  returns, which apikit does on SIGTERM or SIGINT, the hub destroys the sandbox of
+  every `active` lease and ends each lease with `end_reason: "shutdown"`, within
+  20 seconds and before the databases close, and then stops the gateway. Kubernetes
+  gives a pod 30 seconds after SIGTERM by default. If the limit runs out the leases
+  not yet ended stay `active`, and the next start ends them. A crash runs none of
+  this: the next start ends every lease still `active` with `end_reason:
+  "restart"`, but it no longer holds the sandboxes of the process before it, and
+  AgentKit's provider has no way to list or destroy a sandbox by id. Those
+  sandboxes live until the TTL the provider enforces, which is never later than
+  their lease's `expires_at`, and the provider's own reap (the first step of every
+  sweep) removes them after that.
 - **A `DELETE` on a lease destroys its sandbox.** If the provider cannot, the
   answer is `502` with `error_type: sandbox_provider_error`, the lease stays
   `active` and the call can be repeated (see
@@ -289,6 +301,45 @@ Things to know when operating it:
 - **The deployment is unchanged.** The manifests in `deploy/` expose the REST
   port only; reaching the gateway from outside the pod (a second Service port,
   gRPC through a route) is a deployment decision.
+
+#### Lease lifetime
+
+Every lease ends: nothing a lease allows outlives its `expires_at`, and a lease
+nobody uses lapses.
+
+- **The deadline for a `Create`.** A lease has a `lease_expires_at`, fixed when it
+  is issued: the earlier of `created_at` plus `lease_timeout` and `expires_at`. A
+  `Create` that arrives at or after it, for a lease still `leased`, is refused
+  (`FailedPrecondition`, naming `expired`) without a call to the provider, and the
+  lease is ended as `expired` in the same call. A row from before the column has no
+  deadline of its own, and `expires_at` is used.
+- **`expires_at`.** From this moment the lease's token is refused in every state.
+- **The sweep.** At start, then every `reap_interval`, the hub runs a sweep, one at
+  a time, in this order: the provider's `Reap`; every `leased` lease past its
+  deadline is ended as `expired`; every `active` lease past its `expires_at` has
+  its sandbox destroyed and is ended as `destroyed`, both with `end_reason:
+  "expired"`, whether or not the sandbox could be destroyed (the failure is
+  logged); every sandbox the hub holds whose lease has ended is destroyed (see
+  below); terminal leases that ended more than 24 hours ago are deleted; and the
+  `afhub_sandboxes_active` gauge is recalibrated. A step that fails is logged and
+  the later ones still run. Each call to the provider is cut off after 30 seconds.
+  The gateway's own periodic reap runs the same sweep.
+- **Sandboxes of ended leases.** The provider cannot list its sandboxes, so the sweep
+  looks at the sandboxes this hub process holds a handle of: those it made and has
+  not seen closed, among them one that could not be destroyed when its lease ended.
+  A held sandbox whose id is the `sandbox_id` of an ended lease, or whose
+  `hub.lease` label names one, is destroyed. A sandbox that cannot be matched to an
+  ended lease is never touched.
+- **Retention.** An ended lease (`destroyed`, `expired` or `failed`) stays readable
+  for 24 hours after `ended_at` (`updated_at` when there is none). The period is
+  fixed.
+- **Metrics.** `afhub_sandboxes_active{workspace}` is the number of `active`
+  leases, `afhub_sandbox_creates_total{result}` counts the `Create`s the gateway
+  accepted for a `leased` lease as `created` or `failed`, and
+  `afhub_sandbox_lease_seconds` is a histogram of the time from issue to
+  destruction of a lease that became `destroyed` (buckets 60, 300, 600, 1200, 1800,
+  3600, 7200, 14400 and 28800 seconds). They are listed on `GET /metrics` from the
+  start.
 
 ```toml
 [sandbox]

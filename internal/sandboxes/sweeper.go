@@ -70,7 +70,7 @@ type Sweeper struct {
 	interval time.Duration
 	tickers  tickerFactory
 	reaperMu sync.Mutex
-	reaper   *Reaper
+	reaper   *reaperLoop
 	// service holds the shutdown mode; shuttingDown is set by the first Shutdown.
 	service      *Service
 	shuttingDown atomic.Bool
