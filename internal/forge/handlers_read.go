@@ -35,7 +35,7 @@ func (h *handlers) serve(operation string, prepare prepareFunc) echo.HandlerFunc
 		if ref != nil {
 			return writeRefusal(c, ref)
 		}
-		fc, err := h.buildClient(req, tgt)
+		fc, err := h.buildClient(req, tgt, false)
 		if err != nil {
 			return writeForgeError(c, err)
 		}

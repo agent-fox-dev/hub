@@ -65,6 +65,8 @@ func (a *writeAnswer) write(c echo.Context) error {
 type writeRun struct {
 	c  echo.Context
 	fc *forgeClient
+	// api is what the write calls on the forge.
+	api writer
 
 	// sent is whether a request has been sent to the forge: only then is there an event.
 	sent       bool
@@ -110,7 +112,7 @@ func (h *handlers) write(rt writeRoute) echo.HandlerFunc {
 		if ref != nil {
 			return writeRefusal(c, ref)
 		}
-		fc, err := h.buildClient(req, tgt)
+		fc, err := h.buildClient(req, tgt, true)
 		if err != nil {
 			return writeForgeError(c, err)
 		}
@@ -118,7 +120,7 @@ func (h *handlers) write(rt writeRoute) echo.HandlerFunc {
 			return writeRefusal(c, ref)
 		}
 
-		w := &writeRun{c: c, fc: fc, resourceID: plan.resourceID, number: plan.number, extra: plan.extra}
+		w := &writeRun{c: c, fc: fc, api: h.writerFor(fc), resourceID: plan.resourceID, number: plan.number, extra: plan.extra}
 		answer, err := plan.send(w)
 		if err != nil {
 			fe := h.mapCall(req, fc, rt.operation, err)
