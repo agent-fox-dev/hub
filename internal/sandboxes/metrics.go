@@ -1,6 +1,9 @@
 package sandboxes
 
 import (
+	"context"
+	"database/sql"
+	"fmt"
 	"time"
 
 	"github.com/txsvc/apikit"
@@ -44,4 +47,37 @@ func (r metricsRecorder) ended(workspace, createdAt, endedAt string, wasActive b
 		return
 	}
 	r.m.SandboxLeaseSeconds.Observe(max(ended.Sub(created), time.Duration(0)).Seconds())
+}
+
+// recalibrate sets afhub_sandboxes_active from the lease table: it resets the
+// gauge, which drops every stale label, and sets one value per workspace from
+// a count of its active leases. The table is read first, so that a failed read
+// leaves the gauge as it was.
+func (r metricsRecorder) recalibrate(ctx context.Context, db *sql.DB) error {
+	if r.m == nil {
+		return nil
+	}
+	rows, err := db.QueryContext(ctx, `SELECT workspace, COUNT(*) FROM sandbox_leases WHERE state = 'active' GROUP BY workspace`)
+	if err != nil {
+		return fmt.Errorf("counting the active leases: %w", err)
+	}
+	defer rows.Close()
+	counts := map[string]int{}
+	for rows.Next() {
+		var workspace string
+		var n int
+		if err := rows.Scan(&workspace, &n); err != nil {
+			return fmt.Errorf("counting the active leases: %w", err)
+		}
+		counts[workspace] = n
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("counting the active leases: %w", err)
+	}
+
+	r.m.SandboxesActive.Reset()
+	for workspace, n := range counts {
+		r.m.SandboxesActive.WithLabelValues(workspace).Set(float64(n))
+	}
+	return nil
 }
