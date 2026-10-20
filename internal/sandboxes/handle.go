@@ -2,7 +2,6 @@ package sandboxes
 
 import (
 	"context"
-	"errors"
 	"log/slog"
 	"maps"
 	"time"
@@ -79,10 +78,12 @@ func (b *Backend) closeBox(ctx context.Context, h *handle) error {
 }
 
 // closeProviderBox destroys the provider's box and forgets the handle once it
-// has. The error of a provider that cannot is scrubbed.
+// has. A box the provider says is gone counts as destroyed. The error of a
+// provider that cannot is scrubbed, and is Unavailable when the remote gateway
+// refused hub's token (see Service.remoteFailure).
 func (b *Backend) closeProviderBox(ctx context.Context, h *handle) error {
-	if err := h.Sandbox.Close(ctx); err != nil {
-		return errors.New(scrub(err.Error(), h.values))
+	if err := h.Sandbox.Close(ctx); err != nil && !isNotFound(err) {
+		return b.service.remoteFailure("destroy", err, scrub(err.Error(), h.values))
 	}
 	b.mu.Lock()
 	if b.boxes[h.lease.ID] == h {
@@ -139,7 +140,7 @@ func (b *Backend) destroyBox(ctx context.Context, server *gatewayd.Server, boxID
 	}
 
 	err := server.Destroy(ctx, boxID)
-	if !errors.Is(err, gatewayd.ErrNotHeld) {
+	if !isNotFound(err) {
 		return err
 	}
 	b.mu.Lock()

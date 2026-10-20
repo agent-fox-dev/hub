@@ -317,7 +317,7 @@ func (b *Backend) createBox(ctx context.Context, lease *Lease, spec sandbox.Spec
 	box, err := b.provider.Create(ctx, spec)
 	if err != nil {
 		msg := scrub(err.Error(), values)
-		return nil, b.failLease(ctx, lease, msg, errors.New(msg))
+		return nil, b.failLease(ctx, lease, msg, b.service.remoteFailure("create", err, msg))
 	}
 	// The handle is held before the lease reads active: from then on a DELETE finds
 	// the lease active, asks the gateway for a box it has not recorded yet, and

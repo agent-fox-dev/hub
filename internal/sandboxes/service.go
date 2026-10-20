@@ -30,6 +30,8 @@ type specChecker func(sandbox.Capabilities, sandbox.Spec) (sandbox.Spec, error)
 // shutdown mode (see EnterShutdown).
 type Service struct {
 	provider sandbox.Provider
+	// remote is the client of the remote gateway, nil for any other provider.
+	remote RemoteClient
 	// caps is the snapshot of the remote gateway's capabilities, read once at
 	// start; nil for a provider that is not remote, which is asked every time.
 	caps         *sandbox.Capabilities
@@ -94,7 +96,7 @@ func startRemote(v *Validated, factory GatewayFactory) (*Service, error) {
 		closeRemote(client)
 		return nil, err
 	}
-	svc.caps = &caps
+	svc.caps, svc.remote = &caps, client
 	return svc, nil
 }
 
