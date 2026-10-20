@@ -1,9 +1,11 @@
 package sandboxes
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/agent-fox-dev/agentkit-go/sandbox"
+	"github.com/agent-fox-dev/agentkit-go/sandbox/gateway"
 	"github.com/agent-fox-dev/agentkit-go/sandbox/podman"
 )
 
@@ -31,4 +33,47 @@ func BuildProvider(v *Validated, factory ProviderFactory) (sandbox.Provider, err
 		return nil, fmt.Errorf("sandbox: cannot build sandbox.provider %q from sandbox.engine_binary %q: %w", v.Provider, v.EngineBinary, err)
 	}
 	return p, nil
+}
+
+// RemoteClient is the client of a remote agentkit-gateway: a sandbox.Provider
+// that also lists the sandboxes its token holds, which is what the start-up probe
+// calls. *gateway.Provider is one.
+type RemoteClient interface {
+	sandbox.Provider
+	List(ctx context.Context) ([]gateway.Info, error)
+}
+
+// GatewayFactory builds the client of the remote gateway at url under opts. It
+// has the shape of gateway.Dial; tests inject their own.
+type GatewayFactory func(ctx context.Context, url string, opts gateway.Options) (RemoteClient, error)
+
+// DialGateway is the factory production uses: gateway.Dial, which connects to the
+// gateway under ctx, reads its capabilities and refuses a URL or a token that
+// breaks its rules before it connects.
+func DialGateway(ctx context.Context, url string, opts gateway.Options) (RemoteClient, error) {
+	client, err := gateway.Dial(ctx, url, opts)
+	if err != nil {
+		return nil, err
+	}
+	return client, nil
+}
+
+// StartOption changes how Start and Init build the service.
+type StartOption func(*startOptions)
+
+type startOptions struct{ gateway GatewayFactory }
+
+// newStartOptions applies opts to the defaults.
+func newStartOptions(opts []StartOption) startOptions {
+	o := startOptions{gateway: DialGateway}
+	for _, opt := range opts {
+		opt(&o)
+	}
+	return o
+}
+
+// WithGatewayFactory sets the factory that builds the client of the remote
+// gateway, for provider "gateway". The default is DialGateway.
+func WithGatewayFactory(f GatewayFactory) StartOption {
+	return func(o *startOptions) { o.gateway = f }
 }

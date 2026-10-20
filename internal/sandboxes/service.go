@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"math"
 	"slices"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/agent-fox-dev/agentkit-go/sandbox"
+	"github.com/agent-fox-dev/agentkit-go/sandbox/gateway"
 )
 
 // probeTimeout bounds the one call that shows the provider is reachable.
@@ -39,19 +41,74 @@ type Service struct {
 	shutdown atomic.Bool
 }
 
-// Start validates cfg, builds the provider through factory and checks it. A
-// static failure is returned before the factory is called, so the engine is
-// never contacted for a configuration that cannot work.
-func Start(cfg *Config, factory ProviderFactory) (*Service, error) {
+// Start validates cfg, builds the provider and checks it. A static failure is
+// returned before any factory is called, so neither an engine nor a remote
+// gateway is contacted for a configuration that cannot work.
+//
+// Provider "podman" is built through factory. Provider "gateway" is built through
+// the factory of WithGatewayFactory, gateway.Dial by default, and never through
+// factory: no engine is run for it.
+func Start(cfg *Config, factory ProviderFactory, opts ...StartOption) (*Service, error) {
 	v, err := Validate(cfg)
 	if err != nil {
 		return nil, err
+	}
+	if v.Provider == providerGateway {
+		return startRemote(v, newStartOptions(opts).gateway)
 	}
 	p, err := BuildProvider(v, factory)
 	if err != nil {
 		return nil, err
 	}
 	return New(v, p)
+}
+
+// startRemote builds the client of the remote gateway and checks it. The factory
+// and the one List that proves the remote answers and accepts hub's token share
+// one probeTimeout, and nothing is created on the remote. The client is closed
+// when start is refused, since it holds a connection.
+func startRemote(v *Validated, factory GatewayFactory) (*Service, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
+	defer cancel()
+
+	client, err := factory(ctx, v.GatewayURL, gateway.Options{Token: v.GatewayToken.reveal()})
+	if err == nil && client == nil {
+		err = errors.New("the gateway factory returned no client")
+	}
+	if err != nil {
+		return nil, remoteStartFailure(ctx, v, err)
+	}
+	if _, err := client.List(ctx); err != nil {
+		closeRemote(client)
+		return nil, remoteStartFailure(ctx, v, err)
+	}
+	svc, err := assemble(v, client, sandbox.CheckSpec)
+	if err != nil {
+		closeRemote(client)
+		return nil, err
+	}
+	return svc, nil
+}
+
+// remoteStartFailure is the error of a remote that cannot be used: it names the
+// three keys that decide which remote hub talks to, and holds the client's text
+// with the token replaced and the user information of URLs removed. The text is
+// built from the scrubbed string and wraps nothing, so the token cannot be got
+// back from the chain.
+func remoteStartFailure(ctx context.Context, v *Validated, err error) error {
+	text := scrub(err.Error(), []string{v.GatewayToken.reveal()})
+	if ctx.Err() != nil {
+		text = fmt.Sprintf("no answer within %s: %s", probeTimeout, text)
+	}
+	return fmt.Errorf("sandbox: sandbox.provider %q cannot use the remote gateway at sandbox.gateway_url %q with sandbox.gateway_token: %s", v.Provider, v.GatewayURL, text)
+}
+
+// closeRemote closes a client that is being given up. Its error is dropped: start
+// is being refused already, and says why.
+func closeRemote(client RemoteClient) {
+	if closer, ok := client.(io.Closer); ok {
+		_ = closer.Close()
+	}
 }
 
 // New probes p once, checks every network mode of v against its capabilities
@@ -67,7 +124,12 @@ func newService(v *Validated, p sandbox.Provider, check specChecker) (*Service, 
 	if err := probe(v, p); err != nil {
 		return nil, err
 	}
+	return assemble(v, p, check)
+}
 
+// assemble reads the capabilities of a provider that has passed its probe, checks
+// the network modes and the profiles against them, and builds the service.
+func assemble(v *Validated, p sandbox.Provider, check specChecker) (*Service, error) {
 	caps := p.Capabilities()
 	errs := checkNetworkModes(v, caps)
 	for _, profile := range v.Profiles {

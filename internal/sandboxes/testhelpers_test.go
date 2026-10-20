@@ -98,6 +98,10 @@ type leaseEnvOptions struct {
 	start time.Time
 	// provider replaces the provider the profile service is checked against.
 	provider sandbox.Provider
+	// service replaces the profile service that config and provider would build.
+	service *Service
+	// recording replaces the recording provider newBackendEnv makes.
+	recording *recordingProvider
 	// noEmitter builds a backend environment with no audit emitter at all. An
 	// emitter given in emitter is used in place of the recording one.
 	noEmitter bool
@@ -162,17 +166,20 @@ func newLeaseEnv(t *testing.T, opts leaseEnvOptions) *leaseEnv {
 	}
 	createWorkspaceTables(t, db)
 
-	cfg := opts.config
-	if cfg == nil {
-		cfg = defaultLeaseConfig()
-	}
-	var provider sandbox.Provider = newFakeProvider()
-	if opts.provider != nil {
-		provider = opts.provider
-	}
-	profileSvc, err := New(requireValid(t, cfg), provider)
-	if err != nil {
-		t.Fatalf("New: %v", err)
+	profileSvc := opts.service
+	if profileSvc == nil {
+		cfg := opts.config
+		if cfg == nil {
+			cfg = defaultLeaseConfig()
+		}
+		var provider sandbox.Provider = newFakeProvider()
+		if opts.provider != nil {
+			provider = opts.provider
+		}
+		var err error
+		if profileSvc, err = New(requireValid(t, cfg), provider); err != nil {
+			t.Fatalf("New: %v", err)
+		}
 	}
 
 	start := opts.start
@@ -658,7 +665,10 @@ type backendEnv struct {
 // the emitter.
 func newBackendEnv(t *testing.T, opts leaseEnvOptions) *backendEnv {
 	t.Helper()
-	env := &backendEnv{prov: newRecordingProvider(), emitter: &recordingEmitter{}, metrics: opts.metrics}
+	env := &backendEnv{prov: opts.recording, emitter: &recordingEmitter{}, metrics: opts.metrics}
+	if env.prov == nil {
+		env.prov = newRecordingProvider()
+	}
 	switch {
 	case opts.emitter != nil:
 		env.sink = opts.emitter
