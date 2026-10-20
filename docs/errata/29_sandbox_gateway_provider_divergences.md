@@ -105,9 +105,11 @@ the hub could and could not do about them.
    next gateway answered `the RPC carries no agentkit-sandbox-id`, so no `Create`
    through the hub could complete. The spec lists changes to AgentKit as a
    non-goal; with the user's approval it was fixed in agentkit-go pull request 150
-   (the relay sends the backend sandbox's own outgoing metadata). The tests that
-   create a box on the remote (TS-29-3, 27 to 30, 33, 44 and 47 to 51) fail with the
-   handshake error against `agentkit-go` before that change.
+   (the relay sends the backend sandbox's own outgoing metadata).
+   Every test in which a caller gets a box through the hub over
+   the real client (TS-29-3, 27 to 30, 33, 41 to 44, 48, 50 and 51, the partition tests
+   and the binary test) fails with the handshake error against `agentkit-go` before
+   that change; the tests that stop before a box exists (TS-29-47 and 49) do not.
 
 11. **`Service.Close` is called from `Gateway.Shutdown`.** The plan has a
     `shutdown.go` and a deferred close in `main`. Hub's shutdown is
@@ -130,8 +132,12 @@ the hub could and could not do about them.
       TS-29-39 to 42 and 44 (the checks are shared between the providers, the real
       client answers `Capabilities` from its cache, and the remote's outage
       behaviour is that of spec 27 and the client), and TS-29-27 to 30 and
-      TS-29-47 to 51 verify what tasks 3 to 9 and spec 27 built. Mutants of the
-      production code each fail one of them.
+      TS-29-47 to 51 verify what tasks 3 to 9 and spec 27 built, as an integration
+      task expects. Mutants of the production code each fail one of them.
+    - Two more tests run the real `af-hub` binary against the in-process remote: one
+      refuses to start on a token the remote refuses, and one starts, makes a box on
+      the remote for a lease's holder through hub's gateway and destroys it on SIGTERM
+      (`TestAfHubBinary_RunsSandboxesOnARemoteGateway`).
     - Spec 25's `TestValidate_UnsupportedProviders_TS_25_10` asserted that provider
       `gateway` is refused as not supported by this build; it now asserts that a
       valid gateway configuration validates, as the spec says TS-25-9 and TS-25-10

@@ -419,7 +419,7 @@
         "`make test` passes offline with no container engine",
         "`make lint` passes"
       ],
-      "state": "pending"
+      "state": "done"
     }
   ]
 }
