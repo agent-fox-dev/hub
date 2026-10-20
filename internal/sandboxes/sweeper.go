@@ -100,7 +100,7 @@ func NewSweeper(cfg SweeperConfig) *Sweeper {
 		store:       store,
 		provider:    cfg.Provider,
 		boxes:       cfg.Boxes,
-		ender:       newEnder(store, cfg.Audit, cfg.Boxes, timeout),
+		ender:       newEnder(store, cfg.Audit, cfg.Boxes, timeout, cfg.Service.scrubValues()...),
 		metrics:     metricsRecorder{m: cfg.Metrics},
 		now:         now,
 		callTimeout: timeout,
@@ -161,7 +161,7 @@ func (s *Sweeper) reap(ctx context.Context) error {
 		slog.Info("sandbox expiry: the provider removed boxes past their time", "sandbox_ids", ids)
 	}
 	if err != nil {
-		return errors.New(callFailure("reap", s.callTimeout, err, nil))
+		return errors.New(callFailure("reap", s.callTimeout, err, s.service.scrubValues()))
 	}
 	return nil
 }
@@ -211,7 +211,7 @@ func (s *Sweeper) removeOrphans(ctx context.Context) error {
 	listed, err := s.boxes.List(listCtx)
 	cancel()
 	if err != nil {
-		return errors.New(callFailure("list", s.callTimeout, err, nil))
+		return errors.New(callFailure("list", s.callTimeout, err, s.service.scrubValues()))
 	}
 	if len(listed) == 0 {
 		return nil
@@ -253,7 +253,7 @@ func (s *Sweeper) destroyOrphan(ctx context.Context, leaseID, boxID string) {
 	defer cancel()
 	if err := s.boxes.Destroy(ctx, boxID); err != nil {
 		slog.Error("sandbox expiry: destroying a box that belongs to an ended lease failed",
-			"lease_id", leaseID, "sandbox_id", boxID, "error", callFailure("destroy", s.callTimeout, err, nil))
+			"lease_id", leaseID, "sandbox_id", boxID, "error", callFailure("destroy", s.callTimeout, err, s.service.scrubValues()))
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"io"
 	"maps"
 	"math"
+	"net/url"
 	"slices"
 	"sync/atomic"
 	"time"
@@ -32,6 +33,9 @@ type Service struct {
 	provider sandbox.Provider
 	// remote is the client of the remote gateway, nil for any other provider.
 	remote RemoteClient
+	// remoteScrub are the values that stay out of every text derived from the
+	// remote's errors: hub's token for it, the gateway_url string and its host.
+	remoteScrub []string
 	// caps is the snapshot of the remote gateway's capabilities, read once at
 	// start; nil for a provider that is not remote, which is asked every time.
 	caps         *sandbox.Capabilities
@@ -96,7 +100,7 @@ func startRemote(v *Validated, factory GatewayFactory) (*Service, error) {
 		closeRemote(client)
 		return nil, err
 	}
-	svc.caps, svc.remote = &caps, client
+	svc.caps, svc.remote, svc.remoteScrub = &caps, client, remoteScrubValues(v)
 	return svc, nil
 }
 
@@ -318,6 +322,28 @@ func (s *Service) Capabilities() sandbox.Capabilities {
 	caps := *s.caps
 	caps.Network = slices.Clone(caps.Network)
 	return caps
+}
+
+// scrubValues are the values besides the secrets and the environment of a lease
+// that must stay out of any text derived from the provider's errors, which is any
+// text stored on a lease, logged, emitted, or returned to a gateway or HTTP
+// caller. For the remote gateway they are hub's token, the configured gateway_url
+// string and the URL's host, as url.Host gives it; for any other provider there
+// are none. The slice is a copy.
+func (s *Service) scrubValues() []string {
+	if s == nil {
+		return nil
+	}
+	return slices.Clone(s.remoteScrub)
+}
+
+// remoteScrubValues are the scrub values of the remote gateway v describes.
+func remoteScrubValues(v *Validated) []string {
+	values := []string{v.GatewayToken.reveal(), v.GatewayURL}
+	if u, err := url.Parse(v.GatewayURL); err == nil && u.Host != "" {
+		values = append(values, u.Host)
+	}
+	return values
 }
 
 // Provider returns the provider the service was built with.

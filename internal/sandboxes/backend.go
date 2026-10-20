@@ -284,7 +284,8 @@ func (b *Backend) expireLate(ctx context.Context, lease *Lease) error {
 // The values live in memory for the length of the call and nowhere else.
 //
 // It returns every value that must stay out of any text derived from the
-// provider's errors: those of the secrets and those of the fixed environment.
+// provider's errors: those of the secrets and of the fixed environment, and the
+// token, the URL and the host of a remote gateway.
 func (b *Backend) addSecrets(ctx context.Context, lease *Lease, spec *sandbox.Spec) ([]string, error) {
 	resolved, err := resolveSecrets(b.secrets, b.db, lease.Workspace, lease.Secrets, lease.OptionalSecrets)
 	var missing *secretMissingError
@@ -302,7 +303,7 @@ func (b *Backend) addSecrets(ctx context.Context, lease *Lease, spec *sandbox.Sp
 	for _, value := range lease.Env {
 		values = append(values, value)
 	}
-	return values, nil
+	return append(values, b.service.scrubValues()...), nil
 }
 
 // createBox asks the provider for the box and records the outcome on the lease.
