@@ -36,3 +36,11 @@ delivered.
    admin token now gets that 404 too (`internal/audit/auth.go`, `authorizeWorkspace`). An admin
    token still reads and opens sessions in every workspace that exists, whatever its status
    (`TestRunReads_OwnerAndAdmin_TS_36_2`, `TestCreateSession_OwnerAndAdminOpen_TS_36_27`).
+
+3. **A failed lookup on the session list answers 500, with no session.** Step 5.2 says that
+   `getAccessibleWorkspaces` returns an empty non-nil list on an error "so no session is
+   returned"; 36-REQ-9.2 says the list "returns no session". `getAccessibleWorkspaces`
+   (`internal/audit/handlers.go`) returns both, the empty list and the error, and
+   `handleListSessions` keeps the `500 internal server error` it has always answered when that
+   lookup fails, rather than a `200` with an empty list a client could take for "no sessions".
+   No session is returned either way (`TestSessionReads_DatabaseFailure_TS_36_40`).

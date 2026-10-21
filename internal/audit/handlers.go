@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -534,37 +535,61 @@ func hasWorkspaceAccess(c echo.Context, sqliteDB *sql.DB, auth *apikit.AuthInfo,
 	return status == 0 && ws.Status == "active"
 }
 
-// getAccessibleWorkspaces returns workspace slugs the caller owns; for a PAT
-// bound to a workspace (spec 33) at most that one. The binding is resolved
-// before any rows are opened.
+// getAccessibleWorkspaces returns the active workspaces a non-admin caller
+// may read: the readable set of wsaccess.ReadableSlugs (owned and member
+// workspaces; for a PAT bound to a workspace at most that one, without a
+// refusal report), kept to those whose status is active.
+//
+// The list is never nil, because ListSessions reads a nil list as "no
+// restriction": a caller with no readable active workspace gets an empty
+// one, and so does a failed lookup, which also returns its error.
 func getAccessibleWorkspaces(sqliteDB *sql.DB, auth *apikit.AuthInfo) ([]string, error) {
-	boundSlug, bound, err := wsaccess.BoundSlug(sqliteDB, auth)
+	readable, _, err := wsaccess.ReadableSlugs(sqliteDB, auth)
 	if err != nil {
-		return nil, err
+		return []string{}, err
+	}
+	slugs := make([]string, 0, len(readable))
+	for slug := range readable {
+		slugs = append(slugs, slug)
+	}
+	slices.Sort(slugs)
+	active := []string{}
+	for chunk := range slices.Chunk(slugs, activeSlugsChunk) {
+		got, err := activeSlugs(sqliteDB, chunk)
+		if err != nil {
+			return []string{}, err
+		}
+		active = append(active, got...)
+	}
+	return active, nil
+}
+
+// activeSlugsChunk bounds the number of slugs one activeSlugs query binds.
+const activeSlugsChunk = 500
+
+// activeSlugs returns those of slugs whose workspace is active.
+func activeSlugs(sqliteDB *sql.DB, slugs []string) ([]string, error) {
+	args := make([]any, len(slugs))
+	for i, s := range slugs {
+		args[i] = s
 	}
 	rows, err := sqliteDB.Query(
-		"SELECT slug FROM workspaces WHERE owner_id = ? AND status = 'active'",
-		auth.UserID,
+		"SELECT slug FROM workspaces WHERE status = 'active' AND slug IN (?"+strings.Repeat(", ?", len(slugs)-1)+")",
+		args...,
 	)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-
-	// Never nil: ListSessions reads a nil list as "no restriction", so a
-	// caller with no readable workspace must get an empty one.
-	slugs := []string{}
+	var active []string
 	for rows.Next() {
 		var slug string
 		if err := rows.Scan(&slug); err != nil {
 			return nil, err
 		}
-		if bound && slug != boundSlug {
-			continue
-		}
-		slugs = append(slugs, slug)
+		active = append(active, slug)
 	}
-	return slugs, rows.Err()
+	return active, rows.Err()
 }
 
 // ---------------------------------------------------------------------------

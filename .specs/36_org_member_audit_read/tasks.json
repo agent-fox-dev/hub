@@ -188,7 +188,7 @@
       "done_when": [
         "TestSessions_NoAccessibleWorkspaceListsNothing and TS-33-37 pass unchanged"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 6,
