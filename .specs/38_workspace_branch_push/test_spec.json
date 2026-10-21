@@ -1,0 +1,1074 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/test_spec.v2.json",
+  "spec_id": "38",
+  "spec_name": "workspace_branch_push",
+  "schema_version": 2,
+  "tests": [
+    {
+      "id": "TS-38-1",
+      "kind": "integration",
+      "verifies": [
+        "38-REQ-1.1"
+      ],
+      "title": "An owner's push of an existing branch to a local bare origin answers 200 with branch, sha, remote, remote_url and result",
+      "given": [
+        "an active, ready standard workspace whose trunk has branch fix with one commit",
+        "origin is a local bare repository set as git_url",
+        "the caller is the owner using an API key"
+      ],
+      "when": "POST /api/v1/workspaces/<slug>/branches/fix/push with no body",
+      "then": [
+        "the status is 200",
+        "body.branch is fix, body.sha is the 40-hex tip of refs/heads/fix in the trunk, body.remote is origin",
+        "body.result is pushed",
+        "the bare origin now has refs/heads/fix at body.sha"
+      ],
+      "pseudocode": "r = env.doRequest(POST, '/api/v1/workspaces/'+slug+'/branches/fix/push', nil, userAuth); assert r.code==200; assert r.json.sha==trunkTip('fix'); assert bare.rev('refs/heads/fix')==r.json.sha"
+    },
+    {
+      "id": "TS-38-2",
+      "kind": "property",
+      "verifies": [
+        "38-REQ-1.2"
+      ],
+      "title": "Any valid branch name sent as one escaped segment is decoded exactly once",
+      "given": [
+        "an active, ready workspace whose trunk holds the generated branch and a local bare origin"
+      ],
+      "when": "for any valid branch name (including names with '/', '%25' sequences and literal '%' characters), the name is escaped with url.PathEscape-style %2F encoding and posted",
+      "then": [
+        "body.branch equals the original name",
+        "the ref pushed to origin is refs/heads/<original name>",
+        "fix%2F42-nil-map names fix/42-nil-map and a%2525b names a%25b, never a%b"
+      ],
+      "pseudocode": "for name in genValidBranchNames(): seed(trunk, name); r=post(escapeSegment(name)); assert r.json.branch==name; assert bare.has('refs/heads/'+name)"
+    },
+    {
+      "id": "TS-38-3",
+      "kind": "unit",
+      "verifies": [
+        "38-REQ-1.3"
+      ],
+      "title": "An unescaped slash inside the branch name matches no route and sends nothing",
+      "given": [
+        "an active, ready workspace with branch fix/x in the trunk",
+        "an audit emitter capturing events"
+      ],
+      "when": "POST /api/v1/workspaces/<slug>/branches/fix/x/push is sent with a literal slash",
+      "then": [
+        "the status is 404 from the router",
+        "no hub.branch.push event is emitted",
+        "origin received nothing"
+      ],
+      "pseudocode": "r=post('/branches/fix/x/push'); assert r.code==404; assert events.count('hub.branch.push')==0; assert bare.refs()==[]"
+    },
+    {
+      "id": "TS-38-4",
+      "kind": "unit",
+      "verifies": [
+        "38-REQ-1.4"
+      ],
+      "title": "An empty body, a body without force and a body with unknown fields all push non-forced",
+      "given": [
+        "an active, ready workspace with branch fix in the trunk",
+        "a stub push seam or local bare origin recording the refspec"
+      ],
+      "when": "the route is called with an empty body, with {}, and with {\"colour\":\"red\"}",
+      "then": [
+        "each call answers 200",
+        "the refspec used is refs/heads/fix:refs/heads/fix without a leading +"
+      ],
+      "pseudocode": "for body in ['', '{}', '{\"colour\":\"red\"}']: r=post(body); assert r.code==200; assert recordedRefspec=='refs/heads/fix:refs/heads/fix'"
+    },
+    {
+      "id": "TS-38-5",
+      "kind": "unit",
+      "verifies": [
+        "38-REQ-1.5"
+      ],
+      "title": "A malformed body, a non-object body or a non-boolean force is rejected with 400 before the lock",
+      "given": [
+        "an active, ready workspace",
+        "the workspace lock is observable",
+        "an audit emitter capturing events"
+      ],
+      "when": "the route is called with `{bad`, with `[1]`, with {\"force\":\"yes\"} and with {\"force\":1}",
+      "then": [
+        "each answer is 400 with apikit's error envelope",
+        "the lock is never taken (TryLock succeeds afterwards and no trunk read happened)",
+        "no push is attempted and no audit event is emitted"
+      ],
+      "pseudocode": "for b in bodies: r=post(b); assert r.code==400; assert r.json.error!=''; assert events.count==0; assert not pushCalled"
+    },
+    {
+      "id": "TS-38-6",
+      "kind": "integration",
+      "verifies": [
+        "38-REQ-1.6"
+      ],
+      "title": "result is pushed, then up_to_date on repeat, up_to_date even with force, and forced when force overwrote the forge",
+      "given": [
+        "an active, ready standard workspace with branch feat and a local bare origin",
+        "a second branch other whose origin tip diverges from the trunk's"
+      ],
+      "when": "feat is pushed, pushed again, pushed again with force true; then other is pushed with force true after origin diverged",
+      "then": [
+        "first answer result is pushed",
+        "second answer result is up_to_date and no objects were sent",
+        "third answer result is up_to_date despite force",
+        "the forced push of other answers result forced and origin's other equals the trunk's tip"
+      ],
+      "pseudocode": "assert push('feat').result=='pushed'; assert push('feat').result=='up_to_date'; assert push('feat',force=true).result=='up_to_date'; diverge(bare,'other'); assert push('other',force=true).result=='forced'"
+    },
+    {
+      "id": "TS-38-7",
+      "kind": "unit",
+      "verifies": [
+        "38-REQ-1.7"
+      ],
+      "title": "remote_url has userinfo stripped for scheme URLs and is unchanged for scp-style addresses",
+      "given": [
+        "workspaces seeded with git_url http://user:secret@127.0.0.1:PORT/r.git and git@github.com:acme/widgets.git",
+        "a push seam that returns success"
+      ],
+      "when": "the route is called for each workspace",
+      "then": [
+        "the first answer's remote_url is http://127.0.0.1:PORT/r.git and contains no user:secret@",
+        "the second answer's remote_url is git@github.com:acme/widgets.git"
+      ],
+      "pseudocode": "assert r1.json.remote_url=='http://127.0.0.1:PORT/r.git'; assert r2.json.remote_url=='git@github.com:acme/widgets.git'"
+    },
+    {
+      "id": "TS-38-8",
+      "kind": "unit",
+      "verifies": [
+        "38-REQ-1.8"
+      ],
+      "title": "Own error types carry their type as a message prefix while shared answers keep shared messages",
+      "given": [
+        "workspaces covering missing branch, integration branch, patch branch, protected branch, non-fast-forward and a forge failure",
+        "a busy workspace, an unknown slug, an org member and a PAT without scope"
+      ],
+      "when": "each refusal is triggered",
+      "then": [
+        "messages for branch_not_found, integration_branch, patch_branch, protected_branch, non_fast_forward and forge_* start with '<error_type>: '",
+        "the 404 is exactly 'workspace not found', the org-member 403 is 'org members have read-only access to this workspace', the scope 403 is 'PAT requires workspaces:write scope to push branches', the busy 409 is 'another operation is running on this workspace; retry later'"
+      ],
+      "pseudocode": "for (case,type) in own: assert startsWith(r.json.error, type+': '); for shared: assert r.json.error==sharedText"
+    },
+    {
+      "id": "TS-38-9",
+      "kind": "unit",
+      "verifies": [
+        "38-REQ-2.1"
+      ],
+      "title": "A request with no credential is refused with 401",
+      "given": [
+        "an active, ready workspace",
+        "an audit emitter capturing events"
+      ],
+      "when": "the route is called without an Authorization header",
+      "then": [
+        "the status is 401",
+        "no push is attempted and no hub.branch.push event is emitted"
+      ],
+      "pseudocode": "r=post(noAuth); assert r.code==401; assert events.count==0"
+    },
+    {
+      "id": "TS-38-10",
+      "kind": "integration",
+      "verifies": [
+        "38-REQ-2.2"
+      ],
+      "title": "A PAT bound to another workspace gets 404 workspace not found before the scope check",
+      "given": [
+        "a real hub with workspaces A and B owned by the same user",
+        "a PAT bound to A with scopes workspaces:write, and another bound to A without scopes"
+      ],
+      "when": "each PAT calls the push route on B's slug",
+      "then": [
+        "both answers are 404 with message 'workspace not found'",
+        "no hub.branch.push event is emitted and nothing reaches B's origin"
+      ],
+      "pseudocode": "for pat in [boundWithScope, boundWithoutScope]: r=post(B, pat); assert r.code==404; assert r.json.error=='workspace not found'"
+    },
+    {
+      "id": "TS-38-11",
+      "kind": "unit",
+      "verifies": [
+        "38-REQ-2.3"
+      ],
+      "title": "An unbound PAT without workspaces:write gets 403 with the scope message and no error_type, even for an unknown slug",
+      "given": [
+        "an owner's PAT with only workspaces:read",
+        "an existing workspace and an unknown slug"
+      ],
+      "when": "the PAT calls the push route on both slugs",
+      "then": [
+        "both answers are 403 with message 'PAT requires workspaces:write scope to push branches'",
+        "the envelope has no error_type",
+        "no workspace lookup precedes the refusal and no event is emitted"
+      ],
+      "pseudocode": "for slug in [existing,'nope']: r=post(slug, pat); assert r.code==403; assert r.json.error_type=='' "
+    },
+    {
+      "id": "TS-38-12",
+      "kind": "unit",
+      "verifies": [
+        "38-REQ-2.4"
+      ],
+      "title": "An unknown slug or a stranger gets 404 workspace not found",
+      "given": [
+        "a workspace owned by user A",
+        "user B is not an admin and not a member of A's org"
+      ],
+      "when": "B calls the route on A's slug and A calls it on an unknown slug",
+      "then": [
+        "both answers are 404 with message 'workspace not found'",
+        "no hub.branch.push event is emitted"
+      ],
+      "pseudocode": "assert post(slugA, userB).code==404; assert post('nope', userA).json.error=='workspace not found'"
+    },
+    {
+      "id": "TS-38-13",
+      "kind": "unit",
+      "verifies": [
+        "38-REQ-2.5"
+      ],
+      "title": "An org member who is not the owner gets 403 forbidden",
+      "given": [
+        "an org workspace owned by user A",
+        "user M is a member of the org"
+      ],
+      "when": "M calls the push route using an API key and a PAT with workspaces:write",
+      "then": [
+        "both answers are 403 with error_type forbidden and message 'org members have read-only access to this workspace'",
+        "no event is emitted and nothing is pushed"
+      ],
+      "pseudocode": "r=post(slug, userM); assert r.code==403; assert r.json.error_type=='forbidden'"
+    },
+    {
+      "id": "TS-38-14",
+      "kind": "unit",
+      "verifies": [
+        "38-REQ-2.6"
+      ],
+      "title": "A database failure during the workspace lookup answers 500 with no event",
+      "given": [
+        "a handler whose database connection has been closed"
+      ],
+      "when": "the owner calls the push route",
+      "then": [
+        "the status is 500",
+        "no hub.branch.push event is emitted and nothing is pushed"
+      ],
+      "pseudocode": "env.db.Close(); r=post(...); assert r.code==500; assert events.count==0"
+    },
+    {
+      "id": "TS-38-15",
+      "kind": "integration",
+      "verifies": [
+        "38-REQ-2.7"
+      ],
+      "title": "The owner with an API key, the owner with a scoped PAT, a PAT bound to this slug and an admin token all get past access",
+      "given": [
+        "an active, ready workspace with branch fix and a local bare origin",
+        "a real hub for the bound PAT"
+      ],
+      "when": "each of the four callers pushes fix",
+      "then": [
+        "none of the answers is 401, 403 or 404 workspace not found",
+        "each answer is 200"
+      ],
+      "pseudocode": "for auth in [apiKey, patWrite, boundPatWrite, admin]: assert post(auth).code==200"
+    },
+    {
+      "id": "TS-38-16",
+      "kind": "unit",
+      "verifies": [
+        "38-REQ-3.1"
+      ],
+      "title": "A malformed branch name answers 404 branch_not_found naming the broken rule, whether or not the lock is held",
+      "given": [
+        "an active, ready workspace",
+        "a second run with the workspace lock held by another operation"
+      ],
+      "when": "the route is called with -x, a name containing '..', a name ending in '.lock' and a name with a space",
+      "then": [
+        "each answer is 404 with error_type branch_not_found",
+        "the message starts with 'branch_not_found: ' and for -x reads 'branch_not_found: \"-x\" is not a valid branch name: ref name must not start with '-''",
+        "the answer is the same with the lock held (never 409)",
+        "no event is emitted"
+      ],
+      "pseudocode": "for n in bad: r=post(esc(n)); assert r.code==404; assert r.json.error_type=='branch_not_found'; hold lock; assert post(esc(n)).code==404"
+    },
+    {
+      "id": "TS-38-17",
+      "kind": "unit",
+      "verifies": [
+        "38-REQ-3.2",
+        "38-REQ-3.3"
+      ],
+      "title": "An inactive workspace or one whose clone is not ready is refused with 400 before the lock",
+      "given": [
+        "a workspace with status archived",
+        "a workspace with status active and clone_status cloning",
+        "an audit emitter capturing events"
+      ],
+      "when": "the owner pushes a branch on each workspace",
+      "then": [
+        "the first answer is 400 with message 'workspace is not active; push requires an active workspace'",
+        "the second answer is 400 with message 'workspace clone is not ready; clone_status must be 'ready' to push'",
+        "the lock was not taken and no event is emitted"
+      ],
+      "pseudocode": "assert post(archived).json.error=='workspace is not active; push requires an active workspace'; assert post(cloning).code==400"
+    },
+    {
+      "id": "TS-38-18",
+      "kind": "unit",
+      "verifies": [
+        "38-REQ-4.1"
+      ],
+      "title": "On a carry_patch workspace the integration branch (column value or default deploy) is refused with 400 integration_branch",
+      "given": [
+        "a carry_patch workspace with integration_branch NULL and another with integration_branch 'stage'",
+        "branches deploy and stage exist in the trunk",
+        "a push seam that fails the test if called"
+      ],
+      "when": "the owner pushes deploy on the first workspace and stage on the second, with the workspace lock held by another operation",
+      "then": [
+        "both answers are 400 with error_type integration_branch (not 409, so the decision precedes the lock)",
+        "messages mention that hub builds the branch and REBUILD_PUSH_INTEGRATION_BRANCH",
+        "nothing is sent to the forge and no event is emitted"
+      ],
+      "pseudocode": "assert post('deploy').json.error_type=='integration_branch'; assert contains(msg,'REBUILD_PUSH_INTEGRATION_BRANCH'); assert not pushCalled"
+    },
+    {
+      "id": "TS-38-19",
+      "kind": "unit",
+      "verifies": [
+        "38-REQ-4.2",
+        "38-REQ-4.3"
+      ],
+      "title": "A registered patch branch is refused with patch_branch while an unregistered or deleted-patch branch pushes normally",
+      "given": [
+        "a carry_patch workspace with patch rows: p1 status active, p2 status deleted",
+        "branches p1, p2 and free exist in the trunk",
+        "a local bare origin"
+      ],
+      "when": "the owner pushes p1, p2 and free",
+      "then": [
+        "p1 answers 400 patch_branch with a message pointing to PUSH_PATCHES_TO_ORIGIN and nothing reaches origin",
+        "p2 answers 200 pushed",
+        "free answers 200 pushed, the same as on a standard workspace"
+      ],
+      "pseudocode": "assert post('p1').json.error_type=='patch_branch'; assert post('p2').code==200; assert post('free').code==200"
+    },
+    {
+      "id": "TS-38-20",
+      "kind": "unit",
+      "verifies": [
+        "38-REQ-4.4",
+        "38-REQ-4.7"
+      ],
+      "title": "force on the workspace's own branch is refused 400 protected_branch in both modes, while a non-forced push of it is a fast-forward push",
+      "given": [
+        "a standard and a carry_patch workspace, each with the branch column set to main and branch main in the trunk",
+        "a local bare origin"
+      ],
+      "when": "the owner pushes main with force true, with the lock held, and then without force",
+      "then": [
+        "the forced push answers 400 protected_branch before the lock (even with the lock held) and nothing reaches origin, no event",
+        "the unforced push answers 200 pushed on both workspaces"
+      ],
+      "pseudocode": "assert post('main',{force:true}).json.error_type=='protected_branch'; assert post('main',{force:false}).json.result=='pushed'"
+    },
+    {
+      "id": "TS-38-21",
+      "kind": "integration",
+      "verifies": [
+        "38-REQ-4.5",
+        "38-REQ-4.6"
+      ],
+      "title": "With a null branch column, force on the HEAD branch is refused under the lock; an unreadable HEAD answers 500; the lock is released",
+      "given": [
+        "a workspace with branch NULL whose trunk HEAD is main",
+        "a second workspace whose trunk HEAD cannot be read (HEAD file corrupted)",
+        "an audit emitter"
+      ],
+      "when": "the owner pushes main with force true on the first workspace and any branch with force true on the second",
+      "then": [
+        "the first answer is 400 protected_branch and nothing is pushed",
+        "the second answer is 500 and nothing is pushed",
+        "TryLock succeeds on both slugs afterwards and no event is emitted"
+      ],
+      "pseudocode": "assert post(ws1,'main',force).json.error_type=='protected_branch'; assert post(ws2,'x',force).code==500; assert tryLock(ws1).ok"
+    },
+    {
+      "id": "TS-38-22",
+      "kind": "unit",
+      "verifies": [
+        "38-REQ-4.8"
+      ],
+      "title": "A database failure while deciding integration, patch or protected branch answers 500 without contacting the forge",
+      "given": [
+        "a carry_patch workspace row loaded, then the patches table dropped so the patch lookup fails",
+        "a push seam that fails the test if called"
+      ],
+      "when": "the owner pushes an ordinary branch",
+      "then": [
+        "the status is 500",
+        "the push seam was not called and no event is emitted"
+      ],
+      "pseudocode": "db.Exec('DROP TABLE patches'); r=post('x'); assert r.code==500; assert not pushCalled"
+    },
+    {
+      "id": "TS-38-23",
+      "kind": "unit",
+      "verifies": [
+        "38-REQ-5.1"
+      ],
+      "title": "A held workspace lock answers 409 workspace_busy immediately with no event",
+      "given": [
+        "the workspace lock is held by another operation (also: a rebuild in its fetch phase)",
+        "an audit emitter"
+      ],
+      "when": "the owner pushes an existing branch",
+      "then": [
+        "the status is 409 with error_type workspace_busy and message 'another operation is running on this workspace; retry later'",
+        "the answer comes without waiting",
+        "no push attempt and no event"
+      ],
+      "pseudocode": "unlock=wslock.TryLock(slug); r=post(); assert r.code==409; assert r.json.error_type=='workspace_busy'; assert elapsed<1s"
+    },
+    {
+      "id": "TS-38-24",
+      "kind": "integration",
+      "verifies": [
+        "38-REQ-5.2"
+      ],
+      "title": "A rebuild between its fetch and final phases does not block the push",
+      "given": [
+        "a carry_patch workspace with a rebuild job running but not holding the workspace lock",
+        "a local bare origin and branch feat in the trunk"
+      ],
+      "when": "the owner pushes feat",
+      "then": [
+        "the answer is 200 pushed, not 409 workspace_busy"
+      ],
+      "pseudocode": "startRebuildBetweenPhases(slug); assert post('feat').code==200"
+    },
+    {
+      "id": "TS-38-25",
+      "kind": "unit",
+      "verifies": [
+        "38-REQ-5.3"
+      ],
+      "title": "A valid name missing from the trunk answers 404 branch_not_found and releases the lock",
+      "given": [
+        "an active, ready workspace whose trunk has no branch ghost",
+        "an audit emitter"
+      ],
+      "when": "the owner pushes ghost",
+      "then": [
+        "the status is 404 with error_type branch_not_found and message 'branch_not_found: branch \"ghost\" does not exist in the workspace'",
+        "no event is emitted",
+        "TryLock succeeds afterwards"
+      ],
+      "pseudocode": "r=post('ghost'); assert r.json.error=='branch_not_found: branch \"ghost\" does not exist in the workspace'; assert tryLock(slug).ok"
+    },
+    {
+      "id": "TS-38-26",
+      "kind": "integration",
+      "verifies": [
+        "38-REQ-5.4",
+        "38-REQ-5.5"
+      ],
+      "title": "sha is the trunk tip read under the lock and the lock is released after every outcome",
+      "given": [
+        "a workspace with branch feat in the trunk and a local bare origin",
+        "a push seam variant that blocks until released, and variants that fail, or time out"
+      ],
+      "when": "the push is run to success, to failure, and with the caller disconnected mid-push",
+      "then": [
+        "body.sha and the event's sha equal the trunk tip of refs/heads/feat",
+        "while the push is in flight a concurrent TryLock fails",
+        "after each outcome (including a disconnected caller once the push ends) TryLock succeeds"
+      ],
+      "pseudocode": "assert r.json.sha==tip; during block: assert not tryLock; release; assert tryLock(slug).ok"
+    },
+    {
+      "id": "TS-38-27",
+      "kind": "integration",
+      "verifies": [
+        "38-REQ-5.6"
+      ],
+      "title": "When HEAD moved during the lock, the worktree is hard-reset to the new HEAD commit",
+      "given": [
+        "a workspace with trunk HEAD on main and a clean worktree",
+        "a hook during the push that advances refs/heads/main as receive-pack would (without touching the worktree)"
+      ],
+      "when": "the owner pushes another branch and HEAD resolves to a new commit before release",
+      "then": [
+        "the answer is unchanged (200)",
+        "the trunk worktree files equal the new HEAD commit and git status is clean"
+      ],
+      "pseudocode": "hook: updateRef(main,newCommit); r=post('feat'); assert r.code==200; assert worktreeMatches(newCommit)"
+    },
+    {
+      "id": "TS-38-28",
+      "kind": "unit",
+      "verifies": [
+        "38-REQ-5.7"
+      ],
+      "title": "A failed reset, an unmoved HEAD or an unreadable HEAD leaves the answer unchanged and logs at most one warning",
+      "given": [
+        "a workspace where the worktree reset is made to fail",
+        "a workspace where HEAD does not move",
+        "a workspace whose HEAD is unreadable at lock time (non-forced push)",
+        "a captured log"
+      ],
+      "when": "the owner pushes a branch in each case",
+      "then": [
+        "each answer is the push's own answer (200)",
+        "the failed reset logs exactly one warning with no secret",
+        "the other two cases leave the worktree untouched and log no reset warning"
+      ],
+      "pseudocode": "assert r.code==200; assert logs.count('warn','reset')==1 for failing case; assert worktreeUntouched for others"
+    },
+    {
+      "id": "TS-38-29",
+      "kind": "integration",
+      "verifies": [
+        "38-REQ-6.1"
+      ],
+      "title": "The push sends exactly the one refspec (plus form when forced) to origin at git_url with the stored credential",
+      "given": [
+        "an HTTP stand-in forge (git http-backend over a recording proxy) that records requests and ref updates",
+        "workspaces with GIT_PAT, with GIT_USERNAME/GIT_PASSWORD, with both, and with none"
+      ],
+      "when": "the owner pushes feat and, on another run, pushes feat with force true",
+      "then": [
+        "the forge receives a ref update only for refs/heads/feat",
+        "the recorded refspec is refs/heads/feat:refs/heads/feat, and +refs/heads/feat:refs/heads/feat when forced",
+        "the Basic credential is x-token-auth:<pat> when GIT_PAT is set (even if username/password exist), user:password when only those exist, and absent when none"
+      ],
+      "pseudocode": "assert forge.updatedRefs==['refs/heads/feat']; assert forge.authHeader==basic('x-token-auth',pat)"
+    },
+    {
+      "id": "TS-38-30",
+      "kind": "unit",
+      "verifies": [
+        "38-REQ-6.2"
+      ],
+      "title": "A secrets-store failure answers 500 internal server error without contacting the forge and without logging secrets",
+      "given": [
+        "a workspace whose secrets table is unavailable",
+        "a captured log and audit emitter"
+      ],
+      "when": "the owner pushes an existing branch",
+      "then": [
+        "the status is 500 with message 'internal server error'",
+        "no push was attempted, no hub.branch.push event",
+        "the log contains no secret"
+      ],
+      "pseudocode": "db.Exec('DROP TABLE secrets'); r=post(); assert r.code==500; assert r.json.error=='internal server error'; assert not pushCalled"
+    },
+    {
+      "id": "TS-38-31",
+      "kind": "integration",
+      "verifies": [
+        "38-REQ-6.3"
+      ],
+      "title": "A stalled forge yields 504 forge_timeout at the two-minute deadline, and a disconnect does not cancel the push",
+      "given": [
+        "a stand-in forge that stalls (clock injectable or deadline observable on the context)",
+        "a second forge that answers after a delay while the client request context is cancelled"
+      ],
+      "when": "the owner pushes with the stalled forge; then the caller disconnects mid-push against the slow forge",
+      "then": [
+        "the push context carries a deadline of two minutes from push start and the answer is 504 with error_type forge_timeout",
+        "after the disconnect the push still completes at the forge and the lock remains held until it ends",
+        "the outcome is logged and audited as if the caller were connected"
+      ],
+      "pseudocode": "assert ctxDeadline-start==2min; cancel(reqCtx); wait; assert forge.hasRef('feat'); assert events.count==1"
+    },
+    {
+      "id": "TS-38-32",
+      "kind": "integration",
+      "verifies": [
+        "38-REQ-6.4"
+      ],
+      "title": "A non-fast-forward push answers 409 non_fast_forward with origin's commit and the right hint, or without commit when listing fails",
+      "given": [
+        "origin's feat has a commit the trunk lacks",
+        "origin's own-branch main has a commit the trunk lacks",
+        "a variant where the origin listing fails after the refusal",
+        "a counter of ls-refs calls"
+      ],
+      "when": "the owner pushes feat, then main (branch column main), then feat with the listing failing",
+      "then": [
+        "each answer is 409 with error_type non_fast_forward",
+        "feat message is 'non_fast_forward: origin's feat is at <sha>, which is not in the workspace's branch; push with force to overwrite it'",
+        "main message ends with a hint to sync the workspace, not a force hint",
+        "the listing-failure message omits the commit",
+        "origin's refs are listed exactly once per refusal; origin is unchanged"
+      ],
+      "pseudocode": "assert r.code==409; assert contains(r.json.error, originSha); assert endsWith(r.json.error,'push with force to overwrite it'); assert lsRefsCount==1"
+    },
+    {
+      "id": "TS-38-33",
+      "kind": "integration",
+      "verifies": [
+        "38-REQ-6.5"
+      ],
+      "title": "Forge 401 maps to 502 forge_unauthenticated naming the credential kind; 403 maps to 502 forge_forbidden",
+      "given": [
+        "an HTTP stand-in forge answering 401, then 403",
+        "workspaces with GIT_PAT, with GIT_USERNAME/GIT_PASSWORD, and with no credential"
+      ],
+      "when": "the owner pushes against each combination",
+      "then": [
+        "401 answers are 502 forge_unauthenticated; the message says no stored credential exists, or that the forge rejected GIT_PAT or GIT_USERNAME/GIT_PASSWORD",
+        "403 answers are 502 forge_forbidden",
+        "no message contains the credential value"
+      ],
+      "pseudocode": "assert r.code==502; assert r.json.error_type=='forge_unauthenticated'; assert contains(msg,'GIT_PAT'); assert not contains(msg,pat)"
+    },
+    {
+      "id": "TS-38-34",
+      "kind": "integration",
+      "verifies": [
+        "38-REQ-6.6"
+      ],
+      "title": "Repository-not-found maps to 404 forge_not_found and a refused ref maps to 422 forge_rejected with the scrubbed reason",
+      "given": [
+        "an HTTP stand-in forge answering repository not found",
+        "a local bare origin with a pre-receive hook declining the ref with a reason containing a secret-like URL user:pw@host"
+      ],
+      "when": "the owner pushes feat to each",
+      "then": [
+        "first answer is 404 with error_type forge_not_found",
+        "second answer is 422 with error_type forge_rejected and a message carrying the forge's reason with userinfo removed"
+      ],
+      "pseudocode": "assert r1.code==404; assert r2.code==422; assert contains(r2.msg,'declined'); assert not contains(r2.msg,'user:pw@')"
+    },
+    {
+      "id": "TS-38-35",
+      "kind": "integration",
+      "verifies": [
+        "38-REQ-6.7"
+      ],
+      "title": "DNS/TCP/TLS failures map to 502 forge_unreachable and other failures to 502 forge_error",
+      "given": [
+        "a workspace with git_url on an unresolvable host or a closed port",
+        "a workspace whose forge answers a malformed protocol response"
+      ],
+      "when": "the owner pushes feat to each",
+      "then": [
+        "the first answer is 502 with error_type forge_unreachable",
+        "the second answer is 502 with error_type forge_error",
+        "both are push attempts: one event each"
+      ],
+      "pseudocode": "assert r1.json.error_type=='forge_unreachable'; assert r2.json.error_type=='forge_error'"
+    },
+    {
+      "id": "TS-38-36",
+      "kind": "unit",
+      "verifies": [
+        "38-REQ-6.8"
+      ],
+      "title": "A trunk that cannot be opened or has no origin answers 500 with no event and no push-attempt warning",
+      "given": [
+        "a workspace whose trunk directory is missing",
+        "a workspace whose trunk is a repository with no origin remote",
+        "a captured log and audit emitter"
+      ],
+      "when": "the owner pushes a branch on each",
+      "then": [
+        "both answers are 500",
+        "no hub.branch.push event",
+        "no push-attempt warning record with an error_type field",
+        "the lock is released"
+      ],
+      "pseudocode": "assert r.code==500; assert events.count==0; assert logs.where(error_type).count==0"
+    },
+    {
+      "id": "TS-38-37",
+      "kind": "property",
+      "verifies": [
+        "38-REQ-7.1"
+      ],
+      "title": "The scrub removes the secret and userinfo, is idempotent, valid UTF-8 and at most 1024 bytes",
+      "given": [
+        "the local scrub function of internal/workspace"
+      ],
+      "when": "for any text (including nested or split occurrences, multi-byte runes and long input) and any non-empty secret",
+      "then": [
+        "the output does not contain the secret",
+        "the output contains no scheme://userinfo@ segment",
+        "the output is valid UTF-8 and at most 1024 bytes",
+        "scrub(scrub(x)) equals scrub(x)"
+      ],
+      "pseudocode": "for (text,secret) in gen(): o=scrub(text,secret); assert !contains(o,secret); assert !userinfoRE.match(o); assert utf8.Valid(o); assert len(o)<=1024; assert scrub(o,secret)==o"
+    },
+    {
+      "id": "TS-38-38",
+      "kind": "integration",
+      "verifies": [
+        "38-REQ-7.2"
+      ],
+      "title": "No response, audit event or log line contains the credential secret or the git_url userinfo",
+      "given": [
+        "a workspace with git_url http://u:urlpw@127.0.0.1:PORT/r.git and GIT_PAT 'tok-12345'",
+        "forge stand-ins whose error text echoes the URL and the token",
+        "captured responses, events and logs"
+      ],
+      "when": "the owner pushes through success, 401, 403, rejection, non-fast-forward and unreachable outcomes",
+      "then": [
+        "no response body, event metadata or log line contains tok-12345 or urlpw",
+        "the response does not carry go-git's full error chain"
+      ],
+      "pseudocode": "for o in outcomes: run(o); for s in [responses,events,logs]: assert not contains(s,'tok-12345') and not contains(s,'urlpw')"
+    },
+    {
+      "id": "TS-38-39",
+      "kind": "unit",
+      "verifies": [
+        "38-REQ-7.3"
+      ],
+      "title": "Each failed push attempt logs exactly one warning with workspace, branch, error_type and the scrubbed error; success logs none",
+      "given": [
+        "a captured structured log",
+        "forge outcomes: success, up_to_date, non_fast_forward, forge_rejected, forge_timeout"
+      ],
+      "when": "the owner pushes under each outcome",
+      "then": [
+        "each failing outcome produces exactly one warning record with fields workspace, branch, error_type and error",
+        "success and up_to_date produce no warning under this rule"
+      ],
+      "pseudocode": "assert logs.warn.count==1; assert logs.warn[0].fields>=['workspace','branch','error_type','error']"
+    },
+    {
+      "id": "TS-38-40",
+      "kind": "unit",
+      "verifies": [
+        "38-REQ-7.4"
+      ],
+      "title": "A 500 answer is logged as an internal error with the credential and userinfo scrubbed",
+      "given": [
+        "a workspace with GIT_PAT 'tok-12345' and git_url with userinfo",
+        "a trunk that cannot be opened with an error text echoing the URL"
+      ],
+      "when": "the owner pushes and the route answers 500",
+      "then": [
+        "an internal-error log line exists",
+        "it contains neither tok-12345 nor the userinfo"
+      ],
+      "pseudocode": "assert r.code==500; assert logs.any('internal'); assert not contains(logs,'tok-12345')"
+    },
+    {
+      "id": "TS-38-41",
+      "kind": "unit",
+      "verifies": [
+        "38-REQ-8.1"
+      ],
+      "title": "The audit package defines EventBranchPush as hub.branch.push",
+      "given": [
+        "the audit package"
+      ],
+      "when": "audit.EventBranchPush is read",
+      "then": [
+        "its value is the string hub.branch.push"
+      ],
+      "pseudocode": "assert audit.EventBranchPush=='hub.branch.push'"
+    },
+    {
+      "id": "TS-38-42",
+      "kind": "integration",
+      "verifies": [
+        "38-REQ-8.2"
+      ],
+      "title": "Every push attempt outcome emits exactly one hub.branch.push event with the right identity fields, also on the SSE stream",
+      "given": [
+        "a capturing audit emitter wired to the SSE broadcaster",
+        "forge outcomes pushed, forced, up_to_date, non_fast_forward, forge_not_found, forge_rejected, forge_unauthenticated, forge_forbidden, forge_unreachable, forge_error and forge_timeout"
+      ],
+      "when": "the owner pushes under each outcome",
+      "then": [
+        "exactly one event per request with EventType hub.branch.push, ResourceType branch, ResourceID the branch name, Action push, Workspace the slug",
+        "the actor is the caller's",
+        "the event is received by an SSE subscriber"
+      ],
+      "pseudocode": "for o in outcomes: run(o); assert events.count==1; e=events[0]; assert e.ResourceType=='branch' and e.Action=='push' and e.Workspace==slug"
+    },
+    {
+      "id": "TS-38-43",
+      "kind": "integration",
+      "verifies": [
+        "38-REQ-8.3"
+      ],
+      "title": "The event metadata has branch, sha, force, ok, remote, remote_url and exactly one of result or error_type, never secrets or forge text",
+      "given": [
+        "a success and a failed push (forge_rejected with message text containing a secret) with forced and unforced requests",
+        "userinfo in git_url"
+      ],
+      "when": "events are inspected",
+      "then": [
+        "both carry branch, sha (40-hex), force, ok, remote 'origin' and remote_url without userinfo",
+        "the success has result and no error_type; the failure has error_type and no result",
+        "no metadata value contains the credential or the forge's message text"
+      ],
+      "pseudocode": "assert keys(m)>={'branch','sha','force','ok','remote','remote_url'}; assert ('result' in m) != ('error_type' in m)"
+    },
+    {
+      "id": "TS-38-44",
+      "kind": "unit",
+      "verifies": [
+        "38-REQ-8.4"
+      ],
+      "title": "Refusals and hub-internal failures emit no hub.branch.push event",
+      "given": [
+        "a capturing emitter",
+        "cases: 401, scope 403, org-member 403, 404 workspace not found, 404 branch_not_found (invalid and missing), 400 (body, inactive, clone not ready, integration, patch, protected), 409 workspace_busy, 500 (secrets failure, trunk cannot be opened, no origin)"
+      ],
+      "when": "each case is requested",
+      "then": [
+        "the expected status is returned for each",
+        "zero hub.branch.push events were emitted across all cases"
+      ],
+      "pseudocode": "for c in cases: assert post(c).code==c.status; assert events.count('hub.branch.push')==0"
+    },
+    {
+      "id": "TS-38-45",
+      "kind": "integration",
+      "verifies": [
+        "38-REQ-8.5",
+        "38-REQ-6.3"
+      ],
+      "title": "When the caller disconnects mid-push the event is still emitted once with the real outcome",
+      "given": [
+        "a slow stand-in forge that accepts the push after the request context is cancelled",
+        "a variant where the forge refuses after the cancel"
+      ],
+      "when": "the request context is cancelled during the push and the push ends",
+      "then": [
+        "exactly one event is emitted per variant",
+        "the first has ok true and result pushed, the second ok false and the matching error_type",
+        "the event was emitted with a context that is not cancelled"
+      ],
+      "pseudocode": "cancel(reqCtx); waitForPushEnd(); assert events.count==1; assert events[0].Metadata.ok==true"
+    },
+    {
+      "id": "TS-38-46",
+      "kind": "unit",
+      "verifies": [
+        "38-REQ-9.1",
+        "38-REQ-9.2"
+      ],
+      "title": "afc workspace push sends the escaped path and {force:bool} and warns on stderr only with --force",
+      "given": [
+        "an httptest stub hub recording r.URL.EscapedPath() and the body"
+      ],
+      "when": "`afc workspace push ws fix/42-nil-map` and `afc workspace push ws fix/42-nil-map --force` run",
+      "then": [
+        "the escaped path is /api/v1/workspaces/ws/branches/fix%2F42-nil-map/push for both",
+        "bodies are {\"force\":false} and {\"force\":true}",
+        "stderr has no warning without --force and exactly one warning line mentioning origin's branch may be overwritten with --force, written before the request is sent"
+      ],
+      "pseudocode": "assert hub.path=='/api/v1/workspaces/ws/branches/fix%2F42-nil-map/push'; assert hub.body.force==true; assert count(lines(stderr))==1"
+    },
+    {
+      "id": "TS-38-47",
+      "kind": "unit",
+      "verifies": [
+        "38-REQ-9.3"
+      ],
+      "title": "On a 200 answer afc prints the response as one JSON document and exits 0",
+      "given": [
+        "a stub hub answering 200 with the push response body"
+      ],
+      "when": "`afc workspace push ws feat` runs",
+      "then": [
+        "stdout is exactly one JSON document equal to the response",
+        "the exit code is 0"
+      ],
+      "pseudocode": "out=run(); assert json.valid(out); assert one document; assert exit==0"
+    },
+    {
+      "id": "TS-38-48",
+      "kind": "unit",
+      "verifies": [
+        "38-REQ-9.4"
+      ],
+      "title": "On a hub error afc prints the error envelope and exits 1, with non_fast_forward visible",
+      "given": [
+        "a stub hub answering 409 with message 'non_fast_forward: origin's feat is at abc…' and error_type non_fast_forward"
+      ],
+      "when": "`afc workspace push ws feat` runs",
+      "then": [
+        "the output contains the hub code 409 and the message including non_fast_forward",
+        "the exit code is 1"
+      ],
+      "pseudocode": "assert contains(out,'non_fast_forward'); assert exit==1"
+    },
+    {
+      "id": "TS-38-49",
+      "kind": "unit",
+      "verifies": [
+        "38-REQ-9.5"
+      ],
+      "title": "A client-side failure exits 2",
+      "given": [
+        "an afc configured with a hub URL that refuses connections, and one with no configuration"
+      ],
+      "when": "`afc workspace push ws feat` runs",
+      "then": [
+        "the client error is reported",
+        "the exit code is 2"
+      ],
+      "pseudocode": "assert exit==2"
+    },
+    {
+      "id": "TS-38-50",
+      "kind": "unit",
+      "verifies": [
+        "38-REQ-9.6"
+      ],
+      "title": "Fewer or more than two arguments exit 2 without contacting hub",
+      "given": [
+        "a stub hub counting requests"
+      ],
+      "when": "`afc workspace push`, `afc workspace push ws` and `afc workspace push ws a b` run",
+      "then": [
+        "each exits 2",
+        "the stub hub received zero requests"
+      ],
+      "pseudocode": "for args in [[],['ws'],['ws','a','b']]: assert run(args).exit==2; assert hub.requests==0"
+    },
+    {
+      "id": "TS-38-51",
+      "kind": "integration",
+      "verifies": [
+        "38-REQ-10.1"
+      ],
+      "title": "The archive push and the branch push go through the same shared push implementation",
+      "given": [
+        "a local bare origin and a trunk with branches a and b",
+        "the shared push function instrumented to count calls (or the seam it exposes)"
+      ],
+      "when": "defaultArchiveOpenAndPushFn pushes refs/heads/*:refs/heads/* and the branch push pushes refs/heads/a",
+      "then": [
+        "both calls are executed by the shared push function",
+        "the archive call has no deadline and the branch call a two-minute deadline"
+      ],
+      "pseudocode": "assert sharedCalls==2; assert sharedCalls[0].refspecs==['refs/heads/*:refs/heads/*']; assert sharedCalls[1].refspecs==['refs/heads/a:refs/heads/a']"
+    },
+    {
+      "id": "TS-38-52",
+      "kind": "integration",
+      "verifies": [
+        "38-REQ-10.2"
+      ],
+      "title": "Archive and reclone still push all branches with the three-argument function and map up-to-date to ErrAlreadyUpToDate",
+      "given": [
+        "a trunk with several branches and a local bare origin",
+        "the unmodified existing archive and reclone tests"
+      ],
+      "when": "defaultArchiveOpenAndPushFn(repoPath, gitURL, auth) runs twice",
+      "then": [
+        "the first call pushes every branch to origin and returns nil",
+        "the second returns ErrAlreadyUpToDate",
+        "the function keeps the ArchiveOpenAndPushFuncType signature and the existing archive and reclone tests pass unchanged"
+      ],
+      "pseudocode": "assert fn(path,url,nil)==nil; assert bare.branches==trunk.branches; assert errors.Is(fn(path,url,nil), ErrAlreadyUpToDate)"
+    },
+    {
+      "id": "TS-38-53",
+      "kind": "smoke",
+      "verifies": [
+        "38-PATH-1",
+        "38-REQ-1.1",
+        "38-REQ-8.2"
+      ],
+      "title": "The owner pushes a new branch with an escaped name to the forge through the API",
+      "given": [
+        "a running hub handler stack with real database, secrets store, workspace lock, audit emitter and a real trunk clone",
+        "an HTTP stand-in forge with a bare repository, and GIT_PAT stored for the workspace",
+        "git_url carrying userinfo"
+      ],
+      "when": "the owner sends POST .../branches/fix%2F42-nil-map/push with an API key and no body",
+      "then": [
+        "the answer is 200 with branch fix/42-nil-map, result pushed and remote_url without userinfo",
+        "the forge has refs/heads/fix/42-nil-map at the trunk's commit",
+        "exactly one hub.branch.push event with ok=true and result=pushed was emitted",
+        "the lock is free afterwards"
+      ],
+      "pseudocode": "r=post('fix%2F42-nil-map'); assert r.json.result=='pushed'; assert forge.ref('refs/heads/fix/42-nil-map')==tip; assert events.count==1",
+      "real_components": [
+        "HTTP handler and router",
+        "binding guard and auth",
+        "secrets store and database",
+        "wslock",
+        "trunk git repository and go-git push",
+        "audit emitter"
+      ]
+    },
+    {
+      "id": "TS-38-54",
+      "kind": "smoke",
+      "verifies": [
+        "38-PATH-2",
+        "38-REQ-9.3"
+      ],
+      "title": "An agent pushes with afc and repeats the call to get up_to_date",
+      "given": [
+        "a real hub server and the afc command wired to it",
+        "a stand-in forge bare repository and a trunk with branch fix/42-nil-map"
+      ],
+      "when": "`afc workspace push <slug> fix/42-nil-map` is run twice",
+      "then": [
+        "the first run prints one JSON document with result pushed and exits 0",
+        "the second run prints result up_to_date, sends no objects to the forge and exits 0",
+        "two hub.branch.push events exist, the second with result up_to_date"
+      ],
+      "pseudocode": "o1=afc(push); assert o1.json.result=='pushed'; o2=afc(push); assert o2.json.result=='up_to_date'; assert events.count==2",
+      "real_components": [
+        "afc CLI and apikit client",
+        "HTTP handler and router",
+        "workspace lock",
+        "trunk git repository and go-git push",
+        "audit emitter"
+      ]
+    },
+    {
+      "id": "TS-38-55",
+      "kind": "smoke",
+      "verifies": [
+        "38-PATH-3",
+        "38-REQ-9.4",
+        "38-REQ-6.4"
+      ],
+      "title": "A diverged branch is refused with non_fast_forward through afc, then force-pushed",
+      "given": [
+        "a real hub server and afc",
+        "origin's feature has a commit the trunk lacks, and feature is not the workspace's own branch"
+      ],
+      "when": "`afc workspace push <slug> feature` runs, then `afc workspace push <slug> feature --force`",
+      "then": [
+        "the first run exits 1 and its output contains `non_fast_forward:` with origin's commit and a force hint",
+        "a hub.branch.push event with ok=false and error_type non_fast_forward exists",
+        "the second run writes one warning line to stderr, sends {\"force\":true}, exits 0 with result forced",
+        "origin's feature equals the trunk's commit and a second event has result forced"
+      ],
+      "pseudocode": "r1=afc(push feature); assert r1.exit==1; assert contains(r1.out,'non_fast_forward:'); r2=afc(push feature --force); assert r2.json.result=='forced'; assert forge.ref('feature')==tip",
+      "real_components": [
+        "afc CLI and apikit client",
+        "HTTP handler and router",
+        "workspace lock",
+        "trunk git repository and go-git push",
+        "audit emitter"
+      ]
+    }
+  ]
+}

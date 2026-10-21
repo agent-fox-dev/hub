@@ -1,0 +1,388 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/tasks.v2.json",
+  "spec_id": "38",
+  "spec_name": "workspace_branch_push",
+  "schema_version": 2,
+  "test_commands": {
+    "all_tests": "make test",
+    "linter": "make lint",
+    "spec_tests": "go test ./internal/workspace/... ./internal/cli/... ./internal/audit/... -count=1 -run 'BranchPush|Push|Scrub'"
+  },
+  "dependencies": [
+    {
+      "spec": "33_token_workspace_binding",
+      "reason": "the binding guard answers 404 to a PAT bound to another slug on every workspaces/:slug route, before the handler's scope check"
+    },
+    {
+      "spec": "35_org_member_workspace_access",
+      "reason": "lookupWorkspaceForAuth with NeedWrite gives the 404 for strangers and the 403 forbidden for org members"
+    },
+    {
+      "spec": "31_forge_writes",
+      "reason": "reuses the forge_* error types and statuses, the detached-cancellation pattern (context.WithoutCancel) and one-audit-event-per-forge-call convention"
+    }
+  ],
+  "tasks": [
+    {
+      "id": 1,
+      "kind": "implement",
+      "title": "Add the audit event constant, the local scrub and the shared go-git push core used by archive and branch push",
+      "criteria": [
+        "38-REQ-7.1",
+        "38-REQ-8.1",
+        "38-REQ-10"
+      ],
+      "tests": [
+        "TS-38-37",
+        "TS-38-41",
+        "TS-38-51",
+        "TS-38-52"
+      ],
+      "steps": [
+        "Write TS-38-37 (property test of the scrub), TS-38-41, TS-38-51 and TS-38-52 and confirm they fail",
+        "In internal/audit/types.go add `const EventBranchPush = \"hub.branch.push\"` with a doc comment in the style of EventForgeIssueCreate",
+        "Create internal/workspace/branch_push_scrub.go with `scrubText(text, secret string) string`: replace each occurrence of a non-empty secret with `[redacted]`, remove URL userinfo using the pattern `(?i)([a-z][a-z0-9+.\\-]*://)[^/\\s?#]*@` replaced by `${1}`, repeat until the text stops changing, then cut to 1024 bytes on a UTF-8 boundary (re-run stability so scrub(scrub(x))==scrub(x)); do not import internal/forge or internal/carrypatch; add a helper `stripUserinfoURL(gitURL)` that strips userinfo for scheme URLs and returns scp-style addresses (git@host:path) unchanged",
+        "Create internal/workspace/push_core.go with one shared function `pushToOrigin(ctx context.Context, repoPath, gitURL string, auth transport.AuthMethod, refSpecs []config.RefSpec, force bool) error` that does git.PlainOpen, then repo.PushContext with PushOptions{RemoteName:\"origin\", RemoteURL: gitURL, Auth, RefSpecs, Force}; return the raw go-git error (including git.NoErrAlreadyUpToDate) and a distinguishable open error type; expose it through a package-level var seam (e.g. `pushToOriginFn`) so tests can count/replace calls",
+        "Rewrite defaultArchiveOpenAndPushFn in internal/workspace/clone.go to call the shared core with refspec `refs/heads/*:refs/heads/*`, no deadline (context.Background()), mapping git.NoErrAlreadyUpToDate to ErrAlreadyUpToDate; keep the three-argument ArchiveOpenAndPushFuncType signature unchanged",
+        "Run the existing archive and reclone tests untouched and confirm they pass",
+        "Run `make doc` if exported identifiers changed (only audit.EventBranchPush)"
+      ],
+      "touches": [
+        "internal/audit/types.go",
+        "internal/workspace/branch_push_scrub.go",
+        "internal/workspace/push_core.go",
+        "internal/workspace/clone.go",
+        "internal/workspace/push_core_test.go",
+        "internal/workspace/branch_push_scrub_test.go",
+        "internal/audit/types_branch_test.go"
+      ],
+      "done_when": [
+        "archive_test.go, reclone_test.go and every test replacing archiveOpenAndPushFn pass without modification"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 2,
+      "kind": "implement",
+      "title": "Mount the branch push route with access checks, body parsing, name decoding and workspace preconditions",
+      "criteria": [
+        "38-REQ-1.3",
+        "38-REQ-1.5",
+        "38-REQ-2",
+        "38-REQ-3"
+      ],
+      "tests": [
+        "TS-38-3",
+        "TS-38-5",
+        "TS-38-9",
+        "TS-38-10",
+        "TS-38-11",
+        "TS-38-12",
+        "TS-38-13",
+        "TS-38-14",
+        "TS-38-16",
+        "TS-38-17"
+      ],
+      "steps": [
+        "Write the listed tests using newTestEnv/doRequest/patAuth/userAuth/adminAuth/seedOrg/newRealHub/mintPAT/bindToken and confirm they fail",
+        "Create internal/workspace/branch_push.go with `handleBranchPush(db *sql.DB) echo.HandlerFunc`; mount `api.POST(\"/workspaces/:slug/branches/:name/push\", handleBranchPush(db))` in RegisterRoutes (routes.go) without adding it to wsaccess.AllowBoundTokens",
+        "Handler order: apikit.GetAuthInfo nil -> 401; PAT without workspaces:write (isPAT/hasScope) -> respondError 403 `PAT requires workspaces:write scope to push branches` with no error_type, before any workspace lookup; then lookupWorkspaceForAuth(c, db, slug, auth, wsaccess.NeedWrite) which writes 404/403/500 itself",
+        "Decode the name: take the segment before the trailing `push` from c.Request().URL.EscapedPath() and apply url.PathUnescape exactly once (same approach as forge/write_labels.go lastSegment) so `a%2525b` yields `a%25b`",
+        "Parse the body: empty body (io.EOF) means force=false; otherwise decode into a struct with `Force *bool`-style handling so a non-object, invalid JSON or non-boolean force yields respondError 400 `invalid request body: ...`; unknown fields ignored; do this before the lock",
+        "Validate the name with gitcmd.ValidateRefName; on failure answer 404 via respondErrorWithType with type `branch_not_found` and message `branch_not_found: \"<name>\" is not a valid branch name: <rule>`; this runs after access and before the lock",
+        "Check ws.Status == active (400 `workspace is not active; push requires an active workspace`) and ws.CloneStatus == ready (400 `workspace clone is not ready; clone_status must be 'ready' to push`)",
+        "Leave the remainder of the handler as an explicit temporary 501 respondError that task 3 replaces; confirm an unescaped slash in the name matches no route (router 404)"
+      ],
+      "touches": [
+        "internal/workspace/branch_push.go",
+        "internal/workspace/routes.go",
+        "internal/workspace/branch_push_access_test.go"
+      ],
+      "depends_on": [
+        1
+      ],
+      "done_when": [
+        "the route is registered and every refusal listed in 38-REQ-2 and 38-REQ-3 answers as specified"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 3,
+      "kind": "implement",
+      "title": "Apply carry-patch and protected-branch refusals, take the workspace lock, resolve the branch and run the push",
+      "criteria": [
+        "38-REQ-4",
+        "38-REQ-5.1",
+        "38-REQ-5.2",
+        "38-REQ-5.3",
+        "38-REQ-5.4"
+      ],
+      "tests": [
+        "TS-38-18",
+        "TS-38-19",
+        "TS-38-20",
+        "TS-38-21",
+        "TS-38-22",
+        "TS-38-23",
+        "TS-38-24",
+        "TS-38-25"
+      ],
+      "steps": [
+        "Write the listed tests (local bare repository as origin over a plain path; seed workspace rows and a real trunk under defaultWorkspaceRoot/<slug>/trunk) and confirm they fail",
+        "Before the lock: on WorkspaceMode == carry_patch, integration branch = IntegrationBranch column or `deploy` when empty; equal name -> 400 type `integration_branch` with message `integration_branch: ...` saying hub builds this branch and it reaches the fork through REBUILD_PUSH_INTEGRATION_BRANCH; then getPatchByBranch(db, slug, name) with status != 'deleted' -> 400 `patch_branch: ...` pointing to PUSH_PATCHES_TO_ORIGIN",
+        "Before the lock: when force is true and ws.Branch is set and equals the name -> 400 `protected_branch: ...` in both modes; any database error in these decisions -> 500 (respondError with generic internal message, logged scrubbed)",
+        "Take the lock with wslock.TryLock(slug) without waiting; on failure answer respondErrorWithType 409 `another operation is running on this workspace; retry later` type `workspace_busy`; defer unlock so it is released on every path",
+        "Under the lock open the trunk (git.PlainOpen at filepath.Join(defaultWorkspaceRoot, slug, \"trunk\")); when force and ws.Branch is nil, read repo.Head().Name().Short(); equal name -> 400 `protected_branch`; unreadable HEAD -> 500",
+        "Resolve refs/heads/<name> with repo.Reference(plumbing.NewBranchReferenceName(name), true); missing -> 404 type `branch_not_found` message `branch_not_found: branch \"<name>\" does not exist in the workspace`; otherwise the hash is `sha`",
+        "Run the push through the shared core with a minimal outcome mapping (success -> pushed/forced, NoErrAlreadyUpToDate -> up_to_date) and answer 200 with branch, sha, remote `origin`, remote_url; refine in tasks 4 and 5",
+        "Replace the temporary 501 of task 2 with this flow"
+      ],
+      "touches": [
+        "internal/workspace/branch_push.go",
+        "internal/workspace/branch_push_refusals_test.go"
+      ],
+      "depends_on": [
+        2
+      ],
+      "done_when": [
+        "no refusal in 38-REQ-4 sends anything to the forge and the lock is free after each answer"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 4,
+      "kind": "implement",
+      "title": "Finish the successful push: credential resolution, refspec, result values, remote_url and body defaults",
+      "criteria": [
+        "38-REQ-1.1",
+        "38-REQ-1.2",
+        "38-REQ-1.4",
+        "38-REQ-1.6",
+        "38-REQ-1.7",
+        "38-REQ-6.1",
+        "38-REQ-6.2"
+      ],
+      "tests": [
+        "TS-38-1",
+        "TS-38-2",
+        "TS-38-4",
+        "TS-38-6",
+        "TS-38-7",
+        "TS-38-29",
+        "TS-38-30"
+      ],
+      "steps": [
+        "Write the listed tests; for TS-38-29 build an HTTP stand-in forge (net/http/cgi with `git http-backend`, http.receivepack=true, wrapped by a recording handler) that records Authorization headers, refspecs/ref updates; confirm they fail",
+        "Resolve the credential with ResolveCloneAuth(secrets.NewStore(db), slug); on store error answer 500 `internal server error` and log it scrubbed, before contacting the forge",
+        "Build the refspec exactly `refs/heads/<name>:refs/heads/<name>`, or `+refs/heads/<name>:refs/heads/<name>` when force; pass Force only through the refspec plus the PushOptions.Force flag consistent with the shared core",
+        "Compute result: git.NoErrAlreadyUpToDate -> up_to_date (even with force), force requested and push accepted -> forced, otherwise pushed",
+        "Set remote_url with stripUserinfoURL(ws.GitURL) (scheme URLs lose userinfo, scp-style unchanged); response uses `remote: origin`",
+        "Verify the percent-decode-once property (TS-38-2) against escaped names including `%25` sequences, and that empty/`{}`/unknown-field bodies push non-forced"
+      ],
+      "touches": [
+        "internal/workspace/branch_push.go",
+        "internal/workspace/branch_push_success_test.go",
+        "internal/workspace/branch_push_forge_helpers_test.go"
+      ],
+      "depends_on": [
+        3
+      ],
+      "done_when": [
+        "a repeated push of an unchanged branch answers up_to_date and sends no objects"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 5,
+      "kind": "implement",
+      "title": "Map push failures to non_fast_forward and forge_* answers",
+      "criteria": [
+        "38-REQ-6.4",
+        "38-REQ-6.5",
+        "38-REQ-6.6",
+        "38-REQ-6.7",
+        "38-REQ-6.8"
+      ],
+      "tests": [
+        "TS-38-32",
+        "TS-38-33",
+        "TS-38-34",
+        "TS-38-35",
+        "TS-38-36"
+      ],
+      "steps": [
+        "Write the listed tests using the HTTP stand-in forge and local bare origins (pre-receive hook for rejection, closed port and unresolvable host for unreachable) and confirm they fail",
+        "Add a `classifyPushError(err, credKind)` in branch_push.go checking errors.Is/As against git.ErrNonFastForwardUpdate, transport.ErrAuthenticationRequired, transport.ErrAuthorizationFailed, transport.ErrRepositoryNotFound, context.DeadlineExceeded and net errors (net.Error, DNS, x509/TLS), with a fallback on lowercased error text (`non-fast-forward`, `fetch first`, `401`, `403`, `not found`, `rejected`/`declined`/`hook`); statuses: 409 non_fast_forward, 502 forge_unauthenticated, 502 forge_forbidden, 404 forge_not_found, 422 forge_rejected, 504 forge_timeout, 502 forge_unreachable, 502 forge_error",
+        "For non_fast_forward list origin's refs once with git.NewRemote(memory.NewStorage(), &config.RemoteConfig{Name:\"origin\", URLs: gitURL}).ListContext with the same auth and same deadline context; if refs/heads/<name> is found name its commit; end with `push with force to overwrite it` unless the branch is the workspace's own branch (branch column, or HEAD branch read under the lock), in which case end with `sync the workspace to bring it up to date`; omit the commit when the listing fails",
+        "For forge_unauthenticated say whether the workspace has no stored credential or the forge rejected GIT_PAT or GIT_USERNAME/GIT_PASSWORD (kind from the BasicAuth username `x-token-auth`), never the value; for forge_rejected carry the scrubbed forge reason",
+        "Every own-type message begins `<error_type>: `; messages are built from scrubText, never from the raw go-git chain",
+        "Distinguish hub-internal failures (trunk cannot be opened, no `origin` remote) from push attempts and answer them 500 without a push-attempt classification"
+      ],
+      "touches": [
+        "internal/workspace/branch_push.go",
+        "internal/workspace/branch_push_errors_test.go"
+      ],
+      "depends_on": [
+        4
+      ],
+      "done_when": [
+        "origin's refs are listed exactly once per non-fast-forward refusal"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 6,
+      "kind": "implement",
+      "title": "Run the push detached with a two-minute deadline, emit the hub.branch.push event and log failures scrubbed",
+      "criteria": [
+        "38-REQ-1.8",
+        "38-REQ-6.3",
+        "38-REQ-7.2",
+        "38-REQ-7.3",
+        "38-REQ-7.4",
+        "38-REQ-8.2",
+        "38-REQ-8.3",
+        "38-REQ-8.4",
+        "38-REQ-8.5"
+      ],
+      "tests": [
+        "TS-38-8",
+        "TS-38-31",
+        "TS-38-38",
+        "TS-38-39",
+        "TS-38-40",
+        "TS-38-42",
+        "TS-38-43",
+        "TS-38-44",
+        "TS-38-45"
+      ],
+      "steps": [
+        "Write the listed tests (capturing emitter via SetAuditDependencies/RegisterRoutesWithConfig as in handlers_audit_test.go, captured slog output, SSE broadcaster for TS-38-42) and confirm they fail",
+        "Run the push and the origin listing on `context.WithoutCancel(c.Request().Context())` wrapped in context.WithTimeout of a fixed 2-minute constant (overridable in tests through an unexported var only); a passed deadline maps to 504 forge_timeout; the caller disconnecting never cancels the push",
+        "On every push attempt (success, up_to_date, forced, 409, 404 forge_not_found, 422, 502s, 504) emit exactly one audit.EventBranchPush via emitHubAudit on a WithoutCancel context: ResourceType `branch`, ResourceID branch name, Action `push`, Workspace slug, Metadata branch, sha, force, ok, remote `origin`, remote_url (userinfo removed), plus result when ok or error_type when not; no credential or forge text; pass every value through scrubText",
+        "Log each failed push attempt exactly once at warning level with fields workspace, branch, error_type and error=scrubText(err, secret); log nothing under this rule on success",
+        "Log every 500 answer the way hub logs internal errors, scrubbed with the credential secret; ensure no refusal (401, 403, 404, 400, workspace_busy, any 500) emits an event",
+        "Audit all error message construction in branch_push.go so that the response never contains the credential secret, git_url userinfo or the raw go-git chain"
+      ],
+      "touches": [
+        "internal/workspace/branch_push.go",
+        "internal/workspace/branch_push_audit_test.go",
+        "internal/workspace/branch_push_leak_test.go"
+      ],
+      "depends_on": [
+        5
+      ],
+      "done_when": [
+        "no response body, audit event or log line contains the credential secret or git_url userinfo"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 7,
+      "kind": "implement",
+      "title": "Hold the lock until the push ends and restore the trunk worktree after a concurrent push to hub",
+      "criteria": [
+        "38-REQ-5.5",
+        "38-REQ-5.6",
+        "38-REQ-5.7"
+      ],
+      "tests": [
+        "TS-38-15",
+        "TS-38-26",
+        "TS-38-27",
+        "TS-38-28"
+      ],
+      "steps": [
+        "Write the listed tests (blocking push seam via the shared core var, a hook that advances refs/heads/main without touching the worktree, a failing-reset seam, captured log) and confirm they fail",
+        "Ensure the unlock is deferred in the handler goroutine and the handler does not return before the detached push has ended, so a disconnected caller still leaves the lock held until the push completes and the lock is released on every path",
+        "Right after taking the lock record the commit repo.Head() resolves to (ignore if unreadable); before releasing the lock re-read it; if both are known and differ, hard-reset the worktree via repo.Worktree().Reset(&git.ResetOptions{Commit: newHash, Mode: git.HardReset}) through an unexported seam so tests can make it fail",
+        "On a failed reset log exactly one warning (scrubbed, no secret) and leave the answer unchanged; if HEAD is unmoved or unreadable at either point leave the worktree untouched and log no reset warning",
+        "Confirm owner API key, scoped PAT, bound PAT on its own slug and admin token all answer 200 (TS-38-15)"
+      ],
+      "touches": [
+        "internal/workspace/branch_push.go",
+        "internal/workspace/branch_push_lock_test.go"
+      ],
+      "depends_on": [
+        6
+      ],
+      "done_when": [
+        "TryLock on the slug succeeds after every answer and after a disconnected push ends"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 8,
+      "kind": "implement",
+      "title": "Add the afc workspace push command",
+      "criteria": [
+        "38-REQ-9"
+      ],
+      "tests": [
+        "TS-38-46",
+        "TS-38-47",
+        "TS-38-48",
+        "TS-38-49",
+        "TS-38-50"
+      ],
+      "steps": [
+        "Write the listed tests with an httptest stub hub recording r.URL.EscapedPath(), body and request count, following forge_write_cmd_test.go and sandbox_cmd_test.go patterns, and confirm they fail",
+        "Add `newPushCmd()` in internal/cli/workspace_cmd.go with `Use: push <slug> <branch>`, a `--force` bool flag and cobra.ExactArgs(2) mapped to exit code 2 without contacting hub",
+        "With --force write exactly one warning line to stderr (origin's branch may be overwritten) before sending the request",
+        "Use apikit.CLIClientFromCmd, client.DoRequest(ctx, POST, apiPath(\"workspaces\", slug, \"branches\", branch, \"push\"), map[string]any{\"force\": force}) so `/` in the branch is sent as %2F; print the result with apikit.CLIPrintResult; route errors through apikit.CLIHandleError (hub error exits 1 with the message, client error exits 2)",
+        "Register newPushCmd in WorkspaceCmd()'s AddCommand list and run `make doc` for docs/generated"
+      ],
+      "touches": [
+        "internal/cli/workspace_cmd.go",
+        "internal/cli/workspace_push_test.go",
+        "docs/generated/cmd/afc.txt"
+      ],
+      "depends_on": [
+        1
+      ],
+      "done_when": [
+        "`afc workspace push` appears in the workspace command help"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 9,
+      "kind": "integration",
+      "title": "Verify the branch push paths end to end and update the documentation",
+      "tests": [
+        "TS-38-53",
+        "TS-38-54",
+        "TS-38-55"
+      ],
+      "steps": [
+        "Write TS-38-53 (real handler stack, secrets store, wslock, trunk clone, HTTP stand-in forge, audit emitter), TS-38-54 and TS-38-55 (real hub server plus the afc command) and confirm they pass",
+        "Trace 38-PATH-1, 38-PATH-2 and 38-PATH-3 from the router through handleBranchPush, the lock, the shared push core, the error mapping, the audit emit and the afc output; confirm each step calls the next and no stub remains (including the temporary 501 of task 2)",
+        "Confirm the shared pushToOrigin result is consumed by both handleBranchPush and defaultArchiveOpenAndPushFn in production code, and that audit.EventBranchPush is emitted from production code, not only tests",
+        "Grep every file in the tasks' touches for panic(\"not implemented\"), TODO, and bare `return nil` on non-trivial paths and remove any that remain",
+        "Update docs/api.md and docs/openapi.yaml: the route, request/response, error table, new error types (branch_not_found, non_fast_forward, integration_branch, patch_branch, protected_branch) and the message-prefix rule, this route added to forge_* and workspace_busy rows with the two-minute forge_timeout note, the Workspace Lock list and the hub.branch.push event",
+        "Update docs/cli.md (afc workspace push), docs/permissions.md (workspaces:write list and the workspace access matrix), docs/architecture.md (shared push core, lock, worktree reset after a concurrent git-server push) and one paragraph in docs/carry_patch_workflow.md under 'Where patch branches live'",
+        "Run `make doc`, then `make check`; do not add tests for documentation content"
+      ],
+      "touches": [
+        "internal/workspace/smoke_spec38_test.go",
+        "internal/cli/smoke_push_test.go",
+        "docs/api.md",
+        "docs/openapi.yaml",
+        "docs/cli.md",
+        "docs/permissions.md",
+        "docs/architecture.md",
+        "docs/carry_patch_workflow.md",
+        "docs/generated"
+      ],
+      "depends_on": [
+        7,
+        8
+      ],
+      "done_when": [
+        "`make test` and `make lint` pass",
+        "every execution path 38-PATH-1..3 is live in production code"
+      ],
+      "state": "pending"
+    }
+  ]
+}

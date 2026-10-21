@@ -1,0 +1,720 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/requirements.v2.json",
+  "spec_id": "38",
+  "spec_name": "workspace_branch_push",
+  "schema_version": 2,
+  "introduction": "Hub gains an on-demand operation, POST /api/v1/workspaces/:slug/branches/:name/push and the matching `afc workspace push` command, that pushes one named branch from a workspace's trunk to the workspace's `origin` with the stored git credential. The push is serialized with other trunk operations, fast-forward only unless forced, refuses carry-patch-owned branches, never leaks the credential, and records every push attempt as a `hub.branch.push` audit event; the archive's existing push keeps its behaviour.",
+  "glossary": {
+    "bound PAT": "A personal access token bound to one workspace slug (spec 33); the binding guard answers 404 for any other slug.",
+    "error-type message prefix": "The rule that messages for this route's own error types (branch_not_found, integration_branch, patch_branch, protected_branch, non_fast_forward, forge_*) begin with `<error_type>: `.",
+    "integration branch": "On a carry_patch workspace, the workspace's integration_branch column, or `deploy` when that column is empty; hub builds it during rebuilds.",
+    "origin": "The trunk's git remote pointing at the workspace's git_url on the forge.",
+    "push attempt": "Any outcome after hub has handed the push to the go-git transport: success, up_to_date, non_fast_forward and every forge_* failure (including forge_unreachable and forge_timeout). Not attempts: refusals before the push, the secrets-store 500, and the 500 for a trunk that cannot be opened or has no origin.",
+    "registered patch branch": "On a carry_patch workspace, a branch name that has a patches row whose status is not `deleted`.",
+    "scrub": "The local text sanitizer of this route: replaces the credential's password or token with [redacted], removes URL userinfo, repeats until stable, and truncates to 1024 bytes on a UTF-8 boundary.",
+    "trunk": "The workspace's main git clone on hub, at <workspace root>/<slug>/trunk, from which branches are pushed.",
+    "workspace lock": "The per-slug lock from internal/wslock taken with TryLock; operations that cannot take it answer 409 workspace_busy.",
+    "workspace's own branch": "The workspace's `branch` column, or, when that column is null, the branch the trunk's HEAD points to as read while the workspace lock is held."
+  },
+  "requirements": [
+    {
+      "id": "38-REQ-1",
+      "title": "The branch push route, its request and its answer",
+      "rationale": "A caller needs a single, explicit route that gets a branch from hub's trunk onto the forge and tells it exactly what happened.",
+      "criteria": [
+        {
+          "id": "38-REQ-1.1",
+          "pattern": "event_driven",
+          "condition": "an authorized caller sends POST /api/v1/workspaces/:slug/branches/:name/push for an existing branch of an active, ready workspace and the forge accepts the push",
+          "system": "hub",
+          "action": "push refs/heads/<name> of the trunk to refs/heads/<name> on origin and answer with the branch, the local tip offered to origin, the remote and the remote URL",
+          "contract": "HTTP 200 with body {branch: string, sha: 40-hex string, remote: \"origin\", remote_url: string, result: \"pushed\"|\"up_to_date\"|\"forced\"}"
+        },
+        {
+          "id": "38-REQ-1.2",
+          "pattern": "ubiquitous",
+          "system": "hub",
+          "action": "for any branch name sent as a single path segment with '/' escaped as %2F, percent-decode the segment as sent exactly once, so that fix%2F42-nil-map names fix/42-nil-map and a%2525b names a%25b",
+          "contract": "the decoded name is the value of `branch` in the 200 answer and the ref pushed"
+        },
+        {
+          "id": "38-REQ-1.3",
+          "pattern": "unwanted",
+          "condition": "the request path contains an unescaped '/' inside the branch name",
+          "system": "hub",
+          "action": "match no route and send nothing to the forge",
+          "contract": "the router's not-found answer (HTTP 404); no audit event is emitted"
+        },
+        {
+          "id": "38-REQ-1.4",
+          "pattern": "event_driven",
+          "condition": "the request has an empty body, or a JSON object body without `force`, or a JSON object body with unknown fields",
+          "system": "hub",
+          "action": "treat `force` as false and ignore the unknown fields",
+          "contract": "the push proceeds with the non-forced refspec"
+        },
+        {
+          "id": "38-REQ-1.5",
+          "pattern": "unwanted",
+          "condition": "the request body is not valid JSON, is not a JSON object, or carries a `force` value that is not a boolean",
+          "system": "hub",
+          "action": "reject the request without taking the workspace lock or contacting the forge",
+          "contract": "HTTP 400 with apikit's error envelope; no audit event"
+        },
+        {
+          "id": "38-REQ-1.6",
+          "pattern": "ubiquitous",
+          "system": "hub",
+          "action": "set `result` to `up_to_date` when origin already had the offered commit on that branch and nothing was sent (even when force was given), to `forced` when force was given and the forge accepted an update, and to `pushed` for every other success; for any branch pushed successfully and unchanged since, a repeated call answers `up_to_date` and sends no objects",
+          "contract": "the `result` field of the 200 answer"
+        },
+        {
+          "id": "38-REQ-1.7",
+          "pattern": "ubiquitous",
+          "system": "hub",
+          "action": "report `remote_url` as the workspace's git_url with URL userinfo removed when the URL has a scheme, and unchanged when it is an scp-style address (git@host:path)",
+          "contract": "the `remote_url` field of the 200 answer contains no user:password@ segment for scheme URLs"
+        },
+        {
+          "id": "38-REQ-1.8",
+          "pattern": "ubiquitous",
+          "system": "hub",
+          "action": "begin every error message carrying one of the error types branch_not_found, integration_branch, patch_branch, protected_branch, non_fast_forward or forge_* with the error type followed by \": \", while the 404 `workspace not found`, the org-member 403 `forbidden`, the scope 403 and the 409 workspace_busy keep the messages shared with the other workspace routes",
+          "contract": "apikit error envelope whose message starts with `<error_type>: ` for this route's own error types"
+        }
+      ]
+    },
+    {
+      "id": "38-REQ-2",
+      "title": "Who may push",
+      "rationale": "Pushing to the forge is a workspace write and must follow the same access rules and ordering as every other workspace write.",
+      "criteria": [
+        {
+          "id": "38-REQ-2.1",
+          "pattern": "unwanted",
+          "condition": "the request carries no credential",
+          "system": "hub",
+          "action": "refuse the request",
+          "contract": "HTTP 401; no audit event; nothing sent to the forge"
+        },
+        {
+          "id": "38-REQ-2.2",
+          "pattern": "unwanted",
+          "condition": "the request uses a PAT bound to a different workspace than :slug, whatever its scopes",
+          "system": "hub",
+          "action": "refuse the request before the scope check and before the workspace lookup",
+          "contract": "HTTP 404 with message `workspace not found`; no audit event"
+        },
+        {
+          "id": "38-REQ-2.3",
+          "pattern": "unwanted",
+          "condition": "the request uses a PAT that lacks the workspaces:write scope",
+          "system": "hub",
+          "action": "refuse the request before the workspace is looked up",
+          "contract": "HTTP 403 with message `PAT requires workspaces:write scope to push branches` and no error_type; no audit event"
+        },
+        {
+          "id": "38-REQ-2.4",
+          "pattern": "unwanted",
+          "condition": "the slug is unknown, or the caller is not the owner, not an admin token and not a member of the workspace's org",
+          "system": "hub",
+          "action": "refuse the request",
+          "contract": "HTTP 404 with message `workspace not found`; no audit event"
+        },
+        {
+          "id": "38-REQ-2.5",
+          "pattern": "unwanted",
+          "condition": "the caller is a member of the workspace's org but not its owner",
+          "system": "hub",
+          "action": "refuse the request with the shared org-member write refusal",
+          "contract": "HTTP 403 with error_type `forbidden` and message `org members have read-only access to this workspace`; no audit event"
+        },
+        {
+          "id": "38-REQ-2.6",
+          "pattern": "unwanted",
+          "condition": "the database fails while the workspace is looked up",
+          "system": "hub",
+          "action": "refuse the request",
+          "contract": "HTTP 500; no audit event"
+        },
+        {
+          "id": "38-REQ-2.7",
+          "pattern": "event_driven",
+          "condition": "the caller is the owner using an API key, the owner using a PAT with workspaces:write (including one bound to this slug), or an admin token",
+          "system": "hub",
+          "action": "let the request proceed to the name, workspace and branch checks",
+          "contract": "the answer is decided by 38-REQ-3 onward, not by an access refusal"
+        }
+      ]
+    },
+    {
+      "id": "38-REQ-3",
+      "title": "Name and workspace preconditions",
+      "rationale": "Requests that cannot name a branch of a usable trunk are refused before any trunk work starts.",
+      "criteria": [
+        {
+          "id": "38-REQ-3.1",
+          "pattern": "unwanted",
+          "condition": "the decoded branch name breaks the rules of `git check-ref-format --branch` or starts with '-'",
+          "system": "hub",
+          "action": "refuse the request before taking the workspace lock, naming the broken rule in the message",
+          "contract": "HTTP 404 with error_type `branch_not_found` and a message such as `branch_not_found: \"-x\" is not a valid branch name: ref name must not start with '-'`; no audit event; the same answer whether or not the lock is held"
+        },
+        {
+          "id": "38-REQ-3.2",
+          "pattern": "unwanted",
+          "condition": "the workspace's status is not `active`",
+          "system": "hub",
+          "action": "refuse the request before taking the workspace lock",
+          "contract": "HTTP 400 with message `workspace is not active; push requires an active workspace`; no audit event"
+        },
+        {
+          "id": "38-REQ-3.3",
+          "pattern": "unwanted",
+          "condition": "the workspace's clone_status is not `ready`",
+          "system": "hub",
+          "action": "refuse the request before taking the workspace lock",
+          "contract": "HTTP 400 with message `workspace clone is not ready; clone_status must be 'ready' to push`; no audit event"
+        }
+      ]
+    },
+    {
+      "id": "38-REQ-4",
+      "title": "Branches this route will not push",
+      "rationale": "Carry-patch rules own the integration and patch branches, and the workspace's own branch must never be force-overwritten on the forge.",
+      "criteria": [
+        {
+          "id": "38-REQ-4.1",
+          "pattern": "unwanted",
+          "condition": "the workspace mode is carry_patch and the name equals the integration branch (the integration_branch column, or `deploy` when it is empty)",
+          "system": "hub",
+          "action": "refuse the request before taking the workspace lock, with a message saying hub builds this branch and it reaches the fork through REBUILD_PUSH_INTEGRATION_BRANCH",
+          "contract": "HTTP 400 with error_type `integration_branch`; nothing sent to the forge; no audit event"
+        },
+        {
+          "id": "38-REQ-4.2",
+          "pattern": "unwanted",
+          "condition": "the workspace mode is carry_patch and the name has a patches row whose status is not `deleted`",
+          "system": "hub",
+          "action": "refuse the request before taking the workspace lock, with a message pointing to PUSH_PATCHES_TO_ORIGIN",
+          "contract": "HTTP 400 with error_type `patch_branch`; nothing sent to the forge; no audit event"
+        },
+        {
+          "id": "38-REQ-4.3",
+          "pattern": "event_driven",
+          "condition": "the workspace mode is carry_patch and the name is neither the integration branch nor a registered patch branch (including a name whose only patch row has status `deleted`)",
+          "system": "hub",
+          "action": "push the branch as it would on a standard workspace",
+          "contract": "the same answers as for a standard workspace"
+        },
+        {
+          "id": "38-REQ-4.4",
+          "pattern": "unwanted",
+          "condition": "`force` is true, the workspace's `branch` column is set, and the name equals it",
+          "system": "hub",
+          "action": "refuse the request before taking the workspace lock, in either workspace mode",
+          "contract": "HTTP 400 with error_type `protected_branch`; nothing sent to the forge; no audit event"
+        },
+        {
+          "id": "38-REQ-4.5",
+          "pattern": "unwanted",
+          "condition": "`force` is true, the workspace's `branch` column is null, and the name equals the branch the trunk's HEAD points to as read while the workspace lock is held",
+          "system": "hub",
+          "action": "refuse the request after taking the lock and before the branch lookup, then release the lock",
+          "contract": "HTTP 400 with error_type `protected_branch`; nothing sent to the forge; no audit event"
+        },
+        {
+          "id": "38-REQ-4.6",
+          "pattern": "unwanted",
+          "condition": "`force` is true, the `branch` column is null, and the trunk's HEAD cannot be read under the lock",
+          "system": "hub",
+          "action": "refuse the request and release the lock",
+          "contract": "HTTP 500; nothing sent to the forge; no audit event"
+        },
+        {
+          "id": "38-REQ-4.7",
+          "pattern": "event_driven",
+          "condition": "`force` is false and the name is the workspace's own branch",
+          "system": "hub",
+          "action": "push the branch fast-forward only, like any other branch",
+          "contract": "the answers of 38-REQ-1 and 38-REQ-6"
+        },
+        {
+          "id": "38-REQ-4.8",
+          "pattern": "unwanted",
+          "condition": "the database fails while the integration-branch, patch-branch or protected-branch decision is made",
+          "system": "hub",
+          "action": "refuse the request without contacting the forge",
+          "contract": "HTTP 500; no audit event"
+        }
+      ]
+    },
+    {
+      "id": "38-REQ-5",
+      "title": "The lock, the branch lookup and the worktree",
+      "rationale": "The push reads the trunk, so it must be serialized with every other trunk operation and must leave the worktree as the git server expects.",
+      "criteria": [
+        {
+          "id": "38-REQ-5.1",
+          "pattern": "unwanted",
+          "condition": "another operation holds the workspace lock, including a rebuild in its fetch or final phase",
+          "system": "hub",
+          "action": "refuse the request without waiting for the lock",
+          "contract": "HTTP 409 with error_type `workspace_busy` and message `another operation is running on this workspace; retry later`; no audit event"
+        },
+        {
+          "id": "38-REQ-5.2",
+          "pattern": "state_driven",
+          "condition": "a rebuild is between its fetch phase and its final phase and does not hold the workspace lock",
+          "system": "hub",
+          "action": "take the lock and proceed with the push without waiting for the rebuild",
+          "contract": "the push answers per 38-REQ-6, not 409 workspace_busy"
+        },
+        {
+          "id": "38-REQ-5.3",
+          "pattern": "unwanted",
+          "condition": "refs/heads/<name> does not exist in the trunk when read under the lock",
+          "system": "hub",
+          "action": "refuse the request and release the lock",
+          "contract": "HTTP 404 with error_type `branch_not_found` and message `branch_not_found: branch \"<name>\" does not exist in the workspace`; no audit event"
+        },
+        {
+          "id": "38-REQ-5.4",
+          "pattern": "ubiquitous",
+          "system": "hub",
+          "action": "use as `sha` the commit refs/heads/<name> resolves to in the trunk, read while holding the lock just before the push",
+          "contract": "the `sha` field of the 200 answer and of the audit event"
+        },
+        {
+          "id": "38-REQ-5.5",
+          "pattern": "ubiquitous",
+          "system": "hub",
+          "action": "hold the workspace lock until the push has ended, even if the caller has disconnected, and release it on every path including refusals, errors and panics-free failure returns",
+          "contract": "after any answer (or after a disconnected push ends) a subsequent TryLock on the slug succeeds"
+        },
+        {
+          "id": "38-REQ-5.6",
+          "pattern": "event_driven",
+          "condition": "the commit the trunk's HEAD resolves to before the lock is released differs from the commit it resolved to when the lock was taken",
+          "system": "hub",
+          "action": "hard-reset the trunk's worktree to the new HEAD commit before releasing the lock",
+          "contract": "the trunk's worktree matches the new HEAD commit; the answer is unchanged"
+        },
+        {
+          "id": "38-REQ-5.7",
+          "pattern": "unwanted",
+          "condition": "the worktree hard reset fails, or HEAD has not moved, or HEAD cannot be read when the lock is taken or before it is released",
+          "system": "hub",
+          "action": "leave the answer unchanged; on a failed reset log one warning, otherwise leave the worktree untouched",
+          "contract": "the HTTP answer is the one the push produced"
+        }
+      ]
+    },
+    {
+      "id": "38-REQ-6",
+      "title": "The push and the meaning of its outcome",
+      "rationale": "Callers need each forge outcome mapped to the forge routes' established error vocabulary, and the forge's ref must never be left in an unknown state.",
+      "criteria": [
+        {
+          "id": "38-REQ-6.1",
+          "pattern": "ubiquitous",
+          "system": "hub",
+          "action": "resolve the credential as the archive's push does (GIT_PAT, otherwise GIT_USERNAME and GIT_PASSWORD, otherwise none) and push to the trunk's remote `origin` at the URL git_url with exactly the refspec refs/heads/<name>:refs/heads/<name>, or +refs/heads/<name>:refs/heads/<name> when `force` is true",
+          "contract": "the forge receives only refs/heads/<name>, authenticated with the stored credential"
+        },
+        {
+          "id": "38-REQ-6.2",
+          "pattern": "unwanted",
+          "condition": "the secrets store fails while the credential is resolved",
+          "system": "hub",
+          "action": "refuse the request without contacting the forge and log the failure without any secret",
+          "contract": "HTTP 500 with message `internal server error`; no audit event"
+        },
+        {
+          "id": "38-REQ-6.3",
+          "pattern": "unwanted",
+          "condition": "the push has not ended two minutes after it started, or the caller disconnects during the push",
+          "system": "hub",
+          "action": "keep the push running despite the disconnect until it ends or the fixed two-minute deadline passes, and treat a passed deadline as a timeout",
+          "contract": "on deadline: HTTP 504 with error_type `forge_timeout`; on disconnect: the outcome is logged and audited as if the caller were connected"
+        },
+        {
+          "id": "38-REQ-6.4",
+          "pattern": "unwanted",
+          "condition": "the push is not a fast-forward: go-git's client-side check refuses it, or the forge's per-ref status reports `non-fast-forward` or `fetch first`",
+          "system": "hub",
+          "action": "list origin's refs once with the same URL, credential and deadline; name origin's commit in the message when the listing finds the branch and omit it when the listing fails; end with a force hint when the branch is not the workspace's own branch and with a hint to sync the workspace when it is",
+          "contract": "HTTP 409 with error_type `non_fast_forward` and a message such as `non_fast_forward: origin's fix/42-nil-map is at <sha>, which is not in the workspace's branch; push with force to overwrite it`"
+        },
+        {
+          "id": "38-REQ-6.5",
+          "pattern": "unwanted",
+          "condition": "the forge answers 401 or reports authentication required, or answers 403 or reports authorization failed",
+          "system": "hub",
+          "action": "refuse with a forge authentication error; for 401 the message says whether the workspace has no stored credential or the forge rejected it and names the credential kind (GIT_PAT or GIT_USERNAME/GIT_PASSWORD), never its value",
+          "contract": "HTTP 502 with error_type `forge_unauthenticated` (401 case) or `forge_forbidden` (403 case)"
+        },
+        {
+          "id": "38-REQ-6.6",
+          "pattern": "unwanted",
+          "condition": "the forge reports the repository not found, or refuses the ref for a reason other than non-fast-forward (protected branch, hook declined)",
+          "system": "hub",
+          "action": "refuse with the matching forge error, carrying the forge's scrubbed reason for a refused ref",
+          "contract": "HTTP 404 with error_type `forge_not_found`, or HTTP 422 with error_type `forge_rejected`"
+        },
+        {
+          "id": "38-REQ-6.7",
+          "pattern": "unwanted",
+          "condition": "the push fails with a DNS, TCP or TLS failure, or with any other push failure not covered by the other outcomes",
+          "system": "hub",
+          "action": "refuse with the matching forge error",
+          "contract": "HTTP 502 with error_type `forge_unreachable` (DNS/TCP/TLS) or `forge_error` (any other failure)"
+        },
+        {
+          "id": "38-REQ-6.8",
+          "pattern": "unwanted",
+          "condition": "the trunk cannot be opened, or `origin` is not configured in it",
+          "system": "hub",
+          "action": "refuse the request as an internal failure that is not a push attempt",
+          "contract": "HTTP 500; no audit event; no push-attempt warning log"
+        }
+      ]
+    },
+    {
+      "id": "38-REQ-7",
+      "title": "Keeping the credential out",
+      "rationale": "The stored git credential and any userinfo in git_url are secrets and must never leave hub through answers, events or logs.",
+      "criteria": [
+        {
+          "id": "38-REQ-7.1",
+          "pattern": "ubiquitous",
+          "system": "scrub",
+          "action": "for any input text and any credential secret, replace each occurrence of the secret with [redacted], remove URL userinfo, repeat both steps until the text stops changing, and cut the result to at most 1024 bytes on a UTF-8 boundary",
+          "contract": "the output contains neither the secret nor any scheme://userinfo@ segment, is valid UTF-8, is at most 1024 bytes, and scrubbing it again leaves it unchanged"
+        },
+        {
+          "id": "38-REQ-7.2",
+          "pattern": "ubiquitous",
+          "system": "hub",
+          "action": "pass every error message this route returns or logs and every value of its audit event through the scrub, and never include the credential, the userinfo of git_url or go-git's full error chain in a response",
+          "contract": "no response body, audit event or log line of this route contains the credential's secret or the userinfo of git_url"
+        },
+        {
+          "id": "38-REQ-7.3",
+          "pattern": "event_driven",
+          "condition": "a push attempt fails",
+          "system": "hub",
+          "action": "log the failure exactly once at warning level with the fields workspace, branch, error_type and the scrubbed error, and log nothing under this rule for a successful push attempt",
+          "contract": "exactly one warning log record per failed push attempt"
+        },
+        {
+          "id": "38-REQ-7.4",
+          "pattern": "event_driven",
+          "condition": "the route answers HTTP 500",
+          "system": "hub",
+          "action": "log the internal error the way hub logs its internal errors, scrubbed",
+          "contract": "the log line contains no credential secret or URL userinfo"
+        }
+      ]
+    },
+    {
+      "id": "38-REQ-8",
+      "title": "The hub.branch.push audit event",
+      "rationale": "Every attempt to change the forge, including a refused force-push, must leave a true record.",
+      "criteria": [
+        {
+          "id": "38-REQ-8.1",
+          "pattern": "ubiquitous",
+          "system": "audit package",
+          "action": "define the hub event type constant `hub.branch.push` next to the other hub event types, with a doc comment in their style",
+          "contract": "the constant's value is the string `hub.branch.push`"
+        },
+        {
+          "id": "38-REQ-8.2",
+          "pattern": "event_driven",
+          "condition": "a push attempt ends with 200 pushed/forced/up_to_date, 409 non_fast_forward, 404 forge_not_found, 422 forge_rejected, 502 forge_unauthenticated/forge_forbidden/forge_unreachable/forge_error or 504 forge_timeout",
+          "system": "hub",
+          "action": "emit exactly one hub.branch.push event with ResourceType \"branch\", ResourceID the branch name, Action \"push\", Workspace the slug and the actor from the credential",
+          "contract": "exactly one hub.branch.push event per push attempt, visible to the audit emitter and on the SSE stream"
+        },
+        {
+          "id": "38-REQ-8.3",
+          "pattern": "ubiquitous",
+          "system": "hub",
+          "action": "fill the event metadata with branch, sha, force (bool), ok (bool), remote (\"origin\") and remote_url (userinfo removed), plus result when ok is true and error_type when ok is false, and never a credential or the forge's message text",
+          "contract": "event metadata keys: branch, sha, force, ok, remote, remote_url, and exactly one of result / error_type"
+        },
+        {
+          "id": "38-REQ-8.4",
+          "pattern": "unwanted",
+          "condition": "the route answers 401, 403, 404 workspace not found, 404 branch_not_found, 400, 409 workspace_busy or any 500 (including a secrets-store failure and a trunk that cannot be opened or has no origin)",
+          "system": "hub",
+          "action": "emit no hub.branch.push event",
+          "contract": "zero hub.branch.push events for the request"
+        },
+        {
+          "id": "38-REQ-8.5",
+          "pattern": "event_driven",
+          "condition": "the caller disconnects before the push attempt ends",
+          "system": "hub",
+          "action": "emit the event on the request context with its cancellation removed, recording the real outcome of the push",
+          "contract": "exactly one hub.branch.push event whose ok/result/error_type match the push outcome"
+        }
+      ]
+    },
+    {
+      "id": "38-REQ-9",
+      "title": "afc workspace push",
+      "rationale": "Agents and operators need a CLI front end that reports the outcome, including the error type, through apikit's conventions.",
+      "criteria": [
+        {
+          "id": "38-REQ-9.1",
+          "pattern": "event_driven",
+          "condition": "a user runs `afc workspace push <slug> <branch> [--force]`",
+          "system": "afc",
+          "action": "send POST /api/v1/workspaces/<slug>/branches/<branch>/push with each path segment escaped (a '/' in the branch sent as %2F) and the body {\"force\": <bool>}",
+          "contract": "the hub receives the escaped path and a JSON body whose force equals the presence of --force"
+        },
+        {
+          "id": "38-REQ-9.2",
+          "pattern": "optional",
+          "condition": "--force is given",
+          "system": "afc",
+          "action": "write one warning line to stderr, before sending the request, saying that origin's branch may be overwritten",
+          "contract": "exactly one warning line on stderr"
+        },
+        {
+          "id": "38-REQ-9.3",
+          "pattern": "event_driven",
+          "condition": "hub answers 200",
+          "system": "afc",
+          "action": "print the response as one JSON document on stdout",
+          "contract": "exit code 0"
+        },
+        {
+          "id": "38-REQ-9.4",
+          "pattern": "unwanted",
+          "condition": "hub answers with an error",
+          "system": "afc",
+          "action": "print apikit's error envelope with hub's code and message",
+          "contract": "exit code 1; for a non-fast-forward the output contains `non_fast_forward`"
+        },
+        {
+          "id": "38-REQ-9.5",
+          "pattern": "unwanted",
+          "condition": "the request fails on the client side (for example the hub cannot be reached or the client is misconfigured)",
+          "system": "afc",
+          "action": "report the client error",
+          "contract": "exit code 2"
+        },
+        {
+          "id": "38-REQ-9.6",
+          "pattern": "unwanted",
+          "condition": "the command is given fewer or more than two positional arguments",
+          "system": "afc",
+          "action": "fail without contacting hub",
+          "contract": "exit code 2; no HTTP request is sent"
+        }
+      ]
+    },
+    {
+      "id": "38-REQ-10",
+      "title": "Shared push implementation and unchanged archive push",
+      "rationale": "Reusing the archive's push for one branch must not change what archive and reclone do.",
+      "criteria": [
+        {
+          "id": "38-REQ-10.1",
+          "pattern": "ubiquitous",
+          "system": "hub",
+          "action": "implement the archive's push to origin and the branch push with one shared push implementation",
+          "contract": "both operations push through the same go-git push code path"
+        },
+        {
+          "id": "38-REQ-10.2",
+          "pattern": "event_driven",
+          "condition": "a workspace is archived or recloned",
+          "system": "hub",
+          "action": "push refs/heads/*:refs/heads/* to origin at git_url with the resolved credential and no deadline, mapping go-git's already-up-to-date result to ErrAlreadyUpToDate, exactly as before this spec",
+          "contract": "the archive push function keeps its three-argument signature (repoPath, gitURL, auth) and the existing archive and reclone tests pass without changes"
+        }
+      ]
+    }
+  ],
+  "execution_paths": [
+    {
+      "id": "38-PATH-1",
+      "title": "The owner pushes a new branch to the forge through the API",
+      "steps": [
+        {
+          "actor": "workspace owner",
+          "action": "sends POST /api/v1/workspaces/<slug>/branches/fix%2F42-nil-map/push with an API key and no body"
+        },
+        {
+          "actor": "hub",
+          "action": "authorizes the owner, decodes the name to fix/42-nil-map, checks the workspace is active and ready, and takes the workspace lock"
+        },
+        {
+          "actor": "hub",
+          "action": "resolves refs/heads/fix/42-nil-map in the trunk and the stored GIT_PAT credential"
+        },
+        {
+          "actor": "hub",
+          "action": "pushes refs/heads/fix/42-nil-map:refs/heads/fix/42-nil-map to origin within the two-minute deadline and releases the lock"
+        },
+        {
+          "actor": "forge",
+          "action": "creates refs/heads/fix/42-nil-map at the pushed commit"
+        },
+        {
+          "actor": "hub",
+          "action": "emits one hub.branch.push event with ok=true and result=pushed and answers 200 with remote_url stripped of userinfo"
+        }
+      ]
+    },
+    {
+      "id": "38-PATH-2",
+      "title": "An agent pushes a branch with afc and repeats the call",
+      "steps": [
+        {
+          "actor": "agent",
+          "action": "runs `afc workspace push <slug> fix/42-nil-map`"
+        },
+        {
+          "actor": "afc",
+          "action": "sends POST .../branches/fix%2F42-nil-map/push with body {\"force\": false}"
+        },
+        {
+          "actor": "hub",
+          "action": "pushes the branch to origin and answers 200 with result pushed"
+        },
+        {
+          "actor": "afc",
+          "action": "prints the response as one JSON document and exits 0"
+        },
+        {
+          "actor": "agent",
+          "action": "runs the same command again"
+        },
+        {
+          "actor": "hub",
+          "action": "finds origin already at the commit, sends no objects, emits a hub.branch.push event with result up_to_date and answers 200 up_to_date"
+        }
+      ]
+    },
+    {
+      "id": "38-PATH-3",
+      "title": "A diverged branch is refused, then force-pushed",
+      "steps": [
+        {
+          "actor": "workspace owner",
+          "action": "runs `afc workspace push <slug> feature` while origin's feature has a commit the trunk lacks"
+        },
+        {
+          "actor": "hub",
+          "action": "pushes fast-forward only, gets a non-fast-forward refusal, lists origin's refs once and emits a hub.branch.push event with ok=false and error_type non_fast_forward"
+        },
+        {
+          "actor": "afc",
+          "action": "prints the error envelope whose message starts with `non_fast_forward:` and names origin's commit with a force hint, and exits 1"
+        },
+        {
+          "actor": "workspace owner",
+          "action": "runs `afc workspace push <slug> feature --force`"
+        },
+        {
+          "actor": "afc",
+          "action": "writes a warning line to stderr and sends body {\"force\": true}"
+        },
+        {
+          "actor": "hub",
+          "action": "checks feature is not the workspace's own branch, pushes +refs/heads/feature:refs/heads/feature and emits a hub.branch.push event with result forced"
+        },
+        {
+          "actor": "forge",
+          "action": "overwrites refs/heads/feature with the trunk's commit"
+        }
+      ]
+    }
+  ],
+  "external_apis": [
+    {
+      "package": "github.com/go-git/go-git/v5",
+      "version": "v5.19.3",
+      "verified": false,
+      "symbols": [
+        {
+          "name": "PlainOpen",
+          "import_path": "github.com/go-git/go-git/v5",
+          "signature": "func PlainOpen(path string) (*git.Repository, error)",
+          "notes": "Call site in internal/workspace/clone.go."
+        },
+        {
+          "name": "Repository.PushContext",
+          "import_path": "github.com/go-git/go-git/v5",
+          "signature": "func (r *Repository) PushContext(ctx context.Context, o *PushOptions) error",
+          "notes": "Call site in internal/carrypatch/push_mirror.go."
+        },
+        {
+          "name": "PushOptions",
+          "import_path": "github.com/go-git/go-git/v5",
+          "signature": "type PushOptions struct { RemoteName string; RemoteURL string; RefSpecs []config.RefSpec; Auth transport.AuthMethod; Force bool; ... }",
+          "notes": "Fields used in clone.go and push_mirror.go."
+        },
+        {
+          "name": "NoErrAlreadyUpToDate",
+          "import_path": "github.com/go-git/go-git/v5",
+          "signature": "var NoErrAlreadyUpToDate error",
+          "notes": "Used in clone.go."
+        },
+        {
+          "name": "ErrNonFastForwardUpdate",
+          "import_path": "github.com/go-git/go-git/v5",
+          "signature": "var ErrNonFastForwardUpdate error",
+          "notes": "Unverified: assumed to be wrapped by the client-side fast-forward check error; mapping must fall back to error text."
+        },
+        {
+          "name": "NewRemote / Remote.ListContext",
+          "import_path": "github.com/go-git/go-git/v5",
+          "signature": "func NewRemote(s storage.Storer, c *config.RemoteConfig) *Remote; func (r *Remote) ListContext(ctx context.Context, o *ListOptions) ([]*plumbing.Reference, error)",
+          "notes": "Call site in internal/workspace/credentials.go; return type unverified there."
+        },
+        {
+          "name": "Worktree.Reset",
+          "import_path": "github.com/go-git/go-git/v5",
+          "signature": "func (w *Worktree) Reset(opts *ResetOptions) error",
+          "notes": "Used with ResetOptions{Commit, Mode: HardReset} in internal/gitserver/handlers.go."
+        },
+        {
+          "name": "transport errors",
+          "import_path": "github.com/go-git/go-git/v5/plumbing/transport",
+          "signature": "var ErrRepositoryNotFound, ErrAuthenticationRequired, ErrAuthorizationFailed error",
+          "notes": "ErrRepositoryNotFound seen in internal/gitserver/gitserver.go; the other two are unverified assumptions for HTTP 401/403."
+        }
+      ]
+    },
+    {
+      "package": "github.com/agent-fox-dev/apikit",
+      "version": "replace ../apikit",
+      "verified": false,
+      "symbols": [
+        {
+          "name": "WriteAPIErrorWithType",
+          "import_path": "apikit",
+          "signature": "func WriteAPIErrorWithType(c echo.Context, code int, message, errorType string) error",
+          "notes": "Call site in internal/workspace/handlers.go."
+        },
+        {
+          "name": "GetAuthInfo",
+          "import_path": "apikit",
+          "signature": "func GetAuthInfo(c echo.Context) *AuthInfo"
+        },
+        {
+          "name": "CLI client helpers",
+          "import_path": "apikit",
+          "signature": "CLIClientFromCmd(cmd); client.DoRequest(ctx, method, path string, body any) (any, error); CLIPrintResult(cmd, result) error; CLIHandleError(cmd, err) error; NewCLIError(code int, msg string)",
+          "notes": "Call sites in internal/cli; the client drops error_type from error answers."
+        }
+      ]
+    }
+  ]
+}
