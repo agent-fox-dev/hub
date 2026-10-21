@@ -4,6 +4,8 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+
+	"github.com/agent-fox-dev/hub/internal/wsaccess"
 )
 
 // createTableSQL is the DDL for the workspaces table.
@@ -161,6 +163,12 @@ func initSchema(db *sql.DB) error {
 			}
 			return fmt.Errorf("patches schema migration failed: %w", err)
 		}
+	}
+
+	// The token workspace bindings (spec 33), which deleteWorkspace reads to
+	// retire a deleted workspace's tokens (spec 34).
+	if err := wsaccess.InitBindingSchema(db); err != nil {
+		return fmt.Errorf("token binding schema init: %w", err)
 	}
 
 	return nil

@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/agent-fox-dev/hub/internal/wsaccess"
 )
 
 // timestampFormat is a fixed-width RFC 3339 layout with microsecond precision.
@@ -250,41 +252,56 @@ func reactivateWorkspaceDB(db *sql.DB, slug string) (*Workspace, error) {
 // associated secrets and variables within a single database transaction
 // (07-REQ-17.1, 07-REQ-17.2).
 func deleteWorkspace(db *sql.DB, slug string) error {
+	_, err := deleteWorkspaceRevoked(db, slug)
+	return err
+}
+
+// deleteWorkspaceRevoked is deleteWorkspace, which also retires the tokens
+// bound to the workspace in the same transaction (34-REQ-5.1): before the
+// workspace row goes, it revokes the live ones and deletes every binding of
+// the slug. It returns the sorted ids it revoked, empty when none; a failure
+// of any step rolls the whole deletion back.
+func deleteWorkspaceRevoked(db *sql.DB, slug string) ([]string, error) {
 	tx, err := db.Begin()
 	if err != nil {
-		return fmt.Errorf("delete workspace %q: begin tx: %w", slug, err)
+		return nil, fmt.Errorf("delete workspace %q: begin tx: %w", slug, err)
 	}
 	defer tx.Rollback()
 
+	revoked, err := wsaccess.RevokeAndUnbindSlug(tx, slug)
+	if err != nil {
+		return nil, fmt.Errorf("delete workspace %q: %w", slug, err)
+	}
+
 	result, err := tx.Exec(`DELETE FROM workspaces WHERE slug = ?`, slug)
 	if err != nil {
-		return fmt.Errorf("delete workspace %q: %w", slug, err)
+		return nil, fmt.Errorf("delete workspace %q: %w", slug, err)
 	}
 	affected, err := result.RowsAffected()
 	if err != nil {
-		return fmt.Errorf("delete workspace %q: rows affected: %w", slug, err)
+		return nil, fmt.Errorf("delete workspace %q: rows affected: %w", slug, err)
 	}
 	if affected == 0 {
-		return fmt.Errorf("workspace %q not found", slug)
+		return nil, fmt.Errorf("workspace %q not found", slug)
 	}
 
 	// Cascade-delete associated patches (15-REQ-13.1).
 	if _, err := tx.Exec(`DELETE FROM patches WHERE workspace_slug = ?`, slug); err != nil {
-		return fmt.Errorf("delete workspace %q patches: %w", slug, err)
+		return nil, fmt.Errorf("delete workspace %q patches: %w", slug, err)
 	}
 
 	// Cascade-delete associated secrets and variables (07-REQ-17.1).
 	if _, err := tx.Exec(`DELETE FROM secrets WHERE owner_type = 'workspace' AND owner_id = ?`, slug); err != nil {
-		return fmt.Errorf("delete workspace %q secrets: %w", slug, err)
+		return nil, fmt.Errorf("delete workspace %q secrets: %w", slug, err)
 	}
 	if _, err := tx.Exec(`DELETE FROM variables WHERE owner_type = 'workspace' AND owner_id = ?`, slug); err != nil {
-		return fmt.Errorf("delete workspace %q variables: %w", slug, err)
+		return nil, fmt.Errorf("delete workspace %q variables: %w", slug, err)
 	}
 
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("delete workspace %q: commit: %w", slug, err)
+		return nil, fmt.Errorf("delete workspace %q: commit: %w", slug, err)
 	}
-	return nil
+	return revoked, nil
 }
 
 // scanWorkspaces scans rows into a slice of Workspace pointers.

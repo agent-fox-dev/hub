@@ -151,8 +151,10 @@ unbound PAT of the same user and scopes gets, and nothing else:
 | The git server, for a repository other than `S`'s | pkt-line `404 repository not found` |
 
 A token bound to an archived workspace still reaches it and gets its usual
-`400`/`409` answers. Deleting the workspace leaves the binding in place, so the
-token then reaches nothing. The binding guard answers a failed binding lookup
+`400`/`409` answers. Deleting the workspace revokes its live bound tokens and
+removes their bindings in the same transaction, so such a token then gets `401`
+everywhere; a binding whose workspace row vanished another way keeps its token
+confined to nothing until the binding sweep revokes it. The binding guard answers a failed binding lookup
 with `500 internal server error` (a pkt-line 500 in git), and no layer lets the
 token through as unbound. API keys, admin tokens and unbound PATs are not affected,
 and API keys and admin tokens never cause a binding lookup.

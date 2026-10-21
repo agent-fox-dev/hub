@@ -650,10 +650,12 @@ A personal access token can be bound to one workspace. The binding is hub's own
 record, the SQLite table `token_workspace_bindings` (`token_id TEXT PRIMARY
 KEY`, `slug TEXT NOT NULL`, `created_at TEXT NOT NULL`, index
 `idx_token_workspace_bindings_slug`). It has no foreign key to `workspaces`:
-archiving or deleting a workspace leaves its bindings in place, so a token bound
-to a deleted workspace reaches nothing. `MountWorkspaceHandlers` creates the
-table right after the workspaces schema, and `MountGitHandlers` creates it too,
-before it registers anything. Either returns the error if it cannot.
+archiving a workspace leaves its bindings alone, and deleting it retires them
+explicitly (`deleteWorkspace` calls `wsaccess.RevokeAndUnbindSlug` in its
+transaction: the live tokens are revoked and the bindings deleted). The
+workspace schema initialisation creates the table, and so do
+`MountWorkspaceHandlers` and `MountGitHandlers`, before they register anything;
+each returns the error if it cannot.
 
 Everything lives in `internal/wsaccess`:
 
