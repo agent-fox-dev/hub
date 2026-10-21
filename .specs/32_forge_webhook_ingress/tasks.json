@@ -48,7 +48,7 @@
       "done_when": [
         "InitSchema is idempotent and leaves rows alone"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 2,
