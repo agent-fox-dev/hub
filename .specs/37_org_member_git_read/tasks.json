@@ -135,7 +135,7 @@
       "done_when": [
         "a member's reads are served identically to the owner's"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 4,
