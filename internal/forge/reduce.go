@@ -41,29 +41,43 @@ var errMalformed = errors.New("the payload lacks a field its event needs")
 // relayed.
 type mapper func(b *builder) ([]audit.HubEvent, error)
 
-// reduceDelivery works out what a verified delivery comes to. For a kind hub relays, the
-// repository the payload names must be the workspace's origin; a delivery of any kind whose
-// repository is the origin is bound to it. Everything else is ignored.
+// reduceDelivery works out what a verified delivery comes to. A body that is not a JSON object,
+// or lacks a field its kind needs, is malformed. A kind and action hub does not relay are
+// ignored. For one it relays, the repository the payload names must be the workspace's origin or,
+// on a carry_patch workspace, its upstream, else the delivery is for another repository and
+// nothing is relayed. A delivery of any kind whose repository is the workspace's is bound to it.
 func reduceDelivery(d delivery, ws workspaceRemotes) reduction {
 	doc, err := parsePayload(d.body)
 	if err != nil {
-		return reduction{outcome: outcomeIgnored}
+		return reduction{outcome: outcomeMalformed}
 	}
 	red := reduction{action: actionOf(d.forge, doc)}
-	if path, ok := repositoryOf(d.forge, doc); ok {
+	path, havePath := repositoryOf(d.forge, doc)
+	if havePath {
 		red.target = bindRepository(path, ws)
 	}
+
 	m := mapperFor(d.forge, d.event, red.action)
-	if m == nil || red.target == "" {
+	switch {
+	case m == nil:
 		red.outcome = outcomeIgnored
+		return red
+	case !havePath:
+		red.outcome, red.target = outcomeMalformed, ""
+		return red
+	case red.target == "":
+		red.outcome = outcomeMismatch
 		return red
 	}
 	events, err := m(&builder{d: d, doc: doc, tgt: red.target})
-	if err != nil || len(events) == 0 {
+	switch {
+	case err != nil:
+		red.outcome, red.target = outcomeMalformed, ""
+	case len(events) == 0:
 		red.outcome = outcomeIgnored
-		return red
+	default:
+		red.outcome, red.events = outcomeRelayed, events
 	}
-	red.outcome, red.events = outcomeRelayed, events
 	return red
 }
 
@@ -95,10 +109,14 @@ func repositoryOf(forge string, doc payload) (string, bool) {
 }
 
 // bindRepository tells which of the workspace's repositories a path names, ignoring case: the
-// origin, else none. A remote that cannot be read names none.
+// origin, else the upstream of a carry_patch workspace, else none. A remote that cannot be read
+// names none.
 func bindRepository(path string, ws workspaceRemotes) target {
-	if remoteIs(ws.gitURL, path) {
+	switch {
+	case remoteIs(ws.gitURL, path):
 		return targetOrigin
+	case ws.hasUpstream() && remoteIs(ws.upstreamURL, path):
+		return targetUpstream
 	}
 	return ""
 }

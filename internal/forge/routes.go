@@ -18,6 +18,8 @@ import (
 type handlers struct {
 	cfg        Config
 	httpClient *http.Client
+	// reduce works out what a verified delivery comes to; reduceDelivery, except in a test.
+	reduce func(delivery, workspaceRemotes) reduction
 }
 
 // RegisterRoutes mounts the forge routes on api, under /workspaces/:slug. The reads

@@ -12,6 +12,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/labstack/echo/v4"
@@ -32,10 +33,13 @@ const (
 // forge, whatever is wrong with its signature or token.
 const unverifiedMessage = "delivery signature missing or invalid"
 
-// The outcomes of a delivery.
+// The outcomes of a delivery. Duplicate is only answered: a duplicate is never a row.
 const (
-	outcomeRelayed = "relayed"
-	outcomeIgnored = "ignored"
+	outcomeRelayed   = "relayed"
+	outcomeIgnored   = "ignored"
+	outcomeMismatch  = "repository_mismatch"
+	outcomeMalformed = "malformed"
+	outcomeDuplicate = "duplicate"
 )
 
 // The forges that post deliveries, as the delivery log names them, and the headers by which a
@@ -52,7 +56,7 @@ const (
 // routes and outside the API group and its authentication: a delivery proves who it is with
 // its signature. The ingress never contacts the forge and takes no workspace lock.
 func MountWebhookIngress(e *echo.Echo, cfg Config) {
-	h := &handlers{cfg: cfg}
+	h := &handlers{cfg: cfg, reduce: reduceDelivery}
 	e.POST("/hooks/forge/:slug", h.ingress)
 }
 
@@ -99,11 +103,18 @@ func (h *handlers) ingress(c echo.Context) error {
 		return writeRefusal(c, ref)
 	}
 	d.slug, d.body = slug, body
-	red := reduceDelivery(d, remotes)
+	red := h.reduce(d, remotes)
 
-	if err := h.recordDelivery(d, red); err != nil {
+	inserted, err := h.recordDelivery(d, red)
+	if err != nil {
 		slog.Error("forge: recording a delivery failed", "slug", slug, "error", err)
 		return apikit.WriteAPIError(c, http.StatusInternalServerError, "internal server error")
+	}
+	switch {
+	case !inserted:
+		return writeOutcome(c, outcomeDuplicate)
+	case red.outcome == outcomeMalformed:
+		return apikit.WriteAPIError(c, http.StatusBadRequest, "the delivery payload is not what its event needs")
 	}
 	if err := writeOutcome(c, red.outcome); err != nil {
 		return err
@@ -231,29 +242,49 @@ func printableASCII(s string) bool {
 	return !strings.ContainsFunc(s, func(r rune) bool { return r < ' ' || r > '~' })
 }
 
-// recordDelivery writes the delivery log row of a delivery.
-func (h *handlers) recordDelivery(d delivery, red reduction) error {
+// recordDelivery writes the delivery log row of a delivery and reports whether it was written:
+// false when the log already had the delivery, which makes this one a duplicate. The insert is
+// the one step that decides it, so that copies of a delivery that arrive together are told apart.
+func (h *handlers) recordDelivery(d delivery, red reduction) (bool, error) {
 	relayed := make([]string, len(red.events))
 	for i, event := range red.events {
 		relayed[i] = event.EventType
 	}
 	relayedJSON, err := json.Marshal(relayed)
 	if err != nil {
-		return err
+		return false, err
 	}
 	var tgt any
 	if red.target != "" {
 		tgt = string(red.target)
 	}
-	_, err = h.cfg.DB.Exec(`INSERT INTO forge_deliveries
+	res, err := h.cfg.DB.Exec(`INSERT INTO forge_deliveries
 		(workspace_slug, delivery_id, forge, event, action, target, outcome, relayed, received_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (workspace_slug, delivery_id) DO NOTHING`,
 		d.slug, d.id, d.forge, truncateUTF8(strings.ToValidUTF8(d.event, "\uFFFD"), maxEventNameBytes),
 		red.action, tgt, red.outcome, string(relayedJSON), apikit.NowUTC())
-	return err
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
 }
 
-// writeOutcome answers 202 {"outcome": ...}.
+// writeOutcome answers 202 {"outcome": ...} and flushes the answer, so that the forge has it
+// before hub starts on the events. The length is set, so that the forge sees a complete answer
+// at once and not one that ends when the handler returns.
 func writeOutcome(c echo.Context, outcome string) error {
-	return c.JSON(http.StatusAccepted, map[string]string{"outcome": outcome})
+	body, err := json.Marshal(map[string]string{"outcome": outcome})
+	if err != nil {
+		return err
+	}
+	res := c.Response()
+	res.Header().Set(echo.HeaderContentType, "application/json; charset=utf-8")
+	res.Header().Set(echo.HeaderContentLength, strconv.Itoa(len(body)))
+	res.WriteHeader(http.StatusAccepted)
+	if _, err := res.Write(body); err != nil {
+		return err
+	}
+	res.Flush()
+	return nil
 }
