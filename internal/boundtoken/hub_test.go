@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -28,9 +27,10 @@ import (
 type realHub struct {
 	server *apikit.Server
 	db     *sql.DB
-	duck   *sql.DB
-	store  audit.Store
-	apiKey string // an API key of user u1
+	duck    *sql.DB
+	store   audit.Store
+	emitter audit.Emitter
+	apiKey  string // an API key of user u1
 }
 
 func newRealHub(t *testing.T) *realHub {
@@ -93,7 +93,7 @@ func newRealHub(t *testing.T) *realHub {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &realHub{server: server, db: database.SqlDB, duck: duck, store: store, apiKey: key.FullKey}
+	return &realHub{server: server, db: database.SqlDB, duck: duck, store: store, emitter: emitter, apiKey: key.FullKey}
 }
 
 // do sends one request with credential as the Bearer token.
@@ -159,6 +159,3 @@ func (h *realHub) hubEvents(t *testing.T, eventType string) []map[string]any {
 	}
 	return out
 }
-
-// readAll reads a response body for messages.
-func readAll(r io.Reader) string { b, _ := io.ReadAll(r); return string(b) }
