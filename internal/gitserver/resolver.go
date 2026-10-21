@@ -137,11 +137,12 @@ func gitResolverMiddleware(db *sql.DB, wsRoot string) echo.MiddlewareFunc {
 				return writePktLineError(c, http.StatusNotFound, "repository not available")
 			}
 
-			// Check authorization: ownership or admin status (06-REQ-4.E2).
-			// For ownership denials, authorizeGitAccess writes a pkt-line
-			// error response and returns errAccessDenied; return nil to
-			// prevent Echo's error handler from writing a second response.
-			// For other errors (e.g. missing auth info), propagate to Echo.
+			// Check authorization through wsaccess (read for clone and
+			// fetch, write for push). For a refusal, authorizeGitAccess
+			// writes a pkt-line error response and returns errAccessDenied;
+			// return nil to prevent Echo's error handler from writing a
+			// second response. For other errors (e.g. missing auth info),
+			// propagate to Echo.
 			if err := authorizeGitAccess(c, db, ws); err != nil {
 				if errors.Is(err, errAccessDenied) {
 					return nil
