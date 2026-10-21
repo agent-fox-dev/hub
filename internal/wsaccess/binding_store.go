@@ -71,3 +71,37 @@ func queryStrings(tx *sql.Tx, query string, args ...any) ([]string, error) {
 	}
 	return out, rows.Err()
 }
+
+// BoundToken is one token bound to a workspace, joined with its pats row.
+type BoundToken struct {
+	TokenID     string
+	Name        string
+	Permissions string // the pats row's JSON array, as stored
+	ExpiresAt   sql.NullString
+	RevokedAt   sql.NullString
+	CreatedAt   string
+}
+
+// ListBoundTokens returns the tokens bound to slug, joined with their pats
+// rows and ordered by the token's created_at and then its id. Revoked and
+// expired tokens are included; a binding whose pats row is gone is left out.
+// It never reads a secret.
+func ListBoundTokens(db *sql.DB, slug string) ([]BoundToken, error) {
+	rows, err := db.Query(`SELECT p.token_id, p.name, p.permissions, p.expires_at, p.revoked_at, p.created_at
+		FROM token_workspace_bindings b JOIN pats p ON p.token_id = b.token_id
+		WHERE b.slug = ?
+		ORDER BY p.created_at, p.token_id`, slug)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []BoundToken{}
+	for rows.Next() {
+		var bt BoundToken
+		if err := rows.Scan(&bt.TokenID, &bt.Name, &bt.Permissions, &bt.ExpiresAt, &bt.RevokedAt, &bt.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, bt)
+	}
+	return out, rows.Err()
+}
