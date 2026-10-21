@@ -23,3 +23,14 @@ delivered.
    to members removed that route from the test's list, and the test keeps the routes on which a
    member's answer stays the stranger's. `POST /sessions` left it with task 2: a member now gets
    `403` with `error_type: forbidden` (36-REQ-6.2, `TestCreateSession_MemberForbidden_TS_36_28`).
+   The per-run reads and the transcript left it with task 3: a member reads them
+   (36-REQ-1.1, `TestRunReads_MemberReads_TS_36_1`).
+
+2. **Admin tokens go through the rule on per-run reads, the transcript and `POST /sessions`.**
+   Before this spec `requireWorkspaceRead` returned early for an admin token, so an admin naming a
+   slug that names no workspace was served (an empty run, or a session opened in a workspace
+   that does not exist). Steps 2.2 and 3.2 send admin tokens through `wsaccess.AuthorizeWorkspace`,
+   and 36-REQ-1.4 and 36-REQ-6.3 answer an unknown slug with `404 workspace not found`, so an
+   admin token now gets that 404 too (`internal/audit/auth.go`, `authorizeWorkspace`). An admin
+   token still reads and opens sessions in every workspace that exists, whatever its status
+   (`TestRunReads_OwnerAndAdmin_TS_36_2`, `TestCreateSession_OwnerAndAdminOpen_TS_36_27`).

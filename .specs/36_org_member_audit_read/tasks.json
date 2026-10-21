@@ -120,7 +120,7 @@
       "done_when": [
         "Existing transcript_handler_test and TS-34-58 pass unchanged"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 4,

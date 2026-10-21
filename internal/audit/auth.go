@@ -97,36 +97,21 @@ func requireAuditRead(c echo.Context) *apikit.AuthInfo {
 	return auth
 }
 
-// requireWorkspaceRead enforces workspace ownership on audit read endpoints:
-// admin tokens may read any workspace, every other credential only
-// workspaces it owns. Unknown and non-owned workspaces both yield 404 so the
-// endpoint cannot be used to enumerate slugs.
+// requireWorkspaceRead decides whether the caller may read the workspace
+// slug on the per-run audit reads and the transcript: an admin token, the
+// workspace's owner and a member of its org may, whatever the workspace's
+// status. A workspace that does not exist or that the caller may not read is
+// 404 workspace not found, so the endpoints cannot be used to enumerate
+// slugs; a failed lookup is 500.
 //
 // When sqliteDB is nil (route registration without a SQLite handle, used by
 // unit tests) the check is skipped; the server binary always wires it.
 // Returns false after writing the error response.
 func requireWorkspaceRead(c echo.Context, auth *apikit.AuthInfo, slug string, sqliteDB *sql.DB) bool {
-	if isAdmin(auth) || sqliteDB == nil {
+	if sqliteDB == nil {
 		return true
 	}
-	var ownerID string
-	err := sqliteDB.QueryRow("SELECT owner_id FROM workspaces WHERE slug = ?", slug).Scan(&ownerID)
-	if err != nil || ownerID != auth.UserID {
-		_ = apikit.WriteAPIError(c, http.StatusNotFound, "workspace not found")
-		return false
-	}
-	// A PAT bound to another workspace treats this one as not its own
-	// (spec 33).
-	denied, err := wsaccess.DeniesWorkspace(sqliteDB, auth, slug, wsaccess.SiteOf(c, http.StatusNotFound))
-	if err != nil {
-		_ = apikit.WriteAPIError(c, http.StatusInternalServerError, "internal server error")
-		return false
-	}
-	if denied {
-		_ = apikit.WriteAPIError(c, http.StatusNotFound, "workspace not found")
-		return false
-	}
-	return true
+	return authorizeWorkspace(c, auth, slug, sqliteDB, wsaccess.NeedRead)
 }
 
 // requireWorkspaceWrite decides whether the caller may change the workspace
