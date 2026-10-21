@@ -49,8 +49,10 @@ type sseFilters struct {
 	category  string // "hub" or "agent"
 
 	// allowedWorkspaces restricts delivery to events of the given
-	// workspaces. nil means unrestricted (admin tokens). Events without a
-	// workspace are only delivered when unrestricted.
+	// workspaces: the caller's readable set (owned and member workspaces),
+	// computed once when the connection opens and kept until it closes.
+	// nil means unrestricted (admin tokens). Events without a workspace are
+	// only delivered when unrestricted.
 	allowedWorkspaces map[string]bool
 }
 

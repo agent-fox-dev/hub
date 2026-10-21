@@ -624,8 +624,13 @@ func handleSSEStream(store Store, mgr *SSEManager, sqliteDB *sql.DB) echo.Handle
 			return nil
 		}
 
-		// Non-admin callers only receive events of workspaces they own.
-		owned, ok := readableWorkspaces(c, auth, sqliteDB, c.QueryParam("workspace"))
+		// Non-admin callers only receive events of workspaces they may read
+		// (owned and member workspaces). The set is computed once, before
+		// any header is written or the connection is registered, and kept
+		// for the life of the connection: a refusal or a failed lookup is
+		// answered as JSON, and membership changes later do not reach an
+		// open stream.
+		readable, ok := readableWorkspaces(c, auth, sqliteDB, c.QueryParam("workspace"))
 		if !ok {
 			return nil
 		}
@@ -636,7 +641,7 @@ func handleSSEStream(store Store, mgr *SSEManager, sqliteDB *sql.DB) echo.Handle
 				workspace:         c.QueryParam("workspace"),
 				runID:             c.QueryParam("run_id"),
 				category:          c.QueryParam("category"),
-				allowedWorkspaces: owned,
+				allowedWorkspaces: readable,
 			}
 
 			conn, err := mgr.Register(filters)

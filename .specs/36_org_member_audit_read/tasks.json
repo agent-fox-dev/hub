@@ -259,7 +259,7 @@
       "done_when": [
         "sse_handler_test.go and sse_broadcaster_test.go pass unchanged"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 8,
