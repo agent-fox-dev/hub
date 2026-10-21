@@ -79,8 +79,8 @@ const EventPatchReset = "hub.patch.reset"
 
 // EventForgeIssueCreate is the hub audit event emitted when a caller creates an
 // issue on a workspace's forge (POST /workspaces/:slug/issues). Hub emits one
-// event of the forge write family (the nine EventForge* constants) for every
-// write request that sent at least one request to the forge, whether the write
+// event of the forge write family (the nine constants from EventForgeIssueCreate to
+// EventForgePullRequestComment) for every write request that sent at least one request to the forge, whether the write
 // succeeded or failed; a request hub refuses on its own (401, 403, 404, 400, 413,
 // 422) emits none. The actor is the caller: ActorID its user and ActorType its
 // credential type. ResourceType is "issue", ResourceID the number of the new
@@ -152,6 +152,113 @@ const EventForgePullRequestCreate = "hub.forge.pull_request.create"
 // metadata of EventForgeIssueCreate, whose url is the comment's URL. It adds no
 // metadata of its own.
 const EventForgePullRequestComment = "hub.forge.pull_request.comment"
+
+// EventForgeIssueOpened is the hub audit event relayed when a forge reports that
+// an issue was opened on a workspace's repository (a GitHub issues delivery with
+// action opened, a GitLab Issue Hook with action open). Hub relays one event for
+// each accepted delivery of the forge delivery family (the thirteen constants from
+// EventForgeIssueOpened to EventForgePush) after it has answered the forge, and
+// never acts on it. The actor is the forge, not a hub identity: ActorType is
+// "forge", ActorID is empty and the forge login is in metadata. ResourceType is
+// "issue", ResourceID the issue number in decimal (the iid on GitLab) and Action
+// "opened". Metadata common to the family: forge ("github" or "gitlab"), target
+// ("origin" or "upstream", the workspace repository the delivery named),
+// delivery_id (the forge's id of the delivery) and actor (the forge login, empty
+// when the payload has none). This event adds number, title (cut to 256 bytes),
+// url and labels (the names of the issue's labels). It holds nothing else of the
+// payload, which hub never stores, and the URLs in it carry no user information.
+const EventForgeIssueOpened = "hub.forge.issue.opened"
+
+// EventForgeIssueEdited is the hub audit event relayed when a forge reports that
+// the title or body of an issue changed. ResourceType is "issue", ResourceID the
+// issue number and Action "edited". Metadata: the common metadata of
+// EventForgeIssueOpened, and number, title, url and labels as it has them.
+const EventForgeIssueEdited = "hub.forge.issue.edited"
+
+// EventForgeIssueClosed is the hub audit event relayed when a forge reports that
+// an issue was closed. ResourceType is "issue", ResourceID the issue number and
+// Action "closed". Metadata: as EventForgeIssueEdited.
+const EventForgeIssueClosed = "hub.forge.issue.closed"
+
+// EventForgeIssueReopened is the hub audit event relayed when a forge reports that
+// an issue was reopened. ResourceType is "issue", ResourceID the issue number and
+// Action "reopened". Metadata: as EventForgeIssueEdited.
+const EventForgeIssueReopened = "hub.forge.issue.reopened"
+
+// EventForgeIssueLabeled is the hub audit event relayed when a forge reports that a
+// label was put on an issue. A GitLab update that adds several labels is relayed as
+// one event for each, sorted by name. ResourceType is "issue", ResourceID the issue
+// number and Action "labeled". Metadata: the common metadata of
+// EventForgeIssueOpened and number, label (the label's name), labels (the names of
+// all the labels the issue has now) and url.
+const EventForgeIssueLabeled = "hub.forge.issue.labeled"
+
+// EventForgeIssueUnlabeled is the hub audit event relayed when a forge reports that
+// a label was taken off an issue. On GitLab it comes before the labeled events of
+// the same update. ResourceType is "issue", ResourceID the issue number and Action
+// "unlabeled". Metadata: as EventForgeIssueLabeled.
+const EventForgeIssueUnlabeled = "hub.forge.issue.unlabeled"
+
+// EventForgeCommentCreated is the hub audit event relayed when a forge reports a new
+// comment on an issue or on a pull request or merge request. ResourceType is
+// "comment", ResourceID the number of the issue or pull request in decimal and
+// Action "created". Metadata: the common metadata of EventForgeIssueOpened and
+// number (of the issue or pull request), comment_url and pull_request, true for a
+// pull request or merge request. The comment's text is not in the event.
+const EventForgeCommentCreated = "hub.forge.comment.created"
+
+// EventForgePullRequestOpened is the hub audit event relayed when a forge reports
+// that a pull request or merge request was opened. ResourceType is "pull_request",
+// ResourceID its number in decimal (the iid on GitLab) and Action "opened". Metadata:
+// the common metadata of EventForgeIssueOpened and number, url, head and base (the
+// branch names) and merged (a boolean).
+const EventForgePullRequestOpened = "hub.forge.pull_request.opened"
+
+// EventForgePullRequestClosed is the hub audit event relayed when a forge reports
+// that a pull request or merge request was closed without being merged.
+// ResourceType is "pull_request", ResourceID the number and Action "closed".
+// Metadata: as EventForgePullRequestOpened.
+const EventForgePullRequestClosed = "hub.forge.pull_request.closed"
+
+// EventForgePullRequestMerged is the hub audit event relayed when a forge reports
+// that a pull request or merge request was merged: a GitHub closed delivery whose
+// pull request is merged, a GitLab merge. Such a delivery is never relayed as
+// EventForgePullRequestClosed. ResourceType is "pull_request", ResourceID the
+// number and Action "merged". Metadata: as EventForgePullRequestOpened.
+const EventForgePullRequestMerged = "hub.forge.pull_request.merged"
+
+// EventForgePullRequestReopened is the hub audit event relayed when a forge reports
+// that a pull request or merge request was reopened. ResourceType is
+// "pull_request", ResourceID the number and Action "reopened". Metadata: as
+// EventForgePullRequestOpened.
+const EventForgePullRequestReopened = "hub.forge.pull_request.reopened"
+
+// EventForgePullRequestSynchronize is the hub audit event relayed when a forge
+// reports that commits were pushed to the branch of a pull request or merge request
+// (a GitHub synchronize delivery, a GitLab update that carries oldrev).
+// ResourceType is "pull_request", ResourceID the number and Action "synchronize".
+// Metadata: as EventForgePullRequestOpened.
+const EventForgePullRequestSynchronize = "hub.forge.pull_request.synchronize"
+
+// EventForgePush is the hub audit event relayed when a forge reports a push of
+// commits or of a tag. ResourceType is "repository", ResourceID the pushed ref and
+// Action "push". Metadata: the common metadata of EventForgeIssueOpened and ref,
+// before and after (the commit ids the ref moved from and to).
+const EventForgePush = "hub.forge.push"
+
+// EventForgeWebhookSet is the hub audit event emitted when a caller sets the
+// webhook secret of a workspace (PUT /workspaces/:slug/forge/webhook). The actor is
+// the caller: ActorID its user and ActorType its credential type. ResourceType is
+// "webhook", ResourceID the workspace slug and Action "set". Metadata: generated, a
+// boolean, true when hub made the secret up. The secret is never in the event.
+const EventForgeWebhookSet = "hub.forge.webhook.set"
+
+// EventForgeWebhookUnset is the hub audit event emitted when a caller removes the
+// webhook secret of a workspace (DELETE /workspaces/:slug/forge/webhook), whether
+// or not there was one. The actor is the caller. ResourceType is "webhook",
+// ResourceID the workspace slug and Action "unset". Metadata: existed, a boolean,
+// false when there was no secret to remove.
+const EventForgeWebhookUnset = "hub.forge.webhook.unset"
 
 // HubEvent represents a hub-internal audit event passed to the Emitter.
 type HubEvent struct {

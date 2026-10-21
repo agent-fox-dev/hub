@@ -12,8 +12,9 @@ import (
 // targetUsage is the help of --target on the commands that read a workspace's forge.
 const targetUsage = "Remote to read: origin (default) or upstream (carry_patch workspaces only)"
 
-// ForgeCmd returns the 'forge' parent cobra.Command, with the subcommand that shows how
-// the hub reaches the forge of a workspace.
+// ForgeCmd returns the 'forge' parent cobra.Command, with the subcommands that show how the
+// hub reaches the forge of a workspace, that set and remove the secret the forge signs its
+// webhook deliveries with, and that list those deliveries.
 //
 // The authenticated CLI client is retrieved from the Cobra context via
 // apikit.CLIClientFromCmd — credentials are resolved by apikit's PersistentPreRunE
@@ -25,7 +26,7 @@ func ForgeCmd() *cobra.Command {
 		SilenceErrors: true,
 		SilenceUsage:  true,
 	}
-	cmd.AddCommand(newForgeStatusCmd())
+	cmd.AddCommand(newForgeStatusCmd(), newForgeWebhookCmd(), newForgeDeliveriesCmd())
 	return cmd
 }
 

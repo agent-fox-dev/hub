@@ -206,6 +206,11 @@ type env struct {
 	db   *sql.DB
 	echo *echo.Echo
 	stub *forgeStub
+	// secrets is the real secrets store over db, which the Config's Secrets is unless a
+	// modifier replaces it.
+	secrets *secrets.Store
+	// cfg is the Config the routes and the ingress were mounted with.
+	cfg Config
 
 	originAuth   transport.AuthMethod
 	upstreamAuth transport.AuthMethod
@@ -243,6 +248,13 @@ func newEnv(t *testing.T, mods ...func(*Config)) *env {
 	isolateForgeEnv(t)
 	e := &env{t: t, db: openTestDB(t), stub: newForgeStub(t), vars: map[string]string{}}
 	createWorkspacesTable(t, e.db)
+	if err := secrets.InitSchema(e.db); err != nil {
+		t.Fatalf("create the secrets tables: %v", err)
+	}
+	if err := InitSchema(e.db); err != nil {
+		t.Fatalf("create the delivery log: %v", err)
+	}
+	e.secrets = secrets.NewStore(e.db)
 	e.originAuth = &githttp.BasicAuth{Username: "x-token-auth", Password: "origin-token"}
 
 	cfg := Config{
@@ -267,7 +279,9 @@ func newEnv(t *testing.T, mods ...func(*Config)) *env {
 			}
 			return "", &secrets.NotFoundError{Key: key}
 		},
-		Transport: e.stub.Client().Transport,
+		Transport:   e.stub.Client().Transport,
+		Secrets:     e.secrets,
+		ExternalURL: "https://hub.example.com",
 	}
 	for _, m := range mods {
 		m(&cfg)
@@ -278,6 +292,8 @@ func newEnv(t *testing.T, mods ...func(*Config)) *env {
 	api := e.echo.Group("/api/v1")
 	api.Use(testAuthMiddleware())
 	RegisterRoutes(api, cfg)
+	MountWebhookIngress(e.echo, cfg)
+	e.cfg = cfg
 	return e
 }
 

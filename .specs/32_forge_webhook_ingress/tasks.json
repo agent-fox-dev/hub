@@ -48,7 +48,7 @@
       "done_when": [
         "InitSchema is idempotent and leaves rows alone"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 2,
@@ -92,7 +92,7 @@
       "done_when": [
         "the secret value is never logged or put in audit metadata"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 3,
@@ -130,7 +130,7 @@
       "depends_on": [
         1
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 4,
@@ -178,7 +178,7 @@
       "done_when": [
         "a request without an Authorization header reaches the handler"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 5,
@@ -223,7 +223,7 @@
       "depends_on": [
         4
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 6,
@@ -260,7 +260,7 @@
       "depends_on": [
         5
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 7,
@@ -299,7 +299,7 @@
       "depends_on": [
         6
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 8,
@@ -337,7 +337,7 @@
       "done_when": [
         "main.go launches the pruner with go after forge.InitSchema"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 9,
@@ -375,7 +375,7 @@
       "done_when": [
         "afc builds with CGO_ENABLED=0"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 10,
@@ -404,7 +404,7 @@
         3,
         5
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 11,
@@ -452,7 +452,7 @@
         "`make test` and `make lint` pass",
         "all six execution paths are live in production code"
       ],
-      "state": "pending"
+      "state": "done"
     }
   ]
 }

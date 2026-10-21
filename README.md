@@ -40,7 +40,10 @@ The hub is also the forge client of its workspaces: a caller reads a workspace's
 repository, issues and pull requests on GitHub or GitLab through the hub
 (`afc forge status`, `afc issue list|get`, `afc pr get|state|files|checks|reviews`),
 and the hub uses the git credential it already holds for the workspace, never the
-caller's. See [Forge Endpoints](docs/api.md#forge-endpoints).
+caller's. The forge can tell the hub what happens on the repository in return:
+`afc forge webhook set` returns the URL and the secret to enter in the forge's webhook
+settings, and the hub relays the verified deliveries as `hub.forge.*` events on its event
+stream. See [Forge Endpoints](docs/api.md#forge-endpoints).
 
 ## Getting Started
 

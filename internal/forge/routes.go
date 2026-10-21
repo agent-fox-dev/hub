@@ -18,6 +18,8 @@ import (
 type handlers struct {
 	cfg        Config
 	httpClient *http.Client
+	// reduce works out what a verified delivery comes to; reduceDelivery, except in a test.
+	reduce func(delivery, workspaceRemotes) reduction
 }
 
 // RegisterRoutes mounts the forge routes on api, under /workspaces/:slug. The reads
@@ -48,6 +50,10 @@ func RegisterRoutes(api *echo.Group, cfg Config) {
 	api.POST("/workspaces/:slug/labels", h.write(ensureLabel))
 	api.POST("/workspaces/:slug/pulls", h.write(openPullRequest))
 	api.POST("/workspaces/:slug/pulls/:n/comments", h.write(commentOnPullRequest))
+
+	api.GET("/workspaces/:slug/forge/deliveries", h.listDeliveries)
+	api.PUT("/workspaces/:slug/forge/webhook", h.setWebhook)
+	api.DELETE("/workspaces/:slug/forge/webhook", h.unsetWebhook)
 }
 
 // request is what the checks every forge route shares establish about a request.
@@ -70,6 +76,9 @@ type access struct {
 var (
 	readAccess  = access{verb: "read", allowed: canReadForge}
 	writeAccess = access{verb: "write", allowed: canWriteForge, active: true}
+	// writeAnyStatusAccess is writeAccess for a route that must work on a workspace that is
+	// not active, such as the one that turns the webhook off.
+	writeAnyStatusAccess = access{verb: "write", allowed: canWriteForge}
 )
 
 // authorize applies, in this order, the checks every forge route shares: no
