@@ -105,6 +105,9 @@ func RegisterRoutes(api *echo.Group, db *sql.DB) error {
 	api.POST("/workspaces/:slug/sync", handleSyncWorkspace(db))
 	api.POST("/workspaces/:slug/reclone", handleRecloneWorkspace(db))
 	api.DELETE("/workspaces/:slug", handleDeleteWorkspace(db))
+	// Push one branch of the trunk to origin (spec 38). Workspace-scoped, so
+	// a bound token reaches it on its own slug only.
+	api.POST("/workspaces/:slug/branches/:name/push", handleBranchPush(db))
 
 	// Patch routes (15-REQ-8, 15-REQ-9, 15-REQ-10, 15-REQ-11, 15-REQ-12, 23-REQ-1).
 	api.POST("/workspaces/:slug/patches", handleAddPatch(db))

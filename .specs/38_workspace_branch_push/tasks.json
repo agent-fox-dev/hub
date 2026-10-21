@@ -104,7 +104,7 @@
       "done_when": [
         "the route is registered and every refusal listed in 38-REQ-2 and 38-REQ-3 answers as specified"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 3,
