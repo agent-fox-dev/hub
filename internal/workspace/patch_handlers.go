@@ -94,11 +94,12 @@ func requirePatchWriteScope(c echo.Context) *apikit.AuthInfo {
 	return auth
 }
 
-// lookupPatchWorkspace resolves the workspace for a patch endpoint, enforcing
-// ownership (404 for non-owners, admin bypass). Returns nil after writing the
+// lookupPatchWorkspace resolves the workspace for a patch endpoint through
+// lookupWorkspaceForAuth with the endpoint's need: members of the workspace's
+// org read, owners and admin tokens write. Returns nil after writing the
 // error response when the workspace is not accessible.
-func lookupPatchWorkspace(c echo.Context, db *sql.DB, slug string, auth *apikit.AuthInfo) *Workspace {
-	ws, _ := lookupWorkspaceForAuth(c, db, slug, auth)
+func lookupPatchWorkspace(c echo.Context, db *sql.DB, slug string, auth *apikit.AuthInfo, need wsaccess.Need) *Workspace {
+	ws, _ := lookupWorkspaceForAuth(c, db, slug, auth, need)
 	return ws
 }
 
@@ -126,7 +127,7 @@ func handleAddPatch(db *sql.DB) echo.HandlerFunc {
 		slug := c.Param("slug")
 
 		// Look up workspace (owner or admin only).
-		ws := lookupPatchWorkspace(c, db, slug, auth)
+		ws := lookupPatchWorkspace(c, db, slug, auth, wsaccess.NeedWrite)
 		if ws == nil {
 			return nil
 		}
@@ -364,7 +365,7 @@ func handleGetPatch(db *sql.DB) echo.HandlerFunc {
 		patchID := c.Param("id")
 
 		// Owner or admin only; 404 for non-owners.
-		ws := lookupPatchWorkspace(c, db, slug, auth)
+		ws := lookupPatchWorkspace(c, db, slug, auth, wsaccess.NeedRead)
 		if ws == nil {
 			return nil
 		}
@@ -411,7 +412,7 @@ func handleListPatches(db *sql.DB) echo.HandlerFunc {
 		slug := c.Param("slug")
 
 		// 15-REQ-9.E1: workspace not found (or not owned) returns 404.
-		ws := lookupPatchWorkspace(c, db, slug, auth)
+		ws := lookupPatchWorkspace(c, db, slug, auth, wsaccess.NeedRead)
 		if ws == nil {
 			return nil
 		}
@@ -446,7 +447,7 @@ func handleUpdatePatch(db *sql.DB) echo.HandlerFunc {
 		slug := c.Param("slug")
 		patchID := c.Param("id")
 
-		if ws := lookupPatchWorkspace(c, db, slug, auth); ws == nil {
+		if ws := lookupPatchWorkspace(c, db, slug, auth, wsaccess.NeedWrite); ws == nil {
 			return nil
 		}
 
@@ -539,7 +540,7 @@ func handleRemovePatch(db *sql.DB) echo.HandlerFunc {
 		slug := c.Param("slug")
 		patchID := c.Param("id")
 
-		if ws := lookupPatchWorkspace(c, db, slug, auth); ws == nil {
+		if ws := lookupPatchWorkspace(c, db, slug, auth, wsaccess.NeedWrite); ws == nil {
 			return nil
 		}
 
@@ -603,7 +604,7 @@ func handleRestorePatch(db *sql.DB) echo.HandlerFunc {
 		patchID := c.Param("id")
 
 		// Look up workspace (owner or admin only).
-		ws := lookupPatchWorkspace(c, db, slug, auth)
+		ws := lookupPatchWorkspace(c, db, slug, auth, wsaccess.NeedWrite)
 		if ws == nil {
 			return nil
 		}
@@ -674,7 +675,7 @@ func handleReorderPatches(db *sql.DB) echo.HandlerFunc {
 
 		slug := c.Param("slug")
 
-		if ws := lookupPatchWorkspace(c, db, slug, auth); ws == nil {
+		if ws := lookupPatchWorkspace(c, db, slug, auth, wsaccess.NeedWrite); ws == nil {
 			return nil
 		}
 

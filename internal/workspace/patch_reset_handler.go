@@ -10,6 +10,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/agent-fox-dev/hub/internal/audit"
+	"github.com/agent-fox-dev/hub/internal/wsaccess"
 )
 
 // handleResetPatchToOrigin handles POST /api/v1/workspaces/:slug/patches/:id/reset-to-origin (23-REQ-2).
@@ -26,7 +27,7 @@ func handleResetPatchToOrigin(db *sql.DB) echo.HandlerFunc {
 		patchID := c.Param("id")
 
 		// Owner or admin only; 404 for non-owners.
-		ws := lookupPatchWorkspace(c, db, slug, auth)
+		ws := lookupPatchWorkspace(c, db, slug, auth, wsaccess.NeedWrite)
 		if ws == nil {
 			return nil
 		}

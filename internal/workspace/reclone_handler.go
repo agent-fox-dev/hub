@@ -13,6 +13,7 @@ import (
 	"github.com/txsvc/apikit"
 
 	"github.com/agent-fox-dev/hub/internal/secrets"
+	"github.com/agent-fox-dev/hub/internal/wsaccess"
 	"github.com/agent-fox-dev/hub/internal/wslock"
 )
 
@@ -43,8 +44,9 @@ func handleRecloneWorkspace(db *sql.DB) echo.HandlerFunc {
 
 		// ---- Look up workspace (13-REQ-7.E6) ----
 		// Reclone discards the local clone, so it is restricted to the
-		// workspace owner (or an admin token); non-owners get 404.
-		ws, _ := lookupWorkspaceForAuth(c, db, slug, auth)
+		// workspace owner (or an admin token); a member of its org gets 403,
+		// anyone else 404.
+		ws, access := lookupWorkspaceForAuth(c, db, slug, auth, wsaccess.NeedWrite)
 		if ws == nil {
 			return nil // Response already written by lookupWorkspaceForAuth.
 		}
@@ -135,6 +137,6 @@ func handleRecloneWorkspace(db *sql.DB) echo.HandlerFunc {
 			return respondError(c, http.StatusInternalServerError,
 				"failed to read workspace after reclone")
 		}
-		return respondWorkspace(c, http.StatusOK, updated, db)
+		return respondWorkspace(c, http.StatusOK, updated, db, access)
 	}
 }
