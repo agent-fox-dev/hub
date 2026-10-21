@@ -296,6 +296,14 @@ func main() {
 		log.Fatal(err)
 	}
 
+	// Create the table of the forge deliveries at every start, then keep it small: the retention
+	// loop prunes it at once and every hour, until the hub stops (spec 32). It is started here, once
+	// the table exists, and not left to be called by nothing.
+	if err := forge.InitSchema(database.SqlDB); err != nil {
+		log.Fatal(err)
+	}
+	go forge.StartDeliveryRetention(ctx, database.SqlDB)
+
 	// Create the sandbox lease table at every start, whether or not sandboxes
 	// are enabled, so that turning them off and on again keeps the history
 	// (spec 26).
@@ -342,10 +350,12 @@ func main() {
 	gateway, leaseSvc := startSandboxes(ctx, sandboxSvc, database.SqlDB, store, auditEmitter, metrics)
 	sandboxes.RegisterLeaseRoutes(server.APIGroup(), leaseSvc)
 
-	// Mount the forge routes (specs 30 and 31): a workspace's repository, issues and pull
+	// Mount the forge routes (specs 30, 31 and 32): a workspace's repository, issues and pull
 	// requests on its forge, read and written with the credential hub holds for the
-	// workspace. Every write is recorded as an audit event.
-	forge.RegisterRoutes(server.APIGroup(), forge.Config{
+	// workspace, and the webhook secret of the workspace. Every write is recorded as an audit
+	// event. The same configuration serves the ingress below, which receives the forge's
+	// deliveries.
+	forgeConfig := forge.Config{
 		DB: database.SqlDB,
 		ResolveOriginAuth: func(slug string) (transport.AuthMethod, error) {
 			return workspace.ResolveCloneAuth(store, slug)
@@ -355,7 +365,10 @@ func main() {
 		},
 		GetVariable: store.GetVariableValue,
 		Audit:       auditEmitter,
-	})
+		Secrets:     store,
+		ExternalURL: server.ExternalURL(),
+	}
+	forge.RegisterRoutes(server.APIGroup(), forgeConfig)
 
 	// ---------------------------------------------------------------------------
 	// Carry-patch HTTP routes (spec 16)
@@ -493,6 +506,11 @@ func main() {
 	if err := gitserver.MountGitHandlers(server.Echo(), database.SqlDB, cfg.Workspace.Path); err != nil {
 		log.Fatal(err)
 	}
+
+	// Mount the webhook ingress of the forges (spec 32) the same way: POST /hooks/forge/:slug
+	// is outside the API group and its authentication, and a delivery proves who it is with the
+	// signature of the workspace's webhook secret.
+	forge.MountWebhookIngress(server.Echo(), forgeConfig)
 
 	// Mount Prometheus middleware on the Echo instance for HTTP request
 	// metrics and expose GET /metrics outside the API auth group (19-REQ-10).

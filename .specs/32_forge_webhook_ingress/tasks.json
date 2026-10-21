@@ -337,7 +337,7 @@
       "done_when": [
         "main.go launches the pruner with go after forge.InitSchema"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 9,
