@@ -20,6 +20,7 @@ import (
 	"github.com/txsvc/apikit"
 
 	"github.com/agent-fox-dev/hub/internal/gitcmd"
+	"github.com/agent-fox-dev/hub/internal/secrets"
 	"github.com/agent-fox-dev/hub/internal/wsaccess"
 	"github.com/agent-fox-dev/hub/internal/wslock"
 )
@@ -131,11 +132,18 @@ func handleBranchPush(db *sql.DB) echo.HandlerFunc {
 		}
 		sha := ref.Hash().String()
 
+		// 38-REQ-6.1, 38-REQ-6.2: the credential the archive's push uses; a
+		// failure of the secrets store is hub's own and sends nothing.
+		gitAuth, err := resolveCloneAuth(secrets.NewStore(db), slug)
+		if err != nil {
+			return branchPushInternalError(c, slug, "resolving the git credential", err)
+		}
+
 		refSpec := config.RefSpec("refs/heads/" + name + ":refs/heads/" + name)
 		if force {
 			refSpec = "+" + refSpec
 		}
-		err = pushToOriginFn(c.Request().Context(), repoPath, ws.GitURL, nil, []config.RefSpec{refSpec}, force, nil)
+		err = pushToOriginFn(c.Request().Context(), repoPath, ws.GitURL, gitAuth, []config.RefSpec{refSpec}, force, nil)
 		var te *trunkError
 		result := "pushed"
 		switch {
@@ -149,7 +157,7 @@ func handleBranchPush(db *sql.DB) echo.HandlerFunc {
 			result = "forced"
 		}
 		return c.JSON(http.StatusOK, branchPushAnswer{
-			Branch: name, SHA: sha, Remote: "origin", RemoteURL: ws.GitURL, Result: result,
+			Branch: name, SHA: sha, Remote: "origin", RemoteURL: stripUserinfoURL(ws.GitURL), Result: result,
 		})
 	}
 }

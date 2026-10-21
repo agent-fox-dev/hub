@@ -70,3 +70,11 @@ func truncateScrubbed(s string, limit int) string {
 	}
 	return s[:n]
 }
+
+// stripUserinfoURL is gitURL without its user information. A URL with a scheme
+// loses everything between the scheme and the @; an scp-style address
+// (git@host:path) has no scheme and comes back unchanged, because the login name
+// before its @ is not a secret.
+func stripUserinfoURL(gitURL string) string {
+	return userinfoPattern.ReplaceAllString(gitURL, "${1}")
+}

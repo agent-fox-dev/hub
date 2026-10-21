@@ -190,7 +190,7 @@
       "done_when": [
         "a repeated push of an unchanged branch answers up_to_date and sends no objects"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 5,
