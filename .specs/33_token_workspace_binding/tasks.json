@@ -66,7 +66,7 @@
       "done_when": [
         "wsaccess still imports only database/sql, net/http, echo and apikit"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     },
     {
