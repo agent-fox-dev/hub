@@ -2,11 +2,14 @@ package audit
 
 import (
 	"database/sql"
+	"errors"
 	"net/http"
 	"slices"
 
 	"github.com/labstack/echo/v4"
 	"github.com/txsvc/apikit"
+
+	"github.com/agent-fox-dev/hub/internal/wsaccess"
 )
 
 // isAdmin reports whether the credential is an admin token.
@@ -112,6 +115,17 @@ func requireWorkspaceRead(c echo.Context, auth *apikit.AuthInfo, slug string, sq
 		_ = apikit.WriteAPIError(c, http.StatusNotFound, "workspace not found")
 		return false
 	}
+	// A PAT bound to another workspace treats this one as not its own
+	// (spec 33).
+	boundSlug, bound, err := wsaccess.BoundSlug(sqliteDB, auth)
+	if err != nil {
+		_ = apikit.WriteAPIError(c, http.StatusInternalServerError, "internal server error")
+		return false
+	}
+	if bound && boundSlug != slug {
+		_ = apikit.WriteAPIError(c, http.StatusNotFound, "workspace not found")
+		return false
+	}
 	return true
 }
 
@@ -139,29 +153,34 @@ func ownedWorkspaces(auth *apikit.AuthInfo, sqliteDB *sql.DB) (map[string]bool, 
 	return owned, rows.Err()
 }
 
+// errWorkspaceAccessDenied is returned by checkWorkspaceAccess once it has
+// written a refusal, so that the ingestion handler stops instead of storing
+// the event.
+var errWorkspaceAccessDenied = errors.New("workspace access denied")
+
+// refused turns the result of writing a refusal into the non-nil error that
+// stops the ingestion handler.
+func refused(writeErr error) error {
+	if writeErr != nil {
+		return writeErr
+	}
+	return errWorkspaceAccessDenied
+}
+
 // checkWorkspaceAccess enforces workspace-level access control for audit
 // ingestion endpoints. It checks:
-// 1. Workspace-scoped PAT workspace matches the URL :slug (403 workspace_mismatch)
-// 2. Generic PAT/API key owner has write access to the workspace (403 workspace_access_denied)
-// 3. Workspace exists (404)
-// 4. Workspace is not archived (409 workspace_archived)
+// 1. Workspace exists (404)
+// 2. A PAT bound to another workspace (spec 33) sees it as missing (404)
+// 3. Workspace is not archived (409 workspace_archived)
+// 4. Generic PAT/API key owner has write access to the workspace (403 workspace_access_denied)
 //
 // Admin tokens bypass all workspace restriction checks.
 // If sqliteDB is nil, workspace existence and archive checks are skipped.
+// After writing a refusal it returns a non-nil error, and the caller must
+// stop.
 func checkWorkspaceAccess(c echo.Context, auth *apikit.AuthInfo, slug string, sqliteDB *sql.DB) error {
 	// Admin tokens bypass all workspace checks.
 	if isAdmin(auth) {
-		return nil
-	}
-
-	// Check workspace-scoped PAT: KeyID stores the workspace scope.
-	if isPAT(auth) && auth.KeyID != "" {
-		if auth.KeyID != slug {
-			return apikit.WriteAPIErrorWithType(c, http.StatusForbidden,
-				"token workspace scope does not match target workspace",
-				"workspace_mismatch")
-		}
-		// Workspace-scoped PAT matches — skip further ownership checks.
 		return nil
 	}
 
@@ -173,35 +192,46 @@ func checkWorkspaceAccess(c echo.Context, auth *apikit.AuthInfo, slug string, sq
 			"SELECT owner_id, status FROM workspaces WHERE slug = ?", slug,
 		).Scan(&ownerID, &status)
 		if err == sql.ErrNoRows {
-			return apikit.WriteAPIError(c, http.StatusNotFound,
-				"workspace not found")
+			return refused(apikit.WriteAPIError(c, http.StatusNotFound,
+				"workspace not found"))
 		}
 		if err != nil {
-			return apikit.WriteAPIError(c, http.StatusInternalServerError,
-				"failed to check workspace access")
+			return refused(apikit.WriteAPIError(c, http.StatusInternalServerError,
+				"failed to check workspace access"))
+		}
+
+		// To a bound token every other workspace does not exist.
+		boundSlug, bound, err := wsaccess.BoundSlug(sqliteDB, auth)
+		if err != nil {
+			return refused(apikit.WriteAPIError(c, http.StatusInternalServerError,
+				"internal server error"))
+		}
+		if bound && boundSlug != slug {
+			return refused(apikit.WriteAPIError(c, http.StatusNotFound,
+				"workspace not found"))
 		}
 
 		// Check archived status.
 		if status == "archived" {
-			return apikit.WriteAPIErrorWithType(c, http.StatusConflict,
+			return refused(apikit.WriteAPIErrorWithType(c, http.StatusConflict,
 				"workspace is archived",
-				"workspace_archived")
+				"workspace_archived"))
 		}
 
 		// Generic tokens: check owner has write access to the workspace.
 		// For API keys and generic PATs, the UserID must match the workspace owner.
 		if auth.UserID != ownerID {
-			return apikit.WriteAPIErrorWithType(c, http.StatusForbidden,
+			return refused(apikit.WriteAPIErrorWithType(c, http.StatusForbidden,
 				"token owner does not have write access to this workspace",
-				"workspace_access_denied")
+				"workspace_access_denied"))
 		}
 	} else {
 		// No SQLite DB available — deny access for generic PATs without
 		// workspace scope since we cannot verify workspace membership.
 		if isPAT(auth) {
-			return apikit.WriteAPIErrorWithType(c, http.StatusForbidden,
+			return refused(apikit.WriteAPIErrorWithType(c, http.StatusForbidden,
 				"token owner does not have write access to this workspace",
-				"workspace_access_denied")
+				"workspace_access_denied"))
 		}
 	}
 

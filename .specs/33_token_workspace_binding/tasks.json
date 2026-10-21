@@ -307,7 +307,7 @@
       "done_when": [
         "the audit suite passes except the rewritten TS-17-51 and the KeyID fixture test"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     },
     {

@@ -42,27 +42,30 @@ func TestWorkspaceAttribution_StoredInDB(t *testing.T) {
 	}
 }
 
-// TS-17-51: Audit ingestion endpoint returns HTTP 403 with error type
-// workspace_mismatch when a workspace-scoped PAT's workspace does not match
-// the URL :slug.
-func TestWorkspaceAuth_ScopedTokenMismatch403(t *testing.T) {
-	env := newAuditTestEnv(t)
+// TS-17-51 (rewritten by spec 33, TS-33-47): a PAT bound to workspace-B by a
+// binding row, posting to a run of workspace-A, gets 404 workspace not found
+// through the shared binding rule. The retired workspace_mismatch check read
+// a slug from KeyID, which nothing ever set.
+func TestWorkspaceAuth_BoundTokenOtherWorkspace404(t *testing.T) {
+	env := newAuditTestEnvWithSQLite(t)
+	env.seedWorkspace(t, "workspace-A", "user-1")
+	env.seedWorkspace(t, "workspace-B", "user-1")
+	bindToken(t, env.sqliteDB, "tokB", "workspace-B")
 
-	// PAT scoped to workspace-B, but posting to workspace-A.
-	patForB := workspacePatAuth("user-1", "workspace-B", "audit:write")
+	patForB := boundPatAuth("user-1", "tokB", "audit:write")
 	wsAPath := "/api/v1/workspaces/workspace-A/runs/" + testRunID + "/events"
 	body := `{"event_type":"session.start"}`
 
 	rec := env.doJSON(t, http.MethodPost, wsAPath, body, patForB)
 
-	if rec.Code != http.StatusForbidden {
-		t.Errorf("status = %d, want %d\nbody: %s", rec.Code, http.StatusForbidden, rec.Body.String())
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want %d\nbody: %s", rec.Code, http.StatusNotFound, rec.Body.String())
 	}
 
 	var errResp apiErrorEnvelope
 	parseJSON(t, rec, &errResp)
-	if errResp.Error.ErrorType != "workspace_mismatch" {
-		t.Errorf("error_type = %q, want %q", errResp.Error.ErrorType, "workspace_mismatch")
+	if errResp.Error.Message != "workspace not found" {
+		t.Errorf("message = %q, want %q", errResp.Error.Message, "workspace not found")
 	}
 }
 

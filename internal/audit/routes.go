@@ -4,6 +4,8 @@ import (
 	"database/sql"
 
 	"github.com/labstack/echo/v4"
+
+	"github.com/agent-fox-dev/hub/internal/wsaccess"
 )
 
 // RegisterSessionRoutes mounts session, token usage, and cost API handlers
@@ -22,12 +24,16 @@ import (
 //	GET    /sessions/:id/usage    - Query token usage records (paginated)
 //	GET    /workspaces/:slug/cost - Workspace cost summary
 func RegisterSessionRoutes(api *echo.Group, store Store, sqliteDB *sql.DB, metrics *Metrics) {
-	api.POST("/sessions", handleCreateSession(store, metrics, sqliteDB))
-	api.POST("/sessions/:id/complete", handleCompleteSession(store, metrics))
-	api.POST("/sessions/:id/usage", handleReportUsage(store, metrics))
-	api.GET("/sessions", handleListSessions(store, sqliteDB))
-	api.GET("/sessions/:id", handleGetSession(store, sqliteDB))
-	api.GET("/sessions/:id/usage", handleListSessionUsage(store, sqliteDB))
+	// A token bound to a workspace may use the session routes; each handler
+	// confines it to its own workspace (spec 33).
+	wsaccess.AllowBoundTokens(
+		api.POST("/sessions", handleCreateSession(store, metrics, sqliteDB)),
+		api.POST("/sessions/:id/complete", handleCompleteSession(store, metrics, sqliteDB)),
+		api.POST("/sessions/:id/usage", handleReportUsage(store, metrics, sqliteDB)),
+		api.GET("/sessions", handleListSessions(store, sqliteDB)),
+		api.GET("/sessions/:id", handleGetSession(store, sqliteDB)),
+		api.GET("/sessions/:id/usage", handleListSessionUsage(store, sqliteDB)),
+	)
 	api.GET("/workspaces/:slug/cost", handleWorkspaceCost(store, sqliteDB))
 }
 

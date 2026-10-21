@@ -16,6 +16,8 @@ import (
 
 	"github.com/labstack/echo/v4"
 	"github.com/txsvc/apikit"
+
+	"github.com/agent-fox-dev/hub/internal/wsaccess"
 )
 
 // auditTestEnv holds a test HTTP server, DuckDB database, and optional SQLite
@@ -262,7 +264,32 @@ func openTestSQLiteDB(t *testing.T) *sql.DB {
 	if err != nil {
 		t.Fatalf("create workspaces table: %v", err)
 	}
+	// The token workspace bindings (spec 33), as MountWorkspaceHandlers
+	// creates them.
+	if err := wsaccess.InitBindingSchema(db); err != nil {
+		t.Fatalf("create binding table: %v", err)
+	}
 	return db
+}
+
+// bindToken writes a binding row for tokenID naming slug (spec 33).
+func bindToken(t *testing.T, db *sql.DB, tokenID, slug string) {
+	t.Helper()
+	if _, err := db.Exec(`INSERT INTO token_workspace_bindings (token_id, slug, created_at) VALUES (?, ?, ?)`,
+		tokenID, slug, apikit.NowUTC()); err != nil {
+		t.Fatalf("binding %s to %s: %v", tokenID, slug, err)
+	}
+}
+
+// boundPatAuth returns a PAT AuthInfo carrying a token id, as apikit's auth
+// middleware sets it; it is bound when tokenID has a binding row.
+func boundPatAuth(userID, tokenID string, permissions ...string) *apikit.AuthInfo {
+	return &apikit.AuthInfo{
+		CredentialType: "pat",
+		UserID:         userID,
+		TokenID:        tokenID,
+		Permissions:    permissions,
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -935,15 +962,5 @@ func (env *auditTestEnv) seedTrace(t *testing.T, id, runID, workspace, eventType
 	)
 	if err != nil {
 		t.Fatalf("seedTrace(%q): %v", id, err)
-	}
-}
-
-// workspacePatAuth returns an apikit.AuthInfo for a workspace-scoped PAT.
-func workspacePatAuth(userID, workspaceSlug string, permissions ...string) *apikit.AuthInfo {
-	return &apikit.AuthInfo{
-		CredentialType: "pat",
-		UserID:         userID,
-		KeyID:          workspaceSlug, // KeyID stores workspace scope for workspace-scoped PATs
-		Permissions:    permissions,
 	}
 }
