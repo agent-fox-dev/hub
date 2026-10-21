@@ -276,7 +276,7 @@
       "done_when": [
         "the affected docs describe members' read access and the 403 push refusal with no TODO text"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 8,

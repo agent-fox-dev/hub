@@ -169,7 +169,10 @@ access, and keep their own answers to a caller who may not read:
   found`. Completing a session and reporting its usage stay with the session's
   creator (`403 not session owner`), and every audit ingestion route stays with
   the owner (`403 workspace_access_denied`), so a member changes nothing.
-- **The git server** stays owner-only.
+- **The git server** applies the same rule (see [Git Access](#git-access)): a
+  member clones and fetches the repository like the owner, and a member's push
+  is refused with a pkt-line `403 org members have read-only access to this
+  workspace`; anyone else gets the pkt-line `404 repository not found`.
 
 Blocked users are rejected by the git server as well as by the API.
 
@@ -234,8 +237,9 @@ When a PAT lacks the required scope for an endpoint, or the caller may not
 see the requested workspace, the workspace CRUD endpoints (list, get, update,
 archive, reactivate, delete) return HTTP 404 (not 403) to avoid disclosing the
 existence of resources. A member of the workspace's org knows it exists, so a
-member's write is 403 with `error_type: forbidden`. The git server does the same, answering
-a pkt-line 404 for non-owner access.
+member's write is 403 with `error_type: forbidden`. The git server does the same: a
+pkt-line 404 `repository not found` for a caller who may not see the workspace,
+and a pkt-line 403 for a member's push.
 
 `POST /api/v1/workspaces` is the exception: it returns 403, because there is no
 existing resource to enumerate. The other endpoint families also return 403 for
@@ -2793,6 +2797,31 @@ All git server endpoints use HTTP Basic authentication. The username is
 ignored; the password must be a valid hub credential (API key, PAT, or admin
 token).
 
+### Git Access
+
+The git server decides access with the rule every workspace route uses (see
+[Workspace Access](#workspace-access)), through `wsaccess.AuthorizeWorkspaceAt`.
+A push (`POST .../git-receive-pack`, and `GET .../info/refs?service=git-receive-pack`)
+needs write access; everything else, `info/refs` with a missing or invalid
+`service` included, needs read access:
+
+| Caller | Clone and fetch | Push |
+|--------|-----------------|------|
+| The workspace's owner, an admin token | served | served |
+| A member of the workspace's org | served, exactly as the owner | pkt-line `403 ERR org members have read-only access to this workspace` |
+| Anyone else | pkt-line `404 ERR repository not found` | pkt-line `404 ERR repository not found` |
+
+An API key whose user has the admin role is not an admin token. Membership is
+read on every request, so a member removed from the org gets the 404 on the
+next one. The access check runs after the resolver's own checks (unknown
+workspace or org mismatch: `404 repository not found`; clone not ready: `404
+repository not available`; a workspace with no org matches no URL) and before
+the PAT scope check, so a member's push is refused with the 403 whatever the
+PAT's scopes. A failed access lookup is a pkt-line `500 internal server
+error`. A PAT bound to another workspace gets the 404 (see
+[Workspace-Bound Tokens](#workspace-bound-tokens)). A refused push changes
+nothing and writes no audit event.
+
 ### Git Permission Scopes
 
 | Scope | Description |
@@ -2906,8 +2935,8 @@ Git ref advertisement endpoint (smart HTTP discovery).
 | Status | Condition |
 |--------|-----------|
 | 401 | Missing or invalid credentials |
-| 403 | Invalid or missing `service` parameter, or PAT lacks the required git scope |
-| 404 | Workspace not found, org mismatch, or clone not ready |
+| 403 | `service=git-receive-pack` from a member of the workspace's org (pkt-line `org members have read-only access to this workspace`); invalid or missing `service` parameter; or PAT lacks the required git scope |
+| 404 | Workspace not found, org mismatch, clone not ready, or the caller is not the owner, a member of the workspace's org or an admin token (pkt-line) |
 
 ---
 
@@ -2933,7 +2962,7 @@ protocol v2 fall back to v0 automatically. Gzip-encoded request bodies
 |--------|-----------|
 | 401 | Missing or invalid credentials |
 | 403 | PAT lacks `git:read` scope |
-| 404 | Workspace not found, org mismatch, or clone not ready |
+| 404 | Workspace not found, org mismatch, clone not ready, or the caller is not the owner, a member of the workspace's org or an admin token (pkt-line) |
 
 ---
 
@@ -2958,8 +2987,8 @@ updates drive the `hub.git.push` audit event and the post-push hook.
 | Status | Condition |
 |--------|-----------|
 | 401 | Missing or invalid credentials |
-| 403 | PAT lacks `git:write` scope |
-| 404 | Workspace not found, org mismatch, or clone not ready |
+| 403 | The caller is a member of the workspace's org (pkt-line `org members have read-only access to this workspace`, whatever the PAT's scopes), or PAT lacks `git:write` scope |
+| 404 | Workspace not found, org mismatch, clone not ready, or the caller is not the owner, a member of the workspace's org or an admin token (pkt-line) |
 
 ---
 

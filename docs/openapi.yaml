@@ -82,7 +82,7 @@ info:
     caller may not see the workspace (not its owner, not a member of its org,
     not an admin token), so that workspace slugs cannot be enumerated. A member
     of the workspace's org knows it exists: a member's write is `403` with
-    `error_type: forbidden`. The git server likewise answers `404` for non-owner access.
+    `error_type: forbidden`. The git server likewise answers a pkt-line `404` to a caller who may not read the workspace, and a pkt-line `403` to a member's push.
     Workspace *creation* returns `403`, because there is no existing resource
     to enumerate. Other endpoint families return `403` for a missing scope.
 
@@ -109,7 +109,7 @@ info:
     workspace access denied` for anyone else), and the workspace's events in
     the unified audit query and the SSE stream; opening a session answers a
     member `403 forbidden`, and completing sessions, usage reports and
-    ingestion stay with the owner. The git server stays owner-only. `GET /api/v1/workspaces` lists the caller's own
+    ingestion stay with the owner. The git server (not described here) lets a member clone and fetch and refuses a member's push with a pkt-line `403`. `GET /api/v1/workspaces` lists the caller's own
     workspaces and those of the caller's orgs, and every workspace object
     carries `access` and `org_slug`.
 
