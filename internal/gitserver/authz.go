@@ -16,21 +16,19 @@ import (
 // error written); this error signals the caller to halt the middleware chain.
 var errAccessDenied = errors.New("git access denied")
 
-// authorizeGitAccess checks whether the authenticated user is authorized to
-// access the given workspace. This implements the ownership check portion of
-// the access control matrix (06-REQ-5).
+// authorizeGitAccess decides whether the authenticated caller may use the
+// workspace's repository for this request, by hub's shared workspace access
+// rule (wsaccess.AuthorizeWorkspaceAt): the owner, admin tokens and members
+// of the workspace's org may read (clone and fetch); only the owner and
+// admin tokens may write (push), and a member's push is refused with 403.
+// A PAT bound to another workspace (spec 33) is refused with 404 and the
+// refusal is reported with the git site (spec 34).
 //
-// Authorization rules:
-//   - Admin tokens (CredentialType "admin_token") bypass ownership checks
-//     and may access any workspace (06-REQ-5.1).
-//   - API keys and PATs must belong to the workspace owner. Non-owner,
-//     non-admin identities receive HTTP 404 to prevent workspace enumeration
-//     (06-REQ-5.E1, 06-REQ-5.E2).
-//   - A PAT bound to a workspace (spec 33) receives the same 404 for every
-//     other workspace; a failed binding lookup is a pkt-line 500.
-//
-// Scope checks (git:read vs git:write) are handled separately by
-// requireGitScope in the handler, which runs after this check.
+// Refusals are pkt-line errors: wsaccess's 404 as "repository not found"
+// (anti-enumeration), its 403 with its message, anything else, a database
+// error included, as a 500. Scope checks (git:read vs git:write) are
+// handled separately by requireGitScope in the handler, which runs after
+// this check.
 //
 // Returns nil if the request is authorized. On denial it writes a pkt-line
 // error response and returns errAccessDenied to halt the middleware chain.
@@ -40,31 +38,34 @@ func authorizeGitAccess(c echo.Context, db *sql.DB, ws *workspaceInfo) error {
 		return echo.NewHTTPError(http.StatusUnauthorized)
 	}
 
-	// Admin tokens have full access to any workspace (06-REQ-5.1).
-	if info.CredentialType == "admin_token" {
-		return nil
-	}
-
-	// API keys and PATs must belong to the workspace owner.
-	// Non-owner, non-admin → HTTP 404 for anti-enumeration (06-PROP-3).
-	if info.UserID != ws.OwnerID {
-		_ = writePktLineError(c, http.StatusNotFound, "repository not found")
-		return errAccessDenied
-	}
-
-	// A PAT bound to another workspace gets the non-owner's answer (spec 33).
-	// API keys never reach a query; a failed lookup is not served.
-	denied, err := wsaccess.DeniesWorkspace(db, info, ws.Slug, wsaccess.RefusalSite{
+	_, status, msg := wsaccess.AuthorizeWorkspaceAt(db, info, ws.Slug, gitNeed(c), wsaccess.RefusalSite{
 		Method: c.Request().Method, Route: c.Path(), Status: http.StatusNotFound, Surface: wsaccess.SurfaceGit,
 	})
-	if err != nil {
-		_ = writePktLineError(c, http.StatusInternalServerError, "internal server error")
-		return errAccessDenied
-	}
-	if denied {
+	switch status {
+	case 0:
+		return nil
+	case http.StatusNotFound:
 		_ = writePktLineError(c, http.StatusNotFound, "repository not found")
-		return errAccessDenied
+	case http.StatusForbidden:
+		_ = writePktLineError(c, http.StatusForbidden, msg)
+	default:
+		_ = writePktLineError(c, http.StatusInternalServerError, "internal server error")
 	}
+	return errAccessDenied
+}
 
-	return nil
+// gitNeed is what the request asks of the caller's access: a push
+// (git-receive-pack, or its ref discovery through info/refs) needs write,
+// everything else, an info/refs request with a missing or invalid service
+// included, needs read. The git server never asks for NeedPrivate.
+func gitNeed(c echo.Context) wsaccess.Need {
+	switch c.Path() {
+	case "/git/:org/:slug.git/git-receive-pack":
+		return wsaccess.NeedWrite
+	case "/git/:org/:slug.git/info/refs":
+		if c.QueryParam("service") == "git-receive-pack" {
+			return wsaccess.NeedWrite
+		}
+	}
+	return wsaccess.NeedRead
 }

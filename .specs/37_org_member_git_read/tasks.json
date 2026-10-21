@@ -96,7 +96,7 @@
         "no non-test file in internal/gitserver compares OwnerID with UserID",
         "go test ./internal/gitserver -count=1 passes with no existing assertion changed"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 3,

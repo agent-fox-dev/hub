@@ -239,7 +239,6 @@ func TestResolver_NonOwnerNonAdmin_Returns404(t *testing.T) {
 
 	env.seedOrg(t, "org-1", "My Org", "myorg")
 	env.seedOrgMember(t, "org-1", "user-1")
-	env.seedOrgMember(t, "org-1", "user-2")
 	// Workspace owned by user-1, not user-2.
 	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "active")
 

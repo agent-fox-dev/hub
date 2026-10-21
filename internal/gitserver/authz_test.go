@@ -187,7 +187,6 @@ func TestAuthz_PATWrongOwner_Returns404(t *testing.T) {
 
 	env.seedOrg(t, "org-1", "My Org", "myorg")
 	env.seedOrgMember(t, "org-1", "user-a")
-	env.seedOrgMember(t, "org-1", "user-b")
 	// Workspace owned by user-a.
 	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-a", "org-1", "active")
 
@@ -227,7 +226,6 @@ func TestAuthz_APIKeyWrongOwner_Returns404(t *testing.T) {
 
 	env.seedOrg(t, "org-1", "My Org", "myorg")
 	env.seedOrgMember(t, "org-1", "user-a")
-	env.seedOrgMember(t, "org-1", "user-b")
 	// Workspace owned by user-a.
 	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-a", "org-1", "active")
 
