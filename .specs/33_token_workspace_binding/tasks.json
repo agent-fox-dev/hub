@@ -396,7 +396,7 @@
       "done_when": [
         "the ownership suites of workspace, gitserver, carrypatch, merge, sandboxes, forge, secrets and audit pass"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     },
     {

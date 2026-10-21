@@ -29,6 +29,10 @@ scopes with HTTP 400.
 Admin tokens and API keys bypass all `RequirePermission` checks — scopes
 only constrain PATs.
 
+A PAT can also be bound to one workspace. The binding narrows where its scopes
+apply and never changes what they allow; see
+[Workspace-Bound PATs](#workspace-bound-pats).
+
 ---
 
 ## API Key Authorization in Detail
@@ -838,6 +842,32 @@ HTTP 404 (not 403) consistent with the anti-enumeration policy.
 
 ---
 
+## Workspace-Bound PATs
+
+Hub can bind a PAT to exactly one workspace `S`, through a row in its SQLite
+table `token_workspace_bindings`, keyed by the PAT's token id. No API writes
+bindings yet. API keys and admin tokens cannot be bound. For a bound PAT:
+
+- **Workspace-scoped routes** (path template with `workspaces/:slug`) answer
+  `404 workspace not found` for every slug other than `S`. The check runs
+  before the handler, so it comes before any scope check: to a bound PAT,
+  other workspaces do not exist. On `S` the route's own scope and ownership
+  checks decide, as for an unbound PAT of the same user and scopes.
+- **Cross-workspace routes** that are allowed (`GET /workspaces`, the session
+  routes, `GET /audit`, `GET /events`, `GET /sandbox-profiles`) see only `S`.
+  For any other workspace they give the answer a non-owner gets.
+- **Every other route** is refused with `403` and `error_type: token_bound`.
+  This includes `POST /workspaces`, user and org secrets and variables,
+  `GET /sandboxes`, unknown paths, and every route apikit mounts. So
+  `tokens:manage` on a bound PAT cannot be used to mint an unbound PAT through
+  `POST /user/tokens`.
+- **Git** serves `S`'s repository under the `git:read`/`git:write` scopes and
+  answers a pkt-line `404 repository not found` for every other repository.
+
+The routes allowed to bound tokens are marked where they are registered
+(`wsaccess.AllowBoundTokens`). A route nobody marks is refused, which is the
+safe default. See `docs/api.md` (Workspace-Bound Tokens) for every answer.
+
 ## Anti-Enumeration Policy
 
 When a PAT lacks the required workspace scope, or when a workspace is
@@ -851,7 +881,8 @@ for non-owner access (`authorizeGitAccess` writes a pkt-line 404
 
 All workspace-scoped endpoint groups (sync, reclone, patches, merges,
 rebuilds, rerere, patch-status, sessions, audit) return HTTP 404 for a
-workspace the caller does not own, matching the CRUD endpoints.
+workspace the caller does not own, matching the CRUD endpoints. A
+workspace-bound PAT gets the same 404 for every workspace other than its own.
 
 Other endpoint groups return HTTP 403 for missing PAT scopes:
 git scope check returns 403 with `"insufficient git permissions"`;

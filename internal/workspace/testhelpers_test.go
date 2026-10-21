@@ -16,6 +16,8 @@ import (
 	"github.com/txsvc/apikit"
 
 	"github.com/agent-fox-dev/hub/internal/audit"
+	"github.com/agent-fox-dev/hub/internal/sandboxes"
+	"github.com/agent-fox-dev/hub/internal/secrets"
 )
 
 // testEnv holds a test HTTP server and database for integration tests.
@@ -314,11 +316,14 @@ func openRealServer(t *testing.T) (*apikit.Server, *apikit.DB) {
 	return apikit.NewServer(cfg, func() error { return nil }), database
 }
 
-// mountRealHub mounts the workspace handlers on server, with the audit scopes
-// registered as cmd/af-hub does, and creates user u1 with an API key.
+// mountRealHub mounts the workspace handlers on server, with the audit,
+// secrets and sandbox scopes registered as cmd/af-hub does, and creates user
+// u1 with an API key.
 func mountRealHub(t *testing.T, server *apikit.Server, database *apikit.DB) *realHub {
 	t.Helper()
-	if err := MountWorkspaceHandlers(server, database, audit.Permissions()...); err != nil {
+	perms := append(audit.Permissions(), secrets.Permissions()...)
+	perms = append(perms, sandboxes.Permissions()...)
+	if err := MountWorkspaceHandlers(server, database, perms...); err != nil {
 		t.Fatalf("MountWorkspaceHandlers: %v", err)
 	}
 	now := apikit.NowUTC()

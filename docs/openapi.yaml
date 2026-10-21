@@ -55,6 +55,20 @@ info:
     The git smart HTTP endpoints use HTTP Basic authentication instead: the
     username is ignored and the password must be any valid hub credential.
 
+    ## Workspace-bound tokens
+
+    A PAT can be bound to one workspace `S` (hub's table
+    `token_workspace_bindings`). For such a token, every route whose path
+    template contains `workspaces/:slug` answers `404 workspace not found` for
+    a slug other than `S`, before any scope check. `GET /api/v1/workspaces`,
+    the session routes, `GET /api/v1/audit`, `GET /api/v1/events` and
+    `GET /api/v1/sandbox-profiles` are allowed and see only `S`. Every other
+    route answers `403` with `error_type: token_bound`: the message is
+    `this token is bound to workspace <S>` on hub's routes and
+    `this token is bound to a workspace` on the routes apikit mounts. The git
+    server answers a pkt-line `404 repository not found` for every repository
+    but `S`'s. API keys, admin tokens and unbound PATs are not affected.
+
     ## Anti-enumeration policy
 
     Workspace CRUD endpoints (list, get, update, archive, reactivate, delete)
@@ -4272,11 +4286,11 @@ paths:
         Ingestion is idempotent: rows are written with `INSERT OR IGNORE`, so a
         duplicate `id` yields `200` instead of `201`.
 
-        Write access is checked per request: a workspace-scoped PAT must match
-        the URL `:slug` (`403 workspace_mismatch`), a generic PAT or API key
-        must own the workspace (`403 workspace_access_denied`), and an archived
-        workspace is rejected (`409 workspace_archived`). Admin tokens bypass
-        all of these.
+        Write access is checked per request: an unknown workspace, and for a
+        workspace-bound PAT any workspace but its own, is `404 workspace not
+        found`; an archived workspace is rejected (`409 workspace_archived`);
+        a PAT or API key must own the workspace (`403 workspace_access_denied`).
+        A refused request stores nothing. Admin tokens bypass all of these.
       x-required-scopes: ["audit:write"]
       requestBody:
         required: true
@@ -7016,9 +7030,8 @@ components:
 
     AuditWriteForbidden:
       description: >-
-        A workspace-scoped PAT does not match the URL slug
-        (`error_type: workspace_mismatch`), or the caller has no write access to
-        the workspace (`error_type: workspace_access_denied`).
+        The caller has no write access to the workspace
+        (`error_type: workspace_access_denied`).
       content:
         application/json:
           schema:
@@ -7125,8 +7138,8 @@ components:
                 - sandboxes_disabled
                 - sandbox_capacity
                 - secret_missing
-                - workspace_mismatch
                 - workspace_access_denied
+                - token_bound
                 - forge_api_url_invalid
                 - forge_unknown
                 - forge_not_found

@@ -67,3 +67,15 @@ instead, with the code and the test of the delivered behaviour.
    `404 workspace not found` for every other workspace, archived or not owned. That is the
    answer the binding guard gives in front of these routes (TS-33-15) and the answer
    33-REQ-8.2 asks for.
+
+7. **On its own deleted workspace, a bound token gets the route's own answer.** 33-REQ-9.5
+   expects `404 workspace not found` on every workspace-scoped route once `S` is deleted. The
+   guard refuses every slug other than `S` with that 404. For `S` itself, the guard lets the
+   request through (33-REQ-3.2), and the route's own checks decide, exactly as for an unbound
+   PAT. A handler that checks its scope before it looks the workspace up therefore answers
+   the scope refusal first. For example, `GET /workspaces/S/patches` without `patches:read`
+   answers `403 PAT requires patches:read scope`. With the scope it answers
+   `404 workspace not found`. Nothing is reachable either way.
+   `TestBoundToken_DeletedWorkspaceFailsClosed_TS_33_55` asserts the 404s and the equality
+   with an unbound PAT. Answering 404 on `S` before the handler would need a second lookup
+   (the workspace's existence) in the guard, which 33-REQ-2.4 does not allow.
