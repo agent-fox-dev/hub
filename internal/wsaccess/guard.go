@@ -88,12 +88,25 @@ func isWorkspaceScoped(template string) bool {
 // prefix apikit was built with and the scheme is matched case-insensitively.
 // It returns "" for any other header, and for an empty id or one with no
 // separator after it. It only parses: it never looks at the secret.
+//
+// apikit strips "Bearer " from the header and then once more from the token,
+// so "Bearer Bearer <PAT>" authenticates the PAT. Every repeated scheme is
+// therefore skipped here: the guard must find the id in every header apikit
+// accepts.
 func patTokenID(header string) string {
 	scheme, token, ok := strings.Cut(header, " ")
 	if !ok || !strings.EqualFold(scheme, "Bearer") {
 		return ""
 	}
-	rest, ok := strings.CutPrefix(strings.TrimSpace(token), apikit.TokenPrefix+"_pat_")
+	token = strings.TrimSpace(token)
+	for {
+		scheme, rest, ok := strings.Cut(token, " ")
+		if !ok || !strings.EqualFold(scheme, "Bearer") {
+			break
+		}
+		token = strings.TrimSpace(rest)
+	}
+	rest, ok := strings.CutPrefix(token, apikit.TokenPrefix+"_pat_")
 	if !ok {
 		return ""
 	}

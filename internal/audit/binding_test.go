@@ -6,10 +6,14 @@ import (
 	"go/token"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 
+	"github.com/labstack/echo/v4"
 	"github.com/txsvc/apikit"
+
+	"github.com/agent-fox-dev/hub/internal/wsaccess"
 )
 
 // errOf decodes an apikit error envelope, error_type included.
@@ -270,5 +274,159 @@ func TestIngestion_NilSQLiteSkipsChecks_TS_33_50(t *testing.T) {
 	rec := env.doJSON(t, http.MethodPost, path, body, boundPatAuth("u1", "tokB", "audit:write"))
 	if rec.Code != http.StatusForbidden || errOf(t, rec).Error.ErrorType != "workspace_access_denied" {
 		t.Errorf("PAT: (%d, %s); want the unchanged 403 workspace_access_denied", rec.Code, rec.Body)
+	}
+}
+
+// TS-33-53 (property, sessions and audit): whatever the state of the bound
+// workspace S (active, archived, deleted, owned by someone else), a bound
+// token never lists more sessions or audit events than the unbound PAT of the
+// same user and scopes, and nothing outside S. Requirements: 33-REQ-6.4,
+// 33-REQ-6.6, 33-REQ-9.3, 33-REQ-9.5
+func TestSessionsAudit_PropertyNeverWidens_TS_33_53(t *testing.T) {
+	for _, state := range []string{"active", "archived", "deleted", "foreign"} {
+		t.Run(state, func(t *testing.T) {
+			env := newAuditTestEnvWithSQLite(t)
+			query := env.echo.Group("/api/v1")
+			query.Use(testAuthMiddleware())
+			RegisterAuditQueryRoutes(query, env.store, &mockSSEManager{}, env.sqliteDB)
+			switch state {
+			case "active", "archived":
+				env.seedWorkspaceWithStatus(t, "s", "u1", state)
+			case "foreign":
+				env.seedWorkspace(t, "s", "u2")
+			}
+			env.seedWorkspace(t, "x", "u1")
+			env.seedWorkspace(t, "y", "u2")
+			bindToken(t, env.sqliteDB, "tokB", "s")
+			for i, ws := range []string{"s", "x", "y"} {
+				env.seedSession(t, &Session{ID: sessionID(i + 1), WorkspaceSlug: ws, Status: "active", CredentialID: "u1", CredentialType: "pat"})
+				insertTestHubEvent(t, env.db, "ev-"+ws, "hub.workspace.updated", "u1", "pat", "workspace", ws, "update", ws, "info", "2026-09-01T10:00:00Z")
+			}
+
+			scopes := []string{"sessions:read", "audit:read"}
+			bound, unbound := boundPatAuth("u1", "tokB", scopes...), boundPatAuth("u1", "tokU", scopes...)
+			sessionsOf := func(auth *apikit.AuthInfo) map[string]bool {
+				rec := env.doJSON(t, http.MethodGet, "/api/v1/sessions", "", auth)
+				if rec.Code != http.StatusOK {
+					t.Fatalf("GET /sessions: (%d, %s)", rec.Code, rec.Body)
+				}
+				out := map[string]bool{}
+				for _, s := range parseSessionListJSON(t, rec).Sessions {
+					out[s.WorkspaceSlug] = true
+				}
+				return out
+			}
+			eventsOf := func(auth *apikit.AuthInfo) map[string]bool {
+				rec := env.doJSON(t, http.MethodGet, "/api/v1/audit", "", auth)
+				if rec.Code != http.StatusOK {
+					t.Fatalf("GET /audit: (%d, %s)", rec.Code, rec.Body)
+				}
+				var resp auditQueryResponse
+				parseJSON(t, rec, &resp)
+				out := map[string]bool{}
+				for _, e := range resp.Events {
+					out[e["workspace"].(string)] = true
+				}
+				return out
+			}
+			for name, pair := range map[string][2]map[string]bool{
+				"sessions": {sessionsOf(bound), sessionsOf(unbound)},
+				"audit":    {eventsOf(bound), eventsOf(unbound)},
+			} {
+				for ws := range pair[0] {
+					if ws != "s" || !pair[1][ws] {
+						t.Errorf("%s: the bound token sees workspace %q (unbound sees %v); want only s, and only what the unbound PAT sees", name, ws, pair[1])
+					}
+				}
+			}
+		})
+	}
+}
+
+// Sessions of a user with no readable workspace: GET /sessions lists none,
+// for an unbound PAT as for a bound one (erratum 33, entry 8).
+func TestSessions_NoAccessibleWorkspaceListsNothing(t *testing.T) {
+	env := newAuditTestEnvWithSQLite(t)
+	env.seedWorkspace(t, "y", "u2")
+	env.seedSession(t, &Session{ID: sessionID(1), WorkspaceSlug: "y", Status: "active", CredentialID: "u2", CredentialType: "pat"})
+
+	rec := env.doJSON(t, http.MethodGet, "/api/v1/sessions", "", boundPatAuth("u1", "tokU", "sessions:read"))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body)
+	}
+	if n := len(parseSessionListJSON(t, rec).Sessions); n != 0 {
+		t.Errorf("u1, who owns no workspace, lists %d sessions of u2; want 0", n)
+	}
+}
+
+// newSweepAuditEnv registers the session, ingestion and query routes on a
+// SQLite-backed environment, with the binding guard in front when guarded,
+// and seeds identical workspaces, sessions and events.
+func newSweepAuditEnv(t *testing.T, guarded bool) *auditTestEnv {
+	t.Helper()
+	duckDB := openTestAuditDB(t)
+	initHandlerTestSchema(t, duckDB)
+	sqliteDB := openTestSQLiteDB(t)
+	store := NewStore(duckDB)
+	e := echo.New()
+	e.HTTPErrorHandler = apikit.HTTPErrorHandler
+	api := e.Group("/api/v1")
+	api.Use(testAuthMiddleware())
+	if guarded {
+		api.Use(wsaccess.BindingGuard(sqliteDB))
+	}
+	RegisterSessionRoutes(api, store, sqliteDB, nil)
+	RegisterRoutes(api, store, &nopEmitter{}, sqliteDB)
+	RegisterAuditQueryRoutes(api, store, &mockSSEManager{}, sqliteDB)
+	env := &auditTestEnv{echo: e, db: duckDB, sqliteDB: sqliteDB, store: store}
+	env.seedWorkspace(t, "x", "u1")
+	env.seedWorkspace(t, "y", "u2")
+	env.seedSession(t, &Session{ID: sessionID(1), WorkspaceSlug: "x", Status: "active", CredentialID: "u1", CredentialType: "pat", StartedAt: "2026-09-01T10:00:00Z"})
+	env.seedSession(t, &Session{ID: sessionID(2), WorkspaceSlug: "y", Status: "active", CredentialID: "u2", CredentialType: "pat", StartedAt: "2026-09-01T10:00:00Z"})
+	insertTestHubEvent(t, duckDB, "ev-x", "hub.workspace.updated", "u1", "pat", "workspace", "x", "update", "x", "info", "2026-09-01T10:00:00Z")
+	return env
+}
+
+var generatedValues = regexp.MustCompile(`\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`)
+
+// TS-33-51 (property, sessions and audit): for any request by an unbound PAT
+// (with and without a token id), an API key, an admin token or no credential,
+// the session, ingestion and audit routes answer the same behind the binding
+// guard as without it (generated timestamps and ids masked).
+// Requirement: 33-REQ-9.1
+func TestSessionsAudit_PropertyUnboundUnchanged_TS_33_51(t *testing.T) {
+	creds := map[string]*apikit.AuthInfo{
+		"pat without token id": patAuth("u1", "sessions:read", "sessions:write", "audit:read", "audit:write"),
+		"unbound pat":          boundPatAuth("u1", "tokU", "sessions:read", "sessions:write", "audit:read", "audit:write"),
+		"api_key":              apiKeyAuth("u1"),
+		"admin_token":          adminAuth(),
+		"none":                 nil,
+	}
+	requests := []struct{ method, path, body string }{
+		{http.MethodGet, "/api/v1/sessions", ""},
+		{http.MethodGet, "/api/v1/sessions?workspace_slug=y", ""},
+		{http.MethodGet, "/api/v1/sessions/" + sessionID(1), ""},
+		{http.MethodGet, "/api/v1/sessions/" + sessionID(2) + "/usage", ""},
+		{http.MethodPost, "/api/v1/sessions", `{"workspace_slug":"x"}`},
+		{http.MethodPost, "/api/v1/sessions", `{"workspace_slug":"y"}`},
+		{http.MethodPost, "/api/v1/sessions/" + sessionID(1) + "/complete", `{"status":"completed"}`},
+		{http.MethodPost, "/api/v1/sessions/" + sessionID(2) + "/usage", `{"model":"m","input_tokens":1}`},
+		{http.MethodGet, "/api/v1/workspaces/x/cost", ""},
+		{http.MethodPost, "/api/v1/workspaces/x/runs/" + testRunID + "/events", `{"event_type":"session.start","payload":{}}`},
+		{http.MethodPost, "/api/v1/workspaces/y/runs/" + testRunID + "/events", `{"event_type":"session.start","payload":{}}`},
+		{http.MethodGet, "/api/v1/workspaces/x/runs/" + testRunID + "/events", ""},
+		{http.MethodGet, "/api/v1/audit", ""},
+		{http.MethodGet, "/api/v1/audit?workspace=y", ""},
+	}
+	for name, auth := range creds {
+		for _, r := range requests {
+			g := newSweepAuditEnv(t, true).doJSON(t, r.method, r.path, r.body, auth)
+			p := newSweepAuditEnv(t, false).doJSON(t, r.method, r.path, r.body, auth)
+			gb := generatedValues.ReplaceAllString(g.Body.String(), "<generated>")
+			pb := generatedValues.ReplaceAllString(p.Body.String(), "<generated>")
+			if g.Code != p.Code || gb != pb {
+				t.Errorf("%s %s as %s: guarded (%d, %s); want unguarded (%d, %s)", r.method, r.path, name, g.Code, g.Body, p.Code, p.Body)
+			}
+		}
 	}
 }

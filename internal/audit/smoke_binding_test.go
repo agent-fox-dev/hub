@@ -18,11 +18,12 @@ import (
 	"github.com/agent-fox-dev/hub/internal/workspace"
 )
 
-// TS-33-59 (smoke, 33-PATH-4): A bound token discovers its workspace, reports
-// a session and reads its audit stream through the running hub. Real: apikit
-// server and auth middleware, binding guard, workspace and audit handlers,
-// SQLite, the DuckDB audit store.
-func TestSmoke_BoundTokenSessionsAndAudit_TS_33_59(t *testing.T) {
+// startSmokeHub runs hub's API wired as cmd/af-hub wires it (workspace
+// handlers first, then the audit routes) on a real apikit server, SQLite and
+// DuckDB, with user u1 owning s and x and one hub event in each. It returns the
+// running server, the SQLite handle and an API key of u1.
+func startSmokeHub(t *testing.T) (*httptest.Server, *apikit.DB, string) {
+	t.Helper()
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
 	t.Setenv("XDG_DATA_HOME", dir)
@@ -38,12 +39,12 @@ func TestSmoke_BoundTokenSessionsAndAudit_TS_33_59(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer database.Close()
+	t.Cleanup(func() { database.Close() })
 	duck, err := audit.OpenDB(filepath.Join(dir, "audit.duckdb"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer duck.Close()
+	t.Cleanup(func() { duck.Close() })
 	if err := audit.InitSchema(duck); err != nil {
 		t.Fatal(err)
 	}
@@ -78,9 +79,17 @@ func TestSmoke_BoundTokenSessionsAndAudit_TS_33_59(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-
 	srv := httptest.NewServer(server.Echo())
-	defer srv.Close()
+	t.Cleanup(srv.Close)
+	return srv, database, key.FullKey
+}
+
+// TS-33-59 (smoke, 33-PATH-4): A bound token discovers its workspace, reports
+// a session and reads its audit stream through the running hub. Real: apikit
+// server and auth middleware, binding guard, workspace and audit handlers,
+// SQLite, the DuckDB audit store.
+func TestSmoke_BoundTokenSessionsAndAudit_TS_33_59(t *testing.T) {
+	srv, database, apiKey := startSmokeHub(t)
 	call := func(method, path, credential, body string) (int, string) {
 		t.Helper()
 		req, _ := http.NewRequest(method, srv.URL+path, strings.NewReader(body))
@@ -95,7 +104,7 @@ func TestSmoke_BoundTokenSessionsAndAudit_TS_33_59(t *testing.T) {
 		return resp.StatusCode, string(raw)
 	}
 
-	code, body := call(http.MethodPost, "/api/v1/user/tokens", key.FullKey, `{"name":"svc","permissions":["workspaces:read","sessions:write","audit:read"]}`)
+	code, body := call(http.MethodPost, "/api/v1/user/tokens", apiKey, `{"name":"svc","permissions":["workspaces:read","sessions:write","audit:read"]}`)
 	var pat struct {
 		Token   string `json:"token"`
 		TokenID string `json:"token_id"`
@@ -103,7 +112,7 @@ func TestSmoke_BoundTokenSessionsAndAudit_TS_33_59(t *testing.T) {
 	if err := json.Unmarshal([]byte(body), &pat); code != http.StatusCreated || err != nil {
 		t.Fatalf("minting the PAT: (%d, %s)", code, body)
 	}
-	if _, err := database.SqlDB.Exec(`INSERT INTO token_workspace_bindings (token_id, slug, created_at) VALUES (?, 's', ?)`, pat.TokenID, now); err != nil {
+	if _, err := database.SqlDB.Exec(`INSERT INTO token_workspace_bindings (token_id, slug, created_at) VALUES (?, 's', ?)`, pat.TokenID, apikit.NowUTC()); err != nil {
 		t.Fatal(err)
 	}
 

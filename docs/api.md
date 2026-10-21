@@ -152,9 +152,9 @@ unbound PAT of the same user and scopes gets, and nothing else:
 
 A token bound to an archived workspace still reaches it and gets its usual
 `400`/`409` answers. Deleting the workspace leaves the binding in place, so the
-token then reaches nothing. A failed binding lookup answers
-`500 internal server error` (a pkt-line 500 in git) and never lets the token
-through as unbound. API keys, admin tokens and unbound PATs are not affected,
+token then reaches nothing. The binding guard answers a failed binding lookup
+with `500 internal server error` (a pkt-line 500 in git), and no layer lets the
+token through as unbound. API keys, admin tokens and unbound PATs are not affected,
 and API keys and admin tokens never cause a binding lookup.
 
 ### Workspace Lock

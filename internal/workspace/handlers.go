@@ -244,11 +244,11 @@ func lookupWorkspaceForAuth(c echo.Context, db *sql.DB, slug string, auth *apiki
 	}
 
 	// A PAT bound to another workspace must not see this one (spec 33).
-	boundSlug, bound, err := wsaccess.BoundSlug(db, auth)
+	denied, err := wsaccess.DeniesWorkspace(db, auth, ws.Slug)
 	if err != nil {
 		return nil, respondError(c, http.StatusInternalServerError, "internal server error")
 	}
-	if bound && boundSlug != ws.Slug {
+	if denied {
 		return nil, respondError(c, http.StatusNotFound, "workspace not found")
 	}
 

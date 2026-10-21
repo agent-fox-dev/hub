@@ -322,6 +322,17 @@ func TestAPIKitRoutes_BoundPATCannotMint_TS_33_29(t *testing.T) {
 		t.Errorf("pats rows %d after; want %d", after, before)
 	}
 
+	// apikit strips "Bearer " twice, so a doubled scheme authenticates the
+	// same PAT; it must be refused just the same.
+	rec = h.do(http.MethodPost, "/api/v1/user/tokens", "Bearer "+token, `{"name":"escape","permissions":["tokens:manage"]}`)
+	raw = rec.Body.String()
+	if rec.Code != http.StatusForbidden || parseErrorEnvelope(t, rec).Error.ErrorType != "token_bound" {
+		t.Errorf("POST /api/v1/user/tokens with a doubled Bearer: (%d, %s); want 403 token_bound", rec.Code, raw)
+	}
+	if after := countPATs(); after != before {
+		t.Errorf("pats rows %d after the doubled Bearer; want %d", after, before)
+	}
+
 	// The same PAT unbound would have minted one: the refusal is the binding's.
 	unbound, _ := h.mintPAT(t, "tokens:manage")
 	if rec := h.do(http.MethodPost, "/api/v1/user/tokens", unbound, `{"name":"ok","permissions":["tokens:manage"]}`); rec.Code != http.StatusCreated {

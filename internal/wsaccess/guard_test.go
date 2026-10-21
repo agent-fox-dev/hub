@@ -302,6 +302,7 @@ func TestBindingGuard_PropertyOtherSlugs_TS_33_15(t *testing.T) {
 // token_bound naming S. Requirement: 33-REQ-4.1
 func TestBindingGuard_DefaultDeny_TS_33_20(t *testing.T) {
 	wsaccess.ResetAllowlistForTest()
+	t.Cleanup(wsaccess.ResetAllowlistForTest)
 	db := openBindingDB(t)
 	bind(t, db, "tokB", "S")
 	e, api := newGuardedAPI(db)

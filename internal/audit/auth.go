@@ -117,12 +117,12 @@ func requireWorkspaceRead(c echo.Context, auth *apikit.AuthInfo, slug string, sq
 	}
 	// A PAT bound to another workspace treats this one as not its own
 	// (spec 33).
-	boundSlug, bound, err := wsaccess.BoundSlug(sqliteDB, auth)
+	denied, err := wsaccess.DeniesWorkspace(sqliteDB, auth, slug)
 	if err != nil {
 		_ = apikit.WriteAPIError(c, http.StatusInternalServerError, "internal server error")
 		return false
 	}
-	if bound && boundSlug != slug {
+	if denied {
 		_ = apikit.WriteAPIError(c, http.StatusNotFound, "workspace not found")
 		return false
 	}
@@ -209,12 +209,12 @@ func checkWorkspaceAccess(c echo.Context, auth *apikit.AuthInfo, slug string, sq
 		}
 
 		// To a bound token every other workspace does not exist.
-		boundSlug, bound, err := wsaccess.BoundSlug(sqliteDB, auth)
+		denied, err := wsaccess.DeniesWorkspace(sqliteDB, auth, slug)
 		if err != nil {
 			return refused(apikit.WriteAPIError(c, http.StatusInternalServerError,
 				"internal server error"))
 		}
-		if bound && boundSlug != slug {
+		if denied {
 			return refused(apikit.WriteAPIError(c, http.StatusNotFound,
 				"workspace not found"))
 		}

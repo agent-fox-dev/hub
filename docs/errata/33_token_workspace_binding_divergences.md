@@ -79,3 +79,13 @@ instead, with the code and the test of the delivered behaviour.
    `TestBoundToken_DeletedWorkspaceFailsClosed_TS_33_55` asserts the 404s and the equality
    with an unbound PAT. Answering 404 on `S` before the handler would need a second lookup
    (the workspace's existence) in the guard, which 33-REQ-2.4 does not allow.
+
+8. **`GET /sessions` no longer lists every session to a caller without a readable workspace.**
+   `getAccessibleWorkspaces` (`internal/audit/handlers.go`) returned a nil list when the caller
+   owned no active workspace, and `ListSessions` (`internal/audit/store.go`) reads nil as "no
+   restriction". So such a caller, and with this spec a token bound to an archived, deleted or
+   foreign workspace, listed the sessions of every user. The list is now empty, never nil. The
+   session listing of a user without an active workspace changes from all sessions to none,
+   which differs from 33-REQ-9.1 for that case only, and removes a cross-tenant read
+   (`TestSessions_NoAccessibleWorkspaceListsNothing`,
+   `TestSessionsAudit_PropertyNeverWidens_TS_33_53`).

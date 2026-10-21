@@ -159,3 +159,23 @@ func TestAPIKitRouteGuard_RefusalBody_TS_33_31(t *testing.T) {
 		t.Errorf("body %s names the workspace", rec.Body)
 	}
 }
+
+// TS-33-31 / 33-REQ-5.2: apikit strips "Bearer " from the header and then
+// once more from the token, so "Bearer Bearer <PAT>" authenticates; the guard
+// must see the PAT id through the second scheme as well.
+func TestAPIKitRouteGuard_DoubledScheme_TS_33_31(t *testing.T) {
+	db := openBindingDB(t)
+	bind(t, db, "tokB", "S")
+	e, p := apikitStandIn(db, true)
+	pat := apikit.TokenPrefix + "_pat_tokB_secret"
+
+	for _, header := range []string{"Bearer Bearer " + pat, "Bearer bearer " + pat, "Bearer  " + pat, "bearer Bearer " + pat} {
+		rec := serve(e, http.MethodGet, "/api/v1/user", nil, header)
+		if rec.Code != http.StatusForbidden || parseError(t, rec).Error.ErrorType != "token_bound" {
+			t.Errorf("Authorization %q: (%d, %s); want 403 token_bound", header, rec.Code, rec.Body)
+		}
+	}
+	if p.calls != 0 {
+		t.Errorf("probe calls = %d; want 0", p.calls)
+	}
+}

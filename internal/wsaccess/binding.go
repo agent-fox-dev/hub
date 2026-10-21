@@ -55,6 +55,19 @@ func LookupBinding(db *sql.DB, tokenID string) (slug string, bound bool, err err
 	return slug, true, nil
 }
 
+// DeniesWorkspace reports whether the credential in auth is a PAT bound to a
+// workspace other than slug. It is the rule every enforcing layer applies
+// (spec 33): to such a token, slug does not exist. Credentials that cannot be
+// bound are never denied and cause no query. A failed lookup is returned
+// with denied true, and the caller must deny.
+func DeniesWorkspace(db *sql.DB, auth *apikit.AuthInfo, slug string) (bool, error) {
+	boundSlug, bound, err := BoundSlug(db, auth)
+	if err != nil {
+		return true, err
+	}
+	return bound && boundSlug != slug, nil
+}
+
 // BoundSlug resolves the binding of the credential in auth. Only a PAT with a
 // token id can be bound: for a nil auth, an api_key, an admin_token or a PAT
 // without a TokenID it returns ("", false, nil) without touching db.

@@ -129,8 +129,15 @@ func handleCompleteSession(store Store, metrics *Metrics, sqliteDB *sql.DB) echo
 		if !isAdmin(auth) && auth.UserID != sess.CredentialID {
 			return apikit.WriteAPIError(c, http.StatusForbidden, "not session owner")
 		}
-		if denied := denySessionOfOtherWorkspace(c, auth, sess, sqliteDB); denied != nil {
-			return *denied
+		// A PAT bound to another workspace does not own the session (spec 33).
+		if sqliteDB != nil {
+			denied, err := wsaccess.DeniesWorkspace(sqliteDB, auth, sess.WorkspaceSlug)
+			if err != nil {
+				return apikit.WriteAPIError(c, http.StatusInternalServerError, "internal server error")
+			}
+			if denied {
+				return apikit.WriteAPIError(c, http.StatusForbidden, "not session owner")
+			}
 		}
 
 		// If session is already terminal, return idempotently (no gauge decrement).
@@ -205,8 +212,15 @@ func handleReportUsage(store Store, metrics *Metrics, sqliteDB *sql.DB) echo.Han
 		if !isAdmin(auth) && auth.UserID != sess.CredentialID {
 			return apikit.WriteAPIError(c, http.StatusForbidden, "not session owner")
 		}
-		if denied := denySessionOfOtherWorkspace(c, auth, sess, sqliteDB); denied != nil {
-			return *denied
+		// A PAT bound to another workspace does not own the session (spec 33).
+		if sqliteDB != nil {
+			denied, err := wsaccess.DeniesWorkspace(sqliteDB, auth, sess.WorkspaceSlug)
+			if err != nil {
+				return apikit.WriteAPIError(c, http.StatusInternalServerError, "internal server error")
+			}
+			if denied {
+				return apikit.WriteAPIError(c, http.StatusForbidden, "not session owner")
+			}
 		}
 
 		// Session must be active.
@@ -503,26 +517,6 @@ func handleWorkspaceCost(store Store, sqliteDB *sql.DB) echo.HandlerFunc {
 // Workspace access helpers
 // ---------------------------------------------------------------------------
 
-// denySessionOfOtherWorkspace refuses a session write by a PAT bound to a
-// workspace other than the session's (spec 33) with the answer a non-owner
-// gets, and a failed binding lookup with 500. It returns nil when the write
-// may go on; the check is skipped without a SQLite handle.
-func denySessionOfOtherWorkspace(c echo.Context, auth *apikit.AuthInfo, sess *Session, sqliteDB *sql.DB) *error {
-	if sqliteDB == nil {
-		return nil
-	}
-	boundSlug, bound, err := wsaccess.BoundSlug(sqliteDB, auth)
-	if err != nil {
-		denied := apikit.WriteAPIError(c, http.StatusInternalServerError, "internal server error")
-		return &denied
-	}
-	if bound && boundSlug != sess.WorkspaceSlug {
-		denied := apikit.WriteAPIError(c, http.StatusForbidden, "not session owner")
-		return &denied
-	}
-	return nil
-}
-
 // hasWorkspaceAccess checks if a non-admin caller can access a workspace.
 // Returns true if the workspace exists in SQLite, the caller is the owner and,
 // for a PAT bound to a workspace (spec 33), it is that workspace. A failed
@@ -542,11 +536,8 @@ func hasWorkspaceAccess(sqliteDB *sql.DB, auth *apikit.AuthInfo, slug string) bo
 	if ownerID != auth.UserID {
 		return false
 	}
-	boundSlug, bound, err := wsaccess.BoundSlug(sqliteDB, auth)
-	if err != nil {
-		return false
-	}
-	return !bound || boundSlug == slug
+	denied, err := wsaccess.DeniesWorkspace(sqliteDB, auth, slug)
+	return err == nil && !denied
 }
 
 // getAccessibleWorkspaces returns workspace slugs the caller owns; for a PAT
@@ -566,7 +557,9 @@ func getAccessibleWorkspaces(sqliteDB *sql.DB, auth *apikit.AuthInfo) ([]string,
 	}
 	defer rows.Close()
 
-	var slugs []string
+	// Never nil: ListSessions reads a nil list as "no restriction", so a
+	// caller with no readable workspace must get an empty one.
+	slugs := []string{}
 	for rows.Next() {
 		var slug string
 		if err := rows.Scan(&slug); err != nil {

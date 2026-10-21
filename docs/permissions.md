@@ -882,7 +882,8 @@ for non-owner access (`authorizeGitAccess` writes a pkt-line 404
 All workspace-scoped endpoint groups (sync, reclone, patches, merges,
 rebuilds, rerere, patch-status, sessions, audit) return HTTP 404 for a
 workspace the caller does not own, matching the CRUD endpoints. A
-workspace-bound PAT gets the same 404 for every workspace other than its own.
+workspace-bound PAT gets the answer a non-owner gets for every workspace other
+than its own.
 
 Other endpoint groups return HTTP 403 for missing PAT scopes:
 git scope check returns 403 with `"insufficient git permissions"`;

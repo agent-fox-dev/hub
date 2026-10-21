@@ -54,12 +54,12 @@ func authorizeGitAccess(c echo.Context, db *sql.DB, ws *workspaceInfo) error {
 
 	// A PAT bound to another workspace gets the non-owner's answer (spec 33).
 	// API keys never reach a query; a failed lookup is not served.
-	boundSlug, bound, err := wsaccess.BoundSlug(db, info)
+	denied, err := wsaccess.DeniesWorkspace(db, info, ws.Slug)
 	if err != nil {
 		_ = writePktLineError(c, http.StatusInternalServerError, "internal server error")
 		return errAccessDenied
 	}
-	if bound && boundSlug != ws.Slug {
+	if denied {
 		_ = writePktLineError(c, http.StatusNotFound, "repository not found")
 		return errAccessDenied
 	}
