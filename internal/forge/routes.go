@@ -49,6 +49,7 @@ func RegisterRoutes(api *echo.Group, cfg Config) {
 	api.POST("/workspaces/:slug/pulls", h.write(openPullRequest))
 	api.POST("/workspaces/:slug/pulls/:n/comments", h.write(commentOnPullRequest))
 
+	api.GET("/workspaces/:slug/forge/deliveries", h.listDeliveries)
 	api.PUT("/workspaces/:slug/forge/webhook", h.setWebhook)
 	api.DELETE("/workspaces/:slug/forge/webhook", h.unsetWebhook)
 }

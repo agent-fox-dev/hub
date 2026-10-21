@@ -57,14 +57,14 @@ func countingEnv(t *testing.T) (*env, *countingTransport) {
 }
 
 // TS-30-26: GET /forge reports forge, API URL, repository and credential kind without
-// contacting the forge.
+// contacting the forge. Spec 32 adds the webhook block after them (32-REQ-2.4).
 // Requirement: 30-REQ-6.1
 func TestDiagnosticReportsWithoutContactingTheForge_TS_30_26(t *testing.T) {
 	e, counting := countingEnv(t)
 	addWorkspace(t, e.db, "widgets")
 
 	_, body := getDiagnostic(t, e, "widgets")
-	const want = `{"forge":"github","api_url":"https://api.github.com","repository":{"host":"github.com","owner":"acme","name":"widgets"},"credential":"pat","upstream":null}`
+	const want = `{"forge":"github","api_url":"https://api.github.com","repository":{"host":"github.com","owner":"acme","name":"widgets"},"credential":"pat","upstream":null,"webhook":{"configured":false,"url":"https://hub.example.com/hooks/forge/widgets","last_delivery_at":null}}`
 	if body != want {
 		t.Errorf("body\n%s\nwant\n%s", body, want)
 	}
@@ -163,7 +163,7 @@ func TestDiagnosticUpstreamBlock_TS_30_29(t *testing.T) {
 	}
 
 	d, body := getDiagnostic(t, e, "standard")
-	if d.Upstream != nil || !strings.HasSuffix(body, `"upstream":null}`) {
+	if d.Upstream != nil || !strings.Contains(body, `"upstream":null,"webhook":`) {
 		t.Errorf("standard: upstream = %+v, body %s; want null", d.Upstream, body)
 	}
 

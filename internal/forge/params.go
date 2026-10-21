@@ -70,18 +70,25 @@ func parseIssueFilter(q url.Values) (issuex.IssueFilter, *refusal) {
 	}
 	f.Assignee = q.Get("assignee")
 
-	f.Limit = defaultLimit
-	if values, present := q["limit"]; present {
-		if len(values) != 1 {
-			return f, badRequest("limit must be given once")
-		}
-		n, ok := positiveInt(values[0])
-		if !ok || n > maxLimit {
-			return f, badRequest("limit must be an integer from 1 to %d", maxLimit)
-		}
-		f.Limit = n
+	f.Limit, ref = parseLimit(q)
+	return f, ref
+}
+
+// parseLimit reads the limit parameter of a list: an integer from 1 to maxLimit, given
+// once, or defaultLimit when it is absent.
+func parseLimit(q url.Values) (int, *refusal) {
+	values, present := q["limit"]
+	if !present {
+		return defaultLimit, nil
 	}
-	return f, nil
+	if len(values) != 1 {
+		return 0, badRequest("limit must be given once")
+	}
+	n, ok := positiveInt(values[0])
+	if !ok || n > maxLimit {
+		return 0, badRequest("limit must be an integer from 1 to %d", maxLimit)
+	}
+	return n, nil
 }
 
 // oneOf reads a parameter that is one of the allowed values. It returns "" when the

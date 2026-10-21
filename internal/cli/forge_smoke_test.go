@@ -98,6 +98,9 @@ func newSmokeEnv(t *testing.T, base http.RoundTripper) *smokeEnv {
 	if err := secrets.InitSchema(db); err != nil {
 		t.Fatal(err)
 	}
+	if err := forge.InitSchema(db); err != nil {
+		t.Fatal(err)
+	}
 	e := &smokeEnv{t: t, db: db, store: secrets.NewStore(db)}
 	e.answer = func(w http.ResponseWriter, r *http.Request) { http.NotFound(w, r) }
 
@@ -135,6 +138,7 @@ func newSmokeEnv(t *testing.T, base http.RoundTripper) *smokeEnv {
 		},
 		GetVariable: e.store.GetVariableValue,
 		Transport:   base,
+		Secrets:     e.store,
 	})
 	e.hub = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rec := httptest.NewRecorder()
