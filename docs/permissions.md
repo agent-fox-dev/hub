@@ -943,6 +943,7 @@ For a bound PAT:
   `tokens:manage` on a bound PAT cannot be used to mint an unbound PAT through
   `POST /user/tokens`.
 - **Git** serves `S`'s repository under the `git:read`/`git:write` scopes and
+  the token user's access (a member's bound PAT still cannot push), and
   answers a pkt-line `404 repository not found` for every other repository.
 - **`tokens:*` scopes are inert.** A bound PAT can neither mint nor list bound
   tokens: on its own workspace's `/tokens` routes it gets `403 token_bound`, on

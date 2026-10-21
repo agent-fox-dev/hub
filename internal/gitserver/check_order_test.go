@@ -48,7 +48,9 @@ func TestCheckOrder_FirstRefusalWins_TS_37_28(t *testing.T) {
 		{"owner's scope-less PAT", http.MethodPost, "/git/myorg/myws.git/git-receive-pack", "af_pat_ownerNoScope", http.StatusForbidden, `"insufficient git permissions"`},
 	} {
 		rec := env.doRequest(t, c.method, c.path, "", withBasicAuth("x", c.cred))
-		if rec.Code != c.status || (c.body != "" && !strings.Contains(rec.Body.String(), c.body)) {
+		// A pkt-line body must match exactly; a JSON one must carry the message.
+		pkt := strings.Contains(c.body, "ERR ")
+		if rec.Code != c.status || (pkt && rec.Body.String() != c.body) || (!pkt && c.body != "" && !strings.Contains(rec.Body.String(), c.body)) {
 			t.Errorf("%s: (%d, %q); want %d with %q", c.name, rec.Code, rec.Body, c.status, c.body)
 		}
 	}

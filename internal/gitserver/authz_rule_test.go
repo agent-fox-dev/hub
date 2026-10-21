@@ -142,7 +142,9 @@ func TestGitserver_NoOwnerComparison_TS_37_3(t *testing.T) {
 				if (owner(l) && strings.Contains(r, "userid")) || (owner(r) && strings.Contains(l, "userid")) {
 					t.Errorf("%s compares an owner id with the caller", fset.Position(x.Pos()))
 				}
-				if name == "authz.go" && (strings.Contains(l+r, `"admin_token"`)) {
+
+			case *ast.BasicLit:
+				if name == "authz.go" && x.Value == `"admin_token"` {
 					t.Errorf("%s: authz.go checks admin_token itself", fset.Position(x.Pos()))
 				}
 			case *ast.SelectorExpr:
@@ -185,6 +187,14 @@ func TestResolver_RefusalIsTheOnlyResponse_TS_37_4(t *testing.T) {
 // read-only 403 and the owner is served. Requirement: 37-REQ-2.1
 func TestReceivePack_NeedWrite_TS_37_5(t *testing.T) {
 	env := newMemberGitEnv(t)
+	// A repeated service parameter: the first value decides, as in
+	// handleInfoRefs.
+	if m := env.doRequest(t, http.MethodGet, "/git/myorg/myws.git/info/refs?service=git-upload-pack&service=git-receive-pack", "", withBasicAuth("x", "af_key_userB")); m.Code != http.StatusOK {
+		t.Errorf("member, upload-pack first: (%d, %q); want 200", m.Code, m.Body)
+	}
+	if m := env.doRequest(t, http.MethodGet, "/git/myorg/myws.git/info/refs?service=git-receive-pack&service=git-upload-pack", "", withBasicAuth("x", "af_key_userB")); m.Code != http.StatusForbidden || m.Body.String() != readOnlyBody {
+		t.Errorf("member, receive-pack first: (%d, %q); want 403 %q", m.Code, m.Body, readOnlyBody)
+	}
 	for _, r := range []struct{ method, path string }{
 		{http.MethodGet, "/git/myorg/myws.git/info/refs?service=git-receive-pack"},
 		{http.MethodPost, "/git/myorg/myws.git/git-receive-pack"},

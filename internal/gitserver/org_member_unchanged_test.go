@@ -10,7 +10,7 @@ import (
 // workspace's org now gets the owner's answer on clone and fetch
 // (upload-pack) and the read-only 403 on push (receive-pack).
 // Requirement: 35-REQ-10.6
-func TestMemberGitOwnerOnly_TS_35_56(t *testing.T) {
+func TestMemberGitReadOnly_TS_35_56(t *testing.T) {
 	env := newGitTestEnv(t)
 	env.seedOrg(t, "org-1", "My Org", "myorg")
 	env.seedOrgMember(t, "org-1", "user-a")

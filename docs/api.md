@@ -2829,7 +2829,8 @@ nothing and writes no audit event.
 | `git:read` | Clone and fetch access to workspace repositories |
 | `git:write` | Push access to workspace repositories. Implies `git:read`. |
 
-Admin tokens and API keys have implicit full access to all git operations.
+Admin tokens and API keys have implicit full git scope. Scope is checked after
+access (see [Git Access](#git-access)): a member's API key still cannot push.
 
 ### URL Format
 

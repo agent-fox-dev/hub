@@ -7,8 +7,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/agent-fox-dev/hub/internal/audit"
 )
 
 // startMemberGitServer serves newMemberGitEnv over HTTP and returns the env
@@ -57,22 +55,12 @@ func TestSmoke_MemberClonesAndFetches_TS_37_36(t *testing.T) {
 
 // TS-37-37 (smoke, 37-PATH-2): a member's git push is refused with the
 // read-only message and changes nothing, nor writes an audit event. Real:
-// as TS-37-36, plus the audit store.
+// as TS-37-36, plus the audit store (useAuditStore).
 func TestSmoke_MemberPushRefused_TS_37_37(t *testing.T) {
 	env, remote := startMemberGitServer(t)
 	trunk := filepath.Join(env.workspaceRoot, "myws", "trunk")
 	setHeadSHAInDB(t, env, "myws", gitOut(t, trunk, "rev-parse", "HEAD"))
-	duck, err := audit.OpenDB(filepath.Join(t.TempDir(), "audit.duckdb"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { duck.Close() })
-	if err := audit.InitSchema(duck); err != nil {
-		t.Fatal(err)
-	}
-	origEmitter := defaultAuditEmitter
-	SetAuditEmitter(audit.NewEmitter(audit.NewStore(duck)))
-	t.Cleanup(func() { defaultAuditEmitter = origEmitter })
+	duck := useAuditStore(t)
 	events := func() (all, pushes int) {
 		if err := duck.QueryRow(`SELECT COUNT(*), COUNT(*) FILTER (WHERE event_type = 'hub.git.push') FROM hub_audit_events`).Scan(&all, &pushes); err != nil {
 			t.Fatal(err)

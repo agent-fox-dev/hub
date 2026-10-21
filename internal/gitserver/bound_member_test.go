@@ -53,8 +53,8 @@ func TestBoundPAT_LookupError500_TS_37_25(t *testing.T) {
 	}
 	rec := env.doRequest(t, http.MethodGet, infoRefsUpload("myws"), "", withBasicAuth("x", "af_pat_tokOwner"))
 	want := string(encodePktLine("ERR internal server error\n"))
-	if rec.Code != http.StatusInternalServerError || rec.Body.String() != want {
-		t.Errorf("(%d, %q); want 500 %q", rec.Code, rec.Body, want)
+	if rec.Code != http.StatusInternalServerError || rec.Body.String() != want || rec.Header().Get("Content-Type") != "text/plain" {
+		t.Errorf("(%d, %q, %q); want text/plain 500 %q", rec.Code, rec.Header().Get("Content-Type"), rec.Body, want)
 	}
 }
 

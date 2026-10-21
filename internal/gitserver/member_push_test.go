@@ -18,7 +18,7 @@ import (
 
 // Spec 37 — members cannot push.
 
-// git runs git in dir and returns its trimmed output.
+// gitOut runs git in dir and returns its trimmed output.
 func gitOut(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	return strings.TrimSpace(runGitCmd(t, dir, args...))
@@ -59,6 +59,24 @@ func repoState(t *testing.T, env *gitTestEnv, slug string) string {
 		gitOut(t, trunk, "status", "--porcelain"),
 		headSHA.String,
 	}, "\n--\n")
+}
+
+// useAuditStore makes a real DuckDB audit store the git server's audit
+// emitter for the rest of the test and returns its database.
+func useAuditStore(t *testing.T) *sql.DB {
+	t.Helper()
+	duck, err := audit.OpenDB(filepath.Join(t.TempDir(), "audit.duckdb"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { duck.Close() })
+	if err := audit.InitSchema(duck); err != nil {
+		t.Fatal(err)
+	}
+	origEmitter := defaultAuditEmitter
+	SetAuditEmitter(audit.NewEmitter(audit.NewStore(duck)))
+	t.Cleanup(func() { defaultAuditEmitter = origEmitter })
+	return duck
 }
 
 // countHooks installs counting pre-receive and post-push hooks for the rest
@@ -132,17 +150,7 @@ func TestMemberPush_NoSideEffects_TS_37_14(t *testing.T) {
 // store. Requirement: 37-REQ-4.4
 func TestMemberPush_NoAuditEvent_TS_37_15(t *testing.T) {
 	env := newMemberGitEnv(t)
-	duck, err := audit.OpenDB(filepath.Join(t.TempDir(), "audit.duckdb"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { duck.Close() })
-	if err := audit.InitSchema(duck); err != nil {
-		t.Fatal(err)
-	}
-	origEmitter := defaultAuditEmitter
-	SetAuditEmitter(audit.NewEmitter(audit.NewStore(duck)))
-	t.Cleanup(func() { defaultAuditEmitter = origEmitter })
+	duck := useAuditStore(t)
 	count := func() int {
 		var n int
 		if err := duck.QueryRow(`SELECT COUNT(*) FROM hub_audit_events`).Scan(&n); err != nil {

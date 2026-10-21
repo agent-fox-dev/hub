@@ -20,7 +20,7 @@ var gitRequests = []struct{ method, path string }{
 	{http.MethodPost, "/git/myorg/myws.git/git-receive-pack"},
 }
 
-// recordRefusals counts the wsaccess bound-refusal reports for the rest of
+// recordGitRefusals records the wsaccess bound-refusal reports for the rest of
 // the test.
 func recordGitRefusals(t *testing.T) *[]wsaccess.BoundRefusal {
 	t.Helper()
@@ -58,8 +58,20 @@ func TestStranger_404NoBindingLookup_TS_37_19(t *testing.T) {
 // Requirement: 37-REQ-6.2
 func TestOwnerAndAdmin_Unchanged_TS_37_20(t *testing.T) {
 	env := newMemberGitEnv(t)
+	// The Content-Type each route answers with (handlers.go), and the body
+	// the owner's API key gets, which every granted credential must match.
+	contentType := []string{
+		"application/x-git-upload-pack-advertisement",
+		"application/x-git-receive-pack-advertisement",
+		"application/x-git-upload-pack-result",
+		"application/x-git-receive-pack-result",
+	}
+	reference := map[int]string{}
+	for i, r := range gitRequests {
+		reference[i] = env.doRequest(t, r.method, r.path, "", withBasicAuth("x", "af_key_userA")).Body.String()
+	}
 	for _, cred := range []string{"af_key_userA", "af_pat_writepat", "af_pat_readpat", "af_admin_test789"} {
-		for _, r := range gitRequests {
+		for i, r := range gitRequests {
 			rec := env.doRequest(t, r.method, r.path, "", withBasicAuth("x", cred))
 			push := strings.Contains(r.path, "receive-pack")
 			if cred == "af_pat_readpat" && push {
@@ -68,8 +80,8 @@ func TestOwnerAndAdmin_Unchanged_TS_37_20(t *testing.T) {
 				}
 				continue
 			}
-			if rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), "ERR repository") || strings.Contains(rec.Body.String(), "read-only") {
-				t.Errorf("%s %s as %s: (%d, %q); want 200", r.method, r.path, cred, rec.Code, rec.Body)
+			if rec.Code != http.StatusOK || rec.Header().Get("Content-Type") != contentType[i] || rec.Body.String() != reference[i] {
+				t.Errorf("%s %s as %s: (%d, %q, %q); want 200 %s with the owner's body %q", r.method, r.path, cred, rec.Code, rec.Header().Get("Content-Type"), rec.Body, contentType[i], reference[i])
 			}
 		}
 	}
