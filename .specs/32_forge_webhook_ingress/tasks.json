@@ -92,7 +92,7 @@
       "done_when": [
         "the secret value is never logged or put in audit metadata"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 3,
