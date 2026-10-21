@@ -1319,7 +1319,7 @@ Fetch a single session by ID with token summary.
 
 | Status | Condition |
 |--------|-----------|
-| 403 | The session's workspace is not active, or the caller is not its owner, a member of its org or an admin token (`workspace access denied`) |
+| 403 | A caller that is not an admin token, when the session's workspace is not active or the caller is not its owner or a member of its org (`workspace access denied`) |
 | 404 | Session not found |
 
 ---
@@ -1363,7 +1363,7 @@ for the session, independent of the current page.
 | Status | Condition |
 |--------|-----------|
 | 400 | Invalid cursor |
-| 403 | The session's workspace is not active, or the caller is not its owner, a member of its org or an admin token (`workspace access denied`) |
+| 403 | A caller that is not an admin token, when the session's workspace is not active or the caller is not its owner or a member of its org (`workspace access denied`) |
 | 404 | Session not found |
 
 ---
@@ -1405,7 +1405,7 @@ Retrieve aggregated token usage for a workspace over a time period.
 | Status | Condition |
 |--------|-----------|
 | 400 | `since >= until`; invalid `group_by` value |
-| 403 | The workspace is not active, or the caller is not its owner, a member of its org or an admin token (`workspace access denied`) |
+| 403 | A caller that is not an admin token, when the workspace is not active or the caller is not its owner or a member of its org (`workspace access denied`) |
 
 ---
 

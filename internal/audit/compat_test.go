@@ -30,8 +30,14 @@ func compatRequests() []compatRequest {
 	run := "/api/v1/workspaces/w/runs/" + testRunID
 	return []compatRequest{
 		{"run events", http.MethodGet, run + "/events", ""},
+		{"run outcomes", http.MethodGet, run + "/sessions/outcomes", ""},
+		{"run tool calls", http.MethodGet, run + "/tools/calls", ""},
+		{"run tool errors", http.MethodGet, run + "/tools/errors", ""},
+		{"run traces", http.MethodGet, run + "/traces", ""},
+		{"run postmortem", http.MethodGet, run + "/postmortem", ""},
 		{"transcript", http.MethodGet, run + "/transcript?node_id=n", ""},
 		{"audit filter", http.MethodGet, "/api/v1/audit?workspace=w", ""},
+		{"audit", http.MethodGet, "/api/v1/audit", ""},
 		{"session", http.MethodGet, "/api/v1/sessions/sess-w", ""},
 		{"session usage", http.MethodGet, "/api/v1/sessions/sess-w/usage", ""},
 		{"session list", http.MethodGet, "/api/v1/sessions?workspace_slug=w", ""},
@@ -52,6 +58,10 @@ type compatAnswer struct {
 func legacyAnswer(r compatRequest, caller, status string) compatAnswer {
 	sessionRead := r.name == "session" || r.name == "session usage" || r.name == "session list" || r.name == "cost"
 	switch {
+	case r.name == "audit":
+		return compatAnswer{status: http.StatusOK}
+	case r.name == "run postmortem" && caller != "stranger":
+		return compatAnswer{http.StatusNotFound, "no postmortem found for the given run_id", "postmortem_not_found"}
 	case caller == "admin" && r.method == http.MethodPost:
 		return compatAnswer{status: http.StatusCreated}
 	case caller == "admin":
@@ -198,6 +208,31 @@ func TestSingleRule_SourceScan_TS_36_45(t *testing.T) {
 				return true
 			})
 			return false
+		})
+	}
+	// No Go-level owner comparison outside checkWorkspaceAccess either.
+	for name, fn := range funcs {
+		if name == "checkWorkspaceAccess" || fn.Body == nil {
+			continue
+		}
+		ast.Inspect(fn.Body, func(n ast.Node) bool {
+			be, ok := n.(*ast.BinaryExpr)
+			if !ok || (be.Op != token.EQL && be.Op != token.NEQ) {
+				return true
+			}
+			for _, side := range []ast.Expr{be.X, be.Y} {
+				var id string
+				switch e := side.(type) {
+				case *ast.Ident:
+					id = e.Name
+				case *ast.SelectorExpr:
+					id = e.Sel.Name
+				}
+				if strings.EqualFold(id, "ownerID") {
+					t.Errorf("%s: %s compares an owner id", fset.Position(be.Pos()), name)
+				}
+			}
+			return true
 		})
 	}
 	if _, ok := funcs["ownedWorkspaces"]; ok {

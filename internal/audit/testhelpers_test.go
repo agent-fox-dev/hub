@@ -1017,6 +1017,9 @@ func TestOpenTestSQLiteDB_OrgSchema_TS_36_46(t *testing.T) {
 		}
 		cols[name] = true
 	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
 	rows.Close()
 	for _, c := range []string{"org_id", "clone_status"} {
 		if !cols[c] {

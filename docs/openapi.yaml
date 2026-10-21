@@ -88,8 +88,9 @@ info:
 
     ## Workspace access
 
-    Every REST route that names a workspace, apart from the session, cost
-    and audit routes, decides the caller's access in one place (`wsaccess`): an admin token is `admin`, the workspace's owner
+    Every REST route that names a workspace decides the caller's access in
+    one place (`wsaccess`; the session, cost and audit routes keep their own
+    refusal answers, see below): an admin token is `admin`, the workspace's owner
     `owner`, a user with an `org_members` row for the workspace's org
     `member`, anyone else has none (`404 workspace not found`). Each route
     needs a level. *Read* (the workspace, patch, rebuild, rebuild-preview,
@@ -4210,7 +4211,7 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
-          description: The caller lacks `sessions:read`, or the session's workspace is not active or the caller is not its owner, a member of its organization or an admin token (`workspace access denied`).
+          description: The caller lacks `sessions:read`, or, for a caller that is not an admin token, the session's workspace is not active or the caller is not its owner or a member of its organization (`workspace access denied`).
           content:
             application/json:
               schema:
@@ -4372,7 +4373,7 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
-          description: The caller lacks `sessions:read`, or the session's workspace is not active or the caller is not its owner, a member of its organization or an admin token (`workspace access denied`).
+          description: The caller lacks `sessions:read`, or, for a caller that is not an admin token, the session's workspace is not active or the caller is not its owner or a member of its organization (`workspace access denied`).
           content:
             application/json:
               schema:
@@ -4430,7 +4431,7 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
-          description: The caller lacks `sessions:read`, or the workspace is not active or the caller is not its owner, a member of its organization or an admin token (`workspace access denied`).
+          description: The caller lacks `sessions:read`, or, for a caller that is not an admin token, the workspace is not active or the caller is not its owner or a member of its organization (`workspace access denied`).
           content:
             application/json:
               schema:
