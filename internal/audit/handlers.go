@@ -593,7 +593,7 @@ func activeSlugs(sqliteDB *sql.DB, slugs []string) ([]string, error) {
 }
 
 // ---------------------------------------------------------------------------
-// Audit ingestion handlers (stubs — implemented in later task groups)
+// Audit ingestion and per-run query handlers (see handlers_audit.go)
 // ---------------------------------------------------------------------------
 
 // handlePostEvent handles POST /workspaces/:slug/runs/:run_id/events.
