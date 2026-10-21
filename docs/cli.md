@@ -562,6 +562,7 @@ All other names are ordinary secrets the hub never interprets.
 | `GIT_USERNAME` + `GIT_PASSWORD` | HTTP basic auth for `origin`, as an alternative to `GIT_PAT`. Both must be set; a username without a password is ignored (with a server warning) and treated as no credentials |
 | `UPSTREAM_GIT_PAT` | Personal access token for the `upstream` remote of a `carry_patch` workspace |
 | `UPSTREAM_GIT_USERNAME` + `UPSTREAM_GIT_PASSWORD` | HTTP basic auth for `upstream`, as an alternative to `UPSTREAM_GIT_PAT`. Both must be set |
+| `FORGE_WEBHOOK_SECRET` | The secret the workspace's forge signs its webhook deliveries with (GitHub's HMAC-SHA256 key, GitLab's token). Set it with `afc forge webhook set`; setting it with `afc secrets` works too. One secret covers deliveries from the origin and, on a `carry_patch` workspace, from the upstream. The hub reads it for every delivery |
 
 Resolution order:
 
@@ -574,7 +575,8 @@ Resolution order:
 creation via `--git-pat`, `--git-username` and `--git-password`; the hub stores
 them under these names.
 
-Reserved names are only honored in workspace scope. Values are stored encrypted
+Reserved names are only honored in workspace scope (`FORGE_WEBHOOK_SECRET` of an org or a user
+is never read). Values are stored encrypted
 and are never returned by the API.
 
 Examples:
@@ -2102,7 +2104,9 @@ afc sandbox destroy <workspace-slug> <lease-id>
 The `forge`, `issue`, `pr` and `label` command groups work with a workspace's repository
 on its forge (GitHub or GitLab) through the hub. `afc forge status` shows how the hub
 reaches the forge, `afc issue` and `afc pr` read and write issues and pull requests, and
-`afc label` makes sure a label exists. The hub uses the credential it holds for the
+`afc label` makes sure a label exists. `afc forge webhook` and `afc forge deliveries` set
+up the forge's webhook, so that the forge tells the hub what happens on the repository,
+and show what it has sent. The hub uses the credential it holds for the
 workspace, never the caller's own, and nothing the commands print contains it (see
 [Forge Endpoints](api.md#forge-endpoints)). Each command prints the hub's answer as one
 JSON document.
@@ -2140,7 +2144,8 @@ afc forge status <workspace-slug>
 - Sends `GET /api/v1/workspaces/<slug>/forge` and prints the response: `forge`
   (`github`, `gitlab` or `unknown`), `api_url`, `repository` (`host`, `owner`,
   `name`), `credential` (`pat`, `basic` or `none`, never a value) and `upstream`
-  (the same four fields for a `carry_patch` workspace, else `null`). See
+  (the same four fields for a `carry_patch` workspace, else `null`) and `webhook`
+  (`configured`, `url`, `last_delivery_at`; never the secret). See
   [`GET /api/v1/workspaces/:slug/forge`](api.md#get-apiv1workspacesslugforge).
 - Run it when another forge command answers `forge_unknown`: it shows which host the
   hub found and whether an API URL variable is needed.
@@ -2160,8 +2165,126 @@ $ afc forge status widgets
     "name": "widgets",
     "owner": "acme"
   },
-  "upstream": null
+  "upstream": null,
+  "webhook": {
+    "configured": false,
+    "last_delivery_at": null,
+    "url": "https://hub.example.com/hooks/forge/widgets"
+  }
 }
+```
+
+The `webhook` block says whether the workspace has a webhook secret, the URL to enter in the
+forge's webhook settings (`null` when the hub's `server.external_url` is not set) and when
+the hub last received a delivery; see [`afc forge webhook`](#afc-forge-webhook-set-unset).
+
+### afc forge webhook set, unset
+
+Set up or turn off the webhook of a workspace's forge. The forge posts what happens on
+the repository (an issue, a label, a comment, a pull request, a push) to the hub, signed
+with a secret; the hub checks it, records it once and relays it as a `hub.forge.*` audit
+event that a consumer reads on the SSE stream (`GET /api/v1/events?workspace=<slug>`) or
+the audit query. The hub does not register the webhook on the forge: enter the URL and the
+secret that `set` prints in the forge's webhook settings (content type `application/json`;
+on GitHub, events Issues, Issue comments, Pull requests and Pushes; on GitLab, Issues,
+Comments, Merge requests, Push and Tag push). See
+[The webhook ingress](api.md#the-webhook-ingress).
+
+**Usage:**
+
+```
+afc forge webhook set <workspace-slug> [--secret <s> | --from-stdin | --generate]
+afc forge webhook unset <workspace-slug>
+```
+
+**Flags of `set`:**
+
+| Flag | Description |
+|---|---|
+| `--secret` | The secret to set, 16 to 255 printable ASCII characters from `!` to `~`. It ends up in the shell history: prefer `--from-stdin` |
+| `--from-stdin` | Read the secret from stdin; one trailing newline is dropped |
+| `--generate` | Let the hub make up a secret. This is the default when none of the three is given |
+
+The three flags exclude each other; more than one is a usage error (exit code 2,
+`... are mutually exclusive`) and nothing is sent.
+
+**Behavior:**
+
+- `set` sends `PUT /api/v1/workspaces/<slug>/forge/webhook`, with `{"secret": ...}` for
+  `--secret` and `--from-stdin` and with `{}` otherwise, and prints the answer:
+  `configured`, `url` and, when the hub made the secret up, `secret`. The hub shows a
+  generated secret **once**: `set` then writes one line to stderr saying so, and it is
+  not in any later output. The secret is stored as the workspace secret
+  `FORGE_WEBHOOK_SECRET`; `afc secrets create FORGE_WEBHOOK_SECRET --workspace <slug>`
+  does the same, and setting it again rotates it from the next delivery.
+- `unset` sends `DELETE .../forge/webhook` and prints
+  `{"status": "unset", "workspace": "<slug>"}`. The hub then answers the forge's deliveries
+  with 404. It works on an archived workspace and when there was no secret.
+- `set` needs an API key, an admin token, or a PAT holding `forge:write`, and an active
+  workspace (`400 workspace is not active`); `unset` the same without the active check.
+
+**Example:**
+
+```
+$ afc forge webhook set widgets
+note: hub will not show this secret again; enter it in the webhook settings of the forge now
+{
+  "configured": true,
+  "secret": "5d0c1f6e9a3b47d2b8e0f1a4c6d93e75a2b8c0d4e6f1a3b5c7d9e0f2a4b6c8d0",
+  "url": "https://hub.example.com/hooks/forge/widgets"
+}
+
+$ printf '%s' "$SECRET" | afc forge webhook set widgets --from-stdin
+$ afc forge webhook unset widgets
+{
+  "status": "unset",
+  "workspace": "widgets"
+}
+```
+
+### afc forge deliveries
+
+List the deliveries the hub received from a workspace's forge, newest first, to debug a
+webhook. A row says which delivery it was, what the hub made of it (`relayed`, `ignored`,
+`repository_mismatch` or `malformed`) and which events it relayed; the payload is not kept.
+
+**Usage:**
+
+```
+afc forge deliveries <workspace-slug> [--since <time>] [--limit <n>]
+```
+
+**Flags:**
+
+| Flag | Description |
+|---|---|
+| `--since` | Only deliveries received at this RFC 3339 time or later |
+| `--limit` | The number of rows, 1 to 100 (the hub's default is 30) |
+
+**Behavior:**
+
+- Sends `GET /api/v1/workspaces/<slug>/forge/deliveries` with the flags that are set,
+  as given: the hub validates them (a bad one is `400` naming it) and the command exits 1.
+  Prints the hub's answer, an array.
+- Works with an API key, an admin token, or a PAT holding `forge:read` or `forge:write`,
+  on active and archived workspaces alike. Rows older than 7 days are pruned.
+
+**Example:**
+
+```
+$ afc forge deliveries widgets --limit 2
+[
+  {
+    "action": "labeled",
+    "delivery_id": "72d3162e-cc78-11e3-81ab-4c9367dc0958",
+    "event": "issues",
+    "forge": "github",
+    "outcome": "relayed",
+    "received_at": "2026-10-21T09:12:03Z",
+    "relayed": ["hub.forge.issue.labeled"],
+    "target": "origin"
+  }
+]
 ```
 
 ### afc issue list

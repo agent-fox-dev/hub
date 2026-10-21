@@ -389,7 +389,9 @@ workspace and never one of the caller's, so a caller needs no forge access of it
 own. The decision is recorded in
 [ADR 04](adr/04-hub-is-the-workspaces-forge-client.md); the endpoints are in
 [Forge Endpoints](api.md#forge-endpoints) and the commands in
-[Forge Commands](cli.md#forge-commands).
+[Forge Commands](cli.md#forge-commands). The same package also receives the forge's webhook
+deliveries (see [A webhook delivery](#a-webhook-delivery)); hub only verifies, records and
+relays them, and never acts on one or calls the forge for it.
 
 The forge client is the `issuex` package of the sibling module
 [aflib](https://github.com/agent-fox-dev/aflib), expected at `../aflib` and replaced
@@ -403,8 +405,8 @@ hold this; a test file of `internal/cli` imports it to run `afc` against the rou
 | File | Responsibility |
 |------|----------------|
 | `permissions.go`, `auth.go` | The `forge:read` and `forge:write` scopes (`Permissions`, appended to `extraPerms` in `cmd/af-hub/main.go`) and the standalone auth helpers; `forge:write` implies `forge:read`. |
-| `config.go` | `Config`: the database, the two credential resolvers (`workspace.ResolveCloneAuth` and `ResolveUpstreamAuthMethod`, as closures in `main.go`), `GetVariable`, an optional base `Transport`, an optional `NewClient` and the audit emitter `Audit` that `main.go` builds with `audit.NewEmitterWithBroadcast`. |
-| `routes.go` | `RegisterRoutes`: the nineteen routes under `/workspaces/:slug` (ten reads, nine writes), and `authorize`, the checks they share, in order: 401, 403 (the scope of the verb), 404, 400 for a write on a workspace that is not active, then the workspace's `git_url`, `workspace_mode` and `upstream_url`. |
+| `config.go` | `Config`: the database, the two credential resolvers (`workspace.ResolveCloneAuth` and `ResolveUpstreamAuthMethod`, as closures in `main.go`), `GetVariable`, an optional base `Transport`, an optional `NewClient`, the audit emitter `Audit` that `main.go` builds with `audit.NewEmitterWithBroadcast`, the secrets store `Secrets` (the interface `SecretStore`, which `*secrets.Store` satisfies) and `ExternalURL` (`server.external_url`); and `webhookURL`, the ingress URL of a workspace. One value serves `RegisterRoutes` and `MountWebhookIngress`. |
+| `routes.go` | `RegisterRoutes`: the twenty-two routes under `/workspaces/:slug` (ten reads, nine writes, and the webhook secret and delivery routes), and `authorize`, the checks they share, in order: 401, 403 (the scope of the verb), 404, 400 for a write on a workspace that is not active, then the workspace's `git_url`, `workspace_mode` and `upstream_url`. |
 | `target.go`, `params.go` | `resolveTarget` (`?target=`), `parseNumber` (`:n`) and `parseIssueFilter` (the query of `GET .../issues`): the refusals that come before a client is built. |
 | `client.go` | `buildClient`: a fresh issuex client for one request, from the remote URL, the API URL variable and the credential; `credentialOf` (`pat`, `basic`, `none`); `parseRemote` and `redactRemote`; `describeRemote` for the diagnostic. |
 | `httpclient.go` | The one `*http.Client` of the process: `forgeTransport` (user agent, no environment token for a workspace without a credential), the redirect policy, and `callDeadline` (30 seconds). |
@@ -415,6 +417,12 @@ hold this; a test file of `internal/cli` imports it to run `afc` against the rou
 | `write_limits.go` | The body limits (65,536 on GitHub, 1,000,000 on GitLab, in code points) and the `413 body_too_large` refusal. |
 | `write_events.go` | `emit`: the one `hub.forge.*` event of a write that reached the forge. |
 | `write_raw.go` | The `writer` the routes call, and `rawForge`: the requests issuex cannot make the way a write needs (see below). |
+| `schema.go` | `InitSchema`: the SQLite table `forge_deliveries` (the delivery log) and its index, created at every start. |
+| `webhook_handlers.go` | `PUT` and `DELETE .../forge/webhook`: the webhook secret in the workspace scope, its generation, validation and rotation, and `emitEvent`, which hands an event to the emitter on a context the request does not cancel. |
+| `deliveries_handler.go` | `GET .../forge/deliveries`: the delivery log, newest first. The `webhook` block of `GET .../forge` is `webhookInfo` in `handlers_forge.go`. |
+| `ingress.go` | `MountWebhookIngress` and `POST /hooks/forge/:slug`: lookup, the scheme and its verification, the 1 MiB body, the delivery identity, the insert that deduplicates, the 202 answer and the relay. |
+| `reduce.go`, `reduce_github.go`, `reduce_gitlab.go` | `reduceDelivery`: a verified payload to an outcome, a target and the events (hub never stores the payload); the GitHub and GitLab mappings. |
+| `retention.go` | `PruneDeliveries` and `StartDeliveryRetention`: rows older than 7 days and rows of deleted workspaces, pruned at start and every hour. |
 
 ### A forge read
 
@@ -453,6 +461,40 @@ it sends nothing.
    `error_type` the hub answers with. A request refused before step 4 records nothing,
    and neither does a write whose calls issuex refused with `ErrNoToken` (the workspace
    has no credential) before sending anything.
+
+### A webhook delivery
+
+`POST /hooks/forge/:slug` is mounted by `forge.MountWebhookIngress(server.Echo(), …)` in
+`cmd/af-hub/main.go` next to `gitserver.MountGitHandlers`: on the Echo root, outside the API
+group, so outside apikit's bearer authentication, its body size limit and its content-type
+check. The forge proves who it is with the signature of the workspace's `FORGE_WEBHOOK_SECRET`.
+
+1. The handler reads the workspace row (`git_url`, `workspace_mode`, `upstream_url`) and the
+   workspace-scope secret for every delivery, with no cache; an unknown slug and a workspace
+   without the secret answer the same 404.
+2. The scheme is chosen by header (`X-Hub-Signature-256` is GitHub's, else `X-Gitlab-Token`
+   is GitLab's, else 401); a GitLab token is compared in constant time before the body is
+   read, a GitHub signature after, over the raw bytes, with `hmac.Equal`. An unverified
+   request writes nothing and logs the slug and the scheme only.
+3. The delivery id and the event name come from the headers of the scheme.
+4. `reduceDelivery` turns the payload into an outcome, a target (`origin` or `upstream`,
+   from the payload's repository path and the workspace's `git_url` and, on a `carry_patch`
+   workspace, `upstream_url`) and zero or more `audit.HubEvent`s of actor type `forge`.
+5. One `INSERT … ON CONFLICT DO NOTHING` into `forge_deliveries` decides: no row inserted
+   is a duplicate, answered and nothing else; a failing insert is a 500 with nothing emitted,
+   so that the forge's redelivery is processed in full.
+6. The 202 answer is written, with its length, and flushed. Only then are the events handed
+   to `Config.Audit` in order, on `context.WithoutCancel(request context)`: the broadcast
+   emitter stores them in `hub_audit_events` and puts them on the SSE stream, where
+   `GET /events` and `GET /audit` find them. An emit error is logged and changes nothing.
+
+`forge.InitSchema` creates `forge_deliveries` at every start, and `main.go` starts
+`go forge.StartDeliveryRetention(ctx, db)` right after it: the pruner (rows older than 7 days
+and rows of deleted workspaces) runs once at start and then every hour, and is the only thing
+that prunes the table. The delivery log is SQLite, in the store where workspaces and secrets
+live, so the insert that deduplicates is atomic; the audit store (DuckDB) stays the place of
+the events. The divergences from the spec are in
+`docs/errata/32_forge_webhook_ingress_divergences.md`.
 
 ### What the writes do themselves
 

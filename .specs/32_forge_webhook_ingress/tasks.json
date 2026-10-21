@@ -452,7 +452,7 @@
         "`make test` and `make lint` pass",
         "all six execution paths are live in production code"
       ],
-      "state": "pending"
+      "state": "done"
     }
   ]
 }

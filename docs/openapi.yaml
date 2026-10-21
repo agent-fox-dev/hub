@@ -141,7 +141,11 @@ tags:
       GitLab), read and written through the hub with the credential the hub holds
       for the workspace and never the caller's. The reads need `forge:read`; the
       writes need `forge:write` and an active workspace, and each one that reaches
-      the forge is recorded as a `hub.forge.*` audit event.
+      the forge is recorded as a `hub.forge.*` audit event. The forge's webhook
+      deliveries are received on a public endpoint, `POST /hooks/forge/{slug}`,
+      checked against the workspace's webhook secret, recorded once and relayed
+      as `hub.forge.*` audit events; three routes set and remove the secret and
+      list the deliveries.
   - name: Sessions
     description: Agent session lifecycle, token usage, and cost aggregation.
   - name: Audit Ingestion
@@ -3768,6 +3772,136 @@ paths:
   # Agent sessions
   # ---------------------------------------------------------------------------
 
+  /api/v1/workspaces/{slug}/forge/webhook:
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceSlug"
+    put:
+      tags: [Forge]
+      operationId: setForgeWebhook
+      summary: Set the webhook secret of the workspace's forge
+      description: |
+        Stores the workspace secret `FORGE_WEBHOOK_SECRET`, the key the forge signs its
+        deliveries with, and answers with the URL to enter in the forge's webhook
+        settings. With no body, `{}` or `{"secret": null}` the hub generates a secret
+        (32 bytes from `crypto/rand`, 64 lowercase hex characters) and returns it in
+        this answer and no other. A supplied secret is 16 to 255 characters from `!`
+        to `~`. The hub does not register the webhook on the forge. The route does not
+        take `target`.
+
+        The checks run in this order: no credential is `401`; a PAT without
+        `forge:write` is `403`; a workspace that does not exist or is not the caller's
+        is `404`; a workspace that is not `active` is `400` (`workspace is not
+        active`); then the body (`400`, with a message that names `secret` and the rule
+        and never the value). A scope that holds 100 secrets already is `400` with the
+        store's message; any other failure of the store is `500`, and neither emits an
+        event. Emits `hub.forge.webhook.set` with `{"generated": bool}`.
+      x-required-scopes: ["forge:write"]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ForgeWebhookSetRequest"
+      responses:
+        "200":
+          description: The secret is stored.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ForgeWebhookState"
+        "400":
+          description: >-
+            The workspace is not active, the body is not a JSON object or `secret`
+            breaks a rule, or the workspace's secrets scope is full.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/MissingScope"
+        "404":
+          $ref: "#/components/responses/WorkspaceNotFoundOrNotOwned"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+    delete:
+      tags: [Forge]
+      operationId: unsetForgeWebhook
+      summary: Remove the webhook secret of the workspace's forge
+      description: |
+        Deletes `FORGE_WEBHOOK_SECRET` when there is one, so that the hub answers the
+        forge's deliveries with `404` from then on, and answers `204` either way. It
+        works on an archived workspace too. The rows of the delivery log stay until they
+        are pruned. Emits `hub.forge.webhook.unset` with `{"existed": bool}`. The checks
+        are those of the `PUT` without the status of the workspace.
+      x-required-scopes: ["forge:write"]
+      responses:
+        "204":
+          description: The secret is gone (it was there or not).
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/MissingScope"
+        "404":
+          $ref: "#/components/responses/WorkspaceNotFoundOrNotOwned"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /api/v1/workspaces/{slug}/forge/deliveries:
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceSlug"
+    get:
+      tags: [Forge]
+      operationId: listForgeDeliveries
+      summary: List the deliveries the hub received from the workspace's forge
+      description: |
+        The workspace's delivery log, newest first (rows of one second last recorded
+        first), whatever the status of the workspace. The log keeps the reduced facts
+        of each verified delivery and never the payload; rows are pruned after 7 days.
+        The checks are those of `GET .../forge`. A bad `since` or `limit` is `400` with
+        a message that names it.
+      x-required-scopes: ["forge:read", "forge:write"]
+      parameters:
+        - name: since
+          in: query
+          required: false
+          description: >-
+            An RFC 3339 timestamp; only deliveries received at that time or later.
+            Offsets are normalised to UTC, and a fraction of a second starts at the next second.
+          schema:
+            type: string
+            format: date-time
+          example: "2026-10-21T00:00:00Z"
+        - name: limit
+          in: query
+          required: false
+          description: The number of rows, 1 to 100.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 30
+      responses:
+        "200":
+          description: The deliveries, `[]` when there are none.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ForgeDelivery"
+        "400":
+          $ref: "#/components/responses/ForgeBadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/MissingScope"
+        "404":
+          $ref: "#/components/responses/WorkspaceNotFoundOrNotOwned"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
   /api/v1/sessions:
     post:
       tags: [Sessions]
@@ -5032,6 +5166,133 @@ paths:
   # default. Both docs/api.md and docs/permissions.md write them without that
   # prefix; see docs/errata/openapi_description.md.
   # ---------------------------------------------------------------------------
+
+  /hooks/forge/{slug}:
+    parameters:
+      - name: slug
+        in: path
+        required: true
+        description: The workspace the forge's webhook is set up for.
+        schema:
+          type: string
+    post:
+      tags: [Forge]
+      operationId: receiveForgeDelivery
+      summary: Receive a delivery of the workspace's forge
+      description: |
+        Registered at the server root beside `/git/...`, outside the API auth group;
+        the forge proves who it is with the signature of the workspace's webhook
+        secret. The body size limit and the content-type check of the API group do not
+        apply. Takes no workspace lock and never contacts the forge.
+
+        The scheme comes from the headers: `X-Hub-Signature-256` is GitHub's (`sha256=`
+        and the HMAC-SHA256 of the raw body, 64 lowercase hex digits); else
+        `X-Gitlab-Token`, compared with the secret before the body is read, is GitLab's.
+        A delivery id (`X-GitHub-Delivery`; `Idempotency-Key`, else
+        `X-Gitlab-Event-UUID`) and an event name (`X-GitHub-Event`, `X-Gitlab-Event`)
+        are required. A unknown slug and a workspace without the secret are the same
+        `404`. A missing, malformed or wrong signature or token is `401` with one message
+        whatever is wrong, and records nothing. A body over 1 MiB is `413`
+        (`error_type: body_too_large`).
+
+        A verified delivery is recorded once (a repeat is the outcome `duplicate`),
+        answered `202`, and only then relayed as `hub.forge.*` audit events, which reach
+        the SSE stream and the audit query. The payload is never stored. See
+        `docs/api.md` ("The webhook ingress") for the mapping and the events.
+      security: []
+      x-required-scopes: []
+      parameters:
+        - name: X-Hub-Signature-256
+          in: header
+          required: false
+          description: GitHub's signature, `sha256=` and 64 lowercase hex digits.
+          schema:
+            type: string
+        - name: X-GitHub-Delivery
+          in: header
+          required: false
+          description: GitHub's id of the delivery.
+          schema:
+            type: string
+        - name: X-GitHub-Event
+          in: header
+          required: false
+          description: GitHub's event name.
+          schema:
+            type: string
+        - name: X-Gitlab-Token
+          in: header
+          required: false
+          description: GitLab's secret token.
+          schema:
+            type: string
+        - name: Idempotency-Key
+          in: header
+          required: false
+          description: GitLab's id of the delivery, which stays the same across retries.
+          schema:
+            type: string
+        - name: X-Gitlab-Event-UUID
+          in: header
+          required: false
+          description: GitLab's id of the delivery when there is no `Idempotency-Key`.
+          schema:
+            type: string
+        - name: X-Gitlab-Event
+          in: header
+          required: false
+          description: GitLab's event name.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: The forge's payload. Only the fields the mapping reads are used.
+      responses:
+        "202":
+          description: >-
+            The delivery was verified and is answered before its events are relayed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ForgeDeliveryAnswer"
+        "400":
+          description: >-
+            The delivery has no id or no event name, or its id is over 255 characters or
+            not printable ASCII; or its payload is not a JSON object or lacks the field
+            that says what it is about (recorded as `malformed`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: >-
+            `delivery signature missing or invalid`: no scheme header, or a signature or
+            token that is missing, malformed or wrong.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: >-
+            No workspace has the slug, or it has no webhook secret. The body is the same
+            for both.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "413":
+          description: >-
+            The body is over 1 MiB (`error_type: body_too_large`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
 
   /version:
     get:
@@ -7682,7 +7943,7 @@ components:
         How the hub reaches the forge of a workspace's origin (the top-level
         fields) and, on a `carry_patch` workspace with an `upstream_url`, of its
         upstream. Nothing is sent to the forge to compute it.
-      required: [forge, api_url, repository, credential, upstream]
+      required: [forge, api_url, repository, credential, upstream, webhook]
       properties:
         forge:
           type: string
@@ -7708,6 +7969,99 @@ components:
             - $ref: "#/components/schemas/ForgeRemote"
             - type: "null"
           description: Null unless the workspace is `carry_patch` with a non-empty `upstream_url`.
+        webhook:
+          $ref: "#/components/schemas/ForgeWebhookInfo"
+
+    ForgeWebhookInfo:
+      type: object
+      description: The state of the workspace's webhook. It never holds the secret.
+      required: [configured, url, last_delivery_at]
+      properties:
+        configured:
+          type: boolean
+          description: True when the workspace has the secret `FORGE_WEBHOOK_SECRET`.
+        url:
+          type: [string, "null"]
+          description: >-
+            The URL the forge posts to: `server.external_url` without its trailing
+            `/`, then `/hooks/forge/<slug>`; null when `external_url` is not set.
+          example: https://hub.example.com/hooks/forge/widgets
+        last_delivery_at:
+          type: [string, "null"]
+          format: date-time
+          description: >-
+            When the latest delivery of any outcome was received; null when there
+            is none.
+
+    ForgeWebhookSetRequest:
+      type: object
+      description: The body of the `PUT`; it may be left out altogether.
+      properties:
+        secret:
+          type: [string, "null"]
+          minLength: 16
+          maxLength: 255
+          pattern: "^[!-~]+$"
+          description: >-
+            The secret to set. Absent or null: the hub generates one.
+
+    ForgeWebhookState:
+      type: object
+      required: [configured, url]
+      properties:
+        configured:
+          type: boolean
+          const: true
+        url:
+          type: [string, "null"]
+          description: The URL to enter in the forge's webhook settings; null when `server.external_url` is not set.
+          example: https://hub.example.com/hooks/forge/widgets
+        secret:
+          type: string
+          description: >-
+            The generated secret, 64 lowercase hex characters. Present only when the
+            hub generated it, and in this answer only.
+          pattern: "^[0-9a-f]{64}$"
+
+    ForgeDelivery:
+      type: object
+      description: A row of the delivery log.
+      required: [delivery_id, forge, event, action, target, outcome, relayed, received_at]
+      properties:
+        delivery_id:
+          type: string
+        forge:
+          type: string
+          enum: [github, gitlab]
+        event:
+          type: string
+          description: The forge's event name, cut to 64 bytes.
+        action:
+          type: string
+          description: The action in the payload; empty when it has none.
+        target:
+          type: [string, "null"]
+          enum: [origin, upstream, null]
+          description: The repository of the workspace the delivery is about; null when it is about neither.
+        outcome:
+          type: string
+          enum: [relayed, ignored, repository_mismatch, malformed]
+        relayed:
+          type: array
+          items:
+            type: string
+          description: The event types handed to the emitter, in order.
+        received_at:
+          type: string
+          format: date-time
+
+    ForgeDeliveryAnswer:
+      type: object
+      required: [outcome]
+      properties:
+        outcome:
+          type: string
+          enum: [relayed, ignored, repository_mismatch, duplicate]
 
     ForgeRemote:
       type: object

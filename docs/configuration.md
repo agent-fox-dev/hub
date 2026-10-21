@@ -60,7 +60,7 @@ secrets = ["GIT_PAT"]
 |-----|------|---------|-------------|
 | `port` | integer | `8080` | Listen port. `0` selects an ephemeral port. Range: 0--65535. |
 | `bind` | string | `"0.0.0.0"` | Bind address. |
-| `external_url` | string | `""` (unset) | External URL used for OAuth redirect validation and for constructing git clone URLs (`hub_url` in workspace responses). When empty, `hub_url` in workspace responses is null. |
+| `external_url` | string | `""` (unset) | External URL used for OAuth redirect validation, for constructing git clone URLs (`hub_url` in workspace responses) and for the webhook URL of a workspace (`<external_url>/hooks/forge/<slug>`, shown by `afc forge webhook set` and `GET .../forge`). When empty, `hub_url` in workspace responses and the webhook `url` are null; a webhook secret can be set all the same. |
 | `mount_point` | string | `"/api/v1"` | API route prefix for all REST endpoints. |
 | `max_body_size` | string | `"1MB"` | Maximum request body size. Format: `<int><KB|MB|GB>`. |
 
@@ -522,6 +522,16 @@ What the hub's environment changes:
 - `GITHUB_API_URL` and `GITLAB_API_URL` are read by the forge client when it decides
   which forge serves a host. `GITHUB_TOKEN`, `GH_TOKEN` and `GITLAB_TOKEN` are never
   sent: a workspace without a credential sends no token.
+
+The forge can also tell the hub what happens on the repository: it posts webhook deliveries
+to `POST /hooks/forge/<slug>`, which the hub always mounts (there is no `config.toml` key for
+it, and no bearer token is needed). A workspace accepts deliveries once it has the workspace
+secret `FORGE_WEBHOOK_SECRET` (`afc forge webhook set`); without it the endpoint answers `404`.
+The URL to enter in the forge is `server.external_url` without a trailing slash, then
+`/hooks/forge/<slug>`; a proxy in front of the hub must pass these requests on as they are.
+`server.max_body_size` does not apply to the endpoint, which accepts at most 1 MiB. The hub
+keeps the log of the deliveries for 7 days (not configurable) and prunes it every hour. See
+[The webhook ingress](api.md#the-webhook-ingress).
 
 Building the hub needs the sibling checkout of
 [aflib](https://github.com/agent-fox-dev/aflib) at `../aflib`, which `go.mod`
