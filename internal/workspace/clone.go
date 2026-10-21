@@ -42,20 +42,18 @@ func defaultCloneFn(ctx context.Context, path string, url string, depth int, sin
 }
 
 // defaultArchiveOpenAndPushFn is the production implementation of
-// ArchiveOpenAndPushFuncType. It opens an existing local repository via
-// go-git PlainOpen and pushes to origin. Returns ErrAlreadyUpToDate when
-// the remote already has all local commits (nothing to push).
+// ArchiveOpenAndPushFuncType. It pushes every local branch of the repository
+// at repoPath to origin through the push the branch push shares
+// (pushToOriginFn), with no deadline. Returns ErrAlreadyUpToDate when the
+// remote already has all local commits (nothing to push), and the error of
+// opening the repository or finding origin as go-git gave it.
 func defaultArchiveOpenAndPushFn(repoPath, gitURL string, auth transport.AuthMethod) error {
-	repo, err := git.PlainOpen(repoPath)
-	if err != nil {
-		return err
+	err := pushToOriginFn(context.Background(), repoPath, gitURL, auth,
+		[]config.RefSpec{"refs/heads/*:refs/heads/*"}, false, nil)
+	var te *trunkError
+	if errors.As(err, &te) {
+		return te.err
 	}
-	err = repo.Push(&git.PushOptions{
-		RemoteName: "origin",
-		RemoteURL:  gitURL,
-		Auth:       auth,
-		RefSpecs:   []config.RefSpec{"refs/heads/*:refs/heads/*"},
-	})
 	if err != nil {
 		if errors.Is(err, git.NoErrAlreadyUpToDate) {
 			return ErrAlreadyUpToDate

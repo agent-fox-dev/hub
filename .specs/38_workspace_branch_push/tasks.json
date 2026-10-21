@@ -59,7 +59,7 @@
       "done_when": [
         "archive_test.go, reclone_test.go and every test replacing archiveOpenAndPushFn pass without modification"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 2,
