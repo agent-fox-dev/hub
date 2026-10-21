@@ -5,6 +5,25 @@ package audit
 
 import "errors"
 
+// EventTokenBind is the hub audit event emitted once for every personal
+// access token minted and bound to a workspace (POST
+// /workspaces/:slug/tokens), after the binding is committed. ResourceType is
+// "token", ResourceID the token id, Action "bind" and Workspace the slug; the
+// actor is the caller. Metadata: token_id, workspace, permissions and
+// expires_at (null when the token does not expire), never the token itself.
+// A refused, passed-through or rolled-back mint emits nothing.
+const EventTokenBind = "hub.token.bind"
+
+// EventTokenBoundRefused is the hub audit event emitted when a request is
+// refused because its token is bound to another workspace, or because the
+// route cannot be used by a bound token. ResourceType is "token", ResourceID
+// the token id, Action "refuse", Workspace the bound slug and ActorType
+// "pat". Metadata: token_id, bound_workspace, requested_workspace (only when
+// the request named one), method, route, status, surface ("api" or "git") and
+// suppressed, the number of refusals of the same token held back since its
+// previous event: at most one event per token is emitted per minute.
+const EventTokenBoundRefused = "hub.token.bound_refused"
+
 // EventSandboxLease is the hub audit event emitted when a sandbox lease is
 // issued (POST /workspaces/:slug/sandboxes). ResourceType is "sandbox",
 // ResourceID the lease ID and Action "lease". Metadata: lease_id, profile,
