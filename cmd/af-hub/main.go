@@ -342,8 +342,9 @@ func main() {
 	gateway, leaseSvc := startSandboxes(ctx, sandboxSvc, database.SqlDB, store, auditEmitter, metrics)
 	sandboxes.RegisterLeaseRoutes(server.APIGroup(), leaseSvc)
 
-	// Mount the forge routes (spec 30): a workspace's repository, issues and pull
-	// requests on its forge, read with the credential hub holds for the workspace.
+	// Mount the forge routes (specs 30 and 31): a workspace's repository, issues and pull
+	// requests on its forge, read and written with the credential hub holds for the
+	// workspace. Every write is recorded as an audit event.
 	forge.RegisterRoutes(server.APIGroup(), forge.Config{
 		DB: database.SqlDB,
 		ResolveOriginAuth: func(slug string) (transport.AuthMethod, error) {
@@ -353,6 +354,7 @@ func main() {
 			return workspace.ResolveUpstreamAuthMethod(store, slug)
 		},
 		GetVariable: store.GetVariableValue,
+		Audit:       auditEmitter,
 	})
 
 	// ---------------------------------------------------------------------------

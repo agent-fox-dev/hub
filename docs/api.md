@@ -62,7 +62,7 @@ they can access. The following scopes are available for workspace operations:
 | `sandboxes:read` | List the deployment's sandbox profiles; list and read sandbox leases | GET /api/v1/sandbox-profiles, GET /api/v1/workspaces/:slug/sandboxes, GET /api/v1/workspaces/:slug/sandboxes/:id |
 | `sandboxes:write` | Issue and end sandbox leases; implies `sandboxes:read` | POST /api/v1/workspaces/:slug/sandboxes, DELETE /api/v1/workspaces/:slug/sandboxes/:id (plus all `sandboxes:read` endpoints) |
 | `forge:read` | Read a workspace's repository, issues and pull requests on its forge, and how the hub reaches it | GET /api/v1/workspaces/:slug/forge, GET .../forge/repository, GET .../issues, GET .../issues/:n, GET .../issues/:n/comments, GET .../pulls/:n, GET .../pulls/:n/state, GET .../pulls/:n/files, GET .../pulls/:n/checks, GET .../pulls/:n/reviews |
-| `forge:write` | Registered for the forge write routes; implies `forge:read` | (all `forge:read` endpoints; no route needs `forge:write` itself yet) |
+| `forge:write` | Change a workspace's issues, comments, labels and pull requests on its forge; implies `forge:read` | POST /api/v1/workspaces/:slug/issues, PATCH .../issues/:n, POST .../issues/:n/close, POST .../issues/:n/comments, POST .../issues/:n/labels, DELETE .../issues/:n/labels/:name, POST .../labels, POST .../pulls, POST .../pulls/:n/comments (plus all `forge:read` endpoints) |
 
 ### Implied Permissions
 
@@ -86,7 +86,8 @@ they can access. The following scopes are available for workspace operations:
   list sandbox profiles and read leases. `sandboxes:read` does not allow
   issuing or ending a lease.
 - `forge:write` implies `forge:read` — a PAT with write scope can also read a
-  workspace's forge. No route needs `forge:write` itself yet.
+  workspace's forge. `forge:read` does not allow a write: the write routes check
+  `forge:write` itself.
 
 ### Scopes Checked Literally
 
@@ -206,15 +207,16 @@ The `error_type` field is omitted when not applicable. Known error types:
 | `secret_missing` | POST /api/v1/workspaces/:slug/sandboxes | A secret the profile requires exists in no searched scope of the workspace |
 | `sandbox_provider_error` | DELETE /api/v1/workspaces/:slug/sandboxes/:id | The provider could not destroy the sandbox of an `active` lease, or did not answer within 30 seconds. The message is the provider's, scrubbed; the lease is unchanged and the request can be repeated |
 | `forge_api_url_invalid` | every forge route | `FORGE_API_URL` (`UPSTREAM_FORGE_API_URL` for the upstream) is set to something that is not an absolute `https://` URL with a host and without userinfo, query or fragment. 422; the message names the variable and the rule, not the value |
-| `forge_unknown` | every forge read route | The forge behind the remote URL cannot be told from its host or an API URL variable, or the remote URL names no repository. 422; nothing is sent to the forge |
-| `forge_not_found` | every forge read route | The forge answered 404. 404 |
-| `forge_unauthenticated` | every forge read route | The forge answered 401. 502 |
-| `forge_forbidden` | every forge read route | The forge answered 403 that is not a rate limit. 502 |
-| `forge_rate_limited` | every forge read route | A rate limit issuex could not wait out. 429, with `Retry-After` in whole seconds when known |
-| `forge_rejected` | every forge read route | The forge answered another 4xx. 422 |
-| `forge_error` | every forge read route | The forge answered 5xx, a response that could not be read, or a redirect to another host. 502 |
-| `forge_unreachable` | every forge read route | The connection to the forge failed at DNS, TCP or TLS level. 502 |
-| `forge_timeout` | every forge read route | The 30-second deadline passed. 504 |
+| `body_too_large` | every forge write route with a body-like field | An issue, pull-request or comment body, or the comment of a close, is longer than the forge accepts: 65,536 Unicode code points on GitHub, 1,000,000 on GitLab. 413; the message names the field, its length, the forge and the limit, and nothing is sent to the forge |
+| `forge_unknown` | every forge route | The forge behind the remote URL cannot be told from its host or an API URL variable, or the remote URL names no repository. 422; nothing is sent to the forge |
+| `forge_not_found` | every forge route | The forge answered 404. 404 |
+| `forge_unauthenticated` | every forge route | The forge answered 401. 502 |
+| `forge_forbidden` | every forge route | The forge answered 403 that is not a rate limit. 502 |
+| `forge_rate_limited` | every forge route | A rate limit issuex could not wait out. 429, with `Retry-After` in whole seconds when known |
+| `forge_rejected` | every forge route | The forge answered another 4xx. 422 |
+| `forge_error` | every forge route | The forge answered 5xx, a response that could not be read, or a redirect to another host. 502. A write that issuex refuses because the workspace has no credential (`no authentication token configured`) is this too; it sends nothing and records no event |
+| `forge_unreachable` | every forge route | The connection to the forge failed at DNS, TCP or TLS level. 502 |
+| `forge_timeout` | every forge route | The 30-second deadline passed. 504 |
 
 ---
 
@@ -3908,14 +3910,19 @@ A workspace's repository lives on a forge, GitHub or GitLab. These endpoints let
 a caller read the repository, its issues and its pull requests through the hub,
 using the credential the hub already holds for the workspace and never one of
 the caller's own. For every request the hub builds a fresh client for the
-workspace itself, from the workspace's own record; the only input it takes from
-the request is which remote to read (`target`). Neither the request's
-`Authorization` header nor its body reaches the forge, and no response shows the
-credential, only its kind.
+workspace itself, from the workspace's own record. A read takes nothing from the
+request but which remote to read (`target`) and its own parameters; a write sends
+the fields of its body (a title, a comment, labels) and nothing else. Neither the
+request's `Authorization` header nor the body as it came reaches the forge, and no
+response shows the credential, only its kind.
 
-The endpoints are read-only. They work on `active` and `archived` workspaces
-alike, take no workspace lock, need no clone (`clone_status` does not matter) and
-emit no audit event.
+The ten read endpoints need `forge:read`. They work on `active` and `archived`
+workspaces alike, take no workspace lock, need no clone (`clone_status` does not
+matter) and emit no audit event. The nine write endpoints
+([The write routes](#the-write-routes)) need `forge:write`, work on `active`
+workspaces only, take no lock and need no clone either, and record every write that
+reaches the forge as a `hub.forge.*` audit event. Everything below that is not
+about the write routes holds for both.
 
 ### How the hub reaches the forge
 
@@ -3975,6 +3982,29 @@ Every forge route checks, in this order:
 6. Building the client: 422 or 500.
 
 API keys and admin tokens hold `forge:read` and `forge:write` implicitly.
+
+A write route checks, in this order, and answers with the first that fails:
+
+1. No credential: 401.
+2. A PAT without `forge:write`, `forge:read` alone included: 403, with the message
+   `PAT requires forge:write scope`. A credential type the hub does not know is 403
+   too. This comes before the workspace is looked up.
+3. A workspace that does not exist or is not the caller's: 404 `workspace not found`.
+4. A workspace whose status is not `active`: 400 `workspace is not active`.
+5. The request itself: 400. This is the `target` (a bad one, and `upstream` on a
+   workspace that is not a `carry_patch` fork with an `upstream_url`, which is
+   `workspace_mode_mismatch`), a number in the path that is not a positive integer,
+   a body that is not JSON of the shape the route takes, and the field rules of the
+   route.
+6. Building the client: 422 or 500, as for a read. A request this forge cannot take
+   is refused here: an update that sets only `assignees` on GitLab is
+   `400 nothing to update`.
+7. A body-like field over the forge's limit: 413 `body_too_large`. The limit depends
+   on the forge, so this check follows the client: a forge the hub cannot tell is
+   422 even for an oversized body.
+
+A request refused at any of these steps sends nothing to the forge and records no
+audit event.
 
 ### The target
 
@@ -4106,6 +4136,128 @@ list; the list routes answer the bare array and do not show those two flags.
 ]
 ```
 
+### The write routes
+
+| Route | Body | Success |
+|---|---|---|
+| `POST /api/v1/workspaces/:slug/issues` | `{title, body?, labels?, assignees?}` | 201, the issue |
+| `PATCH /api/v1/workspaces/:slug/issues/:n` | `{title?, body?, state?, labels?, assignees?}` | 200, the issue |
+| `POST /api/v1/workspaces/:slug/issues/:n/close` | `{comment?}` or no body | 200, the issue |
+| `POST /api/v1/workspaces/:slug/issues/:n/comments` | `{body}` | 201, `{"url": …}` |
+| `POST /api/v1/workspaces/:slug/issues/:n/labels` | `["name", …]` | 204, no body |
+| `DELETE /api/v1/workspaces/:slug/issues/:n/labels/:name` | none | 204, no body |
+| `POST /api/v1/workspaces/:slug/labels` | `{name, color?, description?}` | 201, the label; 200 when it exists |
+| `POST /api/v1/workspaces/:slug/pulls` | `{title, body?, head, base, draft?}` | 201, the pull request |
+| `POST /api/v1/workspaces/:slug/pulls/:n/comments` | `{body}` | 201, `{"url": …}` |
+
+**Authentication:** API Key, Admin Token, or PAT with the `forge:write` scope.
+Every route takes `?target=origin|upstream`, with the default and the meaning given
+in [The target](#the-target). Issues, pull requests and labels in the answers are
+the types listed under [The read routes](#the-read-routes), as issuex encodes them
+(a label: `name`, `color?`, `description?`; GitHub gives the color without a `#`,
+GitLab with one). Fields the hub does not know are ignored. `:n` is the issue
+number, on GitLab the project's `iid`.
+
+- **`POST .../issues`.** `title` is required and must not be blank; `body` may be
+  empty; `labels` and `assignees` are at most 100 names each, none blank. The
+  credential the forge sees is the workspace's, never the caller's bearer. On GitLab
+  the assignees are accepted and not sent: issuex sends none, because GitLab takes
+  user ids (`docs/errata/31_forge_writes_divergences.md`).
+- **`PATCH .../issues/:n`.** Only the fields the request sets change. A field that is
+  absent or `null` is left alone; `title` must not be blank; `body: ""` clears the
+  body; `state` is `open` or `closed`; `labels` and `assignees` replace the issue's
+  whole set, and `[]` removes every entry. A body that sets none of them is
+  `400 nothing to update`, and so, on GitLab, is one that sets only `assignees`, which
+  the hub does not send there (an update that sets other fields records only those
+  as changed). The answer is the issue as the forge returns it.
+- **`POST .../issues/:n/close`.** An empty body, `{}` or a comment that is blank
+  closes the issue. A comment that is not blank is posted first, and the issue is
+  closed only when that succeeded: a comment the forge refuses leaves the issue open
+  and is answered with its error; a close that fails after the comment leaves the
+  comment, is answered with the close's error, and the event holds the comment's URL.
+  Closing a closed issue is 200. The answer is the issue as the forge reports it
+  after the close.
+- **`POST .../issues/:n/comments`.** `body` is required and must not be blank. The
+  answer is `{"url": "<the comment's URL>"}`.
+- **`POST .../issues/:n/labels`.** The body is a bare JSON array of 1 to 100 names,
+  none blank (an object, an empty array or a non-string entry is 400). The labels
+  are added and the issue keeps its others. A name the repository does not have is
+  for the forge to deal with, and its answer is passed through.
+- **`DELETE .../issues/:n/labels/:name`.** `:name` is the last path segment,
+  percent-decoded exactly once: `type%2Fbug` removes `type/bug`, `af:fix` is
+  unchanged; a label named `.` or `..` is sent to the forge as `%2E` or `%2E%2E`, so that
+  no dot segment is left in the path. The answer is 204 also when the issue never had
+  the label. GitHub
+  answers not found to such a removal and GitLab does not, so after a not found from
+  the forge the hub reads the issue once: if it is there the answer is 204, and if
+  not it is 404 `forge_not_found`.
+- **`POST .../labels`.** `name` is required and must not be blank; `color` is six hex
+  digits, with or without a leading `#` (anything else is 400), and defaults to
+  `ededed`; `description` is optional. The label is looked up by name first. One that
+  exists is answered 200 as the forge holds it, and is never changed, whatever color
+  and description the request carries: making sure of a label twice is harmless. One
+  that does not is created and answered 201. A create the forge refuses, as when a
+  concurrent call created the same label, is followed by exactly one more lookup,
+  which answers 200 when the label is there and the create's error when it is not.
+- **`POST .../pulls`.** `title`, `head` and `base` are required and must not be
+  blank; `body` is optional; `draft` must be a boolean and is `false` when absent.
+  `head` is sent as given, so GitHub's `owner:branch` opens a pull request from a
+  fork. With `?target=upstream` on a `carry_patch` workspace it is opened on the
+  `upstream_url` repository with the upstream credential. A pull request that
+  exists for `head` and `base` is refused by the forge and answered through the
+  mapping (422 `forge_rejected`); the hub keeps no idempotency key, checks for no
+  duplicate, and a retried create can create twice.
+- **`POST .../pulls/:n/comments`.** `body` is required and must not be blank. The
+  comment goes to the conversation of the pull request (on GitLab, the merge
+  request's notes), and the answer is `{"url": …}`.
+
+**Body limits.** These fields are measured, in Unicode code points and after the
+client is built: the `body` of an issue (create and update), the `comment` of a
+close, the `body` of a comment on an issue or a pull request, and the `body` of a pull
+request.
+
+| Forge | Limit |
+|---|---|
+| GitHub | 65,536 |
+| GitLab | 1,000,000 |
+
+A field over the limit is `413` with `error_type: body_too_large` and a message such
+as `body is 70000 characters; github accepts at most 65536`; nothing is sent. A field
+of exactly the limit is sent, whatever the bytes of each code point. Titles, `head`,
+`base`, label names, label descriptions and assignee names are not measured: the
+forge rejects them, and its rejection is mapped like any other. A request body
+larger than the server's `max_body_size` is refused earlier, by the server, with its
+own 413.
+
+**How a write is sent.**
+
+- The requests go to the API root of the workspace's `FORGE_API_URL` (or
+  `UPSTREAM_FORGE_API_URL`), or to the one the hub states for the host; unlike a read,
+  a write does not look at the `GITHUB_API_URL` or `GITLAB_API_URL` of the hub's own
+  environment.
+- Creating an issue, commenting, adding labels and opening a pull request are issuex's
+  calls. issuex cannot send the rest the way these routes need, so the hub sends them
+  itself, through the same HTTP client, with the same token rules, user agent,
+  redirect policy and deadline: an issue update (issuex sends only non-empty fields,
+  so it cannot clear a body or a set), the label lookup and the label create (issuex
+  has no lookup, and its create returns no label and counts an existing label as a
+  success), the removal of a label on GitHub (issuex counts GitHub's 404 as a
+  success), and the read of the issue after a not found. Those requests are not
+  retried at all, a rate limit included; issuex retries its own once after the forge's
+  `Retry-After`, as for a read.
+- The hub adds no retry of its own. A create that times out or cannot reach the forge
+  may have happened, and the hub reports the mapped error without checking.
+- A write the caller walks away from is not cancelled: it runs on the request's
+  context with the cancellation detached, so that a write which left the hub is
+  finished and recorded.
+- A write that takes several requests (a close with a comment, a label lookup and
+  create, a removal and its read) gives every request the whole 30 seconds.
+- A write needs no clone and takes no workspace lock.
+
+**Audit.** A write that sent at least one request to the forge records exactly one
+event, whether it succeeded or failed, before the answer is written. See
+[Hub Audit Events](#hub-audit-events).
+
 ### Failures of the forge
 
 Every failure of a call to the forge is answered by one of these, whatever the route:
@@ -4113,7 +4265,9 @@ Every failure of a call to the forge is answered by one of these, whatever the r
 | Condition | Status | `error_type` |
 |---|---|---|
 | `target=upstream` on a workspace that is not a `carry_patch` fork with an `upstream_url` | 400 | `workspace_mode_mismatch` |
-| an invalid `target`, `:n` or query parameter | 400 | |
+| an invalid `target`, `:n` or query parameter, or a write body that breaks a rule of its route | 400 | |
+| a write on a workspace that is not `active` | 400 | |
+| a body-like field over the forge's limit (writes) | 413 | `body_too_large` |
 | `FORGE_API_URL` / `UPSTREAM_FORGE_API_URL` invalid | 422 | `forge_api_url_invalid` |
 | the forge cannot be told from the host, or the remote URL names no repository | 422 | `forge_unknown` |
 | the forge answered 404 | 404 | `forge_not_found` |
@@ -4136,6 +4290,8 @@ Every failure of a call to the forge is answered by one of these, whatever the r
   (`Retry-After: 1` gives `2`) and itself waits out a backoff of up to 120 seconds
   and tries once more; the 30-second deadline cuts a wait of 29 to 120 seconds
   short, which is answered `504 forge_timeout`.
+- This table holds for the write routes too. A write the forge refuses is answered
+  like a read it refuses, and the event it records says the same in `error_type`.
 - Each 5xx and 429 answer caused by the forge is logged once, as `forge: request
   failed` with the workspace (`slug`), the `target`, the `operation` (the issuex
   method, for example `ListIssues`), the status the forge gave (`forge_status`; 0
@@ -4166,11 +4322,34 @@ query endpoint (`GET /api/v1/audit`). Each event has an `event_type`, an actor
 | `hub.sandbox.failed` | `sandbox` | A lease became `failed` because its sandbox could not be created (`action` is `fail`; actor type `lease` and actor ID the lease's `created_by`) | `lease_id`, `error` (scrubbed: no secret value, fixed environment value or URL user information, at most 1024 bytes) |
 | `hub.sandbox.destroy` | `sandbox` | A lease became `destroyed`: its holder closed the sandbox through the gateway (actor type `lease`, actor ID the lease's `created_by`), `DELETE` ended it (the calling credential is the actor), or the hub ended it when it shut down or started after a crash (actor type `system`, empty actor ID). One event per change (`action` is `destroy`) | `lease_id`, `sandbox_id` (`null` when the lease never had a sandbox), `reason` (`client`, `api`, `shutdown` or `restart`; a Close or a `DELETE` while the hub shuts down carries `shutdown`) |
 | `hub.sandbox.expire` | `sandbox` | Time ended a lease: a `leased` lease got no `Create` before its deadline (a late `Create`, or a sweep), or an `active` lease passed its `expires_at` and a sweep destroyed its sandbox. One event per lease, and no `hub.sandbox.destroy` (`action` is `expire`; actor type `system`, empty actor ID) | `lease_id`, `state` (`expired` for a lease that never had a sandbox, `destroyed` for one whose sandbox was destroyed), `sandbox_id` (only when a sandbox was destroyed) |
+| `hub.forge.issue.create` | `issue` | `POST /workspaces/:slug/issues` sent a request to the forge, whether it succeeded or not (`resource_id` is the new issue's number, empty on a failure; `action` is `create`). The actor is the caller. All nine `hub.forge.*` events share the metadata under the table | none of its own |
+| `hub.forge.issue.update` | `issue` | `PATCH /workspaces/:slug/issues/:n` (`resource_id` is `n`, `action` is `update`) | `fields`: the names of the fields the request changed, sorted |
+| `hub.forge.issue.close` | `issue` | `POST /workspaces/:slug/issues/:n/close` (`resource_id` is `n`, `action` is `close`). One event stands for a close with a comment too; there is no separate comment event | `comment_url`: the URL of the comment, when one was posted, also when the close then failed |
+| `hub.forge.comment.create` | `comment` | `POST /workspaces/:slug/issues/:n/comments` (`resource_id` is the issue number `n`, `action` is `create`) | none of its own; `url` is the comment's |
+| `hub.forge.label.add` | `label` | `POST /workspaces/:slug/issues/:n/labels` (`resource_id` is `n`, `action` is `add`) | `labels`: the names the request gave |
+| `hub.forge.label.remove` | `label` | `DELETE /workspaces/:slug/issues/:n/labels/:name` (`resource_id` is `n`, `action` is `remove`) | `label`: the name |
+| `hub.forge.label.create` | `label` | `POST /workspaces/:slug/labels`, whether it created the label or found it (`resource_id` is the label name, `action` is `create`) | `label`: the name; `created`: true only when this call created the label, false when it existed and when the call failed |
+| `hub.forge.pull_request.create` | `pull_request` | `POST /workspaces/:slug/pulls` (`resource_id` is the new number, empty on a failure; `action` is `create`) | `head`, `base`, `draft` |
+| `hub.forge.pull_request.comment` | `pull_request` | `POST /workspaces/:slug/pulls/:n/comments` (`resource_id` is `n`, `action` is `comment`) | none of its own; `url` is the comment's |
 
 A nil audit emitter skips emission. An emit error is logged without affecting
 the response. In `hub` mode no `hub.patch.sync` or `hub.patch.replace` events
 are emitted. On the ref-write failure path, events are still emitted for the
 outcomes already produced.
+
+**The `hub.forge.*` events.** One event is recorded for each write request that sent
+at least one request to the forge, whether the write succeeded or failed, and it is
+recorded before the answer is written, on a context the caller's disconnect does not
+cancel. A request the hub refuses on its own (401, 403, 404, 400, 413, 422 or a
+credential error) sends nothing and records nothing. The actor is the caller
+(`actor_id` its user, `actor_type` its credential type) and `workspace` the slug.
+Common metadata: `target` (`origin` or `upstream`); `ok`; `error_type` only when `ok`
+is false, the `error_type` the hub answered with; `number`, a JSON number, when
+known; and `url`, the issue, pull-request or comment URL the forge returned, with any
+userinfo removed. The metadata holds names, numbers and URLs and never a credential,
+URL userinfo, a title, a body, a comment or a message from the forge. These events
+say who asked the hub to write; the events a forge reports about a repository, when a
+webhook relays them, are named in the past tense and are a different thing.
 
 A reset with action `replaced` also emits `hub.patch.replace` with
 `branch_name`, `replaced_sha`, `origin_sha` and an added `trigger` key set to

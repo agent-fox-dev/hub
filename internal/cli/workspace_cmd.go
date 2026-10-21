@@ -70,6 +70,7 @@ func BuildRootCommand() *cobra.Command {
 		ForgeCmd(),
 		IssueCmd(),
 		PRCmd(),
+		LabelCmd(),
 	)
 
 	return root

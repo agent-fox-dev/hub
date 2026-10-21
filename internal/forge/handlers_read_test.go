@@ -384,23 +384,16 @@ func TestRoutesCallTheirIssuexMethod(t *testing.T) {
 	}
 }
 
-// TS-30-37: Forge reads record no audit event: the package has no way to emit one and
-// leaves the database as it found it.
+// TS-30-37: Forge reads record no audit event: a spy emitter wired into the routes is not
+// called, and the database is left as the reads found it.
+//
+// Spec 30 had the package without an emitter and checked that it did not import
+// internal/audit. Spec 31 gives forge.Config an emitter for the writes, so the check is
+// the one the spec describes: an emitter spy that no read reaches.
 // Requirement: 30-REQ-7.6
 func TestReadsRecordNoAuditEvent_TS_30_37(t *testing.T) {
-	const audit = "github.com/agent-fox-dev/hub/internal/audit"
-	if !strings.Contains(goInRepo(t, nil, "list", "-deps", "./internal/audit"), audit) {
-		t.Fatal("internal/audit is not a package of the module; the check below would prove nothing")
-	}
-	// Direct imports: internal/secrets, which the package needs for its not-found error,
-	// brings the audit package in beneath it.
-	for _, imp := range strings.Fields(goInRepo(t, nil, "list", "-f", `{{join .Imports " "}}`, "./internal/forge")) {
-		if imp == audit {
-			t.Errorf("internal/forge imports %s", imp)
-		}
-	}
-
-	e := githubEnv(t)
+	spy := &recordingEmitter{}
+	e := githubEnv(t, withEmitter(spy))
 	snapshot := func() string {
 		var out []string
 		rows, err := e.db.Query(`SELECT type, name, sql FROM sqlite_master ORDER BY name`)
@@ -432,5 +425,8 @@ func TestReadsRecordNoAuditEvent_TS_30_37(t *testing.T) {
 	}
 	if after := snapshot(); after != before {
 		t.Errorf("the database changed during the reads:\n%s\n%s", before, after)
+	}
+	if events := spy.recorded(); len(events) != 0 {
+		t.Errorf("the reads emitted %d events: %+v", len(events), events)
 	}
 }

@@ -23,7 +23,7 @@ type prepareFunc func(c echo.Context) (readOp, *refusal)
 // parameters, and only then builds the client and calls the forge.
 func (h *handlers) serve(operation string, prepare prepareFunc) echo.HandlerFunc {
 	return func(c echo.Context) error {
-		req, err := h.authorize(c)
+		req, err := h.authorize(c, readAccess)
 		if req == nil {
 			return err
 		}
@@ -35,7 +35,7 @@ func (h *handlers) serve(operation string, prepare prepareFunc) echo.HandlerFunc
 		if ref != nil {
 			return writeRefusal(c, ref)
 		}
-		fc, err := h.buildClient(req, tgt)
+		fc, err := h.buildClient(req, tgt, false)
 		if err != nil {
 			return writeForgeError(c, err)
 		}

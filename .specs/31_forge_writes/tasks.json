@@ -50,7 +50,7 @@
       "done_when": [
         "every one of the nine routes answers 401/403/404/400 per the check order and sends no forge request for those"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 2,
@@ -102,7 +102,7 @@
       "done_when": [
         "a POST /issues through the real route records one hub.forge.issue.create event"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 3,
@@ -144,7 +144,7 @@
       "depends_on": [
         2
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 4,
@@ -176,7 +176,7 @@
       "depends_on": [
         3
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 5,
@@ -207,7 +207,7 @@
       "depends_on": [
         4
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 6,
@@ -240,7 +240,7 @@
       "depends_on": [
         5
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 7,
@@ -281,7 +281,7 @@
       "depends_on": [
         6
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 8,
@@ -317,7 +317,7 @@
       "depends_on": [
         7
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 9,
@@ -354,7 +354,7 @@
       "depends_on": [
         8
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 10,
@@ -389,7 +389,7 @@
         "make test passes with all five smoke tests green",
         "no stub markers remain in files touched by this spec"
       ],
-      "state": "pending"
+      "state": "done"
     }
   ]
 }

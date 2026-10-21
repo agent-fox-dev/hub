@@ -138,8 +138,10 @@ tags:
   - name: Forge
     description: >-
       A workspace's repository, issues and pull requests on its forge (GitHub or
-      GitLab), read through the hub with the credential the hub holds for the
-      workspace and never the caller's. Read-only.
+      GitLab), read and written through the hub with the credential the hub holds
+      for the workspace and never the caller's. The reads need `forge:read`; the
+      writes need `forge:write` and an active workspace, and each one that reaches
+      the forge is recorded as a `hub.forge.*` audit event.
   - name: Sessions
     description: Agent session lifecycle, token usage, and cost aggregation.
   - name: Audit Ingestion
@@ -2862,6 +2864,66 @@ paths:
         "504":
           $ref: "#/components/responses/ForgeGatewayTimeout"
 
+    post:
+      tags: [Forge]
+      operationId: createForgeIssue
+      summary: Create an issue on the workspace's forge
+      description: |
+        Creates an issue with the given fields and returns it as issuex encodes it. `title` is required and must not be blank; `body` may be empty; `labels` and `assignees` are at most 100 names each, none blank. Fields the route does not know are ignored. On GitLab the assignees are accepted and not sent: the client library sends none, because GitLab takes user ids.
+
+        Records `hub.forge.issue.create`, with the metadata described in `docs/api.md`.
+
+        The checks run in this order: no credential is `401`; a PAT without
+        `forge:write` (`forge:read` is not enough) is `403`, also for a slug that
+        does not exist; a workspace that does not exist or is not the caller's is
+        `404`; a workspace that is not `active` is `400` (`workspace is not
+        active`); then the request (`target`, the number in the path, the JSON
+        body) is read and checked (`400`); then the client is built (`422`, `500`);
+        then a body-like field over the forge's limit is `413`
+        (`error_type: body_too_large`; 65,536 characters on GitHub, 1,000,000 on
+        GitLab, counted in Unicode code points). Only then is the forge called. A
+        request refused at any step sends nothing to the forge and records no audit
+        event. API keys and admin tokens are not scope-checked. The route needs no
+        clone and takes no workspace lock. Hub never retries a write, and a caller
+        who disconnects does not cancel it. Failures of the forge are answered by
+        the table in `docs/api.md` ("Failures of the forge"); the forge's message
+        is scrubbed of the workspace's token and of URL userinfo and cut to 1024
+        bytes.
+      x-required-scopes: ["forge:write"]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ForgeCreateIssueRequest"
+      responses:
+        "201":
+          description: The issue the forge created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ForgeIssue"
+        "400":
+          $ref: "#/components/responses/ForgeWriteBadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/MissingScope"
+        "404":
+          $ref: "#/components/responses/ForgeNotFound"
+        "413":
+          $ref: "#/components/responses/ForgeBodyTooLarge"
+        "422":
+          $ref: "#/components/responses/ForgeUnprocessable"
+        "429":
+          $ref: "#/components/responses/ForgeRateLimited"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "502":
+          $ref: "#/components/responses/ForgeBadGateway"
+        "504":
+          $ref: "#/components/responses/ForgeGatewayTimeout"
+
   /api/v1/workspaces/{slug}/issues/{n}:
     parameters:
       - $ref: "#/components/parameters/WorkspaceSlug"
@@ -2900,6 +2962,66 @@ paths:
           $ref: "#/components/responses/MissingScope"
         "404":
           $ref: "#/components/responses/ForgeNotFound"
+        "422":
+          $ref: "#/components/responses/ForgeUnprocessable"
+        "429":
+          $ref: "#/components/responses/ForgeRateLimited"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "502":
+          $ref: "#/components/responses/ForgeBadGateway"
+        "504":
+          $ref: "#/components/responses/ForgeGatewayTimeout"
+
+    patch:
+      tags: [Forge]
+      operationId: updateForgeIssue
+      summary: Change an issue on the workspace's forge
+      description: |
+        Changes only the fields the request sets. A field that is absent or `null` is left as it is; `body: ""` clears the body; `labels` and `assignees` replace the issue's whole set, `[]` removing every entry. `title` must not be blank, `state` is `open` or `closed`. A body that sets none of the fields is `400` (`nothing to update`). The answer is the issue as the forge returns it. On GitLab `n` is the project's `iid`, and assignees are not sent: an update that sets only assignees is `400` (`nothing to update`), and an update with other fields records only those as changed.
+
+        Records `hub.forge.issue.update`, with the metadata described in `docs/api.md`.
+
+        The checks run in this order: no credential is `401`; a PAT without
+        `forge:write` (`forge:read` is not enough) is `403`, also for a slug that
+        does not exist; a workspace that does not exist or is not the caller's is
+        `404`; a workspace that is not `active` is `400` (`workspace is not
+        active`); then the request (`target`, the number in the path, the JSON
+        body) is read and checked (`400`); then the client is built (`422`, `500`);
+        then a body-like field over the forge's limit is `413`
+        (`error_type: body_too_large`; 65,536 characters on GitHub, 1,000,000 on
+        GitLab, counted in Unicode code points). Only then is the forge called. A
+        request refused at any step sends nothing to the forge and records no audit
+        event. API keys and admin tokens are not scope-checked. The route needs no
+        clone and takes no workspace lock. Hub never retries a write, and a caller
+        who disconnects does not cancel it. Failures of the forge are answered by
+        the table in `docs/api.md` ("Failures of the forge"); the forge's message
+        is scrubbed of the workspace's token and of URL userinfo and cut to 1024
+        bytes.
+      x-required-scopes: ["forge:write"]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ForgeUpdateIssueRequest"
+      responses:
+        "200":
+          description: The issue as the forge returns it after the change.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ForgeIssue"
+        "400":
+          $ref: "#/components/responses/ForgeWriteBadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/MissingScope"
+        "404":
+          $ref: "#/components/responses/ForgeNotFound"
+        "413":
+          $ref: "#/components/responses/ForgeBodyTooLarge"
         "422":
           $ref: "#/components/responses/ForgeUnprocessable"
         "429":
@@ -2951,6 +3073,66 @@ paths:
           $ref: "#/components/responses/MissingScope"
         "404":
           $ref: "#/components/responses/ForgeNotFound"
+        "422":
+          $ref: "#/components/responses/ForgeUnprocessable"
+        "429":
+          $ref: "#/components/responses/ForgeRateLimited"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "502":
+          $ref: "#/components/responses/ForgeBadGateway"
+        "504":
+          $ref: "#/components/responses/ForgeGatewayTimeout"
+
+    post:
+      tags: [Forge]
+      operationId: createForgeIssueComment
+      summary: Comment on an issue on the workspace's forge
+      description: |
+        `body` is required and must not be blank. The answer is the URL of the comment.
+
+        Records `hub.forge.comment.create`, with the metadata described in `docs/api.md`.
+
+        The checks run in this order: no credential is `401`; a PAT without
+        `forge:write` (`forge:read` is not enough) is `403`, also for a slug that
+        does not exist; a workspace that does not exist or is not the caller's is
+        `404`; a workspace that is not `active` is `400` (`workspace is not
+        active`); then the request (`target`, the number in the path, the JSON
+        body) is read and checked (`400`); then the client is built (`422`, `500`);
+        then a body-like field over the forge's limit is `413`
+        (`error_type: body_too_large`; 65,536 characters on GitHub, 1,000,000 on
+        GitLab, counted in Unicode code points). Only then is the forge called. A
+        request refused at any step sends nothing to the forge and records no audit
+        event. API keys and admin tokens are not scope-checked. The route needs no
+        clone and takes no workspace lock. Hub never retries a write, and a caller
+        who disconnects does not cancel it. Failures of the forge are answered by
+        the table in `docs/api.md` ("Failures of the forge"); the forge's message
+        is scrubbed of the workspace's token and of URL userinfo and cut to 1024
+        bytes.
+      x-required-scopes: ["forge:write"]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ForgeCommentRequest"
+      responses:
+        "201":
+          description: The comment was posted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ForgeCommentCreated"
+        "400":
+          $ref: "#/components/responses/ForgeWriteBadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/MissingScope"
+        "404":
+          $ref: "#/components/responses/ForgeNotFound"
+        "413":
+          $ref: "#/components/responses/ForgeBodyTooLarge"
         "422":
           $ref: "#/components/responses/ForgeUnprocessable"
         "429":
@@ -3202,6 +3384,375 @@ paths:
           $ref: "#/components/responses/MissingScope"
         "404":
           $ref: "#/components/responses/ForgeNotFound"
+        "422":
+          $ref: "#/components/responses/ForgeUnprocessable"
+        "429":
+          $ref: "#/components/responses/ForgeRateLimited"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "502":
+          $ref: "#/components/responses/ForgeBadGateway"
+        "504":
+          $ref: "#/components/responses/ForgeGatewayTimeout"
+
+  /api/v1/workspaces/{slug}/issues/{n}/close:
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceSlug"
+      - $ref: "#/components/parameters/ForgeNumber"
+      - $ref: "#/components/parameters/ForgeTarget"
+    post:
+      tags: [Forge]
+      operationId: closeForgeIssue
+      summary: Close an issue on the workspace's forge
+      description: |
+        Accepts an empty body or `{"comment": "…"}`. A comment that is not blank is posted on the issue first, and the issue is closed only when that succeeded; if the close fails after the comment was posted, the answer is the close's failure and the event holds the comment's URL (`comment_url`). Closing an issue that is closed already is `200`. The event is one `hub.forge.issue.close`, never a separate comment event.
+
+        Records `hub.forge.issue.close`, with the metadata described in `docs/api.md`.
+
+        The checks run in this order: no credential is `401`; a PAT without
+        `forge:write` (`forge:read` is not enough) is `403`, also for a slug that
+        does not exist; a workspace that does not exist or is not the caller's is
+        `404`; a workspace that is not `active` is `400` (`workspace is not
+        active`); then the request (`target`, the number in the path, the JSON
+        body) is read and checked (`400`); then the client is built (`422`, `500`);
+        then a body-like field over the forge's limit is `413`
+        (`error_type: body_too_large`; 65,536 characters on GitHub, 1,000,000 on
+        GitLab, counted in Unicode code points). Only then is the forge called. A
+        request refused at any step sends nothing to the forge and records no audit
+        event. API keys and admin tokens are not scope-checked. The route needs no
+        clone and takes no workspace lock. Hub never retries a write, and a caller
+        who disconnects does not cancel it. Failures of the forge are answered by
+        the table in `docs/api.md` ("Failures of the forge"); the forge's message
+        is scrubbed of the workspace's token and of URL userinfo and cut to 1024
+        bytes.
+      x-required-scopes: ["forge:write"]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ForgeCloseIssueRequest"
+      responses:
+        "200":
+          description: The issue as the forge reports it after the close.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ForgeIssue"
+        "400":
+          $ref: "#/components/responses/ForgeWriteBadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/MissingScope"
+        "404":
+          $ref: "#/components/responses/ForgeNotFound"
+        "413":
+          $ref: "#/components/responses/ForgeBodyTooLarge"
+        "422":
+          $ref: "#/components/responses/ForgeUnprocessable"
+        "429":
+          $ref: "#/components/responses/ForgeRateLimited"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "502":
+          $ref: "#/components/responses/ForgeBadGateway"
+        "504":
+          $ref: "#/components/responses/ForgeGatewayTimeout"
+
+  /api/v1/workspaces/{slug}/issues/{n}/labels:
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceSlug"
+      - $ref: "#/components/parameters/ForgeNumber"
+      - $ref: "#/components/parameters/ForgeTarget"
+    post:
+      tags: [Forge]
+      operationId: addForgeIssueLabels
+      summary: Add labels to an issue on the workspace's forge
+      description: |
+        The body is a bare JSON array of 1 to 100 label names, none blank; an object, an empty array or a non-string entry is `400`. The issue keeps its other labels. A name the repository does not have is for the forge to deal with, and its answer is passed through. The event holds the names given (`labels`).
+
+        Records `hub.forge.label.add`, with the metadata described in `docs/api.md`.
+
+        The checks run in this order: no credential is `401`; a PAT without
+        `forge:write` (`forge:read` is not enough) is `403`, also for a slug that
+        does not exist; a workspace that does not exist or is not the caller's is
+        `404`; a workspace that is not `active` is `400` (`workspace is not
+        active`); then the request (`target`, the number in the path, the JSON
+        body) is read and checked (`400`); then the client is built (`422`, `500`);
+        and only then is the forge called. A
+        request refused at any step sends nothing to the forge and records no audit
+        event. API keys and admin tokens are not scope-checked. The route needs no
+        clone and takes no workspace lock. Hub never retries a write, and a caller
+        who disconnects does not cancel it. Failures of the forge are answered by
+        the table in `docs/api.md` ("Failures of the forge"); the forge's message
+        is scrubbed of the workspace's token and of URL userinfo and cut to 1024
+        bytes.
+      x-required-scopes: ["forge:write"]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ForgeLabelNames"
+      responses:
+        "204":
+          description: The labels were added.
+        "400":
+          $ref: "#/components/responses/ForgeWriteBadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/MissingScope"
+        "404":
+          $ref: "#/components/responses/ForgeNotFound"
+        "422":
+          $ref: "#/components/responses/ForgeUnprocessable"
+        "429":
+          $ref: "#/components/responses/ForgeRateLimited"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "502":
+          $ref: "#/components/responses/ForgeBadGateway"
+        "504":
+          $ref: "#/components/responses/ForgeGatewayTimeout"
+
+  /api/v1/workspaces/{slug}/issues/{n}/labels/{name}:
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceSlug"
+      - $ref: "#/components/parameters/ForgeNumber"
+      - $ref: "#/components/parameters/ForgeLabelName"
+      - $ref: "#/components/parameters/ForgeTarget"
+    delete:
+      tags: [Forge]
+      operationId: removeForgeIssueLabel
+      summary: Remove a label from an issue on the workspace's forge
+      description: |
+        The label is the last path segment, percent-decoded exactly once (`type%2Fbug` removes `type/bug`). The answer is `204` also when the issue never had the label: GitHub answers not found to such a removal and GitLab does not, so after a not found from the forge the hub reads the issue once, and answers `204` when it is there and `404` (`error_type: forge_not_found`) when it is not. The event holds the label (`label`).
+
+        Records `hub.forge.label.remove`, with the metadata described in `docs/api.md`.
+
+        The checks run in this order: no credential is `401`; a PAT without
+        `forge:write` (`forge:read` is not enough) is `403`, also for a slug that
+        does not exist; a workspace that does not exist or is not the caller's is
+        `404`; a workspace that is not `active` is `400` (`workspace is not
+        active`); then the request (`target`, the number in the path, the JSON
+        body) is read and checked (`400`); then the client is built (`422`, `500`);
+        and only then is the forge called. A
+        request refused at any step sends nothing to the forge and records no audit
+        event. API keys and admin tokens are not scope-checked. The route needs no
+        clone and takes no workspace lock. Hub never retries a write, and a caller
+        who disconnects does not cancel it. Failures of the forge are answered by
+        the table in `docs/api.md` ("Failures of the forge"); the forge's message
+        is scrubbed of the workspace's token and of URL userinfo and cut to 1024
+        bytes.
+      x-required-scopes: ["forge:write"]
+      responses:
+        "204":
+          description: The issue no longer has the label.
+        "400":
+          $ref: "#/components/responses/ForgeWriteBadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/MissingScope"
+        "404":
+          $ref: "#/components/responses/ForgeNotFound"
+        "422":
+          $ref: "#/components/responses/ForgeUnprocessable"
+        "429":
+          $ref: "#/components/responses/ForgeRateLimited"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "502":
+          $ref: "#/components/responses/ForgeBadGateway"
+        "504":
+          $ref: "#/components/responses/ForgeGatewayTimeout"
+
+  /api/v1/workspaces/{slug}/labels:
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceSlug"
+      - $ref: "#/components/parameters/ForgeTarget"
+    post:
+      tags: [Forge]
+      operationId: ensureForgeLabel
+      summary: Make sure a label exists in the workspace's repository
+      description: |
+        `name` is required and must not be blank; `color` is six hex digits with or without a leading `#` (default `ededed`); `description` is optional. The label is looked up by name first: one that exists is returned as the forge holds it, `200`, and is never changed, whatever color and description the request carries; one that is not there is created, `201`. A create the forge refuses is followed by one more lookup, which answers `200` when a concurrent call created the label, else the create's failure. The event holds the label name (`label`) and `created`, true only when this call created it.
+
+        Records `hub.forge.label.create`, with the metadata described in `docs/api.md`.
+
+        The checks run in this order: no credential is `401`; a PAT without
+        `forge:write` (`forge:read` is not enough) is `403`, also for a slug that
+        does not exist; a workspace that does not exist or is not the caller's is
+        `404`; a workspace that is not `active` is `400` (`workspace is not
+        active`); then the request (`target`, the number in the path, the JSON
+        body) is read and checked (`400`); then the client is built (`422`, `500`);
+        and only then is the forge called. A
+        request refused at any step sends nothing to the forge and records no audit
+        event. API keys and admin tokens are not scope-checked. The route needs no
+        clone and takes no workspace lock. Hub never retries a write, and a caller
+        who disconnects does not cancel it. Failures of the forge are answered by
+        the table in `docs/api.md` ("Failures of the forge"); the forge's message
+        is scrubbed of the workspace's token and of URL userinfo and cut to 1024
+        bytes.
+      x-required-scopes: ["forge:write"]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ForgeEnsureLabelRequest"
+      responses:
+        "200":
+          description: The label exists already; it is returned as the forge holds it and was not changed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ForgeLabel"
+        "201":
+          description: The label did not exist and was created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ForgeLabel"
+        "400":
+          $ref: "#/components/responses/ForgeWriteBadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/MissingScope"
+        "404":
+          $ref: "#/components/responses/ForgeNotFound"
+        "422":
+          $ref: "#/components/responses/ForgeUnprocessable"
+        "429":
+          $ref: "#/components/responses/ForgeRateLimited"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "502":
+          $ref: "#/components/responses/ForgeBadGateway"
+        "504":
+          $ref: "#/components/responses/ForgeGatewayTimeout"
+
+  /api/v1/workspaces/{slug}/pulls:
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceSlug"
+      - $ref: "#/components/parameters/ForgeTarget"
+    post:
+      tags: [Forge]
+      operationId: createForgePullRequest
+      summary: Open a pull request on the workspace's forge
+      description: |
+        `title`, `head` and `base` are required and must not be blank; `body` is optional; `draft` must be a boolean and is `false` when absent. `head` is sent to the forge as given, so GitHub's `owner:branch` opens a pull request from a fork. With `target=upstream` on a `carry_patch` workspace the pull request is opened on `upstream_url` with the upstream credential. A pull request that exists already for `head` and `base` is refused by the forge (`422`, `error_type: forge_rejected`); hub keeps no idempotency key and does not check for duplicates. The event holds `head`, `base` and `draft`.
+
+        Records `hub.forge.pull_request.create`, with the metadata described in `docs/api.md`.
+
+        The checks run in this order: no credential is `401`; a PAT without
+        `forge:write` (`forge:read` is not enough) is `403`, also for a slug that
+        does not exist; a workspace that does not exist or is not the caller's is
+        `404`; a workspace that is not `active` is `400` (`workspace is not
+        active`); then the request (`target`, the number in the path, the JSON
+        body) is read and checked (`400`); then the client is built (`422`, `500`);
+        then a body-like field over the forge's limit is `413`
+        (`error_type: body_too_large`; 65,536 characters on GitHub, 1,000,000 on
+        GitLab, counted in Unicode code points). Only then is the forge called. A
+        request refused at any step sends nothing to the forge and records no audit
+        event. API keys and admin tokens are not scope-checked. The route needs no
+        clone and takes no workspace lock. Hub never retries a write, and a caller
+        who disconnects does not cancel it. Failures of the forge are answered by
+        the table in `docs/api.md` ("Failures of the forge"); the forge's message
+        is scrubbed of the workspace's token and of URL userinfo and cut to 1024
+        bytes.
+      x-required-scopes: ["forge:write"]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ForgeCreatePullRequestRequest"
+      responses:
+        "201":
+          description: The pull request the forge created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ForgePullRequest"
+        "400":
+          $ref: "#/components/responses/ForgeWriteBadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/MissingScope"
+        "404":
+          $ref: "#/components/responses/ForgeNotFound"
+        "413":
+          $ref: "#/components/responses/ForgeBodyTooLarge"
+        "422":
+          $ref: "#/components/responses/ForgeUnprocessable"
+        "429":
+          $ref: "#/components/responses/ForgeRateLimited"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "502":
+          $ref: "#/components/responses/ForgeBadGateway"
+        "504":
+          $ref: "#/components/responses/ForgeGatewayTimeout"
+
+  /api/v1/workspaces/{slug}/pulls/{n}/comments:
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceSlug"
+      - $ref: "#/components/parameters/ForgeNumber"
+      - $ref: "#/components/parameters/ForgeTarget"
+    post:
+      tags: [Forge]
+      operationId: createForgePullRequestComment
+      summary: Comment on a pull request on the workspace's forge
+      description: |
+        `body` is required and must not be blank. The comment is posted on the pull request's conversation, and the answer is its URL.
+
+        Records `hub.forge.pull_request.comment`, with the metadata described in `docs/api.md`.
+
+        The checks run in this order: no credential is `401`; a PAT without
+        `forge:write` (`forge:read` is not enough) is `403`, also for a slug that
+        does not exist; a workspace that does not exist or is not the caller's is
+        `404`; a workspace that is not `active` is `400` (`workspace is not
+        active`); then the request (`target`, the number in the path, the JSON
+        body) is read and checked (`400`); then the client is built (`422`, `500`);
+        then a body-like field over the forge's limit is `413`
+        (`error_type: body_too_large`; 65,536 characters on GitHub, 1,000,000 on
+        GitLab, counted in Unicode code points). Only then is the forge called. A
+        request refused at any step sends nothing to the forge and records no audit
+        event. API keys and admin tokens are not scope-checked. The route needs no
+        clone and takes no workspace lock. Hub never retries a write, and a caller
+        who disconnects does not cancel it. Failures of the forge are answered by
+        the table in `docs/api.md` ("Failures of the forge"); the forge's message
+        is scrubbed of the workspace's token and of URL userinfo and cut to 1024
+        bytes.
+      x-required-scopes: ["forge:write"]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ForgeCommentRequest"
+      responses:
+        "201":
+          description: The comment was posted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ForgeCommentCreated"
+        "400":
+          $ref: "#/components/responses/ForgeWriteBadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/MissingScope"
+        "404":
+          $ref: "#/components/responses/ForgeNotFound"
+        "413":
+          $ref: "#/components/responses/ForgeBodyTooLarge"
         "422":
           $ref: "#/components/responses/ForgeUnprocessable"
         "429":
@@ -5705,6 +6256,17 @@ components:
         type: string
         pattern: "^[0-9]+$"
 
+    ForgeLabelName:
+      name: name
+      in: path
+      required: true
+      description: >-
+        The name of the label, percent-encoded as one path segment and decoded
+        exactly once (`type%2Fbug` is `type/bug`, `af:fix` is unchanged). A blank
+        name is `400`.
+      schema:
+        type: string
+
     ForgeIssueState:
       name: state
       in: query
@@ -6030,6 +6592,35 @@ components:
           schema:
             $ref: "#/components/schemas/Error"
 
+    ForgeWriteBadRequest:
+      description: >-
+        The workspace is not active (`workspace is not active`), or `target` is
+        not `origin` or `upstream`, or `target=upstream` is asked of a workspace
+        that is not a `carry_patch` fork with an `upstream_url`
+        (`error_type: workspace_mode_mismatch`), or `n` is not a positive
+        integer, or the JSON body is malformed or breaks a rule of the route
+        (the message names the field, or says `nothing to update`). Nothing was
+        sent to the forge and no event was recorded.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+    ForgeBodyTooLarge:
+      description: >-
+        A body-like field (an issue, pull-request or comment body, or the comment
+        of a close) is longer than the forge accepts, counted in Unicode code
+        points: 65,536 on GitHub, 1,000,000 on GitLab
+        (`error_type: body_too_large`). The message names the field, its length,
+        the forge and the limit, for example `body is 70000 characters; github
+        accepts at most 65536`. Nothing was sent to the forge and no event was
+        recorded. A request body larger than the server's `max_body_size` is
+        refused earlier with the server's own `413`.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
     ForgeNotFound:
       description: >-
         The workspace does not exist or is not owned by the caller
@@ -6285,6 +6876,7 @@ components:
                 - forge_error
                 - forge_unreachable
                 - forge_timeout
+                - body_too_large
                 - workspace_archived
                 - unknown_schema_version
                 - postmortem_not_found
@@ -6949,6 +7541,140 @@ components:
           description: Every profile, sorted by name.
           items:
             $ref: "#/components/schemas/SandboxProfile"
+
+    ForgeCreateIssueRequest:
+      type: object
+      required: [title]
+      properties:
+        title:
+          type: string
+          description: Must not be blank.
+        body:
+          type: string
+          description: May be empty. At most 65,536 characters on GitHub, 1,000,000 on GitLab.
+        labels:
+          type: array
+          maxItems: 100
+          items:
+            type: string
+          description: Names, none blank.
+        assignees:
+          type: array
+          maxItems: 100
+          items:
+            type: string
+          description: User names, none blank. Not sent to GitLab.
+
+    ForgeUpdateIssueRequest:
+      type: object
+      description: >-
+        At least one field must be set and not `null`. A field that is absent or
+        `null` is left as it is.
+      properties:
+        title:
+          type: string
+          description: Must not be blank.
+        body:
+          type: string
+          description: "`\"\"` clears the body."
+        state:
+          type: string
+          enum: [open, closed]
+        labels:
+          type: array
+          maxItems: 100
+          items:
+            type: string
+          description: Replaces the issue's whole set of labels; `[]` removes every label.
+        assignees:
+          type: array
+          maxItems: 100
+          items:
+            type: string
+          description: Replaces the issue's whole set of assignees; `[]` removes every one. Not sent to GitLab.
+
+    ForgeCloseIssueRequest:
+      type: object
+      properties:
+        comment:
+          type: string
+          description: >-
+            Posted on the issue before it is closed when it is not blank. At most
+            65,536 characters on GitHub, 1,000,000 on GitLab.
+
+    ForgeCommentRequest:
+      type: object
+      required: [body]
+      properties:
+        body:
+          type: string
+          description: Must not be blank. At most 65,536 characters on GitHub, 1,000,000 on GitLab.
+
+    ForgeCommentCreated:
+      type: object
+      required: [url]
+      properties:
+        url:
+          type: string
+          description: The URL of the comment the forge created.
+
+    ForgeLabelNames:
+      type: array
+      minItems: 1
+      maxItems: 100
+      description: A bare array of label names, none blank.
+      items:
+        type: string
+
+    ForgeEnsureLabelRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          description: Must not be blank.
+        color:
+          type: string
+          pattern: "^#?[0-9a-fA-F]{6}$"
+          description: Six hex digits, with or without a leading `#`. Default `ededed`.
+        description:
+          type: string
+
+    ForgeLabel:
+      type: object
+      description: >-
+        A label as the forge holds it. GitHub gives the color without a `#`,
+        GitLab with one.
+      required: [name]
+      properties:
+        name:
+          type: string
+        color:
+          type: string
+        description:
+          type: string
+
+    ForgeCreatePullRequestRequest:
+      type: object
+      required: [title, head, base]
+      properties:
+        title:
+          type: string
+          description: Must not be blank.
+        body:
+          type: string
+          description: At most 65,536 characters on GitHub, 1,000,000 on GitLab.
+        head:
+          type: string
+          description: >-
+            The branch with the changes, sent to the forge as given; GitHub's
+            `owner:branch` opens a pull request from a fork. Must not be blank.
+        base:
+          type: string
+          description: The branch to merge into. Must not be blank.
+        draft:
+          type: boolean
+          default: false
 
     ForgeDiagnostic:
       type: object

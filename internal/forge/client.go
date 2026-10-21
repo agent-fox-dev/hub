@@ -61,12 +61,22 @@ type forgeClient struct {
 	kind   credentialKind
 	token  string
 	target target
+
+	// forge is the forge the client talks to, which the body limit of a write depends on.
+	forge issuex.ForgeType
+	// root is the API root of a client built for a write, for the requests hub sends itself.
+	root string
 }
 
 // buildClient builds a fresh issuex client for the request's workspace and target,
 // from what hub holds for it and nothing the request carries but the target. Nothing
 // is cached, so a rotated secret or a changed variable applies to the next call.
-func (h *handlers) buildClient(req *request, tgt target) (*forgeClient, error) {
+//
+// A client for a write is given the API URL explicitly, the variable's or the one hub
+// states for the host, where a client for a read finds it by itself (and honours
+// GITHUB_API_URL and GITLAB_API_URL of the hub's environment). A write sends some of its
+// requests itself, beside the ones issuex sends, and the two must go to the same place.
+func (h *handlers) buildClient(req *request, tgt target, forWrite bool) (*forgeClient, error) {
 	remote, variable, resolve := req.remotes.gitURL, originAPIURLVariable, h.cfg.ResolveOriginAuth
 	if tgt == targetUpstream {
 		remote, variable, resolve = req.remotes.upstreamURL, upstreamAPIURLVariable, h.cfg.ResolveUpstreamAuth
@@ -92,21 +102,41 @@ func (h *handlers) buildClient(req *request, tgt target) (*forgeClient, error) {
 	}
 	kind, token := credentialOf(auth)
 
-	api, err := h.cfg.NewClient(issuex.Options{
+	opts := issuex.Options{
 		BaseURL:    baseURL,
 		Token:      token,
 		RemoteURL:  redactRemote(remote),
 		Repo:       repo,
 		HTTPClient: h.httpClient,
-	})
+	}
+	forge, err := issuex.DetectForge(opts)
+	if err == nil && forWrite && opts.BaseURL == "" {
+		opts.BaseURL = defaultAPIURL(forge, repo.Host)
+		forge, err = issuex.DetectForge(opts)
+	}
 	if errors.Is(err, issuex.ErrAmbiguousForge) {
 		return nil, ambiguousForge(repo.Host, variable, baseURL != "")
 	}
 	if err != nil {
+		slog.Error("forge: telling the forge failed", "slug", req.slug, "target", string(tgt), "error", err)
+		return nil, errInternal()
+	}
+	api, err := h.cfg.NewClient(opts)
+	if err != nil {
 		slog.Error("forge: building the client failed", "slug", req.slug, "target", string(tgt), "error", err)
 		return nil, errInternal()
 	}
-	return &forgeClient{api: api, repo: repo, kind: kind, token: token, target: tgt}, nil
+	return &forgeClient{api: api, repo: repo, forge: forge, kind: kind, token: token, target: tgt, root: apiRoot(forge, opts.BaseURL)}, nil
+}
+
+// apiRoot is the root of the forge's API as a client given base reaches it: without a
+// trailing slash, and with /api/v4 after a GitLab URL that lacks it, which issuex adds.
+func apiRoot(forge issuex.ForgeType, base string) string {
+	root := strings.TrimRight(strings.TrimSpace(base), "/")
+	if forge == issuex.ForgeTypeGitLab && !strings.HasSuffix(root, "/api/v4") {
+		root += "/api/v4"
+	}
+	return root
 }
 
 // apiURL reads the workspace variable that overrides the forge's API URL. It returns

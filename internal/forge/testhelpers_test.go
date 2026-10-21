@@ -131,9 +131,11 @@ func carryPatch(upstream string) func(*workspaceRow) {
 type recordedRequest struct {
 	Method string
 	Path   string
-	Query  string
-	Header http.Header
-	Body   string
+	// EscapedPath is the path as it was sent, with %2F in a segment kept.
+	EscapedPath string
+	Query       string
+	Header      http.Header
+	Body        string
 }
 
 // forgeStub is a TLS server standing in for GitHub or GitLab. It records every
@@ -156,9 +158,10 @@ func newForgeStub(t *testing.T) *forgeStub {
 	}
 	s.Server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
+		r.Body = io.NopCloser(bytes.NewReader(body)) // for a handler that reads it too
 		s.mu.Lock()
 		s.requests = append(s.requests, recordedRequest{
-			Method: r.Method, Path: r.URL.Path, Query: r.URL.RawQuery,
+			Method: r.Method, Path: r.URL.Path, EscapedPath: r.URL.EscapedPath(), Query: r.URL.RawQuery,
 			Header: r.Header.Clone(), Body: string(body),
 		})
 		h := s.handler
@@ -184,6 +187,13 @@ func (s *forgeStub) received() []recordedRequest {
 }
 
 func (s *forgeStub) count() int { return len(s.received()) }
+
+// forget drops the requests recorded so far, for a test that sends requests too large to keep.
+func (s *forgeStub) forget() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.requests = nil
+}
 
 // ---------------------------------------------------------------------------
 // The test environment
