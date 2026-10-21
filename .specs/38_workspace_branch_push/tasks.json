@@ -275,7 +275,7 @@
       "done_when": [
         "no response body, audit event or log line contains the credential secret or git_url userinfo"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 7,

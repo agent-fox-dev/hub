@@ -127,6 +127,17 @@ func TestSharedPushImplementation_TS_38_51(t *testing.T) {
 			t.Errorf("origin has %s at %s; a one-branch push must send only refs/heads/a", ref, got)
 		}
 	}
+
+	// The branch push route goes through the same function, with a deadline.
+	env := newBranchPushEnv(t)
+	env.seedPushWorkspace(t, &Workspace{Slug: "shared", OwnerID: "user-a"}, "a", "b")
+	pushedOK(t, env.push(t, "shared", "a", "", userAuth("user-a")))
+	if len(*env.pushes) != 1 {
+		t.Fatalf("the branch push made %d calls of the shared push; want 1", len(*env.pushes))
+	}
+	if branch := (*env.pushes)[0]; len(branch.refSpecs) != 1 || branch.refSpecs[0] != "refs/heads/a:refs/heads/a" || !branch.hasDeadline {
+		t.Errorf("branch push call = %+v; want refs/heads/a:refs/heads/a with a deadline", branch)
+	}
 }
 
 // TS-38-52: Archive and reclone still push all branches with the

@@ -159,10 +159,11 @@ func TestBranchPushProtectedBranchColumn_TS_38_20(t *testing.T) {
 		slug := "own-" + strings.ReplaceAll(mode, "_", "-")
 		bare := env.seedPushWorkspace(t, &Workspace{Slug: slug, OwnerID: "user-a", Branch: strPtr("main"), WorkspaceMode: mode})
 		release := holdLock(t, slug)
+		events := len(env.branchEvents())
 		refusedWithType(t, env.push(t, slug, "main", `{"force":true}`, userAuth("user-a")), http.StatusBadRequest, "protected_branch", `"main"`)
 		release()
-		if refs := bareRefs(t, bare); len(refs) != 0 || len(*env.pushes) != 0 || len(env.branchEvents()) != 0 {
-			t.Fatalf("%s: the refusal reached origin %v, pushed %d times or emitted %d events", mode, refs, len(*env.pushes), len(env.branchEvents()))
+		if refs := bareRefs(t, bare); len(refs) != 0 || len(*env.pushes) != 0 || len(env.branchEvents()) != events {
+			t.Fatalf("%s: the refusal reached origin %v, pushed %d times or emitted %d events", mode, refs, len(*env.pushes), len(env.branchEvents())-events)
 		}
 		a := pushedOK(t, env.push(t, slug, "main", `{"force":false}`, userAuth("user-a")))
 		if a.Result != "pushed" {

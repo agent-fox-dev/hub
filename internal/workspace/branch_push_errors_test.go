@@ -190,6 +190,9 @@ func TestBranchPushForgeUnreachableAndError_TS_38_35(t *testing.T) {
 	if got := len(*env.pushes); got != 3 {
 		t.Errorf("the shared push was called %d times; want 3 push attempts", got)
 	}
+	if evs := env.branchEvents(); len(evs) != 3 {
+		t.Errorf("%d hub.branch.push events; want one per push attempt (3)", len(evs))
+	}
 }
 
 // TS-38-36: A trunk that cannot be opened or has no origin answers 500 with no

@@ -28,6 +28,7 @@ import (
 	"github.com/labstack/echo/v4"
 	"github.com/txsvc/apikit"
 
+	"github.com/agent-fox-dev/hub/internal/audit"
 	"github.com/agent-fox-dev/hub/internal/gitcmd"
 	"github.com/agent-fox-dev/hub/internal/secrets"
 	"github.com/agent-fox-dev/hub/internal/wsaccess"
@@ -38,8 +39,9 @@ import (
 // most {"force": true}.
 const maxBranchPushBody = 64 << 10
 
-// branchPushDeadline is how long a push to origin may run (38-REQ-6.3).
-const branchPushDeadline = 2 * time.Minute
+// branchPushDeadline is how long a push to origin may run (38-REQ-6.3). It is
+// fixed; tests shorten it.
+var branchPushDeadline = 2 * time.Minute
 
 // handleBranchPush handles POST /api/v1/workspaces/:slug/branches/:name/push:
 // it pushes one branch of the workspace's trunk to its origin.
@@ -161,15 +163,22 @@ func pushBranchLocked(c echo.Context, db *sql.DB, ws *Workspace, name string, fo
 	if force {
 		refSpec = "+" + refSpec
 	}
-	ctx := c.Request().Context()
+	// 38-REQ-6.3, 38-REQ-8.5: the push, and the listing of a refused one,
+	// run to their end when the caller goes away, within the deadline; the
+	// handler, and the lock with it, waits for them.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(c.Request().Context()), branchPushDeadline)
+	defer cancel()
 	progress := &remoteMessages{}
 	err = pushToOriginFn(ctx, repoPath, ws.GitURL, gitAuth, []config.RefSpec{refSpec}, force, progress)
 	var te *trunkError
-	result := "pushed"
-	switch {
-	case errors.As(err, &te):
+	if errors.As(err, &te) {
 		// 38-REQ-6.8: hub's own failure, not a push attempt.
 		return branchPushInternalError(c, slug, "opening the trunk", err, secret)
+	}
+
+	attempt := branchPushEvent{slug: slug, name: name, sha: sha, force: force, remoteURL: stripUserinfoURL(ws.GitURL), secret: secret}
+	result := "pushed"
+	switch {
 	case errors.Is(err, git.NoErrAlreadyUpToDate):
 		result = "up_to_date"
 	case err != nil:
@@ -177,12 +186,53 @@ func pushBranchLocked(c echo.Context, db *sql.DB, ws *Workspace, name string, fo
 		if failure.errorType == "non_fast_forward" {
 			failure.message = nonFastForwardMessage(ctx, ws.GitURL, gitAuth, name, own, force)
 		}
+		// 38-REQ-7.3: one warning per failed push attempt.
+		slog.Warn("branch push: push to origin failed", "workspace", slug, "branch", name,
+			"error_type", failure.errorType, "error", scrubText(err.Error(), secret))
+		attempt.emit(c, "", failure.errorType)
 		return failure.write(c, secret)
 	case force:
 		result = "forced"
 	}
+	attempt.emit(c, result, "")
 	return c.JSON(http.StatusOK, branchPushAnswer{
-		Branch: name, SHA: sha, Remote: "origin", RemoteURL: stripUserinfoURL(ws.GitURL), Result: result,
+		Branch: name, SHA: sha, Remote: "origin", RemoteURL: attempt.remoteURL, Result: result,
+	})
+}
+
+// branchPushEvent is what the hub.branch.push event of a push attempt records.
+type branchPushEvent struct {
+	slug, name, sha string
+	force           bool
+	remoteURL       string
+	secret          string
+}
+
+// emit records the push attempt (38-REQ-8.2, 38-REQ-8.3): result when it
+// succeeded, errorType when it failed. It emits on the request's context with
+// its cancellation removed, so the event is recorded when the caller has gone
+// away. Every value is scrubbed; no message of the forge is recorded.
+func (e branchPushEvent) emit(c echo.Context, result, errorType string) {
+	metadata := map[string]any{
+		"branch":     scrubText(e.name, e.secret),
+		"sha":        e.sha,
+		"force":      e.force,
+		"ok":         errorType == "",
+		"remote":     "origin",
+		"remote_url": scrubText(e.remoteURL, e.secret),
+	}
+	if errorType == "" {
+		metadata["result"] = result
+	} else {
+		metadata["error_type"] = errorType
+	}
+	emitHubAuditContext(context.WithoutCancel(c.Request().Context()), c, audit.HubEvent{
+		EventType:    audit.EventBranchPush,
+		ResourceType: "branch",
+		ResourceID:   scrubText(e.name, e.secret),
+		Action:       "push",
+		Workspace:    e.slug,
+		Metadata:     metadata,
 	})
 }
 

@@ -1,6 +1,7 @@
 package workspace
 
 import (
+	"context"
 	"log/slog"
 
 	"github.com/labstack/echo/v4"
@@ -19,6 +20,13 @@ import (
 // unavailable (unauthenticated context), ActorID is empty and ActorType is
 // "system" (18-REQ-1.E2).
 func emitHubAudit(c echo.Context, event audit.HubEvent) {
+	emitHubAuditContext(c.Request().Context(), c, event)
+}
+
+// emitHubAuditContext is emitHubAudit emitting on ctx rather than on the
+// request's context, for an event that must be recorded when the caller has
+// gone away (38-REQ-8.5).
+func emitHubAuditContext(ctx context.Context, c echo.Context, event audit.HubEvent) {
 	if defaultAuditEmitter == nil {
 		return
 	}
@@ -32,7 +40,7 @@ func emitHubAudit(c echo.Context, event audit.HubEvent) {
 		event.ActorType = "system"
 	}
 
-	if err := defaultAuditEmitter.Emit(c.Request().Context(), event); err != nil {
+	if err := defaultAuditEmitter.Emit(ctx, event); err != nil {
 		slog.Error("audit: failed to emit event",
 			"event_type", event.EventType,
 			"workspace", event.Workspace,
