@@ -289,7 +289,7 @@
       "done_when": [
         "workspace_auth_test.go and TS-33-46 to 50 pass unchanged"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 9,
