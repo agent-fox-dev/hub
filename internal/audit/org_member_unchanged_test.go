@@ -22,8 +22,6 @@ func TestMemberAuditRoutesOwnerOnly_TS_35_56(t *testing.T) {
 	api.Use(testAuthMiddleware())
 	RegisterAuditQueryRoutes(api, env.store, NewSSEManager(10), env.sqliteDB)
 	for _, stmt := range []string{
-		`ALTER TABLE workspaces ADD COLUMN org_id TEXT`,
-		`CREATE TABLE org_members (org_id TEXT NOT NULL, user_id TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT '', PRIMARY KEY (org_id, user_id))`,
 		`INSERT INTO workspaces (slug, owner_id, org_id) VALUES ('w', 'u1', 'O')`,
 		`INSERT INTO org_members (org_id, user_id) VALUES ('O', 'u1'), ('O', 'u2')`,
 	} {

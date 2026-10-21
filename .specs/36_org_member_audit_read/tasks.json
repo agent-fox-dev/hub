@@ -45,7 +45,7 @@
       "done_when": [
         "go test ./internal/audit/... -count=1 passes with no existing assertion changed"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 2,
