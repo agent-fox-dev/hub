@@ -132,7 +132,8 @@ Blocked users are rejected by the git server as well as by the API.
 A personal access token can be bound to exactly one workspace. Hub keeps the
 binding in its SQLite table `token_workspace_bindings` (`token_id` primary key,
 `slug`, `created_at`), keyed by apikit's token id; a PAT without a row is
-unbound. This release enforces bindings; no API writes them yet. A bound token
+unbound. Bound tokens are minted through `POST /api/v1/workspaces/:slug/tokens`
+(see [Workspace-Bound Token Endpoints](#workspace-bound-token-endpoints)). A bound token
 reaches its own workspace `S` under its scopes, with exactly the answers an
 unbound PAT of the same user and scopes gets, and nothing else:
 
@@ -904,6 +905,129 @@ tokens can delete any workspace.
 | 401 | Unauthenticated request |
 | 404 | Workspace not found; PAT lacks `workspaces:delete` scope; workspace not owned by the authenticated user (anti-enumeration) |
 | 409 | Workspace is not archived (must archive before deleting) |
+| 500 | `failed to delete workspace`; nothing was deleted (the deletion, including the revocation of its bound tokens, is one transaction) |
+
+Deleting a workspace also retires the tokens bound to it, in the same
+transaction: every live bound token is revoked (its `revoked_at` is set, as
+apikit's own revocation does) and every binding of the slug is removed, so the
+tokens are answered `401` by the API and the git server from then on. The
+`hub.workspace.delete` event lists the ids this deletion revoked in
+`revoked_tokens`. Archiving and reactivating leave bound tokens alone.
+
+---
+
+## Workspace-Bound Token Endpoints
+
+A personal access token bound to one workspace reaches that workspace under its
+scopes and nothing else (see [Workspace-Bound Tokens](#workspace-bound-tokens)).
+These two routes mint and list them. A bound token can do neither: its
+`tokens:*` scopes are inert.
+
+### POST /api/v1/workspaces/:slug/tokens
+
+Mint a personal access token bound to the workspace. Hub serves apikit's own
+`POST /api/v1/user/tokens` in-process with the caller's body and
+`Authorization` header, so apikit's validation, expiry and privilege-escalation
+rules apply unchanged, and then writes the binding.
+
+**Authentication:** API key, or PAT with `tokens:manage` (checked by apikit).
+Only the workspace's owner may mint; admin tokens cannot.
+
+**Request Body:** apikit's, passed on unchanged.
+
+| Field | Required | Type | Description |
+|-------|----------|------|-------------|
+| `name` | yes | string | Token name |
+| `permissions` | yes | array of strings | Scopes of the token; a PAT caller may grant only scopes it holds |
+| `expires` | no | integer | Days until expiry: 0 (never), 30, 60 or 90 |
+
+**Response:** HTTP 201 Created, `Cache-Control: no-store`. The only response
+that carries the token:
+
+```json
+{
+  "token_id": "k3x9q2mz",
+  "token": "af_pat_k3x9q2mz_...",
+  "name": "agent-fox service",
+  "permissions": ["workspaces:read", "patches:read"],
+  "workspace": "my-ws",
+  "expires_at": "2027-01-19T10:00:00Z",
+  "created_at": "2026-10-21T10:00:00Z"
+}
+```
+
+**Checks, in order:**
+
+| Status | Condition |
+|--------|-----------|
+| 401 | `authentication required` |
+| 403 | `this token is bound to workspace <S>` with `error_type: token_bound`: the caller is a bound PAT. Behind the binding guard, a bound PAT gets `404 workspace not found` for any workspace other than its own |
+| 500 | `internal server error`: the binding lookup failed |
+| 403 | `admin tokens cannot mint bound tokens; a real user is required as the token's owner` |
+| 404 | `workspace not found`: the workspace does not exist or the caller does not own it |
+| 400 | `workspace is not active` |
+
+Then apikit answers. Any status other than 201 (a bad body, an unknown scope, a
+missing `tokens:manage`, a PAT asking for scopes it does not hold, a bad
+`expires`) reaches the caller unchanged, and nothing is bound.
+
+**After apikit's 201:** the binding is written only while the workspace still
+exists. If anything fails, hub revokes the new token before it answers:
+
+| Status | Condition |
+|--------|-----------|
+| 404 | `workspace not found`: the workspace was deleted meanwhile |
+| 500 | `failed to bind the token to the workspace`: apikit's answer could not be read, or the binding could not be written |
+
+Hub never logs the token, apikit's answer or the `Authorization` header. A
+successful mint emits `hub.token.bind`.
+
+### GET /api/v1/workspaces/:slug/tokens
+
+List the tokens bound to the workspace, revoked and expired ones included,
+ordered by the token's `created_at` and then `token_id`. Works on archived
+workspaces. A binding whose token apikit no longer holds is left out. Never
+carries a token or its hash.
+
+**Authentication:** API key, PAT with `tokens:read` or `tokens:manage`, or
+admin token. Only the workspace's owner or an admin token may list.
+
+**Response:** HTTP 200 OK with a JSON array, `[]` when there is nothing to list:
+
+```json
+[
+  {
+    "token_id": "k3x9q2mz",
+    "name": "agent-fox service",
+    "permissions": ["workspaces:read", "patches:read"],
+    "workspace": "my-ws",
+    "expires_at": "2027-01-19T10:00:00Z",
+    "revoked_at": null,
+    "created_at": "2026-10-21T10:00:00Z"
+  }
+]
+```
+
+`expires_at` and `revoked_at` are `null` when unset; `permissions` is `[]` when
+the stored list cannot be read.
+
+**Checks, in order:**
+
+| Status | Condition |
+|--------|-----------|
+| 401 | `authentication required` |
+| 403 | `this token is bound to workspace <S>` with `error_type: token_bound` (500 `internal server error` when the binding lookup fails) |
+| 403 | `PAT requires tokens:read scope`: a PAT with neither `tokens:read` nor `tokens:manage` |
+| 404 | `workspace not found`: the workspace does not exist, or the caller is neither its owner nor an admin token |
+| 500 | `internal server error`: the listing query failed |
+
+### The binding sweep
+
+At start and then every hour, hub revokes the live tokens of bindings whose
+workspace no longer exists and removes those bindings, and removes bindings
+whose token apikit no longer holds, in one transaction per pass. Bindings of
+revoked or expired tokens whose workspace exists are kept, so the listing above
+shows them. A failed pass is logged and retried at the next pass.
 
 ---
 
@@ -4598,6 +4722,9 @@ query endpoint (`GET /api/v1/audit`). Each event has an `event_type`, an actor
 | `hub.patch.replace` | `patch` | A patch branch is replaced during an `origin`-mode sync (one event per replaced branch; `resource_id` is the branch name, `action` is `replace`, as for the reset-triggered event) | `branch_name`, `replaced_sha`, `origin_sha` |
 | `hub.patch.mirror_failed` | `patch` | A hub-mode mirror of a registered patch branch to the fork failed (one event per failed branch) | `branch_name`, `error` (with any URL userinfo removed) |
 | `hub.patch.reset` | `patch` | A patch branch is reset to the fork's tip via `POST /workspaces/:slug/patches/:id/reset-to-origin` | `branch_name`, `action` (`none`, `created`, `fast_forwarded` or `replaced`), `local_sha` (omitted when no local branch), `origin_sha`, `replaced_sha` (present only for `replaced`) |
+| `hub.workspace.delete` | `workspace` | A workspace is deleted via `DELETE /workspaces/:slug` | `revoked_tokens`: the ids of the bound tokens this deletion revoked, sorted, `[]` when none (tokens revoked before are not listed) |
+| `hub.token.bind` | `token` | A token minted via `POST /workspaces/:slug/tokens` is bound to the workspace (once per successful mint, after the binding is committed; `resource_id` is the token id, `action` is `bind`; never for a refusal, a pass-through of apikit's answer or a rollback) | `token_id`, `workspace`, `permissions`, `expires_at` (`null` when the token does not expire). Never the token |
+| `hub.token.bound_refused` | `token` | A request is refused because its token is bound to another workspace, or the route cannot be used by a bound token (`resource_id` is the token id, `action` is `refuse`, `workspace` the bound workspace, actor type `pat`, actor id the token's user when the refusing layer has authenticated it). At most one event per token per minute | `token_id`, `bound_workspace`, `requested_workspace` (only when the request named one), `method`, `route` (the route template, or the git route), `status` (403 or 404), `surface` (`api` or `git`), `suppressed` (refusals of the same token held back since its previous event) |
 | `hub.sandbox.lease` | `sandbox` | A sandbox lease is issued via `POST /workspaces/:slug/sandboxes` (one event per successful request; `resource_id` is the lease ID, `action` is `lease`; ending a lease emits `hub.sandbox.destroy` or `hub.sandbox.expire` and no event of this kind) | `lease_id`, `profile`, `purpose`, `ttl` (a Go duration string such as `1h0m0s`), `secret_names`, `optional_secret_names`. Never a secret value, an environment value or the lease token |
 | `hub.sandbox.create` | `sandbox` | The sandbox gateway made the sandbox of a lease, which became `active` (`resource_id` is the lease ID, `action` is `create`; actor type `lease` and actor ID the lease's `created_by`) | `lease_id`, `sandbox_id`, `image`, `network` |
 | `hub.sandbox.failed` | `sandbox` | A lease became `failed` because its sandbox could not be created (`action` is `fail`; actor type `lease` and actor ID the lease's `created_by`) | `lease_id`, `error` (scrubbed: no secret value, fixed environment value or URL user information, at most 1024 bytes) |

@@ -117,7 +117,7 @@ func requireWorkspaceRead(c echo.Context, auth *apikit.AuthInfo, slug string, sq
 	}
 	// A PAT bound to another workspace treats this one as not its own
 	// (spec 33).
-	denied, err := wsaccess.DeniesWorkspace(sqliteDB, auth, slug)
+	denied, err := wsaccess.DeniesWorkspace(sqliteDB, auth, slug, wsaccess.SiteOf(c, http.StatusNotFound))
 	if err != nil {
 		_ = apikit.WriteAPIError(c, http.StatusInternalServerError, "internal server error")
 		return false
@@ -159,6 +159,15 @@ func ownedWorkspaces(auth *apikit.AuthInfo, sqliteDB *sql.DB) (map[string]bool, 
 		owned[slug] = true
 	}
 	return owned, rows.Err()
+}
+
+// reportBindingRefusal reports the 404 of a cross-workspace query for a
+// workspace the caller may not read when the cause is the caller's binding
+// (spec 34). ownedWorkspaces has already confined a bound token, so this
+// lookup only decides whether to report; its error leaves the refusal as it
+// is.
+func reportBindingRefusal(c echo.Context, sqliteDB *sql.DB, auth *apikit.AuthInfo, slug string) {
+	_, _ = wsaccess.DeniesWorkspace(sqliteDB, auth, slug, wsaccess.SiteOf(c, http.StatusNotFound))
 }
 
 // errWorkspaceAccessDenied is returned by checkWorkspaceAccess once it has
@@ -209,7 +218,7 @@ func checkWorkspaceAccess(c echo.Context, auth *apikit.AuthInfo, slug string, sq
 		}
 
 		// To a bound token every other workspace does not exist.
-		denied, err := wsaccess.DeniesWorkspace(sqliteDB, auth, slug)
+		denied, err := wsaccess.DeniesWorkspace(sqliteDB, auth, slug, wsaccess.SiteOf(c, http.StatusNotFound))
 		if err != nil {
 			return refused(apikit.WriteAPIError(c, http.StatusInternalServerError,
 				"internal server error"))

@@ -257,6 +257,13 @@ func main() {
 		APIKit: server.Echo(),
 		Audit:  auditEmitter,
 	})
+	// Record every request refused because of a token binding as
+	// hub.token.bound_refused, at most once per token per minute.
+	boundtoken.Install(auditEmitter)
+	// MountWorkspaceHandlers has created the binding table; the sweep revokes
+	// and removes bindings whose workspace or token is gone, at once and then
+	// every hour, and never holds up the start.
+	go boundtoken.StartBindingSweep(ctx, database.SqlDB)
 
 	// Wire audit dependencies into workspace package for force-close on
 	// archive/delete (19-REQ-8, 19-REQ-9).

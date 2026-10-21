@@ -103,6 +103,7 @@ func handleAuditQuery(store Store, sqliteDB *sql.DB) echo.HandlerFunc {
 		}
 		params.allowedWorkspaces = owned
 		if owned != nil && params.workspace != "" && !owned[params.workspace] {
+			reportBindingRefusal(c, sqliteDB, auth, params.workspace)
 			return apikit.WriteAPIError(c, http.StatusNotFound, "workspace not found")
 		}
 
@@ -632,6 +633,7 @@ func handleSSEStream(store Store, mgr *SSEManager, sqliteDB *sql.DB) echo.Handle
 			return apikit.WriteAPIError(c, http.StatusInternalServerError, "internal server error")
 		}
 		if owned != nil && c.QueryParam("workspace") != "" && !owned[c.QueryParam("workspace")] {
+			reportBindingRefusal(c, sqliteDB, auth, c.QueryParam("workspace"))
 			return apikit.WriteAPIError(c, http.StatusNotFound, "workspace not found")
 		}
 

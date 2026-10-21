@@ -150,3 +150,79 @@ func TestMainWiresTheWebhookIngress_TS_32_56(t *testing.T) {
 		}
 	}
 }
+
+// packageCalls returns, in source order, the calls of package pkg in func main
+// of main.go ("pkg.Func" with its position), and the ones started with go.
+func packageCalls(t *testing.T, pkgs ...string) (calls []wiringStep, goStarts map[string]bool) {
+	t.Helper()
+	file, err := parser.ParseFile(token.NewFileSet(), "main.go", nil, parser.SkipObjectResolution)
+	if err != nil {
+		t.Fatalf("parse main.go: %v", err)
+	}
+	goStarts = map[string]bool{}
+	name := func(n ast.Node) string {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return ""
+		}
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok {
+			return ""
+		}
+		if pkg, ok := sel.X.(*ast.Ident); ok && slices.Contains(pkgs, pkg.Name) {
+			return pkg.Name + "." + sel.Sel.Name
+		}
+		return ""
+	}
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Name.Name != "main" || fn.Recv != nil {
+			continue
+		}
+		ast.Inspect(fn.Body, func(n ast.Node) bool {
+			if g, ok := n.(*ast.GoStmt); ok {
+				if s := name(g.Call); s != "" {
+					goStarts[s] = true
+				}
+			}
+			if s := name(n); s != "" {
+				calls = append(calls, wiringStep{s, n.Pos()})
+			}
+			return true
+		})
+	}
+	return calls, goStarts
+}
+
+// TS-34-40: main starts the binding sweep with go after the binding table
+// exists, registers the bound-token routes right after
+// MountWorkspaceHandlers, and registers the refusal reporter.
+// Requirement: 34-REQ-6.6
+func TestMainWiresBoundTokens_TS_34_40(t *testing.T) {
+	calls, goStarts := packageCalls(t, "boundtoken", "workspace")
+	pos := map[string]token.Pos{}
+	order := []string{}
+	for _, c := range calls {
+		if _, seen := pos[c.name]; !seen {
+			pos[c.name] = c.pos
+			order = append(order, c.name)
+		}
+	}
+	for _, want := range []string{"workspace.MountWorkspaceHandlers", "boundtoken.RegisterRoutes", "boundtoken.Install", "boundtoken.StartBindingSweep"} {
+		if !pos[want].IsValid() {
+			t.Fatalf("main does not call %s (calls %v)", want, order)
+		}
+	}
+	if !goStarts["boundtoken.StartBindingSweep"] {
+		t.Error("StartBindingSweep is not started with go")
+	}
+	// MountWorkspaceHandlers creates the binding table (through the
+	// workspace schema), so the sweep must start after it.
+	if pos["workspace.MountWorkspaceHandlers"] >= pos["boundtoken.StartBindingSweep"] {
+		t.Error("the sweep starts before MountWorkspaceHandlers has created the binding table")
+	}
+	i := slices.Index(order, "workspace.MountWorkspaceHandlers")
+	if i < 0 || i+1 >= len(order) || order[i+1] != "boundtoken.RegisterRoutes" {
+		t.Errorf("calls %v; want boundtoken.RegisterRoutes right after workspace.MountWorkspaceHandlers", order)
+	}
+}

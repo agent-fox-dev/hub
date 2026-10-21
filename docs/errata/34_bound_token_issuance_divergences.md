@@ -46,3 +46,14 @@ delivered.
    which records the count. Memory is bounded by the tokens refused within the last minute plus
    the tokens with a pending count, at most one entry per bound token
    (`TestReporter_BoundedMemory_TS_34_62`, `TestReporter_PropertyWindow_TS_34_61`).
+
+5. **`wsaccess.AuthorizeWorkspace` reports its refusals without a method or route.**
+   34-REQ-10.2 puts the request's method and route template in every report.
+   `AuthorizeWorkspace(db, auth, slug)` has no request: its callers (sandboxes, forge, merge,
+   carrypatch, the bound-token handlers) do not pass one. It reports through
+   `wsaccess.DeniesWorkspace` with a `RefusalSite` that holds only the status and the surface
+   (`internal/wsaccess/wsaccess.go`). Behind spec 33's guard, a bound token never reaches it
+   for another workspace, because the guard has already refused and reported with the full
+   route. Every other refusal point reports the method and the route
+   (`TestRefusalPoints_ReportOnce_TS_34_58` and its halves in `internal/workspace`,
+   `internal/gitserver` and `internal/audit`).

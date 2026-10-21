@@ -59,7 +59,8 @@ func AuthorizeWorkspace(db *sql.DB, auth *apikit.AuthInfo, slug string) (*Worksp
 	// A PAT bound to another workspace must not see this one (spec 33). The
 	// workspace row is closed by now, so the lookup can run on a
 	// single-connection pool; a failed lookup denies access.
-	denied, err := DeniesWorkspace(db, auth, ws.Slug)
+	// It has no request, so its report carries no method or route.
+	denied, err := DeniesWorkspace(db, auth, ws.Slug, RefusalSite{Status: http.StatusNotFound, Surface: SurfaceAPI})
 	if err != nil {
 		return nil, http.StatusInternalServerError, "internal server error"
 	}

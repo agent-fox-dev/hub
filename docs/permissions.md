@@ -353,7 +353,7 @@ These 8 permissions are registered automatically by `apikit`'s
 |---|---|
 | **Source** | apikit |
 | **Grants** | List and retrieve the authenticated user's PATs (metadata only) |
-| **Endpoints** | `GET /api/v1/user/tokens`, `GET /api/v1/user/tokens/:token_id` |
+| **Endpoints** | `GET /api/v1/user/tokens`, `GET /api/v1/user/tokens/:token_id`; hub's `GET /api/v1/workspaces/:slug/tokens` (the workspace's owner) |
 
 ### tokens:manage
 
@@ -361,7 +361,7 @@ These 8 permissions are registered automatically by `apikit`'s
 |---|---|
 | **Source** | apikit |
 | **Grants** | Create and revoke PATs, and modify PAT permissions. Privilege escalation is blocked: a new PAT's permissions must be a subset of the creating PAT's permissions. |
-| **Endpoints** | `POST /api/v1/user/tokens`, `DELETE /api/v1/user/tokens/:token_id`, `PUT /api/v1/user/tokens/:token_id/permissions`, `PATCH /api/v1/user/tokens/:token_id/permissions`, `DELETE /api/v1/user/tokens/:token_id/permissions` |
+| **Endpoints** | `POST /api/v1/user/tokens`, `DELETE /api/v1/user/tokens/:token_id`, `PUT /api/v1/user/tokens/:token_id/permissions`, `PATCH /api/v1/user/tokens/:token_id/permissions`, `DELETE /api/v1/user/tokens/:token_id/permissions`; hub's `POST /api/v1/workspaces/:slug/tokens` (checked by apikit's route, which hub calls) and `GET /api/v1/workspaces/:slug/tokens` |
 
 ### tokens:write
 
@@ -845,8 +845,18 @@ HTTP 404 (not 403) consistent with the anti-enumeration policy.
 ## Workspace-Bound PATs
 
 Hub can bind a PAT to exactly one workspace `S`, through a row in its SQLite
-table `token_workspace_bindings`, keyed by the PAT's token id. No API writes
-bindings yet. API keys and admin tokens cannot be bound. For a bound PAT:
+table `token_workspace_bindings`, keyed by the PAT's token id. API keys and
+admin tokens cannot be bound.
+
+**Who may mint and list bound tokens.** `POST /api/v1/workspaces/:slug/tokens`
+is open to the owner of an active workspace with an API key, or with a PAT
+holding `tokens:manage`; the token is minted by apikit's own route, so a PAT can
+grant only scopes it holds. Admin tokens cannot mint (a token needs a user as
+its owner). `GET /api/v1/workspaces/:slug/tokens` is open to the owner (a PAT
+needs `tokens:read` or `tokens:manage`) and to admin tokens. Deleting a
+workspace revokes its bound tokens.
+
+For a bound PAT:
 
 - **Workspace-scoped routes** (path template with `workspaces/:slug`) answer
   `404 workspace not found` for every slug other than `S`. The check runs
@@ -863,6 +873,10 @@ bindings yet. API keys and admin tokens cannot be bound. For a bound PAT:
   `POST /user/tokens`.
 - **Git** serves `S`'s repository under the `git:read`/`git:write` scopes and
   answers a pkt-line `404 repository not found` for every other repository.
+- **`tokens:*` scopes are inert.** A bound PAT can neither mint nor list bound
+  tokens (`403 token_bound`), nor reach apikit's token routes.
+- **Refusals are audited** as `hub.token.bound_refused`, at most once per token
+  per minute.
 
 The routes allowed to bound tokens are marked where they are registered
 (`wsaccess.AllowBoundTokens`). A route nobody marks is refused, which is the
