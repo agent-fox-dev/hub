@@ -623,3 +623,18 @@ func useClient(rc *recordingClient, built *atomic.Int64) func(*Config) {
 		}
 	}
 }
+
+// addOrgMember puts workspace slug in org and makes user a member of it,
+// creating apikit's org_members table on first use.
+func addOrgMember(t *testing.T, db *sql.DB, slug, org, user string) {
+	t.Helper()
+	for _, stmt := range []string{
+		`CREATE TABLE IF NOT EXISTS org_members (org_id TEXT NOT NULL, user_id TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT '', PRIMARY KEY (org_id, user_id))`,
+		`UPDATE workspaces SET org_id = '` + org + `' WHERE slug = '` + slug + `'`,
+		`INSERT OR IGNORE INTO org_members (org_id, user_id) VALUES ('` + org + `', '` + user + `')`,
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("addOrgMember: %v", err)
+		}
+	}
+}
