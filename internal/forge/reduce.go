@@ -222,6 +222,20 @@ func (p payload) names(key string, keys ...string) []string {
 	return out
 }
 
+// maxTitleBytes is the longest title an event holds.
+const maxTitleBytes = 256
+
+// title cuts a title from a payload to maxTitleBytes on a UTF-8 boundary.
+func title(s string) string {
+	return truncateUTF8(strings.ToValidUTF8(s, "\uFFFD"), maxTitleBytes)
+}
+
+// payloadURL is a URL from a payload without its user information, which the audit log must
+// not hold.
+func payloadURL(s string) string {
+	return userinfoPattern.ReplaceAllString(s, "${1}")
+}
+
 // need turns a missing field into the error of a payload that lacks it.
 func need(ok bool, what string) error {
 	if !ok {
