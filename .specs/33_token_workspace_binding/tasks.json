@@ -216,7 +216,7 @@
       "done_when": [
         "hook_ordering_test.go still passes unchanged"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     },
     {

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	githttp "github.com/go-git/go-git/v5/plumbing/transport/http"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/agent-fox-dev/hub/internal/audit"
 	"github.com/agent-fox-dev/hub/internal/secrets"
+	"github.com/agent-fox-dev/hub/internal/wsaccess"
 	"github.com/agent-fox-dev/hub/internal/wslock"
 )
 
@@ -238,6 +240,15 @@ func lookupWorkspaceForAuth(c echo.Context, db *sql.DB, slug string, auth *apiki
 	}
 
 	if ws.OwnerID != auth.UserID {
+		return nil, respondError(c, http.StatusNotFound, "workspace not found")
+	}
+
+	// A PAT bound to another workspace must not see this one (spec 33).
+	boundSlug, bound, err := wsaccess.BoundSlug(db, auth)
+	if err != nil {
+		return nil, respondError(c, http.StatusInternalServerError, "internal server error")
+	}
+	if bound && boundSlug != ws.Slug {
 		return nil, respondError(c, http.StatusNotFound, "workspace not found")
 	}
 
@@ -868,8 +879,14 @@ func handleListWorkspaces(db *sql.DB) echo.HandlerFunc {
 
 		includeArchived := c.QueryParam("include_archived") == "true"
 
+		// A bound PAT lists at most its own workspace (spec 33). The
+		// binding is resolved before any rows are opened.
+		boundSlug, bound, err := wsaccess.BoundSlug(db, auth)
+		if err != nil {
+			return respondError(c, http.StatusInternalServerError, "internal server error")
+		}
+
 		var workspaces []*Workspace
-		var err error
 
 		if isAdmin(auth) {
 			workspaces, err = listAllWorkspaces(db, includeArchived)
@@ -878,6 +895,9 @@ func handleListWorkspaces(db *sql.DB) echo.HandlerFunc {
 		}
 		if err != nil {
 			return respondError(c, http.StatusInternalServerError, "internal server error")
+		}
+		if bound {
+			workspaces = slices.DeleteFunc(workspaces, func(ws *Workspace) bool { return ws.Slug != boundSlug })
 		}
 
 		// Build response array.

@@ -6,12 +6,16 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/labstack/echo/v4"
 	"github.com/txsvc/apikit"
+
+	"github.com/agent-fox-dev/hub/internal/audit"
 )
 
 // testEnv holds a test HTTP server and database for integration tests.
@@ -227,8 +231,9 @@ func (env *testEnv) deleteWorkspaceBySlug(t *testing.T, slug string) {
 // errorEnvelope represents the JSON error response envelope.
 type errorEnvelope struct {
 	Error struct {
-		Code    int    `json:"code"`
-		Message string `json:"message"`
+		Code      int    `json:"code"`
+		Message   string `json:"message"`
+		ErrorType string `json:"error_type,omitempty"`
 	} `json:"error"`
 }
 
@@ -275,4 +280,114 @@ func parseWorkspaceListJSON(t *testing.T, rec *httptest.ResponseRecorder) []work
 		t.Fatalf("failed to decode workspace list response: %v", err)
 	}
 	return resp
+}
+
+// realHub is hub's API stack on a real apikit server and database, mounted
+// with MountWorkspaceHandlers: apikit's auth middleware, both binding guards
+// and the workspace routes (spec 33).
+type realHub struct {
+	server *apikit.Server
+	db     *apikit.DB
+	apiKey string // an API key of user u1
+}
+
+// openRealServer creates an apikit server and database in a temporary
+// directory, without mounting anything.
+func openRealServer(t *testing.T) (*apikit.Server, *apikit.DB) {
+	t.Helper()
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	t.Setenv("XDG_DATA_HOME", dir)
+	config := "[server]\nport = 0\n\n[database]\npath = \"" + filepath.Join(dir, "hub.db") + "\"\n"
+	if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte(config), 0o600); err != nil {
+		t.Fatalf("writing config: %v", err)
+	}
+	cfg, err := apikit.LoadConfig()
+	if err != nil {
+		t.Fatalf("apikit.LoadConfig: %v", err)
+	}
+	database, err := apikit.OpenDatabase(cfg.Database.Path)
+	if err != nil {
+		t.Fatalf("apikit.OpenDatabase: %v", err)
+	}
+	t.Cleanup(func() { database.Close() })
+	return apikit.NewServer(cfg, func() error { return nil }), database
+}
+
+// mountRealHub mounts the workspace handlers on server, with the audit scopes
+// registered as cmd/af-hub does, and creates user u1 with an API key.
+func mountRealHub(t *testing.T, server *apikit.Server, database *apikit.DB) *realHub {
+	t.Helper()
+	if err := MountWorkspaceHandlers(server, database, audit.Permissions()...); err != nil {
+		t.Fatalf("MountWorkspaceHandlers: %v", err)
+	}
+	now := apikit.NowUTC()
+	if _, err := database.SqlDB.Exec(`INSERT INTO users (id, username, email, full_name, role, status, provider, provider_id, created_at, updated_at)
+		VALUES ('u1', 'u1', 'u1@example.com', '', 'user', 'active', 'github', 'p1', ?, ?)`, now, now); err != nil {
+		t.Fatalf("inserting user u1: %v", err)
+	}
+	key, err := apikit.GenerateAPIKey(database.SqlDB, "u1", 0, echo.New().Logger)
+	if err != nil {
+		t.Fatalf("apikit.GenerateAPIKey: %v", err)
+	}
+	return &realHub{server: server, db: database, apiKey: key.FullKey}
+}
+
+// newRealHub opens a real apikit server and mounts the workspace handlers.
+func newRealHub(t *testing.T) *realHub {
+	t.Helper()
+	server, database := openRealServer(t)
+	return mountRealHub(t, server, database)
+}
+
+// do sends a request through the server's Echo instance with credential as
+// the Bearer token.
+func (h *realHub) do(method, path, credential, body string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(method, path, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	if credential != "" {
+		req.Header.Set("Authorization", "Bearer "+credential)
+	}
+	rec := httptest.NewRecorder()
+	h.server.Echo().ServeHTTP(rec, req)
+	return rec
+}
+
+// mintPAT creates a PAT of u1 with the given scopes through apikit's
+// POST /user/tokens and returns the token and its id.
+func (h *realHub) mintPAT(t *testing.T, scopes ...string) (token, tokenID string) {
+	t.Helper()
+	perms, _ := json.Marshal(scopes)
+	if scopes == nil {
+		perms = []byte("[]")
+	}
+	rec := h.do(http.MethodPost, "/api/v1/user/tokens", h.apiKey, `{"name":"t","permissions":`+string(perms)+`}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("minting a PAT with %v: status %d: %s", scopes, rec.Code, rec.Body)
+	}
+	var created struct {
+		Token   string `json:"token"`
+		TokenID string `json:"token_id"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil || created.Token == "" || created.TokenID == "" {
+		t.Fatalf("PAT response: %v: %s", err, rec.Body)
+	}
+	return created.Token, created.TokenID
+}
+
+// bindToken writes a binding row for tokenID naming slug.
+func bindToken(t *testing.T, db *sql.DB, tokenID, slug string) {
+	t.Helper()
+	if _, err := db.Exec(`INSERT INTO token_workspace_bindings (token_id, slug, created_at) VALUES (?, ?, ?)`,
+		tokenID, slug, apikit.NowUTC()); err != nil {
+		t.Fatalf("binding %s to %s: %v", tokenID, slug, err)
+	}
+}
+
+// seed inserts a workspace owned by ownerID with the given status.
+func (h *realHub) seed(t *testing.T, slug, ownerID, status string) {
+	t.Helper()
+	if err := insertWorkspace(h.db.SqlDB, &Workspace{Slug: slug, GitURL: "https://github.com/org/" + slug, OwnerID: ownerID, Status: status}); err != nil {
+		t.Fatalf("seeding workspace %s: %v", slug, err)
+	}
 }
