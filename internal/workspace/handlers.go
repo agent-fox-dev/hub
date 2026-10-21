@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
+	"maps"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -872,32 +873,33 @@ func handleListWorkspaces(db *sql.DB) echo.HandlerFunc {
 
 		includeArchived := c.QueryParam("include_archived") == "true"
 
-		// A bound PAT lists at most its own workspace (spec 33). The
-		// binding is resolved before any rows are opened.
-		boundSlug, bound, err := wsaccess.BoundSlug(db, auth)
+		// The caller's readable set decides the listing (spec 35): every
+		// workspace for an admin token, else the caller's own workspaces and
+		// those of the caller's orgs, at most the bound one for a bound PAT.
+		readable, all, err := wsaccess.ReadableSlugs(db, auth)
 		if err != nil {
 			return respondError(c, http.StatusInternalServerError, "internal server error")
 		}
 
 		var workspaces []*Workspace
-
-		if isAdmin(auth) {
+		if all {
 			workspaces, err = listAllWorkspaces(db, includeArchived)
 		} else {
-			workspaces, err = listWorkspacesByOwner(db, auth.UserID, includeArchived)
+			workspaces, err = listWorkspacesBySlugs(db, slices.Collect(maps.Keys(readable)), includeArchived)
 		}
 		if err != nil {
 			return respondError(c, http.StatusInternalServerError, "internal server error")
-		}
-		if bound {
-			workspaces = slices.DeleteFunc(workspaces, func(ws *Workspace) bool { return ws.Slug != boundSlug })
 		}
 
 		// Build response array.
 		orgSlugs := orgSlugsOf(db, workspaces)
 		result := make([]map[string]any, 0, len(workspaces))
 		for _, ws := range workspaces {
-			result = append(result, workspaceResponse(ws, orgSlugs[ws.Slug], wsaccess.AccessNone))
+			access := wsaccess.AccessAdmin
+			if !all {
+				access = readable[ws.Slug]
+			}
+			result = append(result, workspaceResponse(ws, orgSlugs[ws.Slug], access))
 		}
 
 		return c.JSON(http.StatusOK, result)

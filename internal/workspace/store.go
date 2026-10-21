@@ -4,6 +4,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/agent-fox-dev/hub/internal/wsaccess"
@@ -160,27 +162,6 @@ func getWorkspaceBySlug(db *sql.DB, slug string) (*Workspace, error) {
 	return ws, nil
 }
 
-// listWorkspacesByOwner retrieves all workspaces owned by the given user.
-// If includeArchived is false, only active workspaces are returned.
-// Results are ordered by created_at descending.
-func listWorkspacesByOwner(db *sql.DB, ownerID string, includeArchived bool) ([]*Workspace, error) {
-	query := `SELECT ` + workspaceSelectColumns + ` FROM workspaces WHERE owner_id = ?`
-	args := []any{ownerID}
-
-	if !includeArchived {
-		query += ` AND status != 'archived'`
-	}
-	query += ` ORDER BY created_at DESC`
-
-	rows, err := db.Query(query, args...)
-	if err != nil {
-		return nil, fmt.Errorf("list workspaces for owner %q: %w", ownerID, err)
-	}
-	defer rows.Close()
-
-	return scanWorkspaces(rows)
-}
-
 // listAllWorkspaces retrieves all workspaces (admin use).
 // If includeArchived is false, only active workspaces are returned.
 // Results are ordered by created_at descending.
@@ -317,5 +298,38 @@ func scanWorkspaces(rows *sql.Rows) ([]*Workspace, error) {
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate workspace rows: %w", err)
 	}
+	return workspaces, nil
+}
+
+// listSlugChunk is the most slugs one by-slug list query binds.
+const listSlugChunk = 500
+
+// listWorkspacesBySlugs loads the workspaces named by slugs, in chunks of at
+// most listSlugChunk slugs, excluding archived ones unless includeArchived,
+// and returns them ordered by created_at descending, as the listing queries
+// are. Slugs that name no workspace are skipped.
+func listWorkspacesBySlugs(db *sql.DB, slugs []string, includeArchived bool) ([]*Workspace, error) {
+	var workspaces []*Workspace
+	for chunk := range slices.Chunk(slugs, listSlugChunk) {
+		query := `SELECT ` + workspaceSelectColumns + ` FROM workspaces WHERE slug IN (?` + strings.Repeat(", ?", len(chunk)-1) + `)`
+		if !includeArchived {
+			query += ` AND status != 'archived'`
+		}
+		args := make([]any, len(chunk))
+		for i, slug := range chunk {
+			args[i] = slug
+		}
+		rows, err := db.Query(query, args...)
+		if err != nil {
+			return nil, fmt.Errorf("list workspaces by slug: %w", err)
+		}
+		found, err := scanWorkspaces(rows)
+		rows.Close()
+		if err != nil {
+			return nil, err
+		}
+		workspaces = append(workspaces, found...)
+	}
+	slices.SortStableFunc(workspaces, func(a, b *Workspace) int { return strings.Compare(b.CreatedAt, a.CreatedAt) })
 	return workspaces, nil
 }
