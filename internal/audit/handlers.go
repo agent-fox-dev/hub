@@ -36,11 +36,12 @@ func handleCreateSession(store Store, metrics *Metrics, sqliteDB *sql.DB) echo.H
 			return apikit.WriteAPIError(c, http.StatusBadRequest, "workspace_slug is required")
 		}
 
-		// Sessions may only be opened in workspaces the caller owns (admin
-		// tokens may open sessions anywhere). This keeps cost and session
-		// listings per workspace trustworthy and bounds the workspace label
-		// on the active-sessions gauge to real workspaces.
-		if !requireWorkspaceRead(c, auth, req.WorkspaceSlug, sqliteDB) {
+		// Opening a session changes the workspace: only its owner and admin
+		// tokens may, and a member of its org is refused with 403. This
+		// keeps cost and session listings per workspace trustworthy and
+		// bounds the workspace label on the active-sessions gauge to real
+		// workspaces.
+		if !requireWorkspaceWrite(c, auth, req.WorkspaceSlug, sqliteDB) {
 			return nil
 		}
 
@@ -77,10 +78,11 @@ func handleCreateSession(store Store, metrics *Metrics, sqliteDB *sql.DB) echo.H
 			return c.JSON(http.StatusCreated, created)
 		}
 		// Idempotent replay: the id already exists. Only return the existing
-		// record when it belongs to a workspace the caller may read, so a
-		// guessed id cannot disclose another tenant's session.
-		if created.WorkspaceSlug != req.WorkspaceSlug &&
-			!requireWorkspaceRead(c, auth, created.WorkspaceSlug, sqliteDB) {
+		// record when it belongs to a workspace the caller may read (its
+		// owner, a member of its org or an admin token), so a guessed id
+		// cannot disclose another tenant's session.
+		if created.WorkspaceSlug != req.WorkspaceSlug && sqliteDB != nil &&
+			!authorizeWorkspace(c, auth, created.WorkspaceSlug, sqliteDB, wsaccess.NeedRead) {
 			return nil
 		}
 		return c.JSON(http.StatusOK, created)

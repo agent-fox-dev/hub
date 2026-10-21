@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+
+	"github.com/txsvc/apikit"
 )
 
 // ---------------------------------------------------------------------------
@@ -1007,5 +1009,129 @@ func TestGetPostmortem_InvalidRunID400(t *testing.T) {
 
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Spec 36 — opening a session needs write access; replay is a read
+// Requirements: 36-REQ-6
+// ---------------------------------------------------------------------------
+
+// newOrgMemberEnv is a SQLite-backed audit environment with org O, in which
+// u1 owns the active workspace w and the archived workspace w-arch, u2 is a
+// member of O, and u3 is a stranger who owns w-x outside O.
+func newOrgMemberEnv(t *testing.T) *auditTestEnv {
+	t.Helper()
+	env := newAuditTestEnvWithSQLite(t)
+	env.seedWorkspaceInOrg(t, "w", "u1", "O", "active")
+	env.seedWorkspaceInOrg(t, "w-arch", "u1", "O", "archived")
+	env.seedWorkspaceInOrg(t, "w-x", "u3", "X", "active")
+	seedOrgMember(t, env.sqliteDB, "O", "u1")
+	seedOrgMember(t, env.sqliteDB, "O", "u2")
+	seedOrgMember(t, env.sqliteDB, "X", "u3")
+	return env
+}
+
+// TS-36-27: the owner and an admin token open sessions, whatever the
+// workspace's status. Requirement: 36-REQ-6.1
+func TestCreateSession_OwnerAndAdminOpen_TS_36_27(t *testing.T) {
+	env := newOrgMemberEnv(t)
+	for _, c := range []struct {
+		id, slug string
+		auth     *apikit.AuthInfo
+	}{
+		{"sess-owner", "w", patAuth("u1", "sessions:write")},
+		{"sess-admin", "w-arch", adminAuth()},
+	} {
+		rec := env.doJSON(t, http.MethodPost, "/api/v1/sessions", `{"id":"`+c.id+`","workspace_slug":"`+c.slug+`"}`, c.auth)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("POST /sessions %s for %s: (%d, %s); want 201", c.id, c.slug, rec.Code, rec.Body)
+		}
+		if got := parseSessionJSON(t, rec); got.ID != c.id || got.WorkspaceSlug != c.slug {
+			t.Errorf("created %s in %s; want %s in %s", got.ID, got.WorkspaceSlug, c.id, c.slug)
+		}
+		if n := env.countSessions(t, c.id); n != 1 {
+			t.Errorf("%d rows for %s; want 1", n, c.id)
+		}
+	}
+}
+
+// TS-36-28: a member opening a session gets the rule's 403 forbidden and no
+// row is written. Requirement: 36-REQ-6.2
+func TestCreateSession_MemberForbidden_TS_36_28(t *testing.T) {
+	env := newOrgMemberEnv(t)
+	before := queryTableCount(t, env.db, "agent_sessions")
+	rec := env.doJSON(t, http.MethodPost, "/api/v1/sessions", `{"id":"sess-m","workspace_slug":"w"}`, patAuth("u2", "sessions:write"))
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status %d (%s); want 403", rec.Code, rec.Body)
+	}
+	e := errOf(t, rec)
+	if e.Error.Message != "org members have read-only access to this workspace" || e.Error.ErrorType != "forbidden" {
+		t.Errorf("error %+v; want the read-only message with error_type forbidden", e.Error)
+	}
+	if after := queryTableCount(t, env.db, "agent_sessions"); after != before {
+		t.Errorf("session rows %d -> %d; want unchanged", before, after)
+	}
+}
+
+// TS-36-29: a stranger, or a slug that names no workspace, gets 404 and no
+// row is written. Requirement: 36-REQ-6.3
+func TestCreateSession_StrangerAndUnknown404_TS_36_29(t *testing.T) {
+	env := newOrgMemberEnv(t)
+	before := queryTableCount(t, env.db, "agent_sessions")
+	for _, slug := range []string{"w", "missing"} {
+		rec := env.doJSON(t, http.MethodPost, "/api/v1/sessions", `{"workspace_slug":"`+slug+`"}`, patAuth("u3", "sessions:write"))
+		if rec.Code != http.StatusNotFound || errOf(t, rec).Error.Message != "workspace not found" {
+			t.Errorf("%s: (%d, %s); want 404 workspace not found", slug, rec.Code, rec.Body)
+		}
+	}
+	if after := queryTableCount(t, env.db, "agent_sessions"); after != before {
+		t.Errorf("session rows %d -> %d; want unchanged", before, after)
+	}
+}
+
+// TS-36-30: replaying an id whose session lives in another workspace the
+// caller may read returns it with 200: to the owner, a member of that
+// workspace's org and an admin token. Requirement: 36-REQ-6.4
+func TestCreateSession_ReplayReadable_TS_36_30(t *testing.T) {
+	env := newOrgMemberEnv(t)
+	env.seedWorkspaceInOrg(t, "w1", "u1", "", "active")
+	env.seedWorkspaceInOrg(t, "w-u2", "u2", "", "active")
+	env.seedSession(t, &Session{ID: "sess-s", WorkspaceSlug: "w", Status: "active", CredentialID: "u1", CredentialType: "pat"})
+	before := queryTableCount(t, env.db, "agent_sessions")
+	for name, c := range map[string]struct {
+		slug string
+		auth *apikit.AuthInfo
+	}{
+		"owner":  {"w1", patAuth("u1", "sessions:write")},
+		"member": {"w-u2", patAuth("u2", "sessions:write")},
+		"admin":  {"w1", adminAuth()},
+	} {
+		rec := env.doJSON(t, http.MethodPost, "/api/v1/sessions", `{"id":"sess-s","workspace_slug":"`+c.slug+`"}`, c.auth)
+		if rec.Code != http.StatusOK {
+			t.Errorf("%s: (%d, %s); want 200", name, rec.Code, rec.Body)
+			continue
+		}
+		if got := parseSessionJSON(t, rec); got.ID != "sess-s" || got.WorkspaceSlug != "w" {
+			t.Errorf("%s: replay returned %s in %s; want sess-s in w", name, got.ID, got.WorkspaceSlug)
+		}
+	}
+	if after := queryTableCount(t, env.db, "agent_sessions"); after != before {
+		t.Errorf("session rows %d -> %d; want unchanged", before, after)
+	}
+}
+
+// TS-36-31: replaying an id whose session lives in a workspace the caller
+// may not read answers 404 without disclosing it. Requirement: 36-REQ-6.5
+func TestCreateSession_ReplayUnreadable404_TS_36_31(t *testing.T) {
+	env := newOrgMemberEnv(t)
+	env.seedWorkspaceInOrg(t, "w1", "u1", "", "active")
+	env.seedSession(t, &Session{ID: "sess-x", WorkspaceSlug: "w-x", Status: "active", CredentialID: "u3", CredentialType: "pat", Model: "secret-model"})
+	rec := env.doJSON(t, http.MethodPost, "/api/v1/sessions", `{"id":"sess-x","workspace_slug":"w1"}`, patAuth("u1", "sessions:write"))
+	if rec.Code != http.StatusNotFound || errOf(t, rec).Error.Message != "workspace not found" {
+		t.Fatalf("(%d, %s); want 404 workspace not found", rec.Code, rec.Body)
+	}
+	if body := rec.Body.String(); strings.Contains(body, "w-x") || strings.Contains(body, "secret-model") || strings.Contains(body, "u3") {
+		t.Errorf("body discloses the session: %s", body)
 	}
 }

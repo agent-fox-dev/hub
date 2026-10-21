@@ -17,3 +17,9 @@ delivered.
    `org_members` itself. `openTestSQLiteDB` now has both (36-REQ-10.4,
    `TestOpenTestSQLiteDB_OrgSchema_TS_36_46`), so the test's `ALTER TABLE` and `CREATE TABLE`
    statements were removed; its seed rows are unchanged.
+
+   TS-35-56 also asserted that a member gets the stranger's answer on every audit and session
+   route, which is what spec 36 changes (Goal 5 does not name it). Each task that opens a route
+   to members removed that route from the test's list, and the test keeps the routes on which a
+   member's answer stays the stranger's. `POST /sessions` left it with task 2: a member now gets
+   `403` with `error_type: forbidden` (36-REQ-6.2, `TestCreateSession_MemberForbidden_TS_36_28`).

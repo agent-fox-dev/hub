@@ -80,7 +80,7 @@
       "done_when": [
         "TS-33-35 and TS-34-58 still pass unchanged"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 3,

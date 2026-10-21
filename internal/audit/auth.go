@@ -129,6 +129,41 @@ func requireWorkspaceRead(c echo.Context, auth *apikit.AuthInfo, slug string, sq
 	return true
 }
 
+// requireWorkspaceWrite decides whether the caller may change the workspace
+// slug (open a session in it): the owner and admin tokens may, a member of
+// the workspace's org is refused with 403 forbidden, and everyone else, like
+// an unknown slug, with 404 workspace not found. The workspace's status is
+// not checked. When sqliteDB is nil the check is skipped. Returns false after
+// writing the refusal.
+func requireWorkspaceWrite(c echo.Context, auth *apikit.AuthInfo, slug string, sqliteDB *sql.DB) bool {
+	if sqliteDB == nil {
+		return true
+	}
+	return authorizeWorkspace(c, auth, slug, sqliteDB, wsaccess.NeedWrite)
+}
+
+// authorizeWorkspace applies the workspace access rule for need, binding
+// first: a PAT bound to another workspace is refused with 404 and reported
+// once with the request's method, route and status (spec 34), and then
+// wsaccess.AuthorizeWorkspace decides, its own binding check passing
+// silently. A failed lookup is 500. Returns false after writing the refusal.
+func authorizeWorkspace(c echo.Context, auth *apikit.AuthInfo, slug string, sqliteDB *sql.DB, need wsaccess.Need) bool {
+	denied, err := wsaccess.DeniesWorkspace(sqliteDB, auth, slug, wsaccess.SiteOf(c, http.StatusNotFound))
+	if err != nil {
+		_ = apikit.WriteAPIError(c, http.StatusInternalServerError, "internal server error")
+		return false
+	}
+	if denied {
+		_ = apikit.WriteAPIError(c, http.StatusNotFound, "workspace not found")
+		return false
+	}
+	if _, status, msg := wsaccess.AuthorizeWorkspace(sqliteDB, auth, slug, need); status != 0 {
+		_ = wsaccess.WriteRefusal(c, status, msg)
+		return false
+	}
+	return true
+}
+
 // ownedWorkspaces returns the set of workspace slugs the caller may read for
 // cross-workspace audit endpoints. It returns nil (unrestricted) for admin
 // tokens or when sqliteDB is nil, and an empty set when the caller owns no

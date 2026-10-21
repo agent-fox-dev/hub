@@ -16,6 +16,10 @@ import (
 // on the session, cost, per-run audit, unified audit query, SSE and
 // transcript routes and on session ingestion: these stay owner-only.
 // Requirement: 35-REQ-10.6
+//
+// Spec 36 opens these routes to members route by route (erratum 36, entry
+// 1); the test keeps the routes on which a member still gets the
+// stranger's answer. Opening a session is 36-REQ-6.2.
 func TestMemberAuditRoutesOwnerOnly_TS_35_56(t *testing.T) {
 	env := newAuditTestEnvWithSQLite(t)
 	api := env.echo.Group("/api/v1")
@@ -55,7 +59,6 @@ func TestMemberAuditRoutesOwnerOnly_TS_35_56(t *testing.T) {
 		{http.MethodGet, "/api/v1/workspaces/w/runs/run-1/transcript", ""},
 		{http.MethodGet, "/api/v1/audit?workspace=w", ""},
 		{http.MethodGet, "/api/v1/events?workspace=w", ""},
-		{http.MethodPost, "/api/v1/sessions", `{"workspace_slug":"w"}`},
 		{http.MethodPost, "/api/v1/sessions/" + sessionID(1) + "/complete", `{"status":"completed"}`},
 		{http.MethodPost, "/api/v1/workspaces/w/runs/run-1/events", `{"event_type":"x"}`},
 	} {
