@@ -87,7 +87,7 @@ func mapperFor(forge, event, action string) mapper {
 	if forge == forgeGitHub {
 		return githubMapper(event, action)
 	}
-	return nil
+	return gitlabMapper(event, action)
 }
 
 // actionOf reads the action of a payload; "" when it has none.
