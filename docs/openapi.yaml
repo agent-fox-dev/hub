@@ -97,8 +97,8 @@ info:
     patch-status, rerere and merge reads, the lease list and get, the forge
     reads and deliveries, the variable list and `vars/resolved`) admits
     members. *Write* (every change: workspace update, archive, reactivate,
-    delete, sync and reclone, patch, rebuild, rerere-forget, merge, rebase,
-    lease, forge and webhook writes, variable writes) answers a member `403`
+    delete, sync and reclone, branch push, patch, rebuild, rerere-forget,
+    merge, rebase, lease, forge and webhook writes, variable writes) answers a member `403`
     `org members have read-only access to this workspace` with
     `error_type: forbidden`. *Private* (workspace secrets, bound tokens)
     answers a member the stranger's `404`. The access check runs after the
@@ -115,16 +115,16 @@ info:
 
     ## Workspace lock
 
-    Operations that modify a workspace clone are serialised per workspace.
-    Handlers that cannot take the lock immediately answer `409` with
-    `error_type: workspace_busy`.
+    Operations that modify or read a workspace clone (the branch push among
+    them) are serialised per workspace. Handlers that cannot take the lock
+    immediately answer `409` with `error_type: workspace_busy`.
 
     A carry-patch rebuild applies patches in its own detached worktree and
     holds the lock only for its fetch phase (upstream fetch and base
     resolution) and its final phase (integration-ref update, patch
-    bookkeeping, optional push to `origin`). Sync, rollback, rerere forget and
-    batch rebase are rejected only while a rebuild is in one of those two
-    phases. Archive and reclone delete the directory the worktree lives in, so
+    bookkeeping, optional push to `origin`). Sync, rollback, rerere forget,
+    batch rebase and the branch push are rejected only while a rebuild is in
+    one of those two phases. Archive and reclone delete the directory the worktree lives in, so
     they answer `409 workspace_busy` for the whole rebuild.
 
     ## Error envelope
@@ -899,6 +899,165 @@ paths:
                 $ref: "#/components/schemas/Error"
         "500":
           description: Failed to delete the workspace directory, or the database update failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/workspaces/{slug}/branches/{name}/push:
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceSlug"
+      - name: name
+        in: path
+        required: true
+        description: >-
+          The branch name as one path segment, each `/` escaped as `%2F`
+          (`fix%2F42-nil-map` names `fix/42-nil-map`). Hub decodes the segment
+          as sent exactly once, so `a%2525b` names `a%25b`. A path with an
+          unescaped `/` in the name matches no route.
+        schema:
+          type: string
+    post:
+      tags: [Workspaces]
+      operationId: pushWorkspaceBranch
+      summary: Push one branch of the trunk to the workspace's origin
+      description: |
+        Pushes `refs/heads/<name>` of the workspace's trunk to
+        `refs/heads/<name>` on `origin` at `git_url`, with the workspace's
+        stored git credential (`GIT_PAT`, otherwise `GIT_USERNAME` and
+        `GIT_PASSWORD`, otherwise none), fast-forward only unless `force` is
+        given. Write access, as for every workspace write: the owner or an
+        admin token; a member of the workspace's org gets `403 forbidden`,
+        anyone else `404`. A PAT bound to another workspace gets `404` before
+        its scope is looked at.
+
+        Before the workspace lock is taken: the scope, access, body and name
+        checks, `status` `active` and `clone_status` `ready`, and the branches
+        this route does not push (on `carry_patch` the integration branch,
+        `400 integration_branch`, and a registered patch, `400 patch_branch`;
+        with `force`, the `branch` column, `400 protected_branch`). The lock is
+        taken without waiting (`409 workspace_busy`). Under it: with `force`
+        and no `branch` column, the trunk's `HEAD` branch is `400
+        protected_branch`; a missing branch is `404 branch_not_found`; then the
+        push, with a two-minute deadline from its start.
+
+        The push runs to its end when the caller goes away, and the lock is
+        held until it ends. If a push to hub's git server moved the checked-out
+        branch meanwhile, hub hard-resets the trunk's worktree to the new
+        `HEAD` before releasing the lock.
+
+        The message of every answer with one of the route's own error types
+        (`branch_not_found`, `integration_branch`, `patch_branch`,
+        `protected_branch`, `non_fast_forward`, `forge_*`) begins with the
+        error type and `: `. No answer carries the credential or the userinfo
+        of `git_url`. Every push attempt (the `200`s, `409 non_fast_forward`,
+        `404 forge_not_found`, `422`, the `502`s and `504`) records one
+        `hub.branch.push` audit event with `branch`, `sha`, `force`, `ok`,
+        `remote`, `remote_url`, and `result` or `error_type`; refusals and
+        `500`s record nothing.
+      x-required-scopes: ["workspaces:write"]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              description: An empty body, `{}` and unknown fields push without force.
+              properties:
+                force:
+                  type: boolean
+                  default: false
+                  description: >-
+                    Overwrite origin's branch when it has commits the trunk's
+                    branch lacks. Refused on the workspace's own branch.
+      responses:
+        "200":
+          description: >-
+            The push ended. `result` is `up_to_date` when origin already had
+            the commit and nothing was sent (also with `force`), `forced` when
+            `force` was given and origin accepted an update, and `pushed`
+            otherwise.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [branch, sha, remote, remote_url, result]
+                properties:
+                  branch: { type: string, example: fix/42-nil-map }
+                  sha:
+                    type: string
+                    description: The trunk's tip of the branch that was offered to origin.
+                  remote: { type: string, enum: [origin] }
+                  remote_url:
+                    type: string
+                    description: >-
+                      `git_url` with any userinfo removed; an scp-style address
+                      (`git@host:path`) comes back unchanged.
+                  result: { type: string, enum: [pushed, up_to_date, forced] }
+        "400":
+          description: >-
+            The body is not a JSON object or `force` is not a boolean; the
+            workspace is not active or its clone is not ready;
+            `integration_branch`, `patch_branch` or `protected_branch`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: >-
+            The PAT lacks `workspaces:write` (`PAT requires workspaces:write
+            scope to push branches`, no `error_type`), or the caller is a
+            member of the workspace's org (`error_type: forbidden`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: >-
+            `workspace not found`; `branch_not_found` (a name that breaks git's
+            branch-name rules, naming the rule, or a branch the trunk lacks);
+            `forge_not_found`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: >-
+            `workspace_busy`; `non_fast_forward`: origin's branch has commits
+            the trunk's lacks. The message names origin's commit when hub could
+            list origin's refs and ends with a hint to push with force, or to
+            sync the workspace on its own branch; when `force` was given and
+            origin still refused, it says origin refuses non-fast-forward
+            updates of the branch also with force.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: "`forge_rejected`: origin refused the ref; the message carries its reason, scrubbed."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: >-
+            A database or secrets store failure, a trunk that cannot be opened
+            or has no `origin`, or an unreadable `HEAD` for a forced push
+            without a `branch` column.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "502":
+          description: "`forge_unauthenticated`, `forge_forbidden`, `forge_unreachable` or `forge_error`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "504":
+          description: "`forge_timeout`: the push did not end within two minutes."
           content:
             application/json:
               schema:
@@ -7443,6 +7602,12 @@ components:
                 - forge_error
                 - forge_unreachable
                 - forge_timeout
+                - workspace_busy
+                - branch_not_found
+                - integration_branch
+                - patch_branch
+                - protected_branch
+                - non_fast_forward
                 - body_too_large
                 - workspace_archived
                 - unknown_schema_version

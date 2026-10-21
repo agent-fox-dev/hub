@@ -279,6 +279,19 @@ const EventForgeWebhookSet = "hub.forge.webhook.set"
 // false when there was no secret to remove.
 const EventForgeWebhookUnset = "hub.forge.webhook.unset"
 
+// EventBranchPush is the hub audit event emitted when a caller pushes a branch of
+// a workspace's trunk to its origin (POST /workspaces/:slug/branches/:name/push).
+// Hub emits one event for every push attempt, a request whose push was handed to
+// the transport, whether it succeeded or failed, and records it when the caller has
+// gone away; a request hub refuses on its own (401, 403, 404, 400, 409) or answers
+// 500 emits nothing. ResourceType is "branch", ResourceID the branch name, Action
+// "push" and Workspace the slug; the actor is the caller. Metadata: branch, sha (the
+// trunk's tip offered to origin), force and ok (booleans), remote ("origin"),
+// remote_url (the workspace's git_url with any userinfo removed), and result
+// (pushed, up_to_date or forced) when ok is true or error_type (the error_type hub
+// answered with) when ok is false; never a credential or a message from the forge.
+const EventBranchPush = "hub.branch.push"
+
 // HubEvent represents a hub-internal audit event passed to the Emitter.
 type HubEvent struct {
 	ID           string         `json:"id"`

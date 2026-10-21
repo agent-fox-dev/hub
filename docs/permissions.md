@@ -144,7 +144,7 @@ or `member`, whatever the PAT's scopes) and `org_slug`.
 | Routes | Need |
 |--------|------|
 | `GET /workspaces/:slug`, patch reads, rebuild reads, `rebuild-preview`, `patch-status`, `GET .../rerere`, merge reads, lease list and get, the forge reads and `forge/deliveries`, `GET .../vars`, `GET .../vars/resolved` | read |
-| workspace update, archive, reactivate, delete, sync, reclone; patch writes; rebuild submit, cancel, requeue, rollback; `DELETE .../rerere/*`; merge submit, cancel, requeue, `rebase`; lease issue and delete; the forge writes and `PUT`/`DELETE .../forge/webhook`; variable create, update, delete | write |
+| workspace update, archive, reactivate, delete, sync, reclone, branch push; patch writes; rebuild submit, cancel, requeue, rollback; `DELETE .../rerere/*`; merge submit, cancel, requeue, `rebase`; lease issue and delete; the forge writes and `PUT`/`DELETE .../forge/webhook`; variable create, update, delete | write |
 | workspace secrets (all four routes); bound tokens (`POST`, `GET .../tokens`) | private |
 
 The session, cost and audit routes decide through the same rule and keep their
@@ -249,6 +249,7 @@ sit outside it.
 | `DELETE /api/v1/workspaces/:slug` | allowed | write: must own (org member 403), must be archived |
 | `POST /api/v1/workspaces/:slug/sync` | allowed | write: must own (org member 403) |
 | `POST /api/v1/workspaces/:slug/reclone` | allowed | write: must own (org member 403) |
+| `POST /api/v1/workspaces/:slug/branches/:name/push` | allowed | write: must own (org member 403) |
 | patches, merges, rebase, rebuilds, rerere, patch-status | allowed | reads: owner or org member; writes: must own (org member 403); 404 otherwise |
 | sessions, cost, audit | allowed | reads: owner or org member (sessions and cost only on an active workspace); opening a session: must own (org member 403 `forbidden`); completing, usage reports and ingestion: owner only (org member 403) |
 
@@ -464,8 +465,8 @@ at startup.
 | | |
 |---|---|
 | **Source** | hub |
-| **Grants** | Update, archive, and reactivate workspaces owned by the authenticated user. Also grants access to the carry-patch sync endpoint (`POST /api/v1/workspaces/:slug/sync` when the workspace is in `carry_patch` mode), as an alternative to `workspaces:sync`. Grants access to forget (delete) rerere resolutions. |
-| **Endpoints** | `PATCH /api/v1/workspaces/:slug`, `POST /api/v1/workspaces/:slug/archive`, `POST /api/v1/workspaces/:slug/reactivate`, `POST /api/v1/workspaces/:slug/sync` (carry-patch sync only), `DELETE /api/v1/workspaces/:slug/rerere/*pathspec`, `GET /api/v1/workspaces`, `GET /api/v1/workspaces/:slug` |
+| **Grants** | Update, archive, and reactivate workspaces owned by the authenticated user, and push one of their branches to the workspace's `origin`. Also grants access to the carry-patch sync endpoint (`POST /api/v1/workspaces/:slug/sync` when the workspace is in `carry_patch` mode), as an alternative to `workspaces:sync`. Grants access to forget (delete) rerere resolutions. |
+| **Endpoints** | `PATCH /api/v1/workspaces/:slug`, `POST /api/v1/workspaces/:slug/archive`, `POST /api/v1/workspaces/:slug/reactivate`, `POST /api/v1/workspaces/:slug/branches/:name/push`, `POST /api/v1/workspaces/:slug/sync` (carry-patch sync only), `DELETE /api/v1/workspaces/:slug/rerere/*pathspec`, `GET /api/v1/workspaces`, `GET /api/v1/workspaces/:slug` |
 | **Implies** | `workspaces:read` (workspace CRUD endpoints only -- list and get workspaces; does NOT grant access to rerere list or patch-status which require the literal `workspaces:read` scope) |
 
 ### workspaces:delete
@@ -971,7 +972,7 @@ pkt-line 404 `"repository not found"`) to prevent workspace slug enumeration;
 a member's push, by someone who already knows the workspace exists, is a
 pkt-line 403 `"org members have read-only access to this workspace"`.
 
-All workspace-scoped endpoint groups (sync, reclone, patches, merges,
+All workspace-scoped endpoint groups (sync, reclone, branch push, patches, merges,
 rebuilds, rerere, patch-status, leases, forge, secrets, variables, bound
 tokens, sessions, audit) return HTTP 404 for a workspace the caller may not
 see, matching the CRUD endpoints, with the same body as for a slug that does
@@ -983,6 +984,7 @@ Other endpoint groups return HTTP 403 for missing PAT scopes:
 git scope check returns 403 with `"insufficient git permissions"`;
 sync handler returns 403 with `"PAT requires workspaces:sync scope to sync workspaces"`;
 reclone handler returns 403 with `"PAT requires workspaces:sync scope to reclone workspaces"`;
+branch push handler returns 403 with `"PAT requires workspaces:write scope to push branches"`, before the workspace is looked up;
 carry-patch sync handler returns 403 with `"missing required scope: workspaces:sync"`;
 secrets and variables handlers return 403 with `"insufficient permission scope"`;
 merge handlers return 403 with `"PAT requires merges:write scope"` (or

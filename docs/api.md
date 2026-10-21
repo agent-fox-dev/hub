@@ -36,7 +36,7 @@ they can access. The following scopes are available for workspace operations:
 |-------|-------------|---------------------|
 | `workspaces:read` | List and view access to the PAT owner's workspaces | GET /api/v1/workspaces, GET /api/v1/workspaces/:slug, GET /api/v1/workspaces/:slug/rerere, GET /api/v1/workspaces/:slug/patch-status |
 | `workspaces:create` | Create workspaces; implies read access | POST /api/v1/workspaces, GET /api/v1/workspaces, GET /api/v1/workspaces/:slug |
-| `workspaces:write` | Update, archive, and reactivate workspaces; implies read access | PATCH /api/v1/workspaces/:slug, POST /api/v1/workspaces/:slug/archive, POST /api/v1/workspaces/:slug/reactivate, DELETE /api/v1/workspaces/:slug/rerere/\*pathspec, GET /api/v1/workspaces, GET /api/v1/workspaces/:slug |
+| `workspaces:write` | Update, archive, and reactivate workspaces, and push a branch to the forge; implies read access | PATCH /api/v1/workspaces/:slug, POST /api/v1/workspaces/:slug/archive, POST /api/v1/workspaces/:slug/reactivate, POST /api/v1/workspaces/:slug/branches/:name/push, DELETE /api/v1/workspaces/:slug/rerere/\*pathspec, GET /api/v1/workspaces, GET /api/v1/workspaces/:slug |
 | `workspaces:delete` | Delete archived workspaces owned by the PAT's user; does **not** imply read access | DELETE /api/v1/workspaces/:slug |
 | `workspaces:sync` | Trigger upstream sync and reclone operations on workspaces | POST /api/v1/workspaces/:slug/sync, POST /api/v1/workspaces/:slug/reclone |
 | `patches:read` | List and view patches for a workspace | GET /api/v1/workspaces/:slug/patches, GET /api/v1/workspaces/:slug/patches/:id |
@@ -129,7 +129,7 @@ no access. Each route needs one of three levels:
   `GET .../vars/resolved`. The listing (`GET /workspaces`) returns the caller's
   own workspaces and those of the caller's orgs.
 - **Write:** workspace update, archive, reactivate, delete, sync and reclone;
-  every patch write; rebuild submit, cancel, requeue and rollback;
+  branch push (`POST .../branches/:name/push`); every patch write; rebuild submit, cancel, requeue and rollback;
   `DELETE .../rerere/*`; merge submit, cancel, requeue and `rebase`; lease
   issue and delete; every forge write and `PUT`/`DELETE .../forge/webhook`;
   variable create, update and delete.
@@ -211,9 +211,9 @@ and API keys and admin tokens never cause a binding lookup.
 
 ### Workspace Lock
 
-Operations that modify a workspace clone (sync, reclone, archive, rebuild,
-merge, batch rebase, rollback, rerere forget, and the post-push hook) are
-serialised per workspace. HTTP handlers that cannot acquire the lock
+Operations that modify or read a workspace clone (sync, reclone, archive,
+rebuild, merge, batch rebase, rollback, rerere forget, branch push, and the
+post-push hook) are serialised per workspace. HTTP handlers that cannot acquire the lock
 immediately return `409` with `error_type: workspace_busy`; background jobs
 wait for it.
 
@@ -223,7 +223,8 @@ upstream fetch and base resolution (the *fetch phase*) and for the final
 integration-ref update, patch bookkeeping and optional push to `origin` (the
 *final phase*). Sync, rollback, rerere forget, batch rebase and merge jobs
 are therefore rejected (or made to wait) only while a rebuild is in its fetch
-phase or final phase; during patch application they proceed normally.
+phase or final phase; during patch application they proceed normally. So
+does a branch push, which deletes nothing.
 
 Archive and reclone delete the directory the rebuild worktree lives in, so
 they are guarded by a separate per-workspace rebuild-active flag instead: they
@@ -285,7 +286,12 @@ The `error_type` field is omitted when not applicable. Known error types:
 | `origin_fetch_failed` | POST /api/v1/workspaces/:slug/sync, POST .../patches/:id/reset-to-origin | The origin fetch failed during a carry-patch sync with `PATCH_BRANCH_SOURCE=origin` or during a reset-to-origin. Distinguished from the upstream fetch failure by this error type |
 | `missing_on_origin` | POST /api/v1/workspaces/:slug/patches/:id/reset-to-origin | The patch branch does not exist on the fork |
 | `ref_changed` | POST /api/v1/workspaces/:slug/patches/:id/reset-to-origin | The patch branch was modified by another operation between the SHA resolution and the compare-and-swap write; retry |
-| `workspace_busy` | archive, sync, reclone, rollback, batch rebase, rerere forget, reset-to-origin | Another operation currently holds the workspace lock; retry later. A rebuild holds the lock only in its fetch phase and final phase, so sync, rollback, rerere forget and batch rebase are rejected only then; archive and reclone are rejected for the whole rebuild |
+| `workspace_busy` | archive, sync, reclone, rollback, batch rebase, rerere forget, reset-to-origin, branch push | Another operation currently holds the workspace lock; retry later. A rebuild holds the lock only in its fetch phase and final phase, so sync, rollback, rerere forget, batch rebase and branch push are rejected only then; archive and reclone are rejected for the whole rebuild |
+| `branch_not_found` | POST /api/v1/workspaces/:slug/branches/:name/push | 404. The name breaks git's branch-name rules (the message names the rule), or the trunk has no such branch |
+| `integration_branch` | POST /api/v1/workspaces/:slug/branches/:name/push | 400. On a `carry_patch` workspace the name is the integration branch, which hub builds; it reaches the fork through `REBUILD_PUSH_INTEGRATION_BRANCH` |
+| `patch_branch` | POST /api/v1/workspaces/:slug/branches/:name/push | 400. On a `carry_patch` workspace the name is a registered patch; patches reach the fork through `PUSH_PATCHES_TO_ORIGIN` |
+| `protected_branch` | POST /api/v1/workspaces/:slug/branches/:name/push | 400. `force` on the workspace's own branch (its `branch`, or the trunk's `HEAD` branch when `branch` is null) |
+| `non_fast_forward` | POST /api/v1/workspaces/:slug/branches/:name/push | 409. Origin's branch has commits the trunk's branch lacks; the message names origin's commit when hub could list it |
 | `forbidden` | every workspace route that needs write access (see [Workspace Access](#workspace-access)) | 403. The caller is a member of the workspace's org, who may read the workspace but not change it. The message is `org members have read-only access to this workspace`. A PAT's scope 403 carries no `error_type` |
 | `token_bound` | every route a workspace-bound token may not call | 403. The token is bound to one workspace and the route is neither scoped to a workspace nor allowed for bound tokens. The message is `this token is bound to workspace <S>`, or `this token is bound to a workspace` on the routes apikit mounts (see [Workspace-Bound Tokens](#workspace-bound-tokens)) |
 | `sandboxes_disabled` | GET /api/v1/sandbox-profiles and every sandbox lease route | The hub has no `[sandbox]` section in its `config.toml`, so sandboxes are not enabled. Answered with 404 to every authenticated caller before any scope is checked |
@@ -295,14 +301,23 @@ The `error_type` field is omitted when not applicable. Known error types:
 | `forge_api_url_invalid` | every forge route | `FORGE_API_URL` (`UPSTREAM_FORGE_API_URL` for the upstream) is set to something that is not an absolute `https://` URL with a host and without userinfo, query or fragment. 422; the message names the variable and the rule, not the value |
 | `body_too_large` | every forge write route with a body-like field | An issue, pull-request or comment body, or the comment of a close, is longer than the forge accepts: 65,536 Unicode code points on GitHub, 1,000,000 on GitLab. 413; the message names the field, its length, the forge and the limit, and nothing is sent to the forge |
 | `forge_unknown` | every forge route | The forge behind the remote URL cannot be told from its host or an API URL variable, or the remote URL names no repository. 422; nothing is sent to the forge |
-| `forge_not_found` | every forge route | The forge answered 404. 404 |
-| `forge_unauthenticated` | every forge route | The forge answered 401. 502 |
-| `forge_forbidden` | every forge route | The forge answered 403 that is not a rate limit. 502 |
+| `forge_not_found` | every forge route; branch push | The forge answered 404. 404. On the branch push: origin has no such repository, or the credential cannot see it |
+| `forge_unauthenticated` | every forge route; branch push | The forge answered 401. 502. On the branch push the message says that the workspace has no stored git credential, or which kind origin rejected (`GIT_PAT` or `GIT_USERNAME/GIT_PASSWORD`) |
+| `forge_forbidden` | every forge route; branch push | The forge answered 403 that is not a rate limit. 502 |
 | `forge_rate_limited` | every forge route | A rate limit issuex could not wait out. 429, with `Retry-After` in whole seconds when known |
-| `forge_rejected` | every forge route | The forge answered another 4xx. 422 |
-| `forge_error` | every forge route | The forge answered 5xx, a response that could not be read, or a redirect to another host. 502. A write that issuex refuses because the workspace has no credential (`no authentication token configured`) is this too; it sends nothing and records no event |
-| `forge_unreachable` | every forge route | The connection to the forge failed at DNS, TCP or TLS level. 502 |
-| `forge_timeout` | every forge route | The 30-second deadline passed. 504 |
+| `forge_rejected` | every forge route; branch push | The forge answered another 4xx. 422. On the branch push: origin refused the ref (a protected branch, a declining hook), and the message carries origin's reason, scrubbed |
+| `forge_error` | every forge route; branch push | The forge answered 5xx, a response that could not be read, or a redirect to another host. 502. On the branch push, any push failure no other type describes. A write that issuex refuses because the workspace has no credential (`no authentication token configured`) is this too; it sends nothing and records no event |
+| `forge_unreachable` | every forge route; branch push | The connection to the forge failed at DNS, TCP or TLS level. 502 |
+| `forge_timeout` | every forge route; branch push | The 30-second deadline passed (two minutes for the branch push). 504 |
+
+On `POST /api/v1/workspaces/:slug/branches/:name/push`, the message of every
+answer with one of the route's own error types (`branch_not_found`,
+`integration_branch`, `patch_branch`, `protected_branch`, `non_fast_forward`
+and the `forge_*` types) begins with the error type and `: `, for example
+`non_fast_forward: origin's feat is at <sha>, ...`, because `afc` shows only
+the message. The answers the route shares with the other workspace routes
+(`workspace not found`, the org member's `forbidden`, the scope 403 and
+`workspace_busy`) keep their shared messages.
 
 ---
 
@@ -942,6 +957,102 @@ the rebuild worktree lives in.
 | 404 | Workspace not found |
 | 409 | Clone operation already in progress (`clone_status` is `"pending"` or `"cloning"`) |
 | 500 | Failed to delete workspace directory; database update failed |
+
+---
+
+### POST /api/v1/workspaces/:slug/branches/:name/push
+
+Pushes one branch of the workspace's trunk to the workspace's `origin`
+(`git_url`), with the workspace's stored git credential: `GIT_PAT` (sent as
+`x-token-auth`), otherwise `GIT_USERNAME` and `GIT_PASSWORD`, otherwise none,
+the same credential the archive's push uses. The refspec is exactly
+`refs/heads/<name>:refs/heads/<name>`, so only that branch is sent, and the
+push is fast-forward only unless `force` is given
+(`+refs/heads/<name>:refs/heads/<name>`). This is how a branch pushed to hub's
+git server gets to the forge, for example before a pull request is opened
+through `POST /workspaces/:slug/pulls`.
+
+**Authentication:** API Key, admin token, or PAT with `workspaces:write`.
+Write access, as for every workspace write: the owner or an admin token. A
+member of the workspace's org gets 403 `forbidden`; anyone else, and an unknown
+slug, 404. A PAT bound to another workspace gets 404 before its scope is
+looked at; a PAT bound to this slug with the scope may push.
+
+**Path Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `:slug` | The workspace slug |
+| `:name` | The branch name as one path segment, with each `/` escaped as `%2F` (`fix%2F42-nil-map` names `fix/42-nil-map`). Hub decodes the segment as sent exactly once, so `a%2525b` names `a%25b`. A path with an unescaped `/` in the name matches no route (404) |
+
+**Request Body (optional):**
+
+```json
+{ "force": false }
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `force` | boolean | Overwrite origin's branch when it has commits the trunk's branch lacks. Default `false`. Refused on the workspace's own branch |
+
+An empty body, `{}` and unknown fields push without force. A body that is not
+a JSON object, or a `force` that is not a boolean, is 400.
+
+**Order of checks:**
+
+1. No credential: 401. A PAT without `workspaces:write`: 403 `PAT requires workspaces:write scope to push branches` (no `error_type`), before the workspace is looked up.
+2. The workspace, with write access: 404 `workspace not found`, 403 `forbidden`, or 500.
+3. The body (400), then the name: one that breaks git's branch-name rules or starts with `-` is 404 `branch_not_found` naming the rule, for example `branch_not_found: "-x" is not a valid branch name: ref name must not start with '-'`.
+4. `status` must be `active` (400 `workspace is not active; push requires an active workspace`) and `clone_status` `ready` (400 `workspace clone is not ready; clone_status must be 'ready' to push`).
+5. Branches this route does not push, decided before the lock and so the same whether the workspace is busy or not: on a `carry_patch` workspace the integration branch (`integration_branch`, or `deploy` when empty) is 400 `integration_branch`, and a patch whose status is not `deleted` is 400 `patch_branch`; with `force`, the `branch` column is 400 `protected_branch`.
+6. The workspace lock, without waiting: 409 `workspace_busy`. A rebuild between its fetch and final phases does not hold it and does not block the push.
+7. Under the lock: with `force` and no `branch` column, the branch the trunk's `HEAD` points to is 400 `protected_branch` (500 when `HEAD` cannot be read); a branch the trunk lacks is 404 `branch_not_found: branch "<name>" does not exist in the workspace`; the credential is resolved (a secrets store failure is 500 `internal server error`).
+8. The push, with a two-minute deadline from its start.
+
+The push runs to its end, or to the deadline, also when the caller has gone
+away, and the lock is held until it ends; its outcome is logged and recorded
+as if the caller were there, and calling again shows where the branch stands.
+If a push to hub's git server moved the checked-out branch while the lock was
+held, hub hard-resets the trunk's worktree to the new `HEAD` before releasing
+the lock, as the git server would have.
+
+**Response (success):** HTTP 200 OK
+
+```json
+{
+  "branch": "fix/42-nil-map",
+  "sha": "<40-hex tip of the trunk's branch that was offered to origin>",
+  "remote": "origin",
+  "remote_url": "https://github.com/acme/widgets.git",
+  "result": "pushed"
+}
+```
+
+`result` is `up_to_date` when origin already had the commit and nothing was
+sent (also with `force`), `forced` when `force` was given and origin accepted
+an update, and `pushed` otherwise. `remote_url` is `git_url` with any userinfo
+removed; an scp-style address (`git@host:path`) comes back unchanged.
+
+**Error Codes:**
+
+| Status | Condition |
+|--------|-----------|
+| 400 | Invalid body; workspace not active or clone not ready; `integration_branch`, `patch_branch`, `protected_branch` |
+| 401 | Unauthenticated request |
+| 403 | PAT lacks `workspaces:write`; the caller is a member of the workspace's org (`forbidden`) |
+| 404 | Workspace not found; `branch_not_found`; `forge_not_found` |
+| 409 | `workspace_busy`; `non_fast_forward`: origin's branch has commits the trunk's lacks. The message names origin's commit when hub could list origin's refs, and ends with `push with force to overwrite it`, or, on the workspace's own branch, `sync the workspace to bring it up to date`; when `force` was given and origin still refused, it says origin refuses non-fast-forward updates also with force |
+| 422 | `forge_rejected`: origin refused the ref; the message carries origin's reason, scrubbed |
+| 500 | Database or secrets store failure; the trunk cannot be opened or has no `origin`; `HEAD` unreadable for a forced push without a `branch` column |
+| 502 | `forge_unauthenticated`, `forge_forbidden`, `forge_unreachable`, `forge_error` |
+| 504 | `forge_timeout`: the push did not end within two minutes |
+
+No answer carries the credential, the userinfo of `git_url` or go-git's error
+chain. Every push attempt (the 200s, 409 `non_fast_forward`, 404
+`forge_not_found`, 422, the 502s and 504) records one `hub.branch.push` event;
+a failed attempt is also logged once at warning level with `workspace`,
+`branch`, `error_type` and the scrubbed error. Refusals and 500s record
+nothing.
 
 ---
 
@@ -4862,6 +4973,7 @@ query endpoint (`GET /api/v1/audit`). Each event has an `event_type`, an actor
 | `hub.forge.push` | `repository` | Commits or a tag were pushed (`resource_id` is the ref, `action` is `push`) | `ref`, `before`, `after` |
 | `hub.forge.webhook.set` | `webhook` | `PUT /workspaces/:slug/forge/webhook` stored the secret (`resource_id` is the workspace slug, `action` is `set`). The actor is the caller | `generated`: true when the hub made the secret up. Never the secret |
 | `hub.forge.webhook.unset` | `webhook` | `DELETE /workspaces/:slug/forge/webhook` (`resource_id` is the slug, `action` is `unset`; also when there was no secret). The actor is the caller | `existed`: false when there was no secret to remove |
+| `hub.branch.push` | `branch` | A push attempt of `POST /workspaces/:slug/branches/:name/push`, succeeded or failed (`resource_id` is the branch name, `action` is `push`; also when the caller has gone away; never for a refusal or a 500). The actor is the caller | `branch`, `sha`, `force`, `ok`, `remote` (`origin`), `remote_url` (without userinfo), and `result` (`pushed`, `up_to_date` or `forced`) when `ok`, `error_type` when not. Never a credential or the forge's message |
 
 A nil audit emitter skips emission. An emit error is logged without affecting
 the response. In `hub` mode no `hub.patch.sync` or `hub.patch.replace` events
