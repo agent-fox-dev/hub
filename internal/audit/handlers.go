@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -36,11 +37,12 @@ func handleCreateSession(store Store, metrics *Metrics, sqliteDB *sql.DB) echo.H
 			return apikit.WriteAPIError(c, http.StatusBadRequest, "workspace_slug is required")
 		}
 
-		// Sessions may only be opened in workspaces the caller owns (admin
-		// tokens may open sessions anywhere). This keeps cost and session
-		// listings per workspace trustworthy and bounds the workspace label
-		// on the active-sessions gauge to real workspaces.
-		if !requireWorkspaceRead(c, auth, req.WorkspaceSlug, sqliteDB) {
+		// Opening a session changes the workspace: only its owner and admin
+		// tokens may, and a member of its org is refused with 403. This
+		// keeps cost and session listings per workspace trustworthy and
+		// bounds the workspace label on the active-sessions gauge to real
+		// workspaces.
+		if !requireWorkspaceWrite(c, auth, req.WorkspaceSlug, sqliteDB) {
 			return nil
 		}
 
@@ -77,10 +79,11 @@ func handleCreateSession(store Store, metrics *Metrics, sqliteDB *sql.DB) echo.H
 			return c.JSON(http.StatusCreated, created)
 		}
 		// Idempotent replay: the id already exists. Only return the existing
-		// record when it belongs to a workspace the caller may read, so a
-		// guessed id cannot disclose another tenant's session.
-		if created.WorkspaceSlug != req.WorkspaceSlug &&
-			!requireWorkspaceRead(c, auth, created.WorkspaceSlug, sqliteDB) {
+		// record when it belongs to a workspace the caller may read (its
+		// owner, a member of its org or an admin token), so a guessed id
+		// cannot disclose another tenant's session.
+		if created.WorkspaceSlug != req.WorkspaceSlug && sqliteDB != nil &&
+			!authorizeWorkspace(c, auth, created.WorkspaceSlug, sqliteDB, wsaccess.NeedRead) {
 			return nil
 		}
 		return c.JSON(http.StatusOK, created)
@@ -517,64 +520,80 @@ func handleWorkspaceCost(store Store, sqliteDB *sql.DB) echo.HandlerFunc {
 // Workspace access helpers
 // ---------------------------------------------------------------------------
 
-// hasWorkspaceAccess checks if a non-admin caller can access a workspace.
-// Returns true if the workspace exists in SQLite, the caller is the owner and,
-// for a PAT bound to a workspace (spec 33), it is that workspace. A failed
-// binding lookup denies access.
+// hasWorkspaceAccess reports whether the caller may read the sessions and
+// cost of the workspace slug: the binding first (a PAT bound to another
+// workspace is refused, and reported with the request's method, route and
+// status 403, spec 34), then wsaccess.AuthorizeWorkspace with NeedRead (an
+// admin token, the owner or a member of the workspace's org), and the
+// workspace must be active. Any failed lookup denies access.
 func hasWorkspaceAccess(c echo.Context, sqliteDB *sql.DB, auth *apikit.AuthInfo, slug string) bool {
-	var ownerID string
-	err := sqliteDB.QueryRow(
-		"SELECT owner_id FROM workspaces WHERE slug = ? AND status = 'active'",
-		slug,
-	).Scan(&ownerID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return false
-	}
-	if err != nil {
-		return false
-	}
-	if ownerID != auth.UserID {
-		return false
-	}
 	denied, err := wsaccess.DeniesWorkspace(sqliteDB, auth, slug, wsaccess.SiteOf(c, http.StatusForbidden))
-	return err == nil && !denied
+	if err != nil || denied {
+		return false
+	}
+	ws, status, _ := wsaccess.AuthorizeWorkspace(sqliteDB, auth, slug, wsaccess.NeedRead)
+	return status == 0 && ws.Status == "active"
 }
 
-// getAccessibleWorkspaces returns workspace slugs the caller owns; for a PAT
-// bound to a workspace (spec 33) at most that one. The binding is resolved
-// before any rows are opened.
+// getAccessibleWorkspaces returns the active workspaces a non-admin caller
+// may read: the readable set of wsaccess.ReadableSlugs (owned and member
+// workspaces; for a PAT bound to a workspace at most that one, without a
+// refusal report), kept to those whose status is active.
+//
+// The list is never nil, because ListSessions reads a nil list as "no
+// restriction": a caller with no readable active workspace gets an empty
+// one, and so does a failed lookup, which also returns its error.
 func getAccessibleWorkspaces(sqliteDB *sql.DB, auth *apikit.AuthInfo) ([]string, error) {
-	boundSlug, bound, err := wsaccess.BoundSlug(sqliteDB, auth)
+	readable, _, err := wsaccess.ReadableSlugs(sqliteDB, auth)
 	if err != nil {
-		return nil, err
+		return []string{}, err
+	}
+	slugs := make([]string, 0, len(readable))
+	for slug := range readable {
+		slugs = append(slugs, slug)
+	}
+	slices.Sort(slugs)
+	active := []string{}
+	for chunk := range slices.Chunk(slugs, activeSlugsChunk) {
+		got, err := activeSlugs(sqliteDB, chunk)
+		if err != nil {
+			return []string{}, err
+		}
+		active = append(active, got...)
+	}
+	return active, nil
+}
+
+// activeSlugsChunk bounds the number of slugs one activeSlugs query binds.
+const activeSlugsChunk = 500
+
+// activeSlugs returns those of slugs whose workspace is active.
+func activeSlugs(sqliteDB *sql.DB, slugs []string) ([]string, error) {
+	args := make([]any, len(slugs))
+	for i, s := range slugs {
+		args[i] = s
 	}
 	rows, err := sqliteDB.Query(
-		"SELECT slug FROM workspaces WHERE owner_id = ? AND status = 'active'",
-		auth.UserID,
+		"SELECT slug FROM workspaces WHERE status = 'active' AND slug IN (?"+strings.Repeat(", ?", len(slugs)-1)+")",
+		args...,
 	)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-
-	// Never nil: ListSessions reads a nil list as "no restriction", so a
-	// caller with no readable workspace must get an empty one.
-	slugs := []string{}
+	var active []string
 	for rows.Next() {
 		var slug string
 		if err := rows.Scan(&slug); err != nil {
 			return nil, err
 		}
-		if bound && slug != boundSlug {
-			continue
-		}
-		slugs = append(slugs, slug)
+		active = append(active, slug)
 	}
-	return slugs, rows.Err()
+	return active, rows.Err()
 }
 
 // ---------------------------------------------------------------------------
-// Audit ingestion handlers (stubs — implemented in later task groups)
+// Audit ingestion and per-run query handlers (see handlers_audit.go)
 // ---------------------------------------------------------------------------
 
 // handlePostEvent handles POST /workspaces/:slug/runs/:run_id/events.

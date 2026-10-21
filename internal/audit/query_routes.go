@@ -42,7 +42,7 @@ func RegisterAuditQueryRoutes(api *echo.Group, store Store, sseBroadcaster SSEBr
 
 	// GET /audit — unified audit event query (18-REQ-6, 18-REQ-10.1). A
 	// token bound to a workspace may call it and GET /events; both confine
-	// it to its workspace through ownedWorkspaces (spec 33).
+	// it to its workspace through readableWorkspaces (spec 33).
 	auditRoute := api.GET("/audit", handleAuditQuery(store, sqliteDB))
 
 	// GET /workspaces/:slug/runs/:run_id/transcript — conversation transcript

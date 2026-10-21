@@ -95,13 +95,14 @@ func handleAuditQuery(store Store, sqliteDB *sql.DB) echo.HandlerFunc {
 			return apikit.WriteAPIError(c, http.StatusBadRequest, err.Error())
 		}
 
-		// Non-admin callers only see events of workspaces they own; events
-		// without a workspace (user- and org-scoped) are admin-only.
-		owned, ok := readableWorkspaces(c, auth, sqliteDB, params.workspace)
+		// Non-admin callers only see events of workspaces they may read
+		// (owned and member workspaces); events without a workspace (user-
+		// and org-scoped) are admin-only.
+		readable, ok := readableWorkspaces(c, auth, sqliteDB, params.workspace)
 		if !ok {
 			return nil
 		}
-		params.allowedWorkspaces = owned
+		params.allowedWorkspaces = readable
 
 		// Execute unified query against DuckDB.
 		ds, ok := store.(*duckDBStore)
@@ -623,8 +624,10 @@ func handleSSEStream(store Store, mgr *SSEManager, sqliteDB *sql.DB) echo.Handle
 			return nil
 		}
 
-		// Non-admin callers only receive events of workspaces they own.
-		owned, ok := readableWorkspaces(c, auth, sqliteDB, c.QueryParam("workspace"))
+		// Non-admin callers only receive events of workspaces they may read,
+		// a set computed once, before any header or registration, and kept
+		// for the life of the connection.
+		readable, ok := readableWorkspaces(c, auth, sqliteDB, c.QueryParam("workspace"))
 		if !ok {
 			return nil
 		}
@@ -635,7 +638,7 @@ func handleSSEStream(store Store, mgr *SSEManager, sqliteDB *sql.DB) echo.Handle
 				workspace:         c.QueryParam("workspace"),
 				runID:             c.QueryParam("run_id"),
 				category:          c.QueryParam("category"),
-				allowedWorkspaces: owned,
+				allowedWorkspaces: readable,
 			}
 
 			conn, err := mgr.Register(filters)

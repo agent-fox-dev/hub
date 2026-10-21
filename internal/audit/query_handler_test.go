@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"math/rand"
 	"net/http"
 	"strings"
 	"testing"
@@ -12,6 +13,8 @@ import (
 
 	"github.com/labstack/echo/v4"
 	"github.com/txsvc/apikit"
+
+	"github.com/agent-fox-dev/hub/internal/wsaccess"
 )
 
 // ===========================================================================
@@ -1088,5 +1091,187 @@ func TestQueryAudit_NoFiltersEmptyResult(t *testing.T) {
 	}
 	if resp.NextCursor != nil {
 		t.Errorf("next_cursor = %v, want nil", *resp.NextCursor)
+	}
+}
+
+// ===========================================================================
+// Spec 36 — the unified audit query for org members
+// Requirements: 36-REQ-4, 36-REQ-9.3
+// ===========================================================================
+
+// newMemberQueryEnv is newOrgMemberEnv with the audit query routes mounted
+// on a running SSE manager, u2 owning the active w-own, and a hub and an
+// agent event in each of w, w-arch, w-own and w-x plus a hub event with no
+// workspace. It returns the environment and the SSE manager.
+func newMemberQueryEnv(t *testing.T) (*auditTestEnv, *SSEManager) {
+	t.Helper()
+	env := newOrgMemberEnv(t)
+	env.seedWorkspaceInOrg(t, "w-own", "u2", "", "active")
+	mgr := NewSSEManager(10)
+	done := make(chan struct{})
+	t.Cleanup(func() { close(done) })
+	go mgr.Run(done)
+	query := env.echo.Group("/api/v1")
+	query.Use(testAuthMiddleware())
+	RegisterAuditQueryRoutes(query, env.store, mgr, env.sqliteDB)
+	for i, ws := range []string{"w", "w-arch", "w-own", "w-x"} {
+		ts := fmt.Sprintf("2026-09-01T10:0%d:00Z", i)
+		insertTestHubEvent(t, env.db, "hub-"+ws, "hub.workspace.updated", "u1", "pat", "workspace", ws, "update", ws, "info", ts)
+		insertTestAgentEvent(t, env.db, "agent-"+ws, testRunID, ws, "session.start", "info", "", "", "", ts)
+	}
+	insertTestHubEvent(t, env.db, "hub-none", "hub.user.updated", "u1", "pat", "user", "u1", "update", "", "info", "2026-09-01T10:09:00Z")
+	return env, mgr
+}
+
+// auditWorkspaces calls GET path as auth and returns the workspaces of the
+// events returned.
+func auditWorkspaces(t *testing.T, env *auditTestEnv, path string, auth *apikit.AuthInfo) map[string]bool {
+	t.Helper()
+	rec := env.doJSON(t, http.MethodGet, path, "", auth)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET %s: (%d, %s); want 200", path, rec.Code, rec.Body)
+	}
+	var resp auditQueryResponse
+	parseJSON(t, rec, &resp)
+	out := map[string]bool{}
+	for _, e := range resp.Events {
+		ws, _ := e["workspace"].(string)
+		out[ws] = true
+	}
+	return out
+}
+
+// TS-36-18: a member's GET /audit lists the events of owned and member
+// workspaces of any status, and none of a stranger's.
+// Requirement: 36-REQ-4.1
+func TestAuditQuery_MemberWorkspaces_TS_36_18(t *testing.T) {
+	env, _ := newMemberQueryEnv(t)
+	got := auditWorkspaces(t, env, auditQueryPath, patAuth("u2", "audit:read"))
+	if len(got) != 3 || !got["w-own"] || !got["w"] || !got["w-arch"] {
+		t.Errorf("u2 sees %v; want w-own, w and w-arch", got)
+	}
+	if got := auditWorkspaces(t, env, auditQueryPath+"?workspace=w-arch", patAuth("u2", "audit:read")); len(got) != 1 || !got["w-arch"] {
+		t.Errorf("u2 filtered to w-arch sees %v; want w-arch", got)
+	}
+}
+
+// TS-36-19: hub events with an empty workspace never reach a non-admin.
+// Requirement: 36-REQ-4.2
+func TestAuditQuery_NoWorkspacelessEvents_TS_36_19(t *testing.T) {
+	env, _ := newMemberQueryEnv(t)
+	for _, u := range []string{"u1", "u2"} {
+		if got := auditWorkspaces(t, env, auditQueryPath, patAuth(u, "audit:read")); got[""] {
+			t.Errorf("%s sees an event with no workspace (%v)", u, got)
+		}
+	}
+}
+
+// TS-36-20: a workspace filter outside the readable set answers 404; a
+// binding refusal is reported once, an unbound one not at all.
+// Requirement: 36-REQ-4.3
+func TestAuditQuery_FilterOutsideSet_TS_36_20(t *testing.T) {
+	var reports []wsaccess.BoundRefusal
+	wsaccess.SetRefusalObserver(func(r wsaccess.BoundRefusal) { reports = append(reports, r) })
+	t.Cleanup(func() { wsaccess.SetRefusalObserver(nil) })
+	env, _ := newMemberQueryEnv(t)
+	bindToken(t, env.sqliteDB, "tokT", "w")
+
+	rec := env.doJSON(t, http.MethodGet, auditQueryPath+"?workspace=w-x", "", patAuth("u2", "audit:read"))
+	if rec.Code != http.StatusNotFound || errOf(t, rec).Error.Message != "workspace not found" {
+		t.Errorf("unbound: (%d, %s); want 404 workspace not found", rec.Code, rec.Body)
+	}
+	if len(reports) != 0 {
+		t.Errorf("unbound refusal made %d reports; want 0", len(reports))
+	}
+	rec = env.doJSON(t, http.MethodGet, auditQueryPath+"?workspace=w-own", "", boundPatAuth("u2", "tokT", "audit:read"))
+	if rec.Code != http.StatusNotFound || errOf(t, rec).Error.Message != "workspace not found" {
+		t.Errorf("bound: (%d, %s); want 404 workspace not found", rec.Code, rec.Body)
+	}
+	want := wsaccess.BoundRefusal{TokenID: "tokT", UserID: "u2", BoundSlug: "w", RequestedSlug: "w-own",
+		Method: http.MethodGet, Route: "/api/v1/audit", Status: http.StatusNotFound, Surface: wsaccess.SurfaceAPI}
+	if len(reports) != 1 || reports[0] != want {
+		t.Errorf("bound refusal reports %+v; want exactly %+v", reports, want)
+	}
+}
+
+// TS-36-21: an admin token's GET /audit is unrestricted, events with no
+// workspace included. Requirement: 36-REQ-4.4
+func TestAuditQuery_AdminUnrestricted_TS_36_21(t *testing.T) {
+	env, _ := newMemberQueryEnv(t)
+	got := auditWorkspaces(t, env, auditQueryPath, adminAuth())
+	for _, ws := range []string{"", "w", "w-arch", "w-own", "w-x"} {
+		if !got[ws] {
+			t.Errorf("admin sees %v; want %q among them", got, ws)
+		}
+	}
+}
+
+// TS-36-22 (property): for any non-admin caller and any seeded events, GET
+// /audit returns exactly the events of the workspaces the caller owns or
+// shares an org with, of any status, and none without a workspace.
+// Requirement: 36-REQ-4.5
+func TestAuditQuery_PropertyReadable_TS_36_22(t *testing.T) {
+	users, orgs, statuses := []string{"u1", "u2", "u3", "u4"}, []string{"", "O1", "O2"}, []string{"active", "archived"}
+	for seed := int64(1); seed <= 40; seed++ {
+		rng := rand.New(rand.NewSource(seed))
+		env := newAuditTestEnvWithSQLite(t)
+		query := env.echo.Group("/api/v1")
+		query.Use(testAuthMiddleware())
+		RegisterAuditQueryRoutes(query, env.store, &mockSSEManager{}, env.sqliteDB)
+		member := map[[2]string]bool{}
+		for _, o := range orgs[1:] {
+			for _, u := range users {
+				if rng.Intn(2) == 0 {
+					seedOrgMember(t, env.sqliteDB, o, u)
+					member[[2]string{o, u}] = true
+				}
+			}
+		}
+		caller := users[rng.Intn(len(users))]
+		want := map[string]bool{}
+		for i := 0; i < 2+rng.Intn(5); i++ {
+			slug, owner := fmt.Sprintf("ws-%d", i), users[rng.Intn(len(users))]
+			org := orgs[rng.Intn(len(orgs))]
+			env.seedWorkspaceInOrg(t, slug, owner, org, statuses[rng.Intn(len(statuses))])
+			insertTestHubEvent(t, env.db, "hub-"+slug, "hub.workspace.updated", owner, "pat", "workspace", slug, "update", slug, "info", "2026-09-01T10:00:00Z")
+			if owner == caller || (org != "" && member[[2]string{org, caller}]) {
+				want[slug] = true
+			}
+		}
+		insertTestHubEvent(t, env.db, "hub-none", "hub.user.updated", caller, "pat", "user", caller, "update", "", "info", "2026-09-01T10:00:00Z")
+		got := auditWorkspaces(t, env, auditQueryPath, patAuth(caller, "audit:read"))
+		if len(got) != len(want) {
+			t.Errorf("seed %d: %s sees %v; want %v", seed, caller, got, want)
+			continue
+		}
+		for ws := range got {
+			if !want[ws] {
+				t.Errorf("seed %d: %s sees %v; want %v", seed, caller, got, want)
+				break
+			}
+		}
+	}
+}
+
+// TS-36-41: a failed readable-set or binding lookup on GET /audit answers
+// 500 with no events. Requirement: 36-REQ-9.3
+func TestAuditQuery_DatabaseFailure500_TS_36_41(t *testing.T) {
+	for table, auth := range map[string]*apikit.AuthInfo{
+		"org_members":              patAuth("u2", "audit:read"),
+		"token_workspace_bindings": boundPatAuth("u2", "tokU", "audit:read"),
+	} {
+		t.Run(table, func(t *testing.T) {
+			env, _ := newMemberQueryEnv(t)
+			if _, err := env.sqliteDB.Exec("DROP TABLE " + table); err != nil {
+				t.Fatal(err)
+			}
+			rec := env.doJSON(t, http.MethodGet, auditQueryPath, "", auth)
+			if rec.Code != http.StatusInternalServerError || errOf(t, rec).Error.Message != "internal server error" {
+				t.Errorf("(%d, %s); want 500 internal server error", rec.Code, rec.Body)
+			}
+			if strings.Contains(rec.Body.String(), "hub-") {
+				t.Errorf("body carries events: %s", rec.Body)
+			}
+		})
 	}
 }

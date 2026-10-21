@@ -434,3 +434,182 @@ func TestSSEHandler_RunIDFilter(t *testing.T) {
 		t.Errorf("Content-Type = %q, want text/event-stream prefix", ct)
 	}
 }
+
+// ===========================================================================
+// Spec 36 — the SSE stream for org members
+// Requirements: 36-REQ-5, 36-REQ-9.4
+// ===========================================================================
+
+// memberStreamServer serves env over HTTP until the test ends. It closes
+// after the streams the test opened, whose cleanups run first.
+func memberStreamServer(t *testing.T, env *auditTestEnv) *httptest.Server {
+	t.Helper()
+	ts := httptest.NewServer(env.echo)
+	t.Cleanup(ts.Close)
+	return ts
+}
+
+// openMemberStream opens GET /events on ts as auth and waits until mgr has
+// want connections. It returns a scanner over the stream.
+func openMemberStream(t *testing.T, ts *httptest.Server, mgr *SSEManager, auth *apikit.AuthInfo, want int) *bufio.Scanner {
+	t.Helper()
+	resp, cancel := sseTestRequest(t, ts, "", auth)
+	t.Cleanup(func() { cancel(); resp.Body.Close() })
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /events as %s: status %d; want 200", auth.UserID, resp.StatusCode)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for mgr.ConnCount() != want && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if mgr.ConnCount() != want {
+		t.Fatalf("%d connections; want %d", mgr.ConnCount(), want)
+	}
+	return bufio.NewScanner(resp.Body)
+}
+
+// receivedUntil reads audit_event frames from scanner until the event with
+// id sentinel arrives and returns the ids received before it.
+func receivedUntil(t *testing.T, scanner *bufio.Scanner, sentinel string) map[string]bool {
+	t.Helper()
+	got := map[string]bool{}
+	for {
+		frame := readSSEFrame(t, scanner)
+		if frame.event == "" {
+			t.Fatalf("stream ended before %s; received %v", sentinel, got)
+		}
+		if frame.event != "audit_event" {
+			continue
+		}
+		var ev HubEvent
+		if err := json.Unmarshal([]byte(frame.data), &ev); err != nil {
+			t.Fatalf("audit_event data %q: %v", frame.data, err)
+		}
+		if ev.ID == sentinel {
+			return got
+		}
+		got[ev.ID] = true
+	}
+}
+
+// refusedStream sends GET /events?query as auth to env with a two-second
+// deadline, so that a stream opened by mistake ends instead of hanging the
+// test, and returns the recorded answer.
+func refusedStream(t *testing.T, env *auditTestEnv, query string, auth *apikit.AuthInfo) *httptest.ResponseRecorder {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	authJSON, err := json.Marshal(auth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, sseEndpoint+query, nil).WithContext(ctx)
+	req.Header.Set("X-Test-Auth", string(authJSON))
+	rec := httptest.NewRecorder()
+	env.echo.ServeHTTP(rec, req)
+	return rec
+}
+
+// liveEvent is a hub event of workspace ws with id.
+func liveEvent(id, ws string) HubEvent {
+	return HubEvent{ID: id, EventType: "hub.workspace.updated", Workspace: ws, Timestamp: "2026-09-01T11:00:00Z"}
+}
+
+// TS-36-23: a member's stream delivers the events of owned and member
+// workspaces and no others. Requirement: 36-REQ-5.1
+func TestSSE_MemberWorkspaces_TS_36_23(t *testing.T) {
+	env, mgr := newMemberQueryEnv(t)
+	ts := memberStreamServer(t, env)
+	stream := openMemberStream(t, ts, mgr, patAuth("u2", "audit:read"), 1)
+	for _, ev := range []HubEvent{liveEvent("ev-own", "w-own"), liveEvent("ev-team", "w"), liveEvent("ev-x", "w-x"), liveEvent("end", "w-own")} {
+		mgr.Broadcast(ev)
+	}
+	if got := receivedUntil(t, stream, "end"); len(got) != 2 || !got["ev-own"] || !got["ev-team"] {
+		t.Errorf("u2 received %v; want ev-own and ev-team", got)
+	}
+}
+
+// TS-36-24: an open stream keeps the readable set computed at connect when
+// the caller's memberships change. Requirement: 36-REQ-5.2
+func TestSSE_SetFixedAtConnect_TS_36_24(t *testing.T) {
+	env, mgr := newMemberQueryEnv(t)
+	ts := memberStreamServer(t, env)
+	stream := openMemberStream(t, ts, mgr, patAuth("u2", "audit:read"), 1)
+	env.seedWorkspaceInOrg(t, "w-new", "u1", "N", "active")
+	if _, err := env.sqliteDB.Exec(`DELETE FROM org_members WHERE org_id = 'O' AND user_id = 'u2'`); err != nil {
+		t.Fatal(err)
+	}
+	seedOrgMember(t, env.sqliteDB, "N", "u2")
+	for _, ev := range []HubEvent{liveEvent("ev-team", "w"), liveEvent("ev-new", "w-new"), liveEvent("end", "w-own")} {
+		mgr.Broadcast(ev)
+	}
+	if got := receivedUntil(t, stream, "end"); len(got) != 1 || !got["ev-team"] {
+		t.Errorf("u2 received %v; want ev-team only", got)
+	}
+}
+
+// TS-36-25: a workspace filter outside the readable set answers 404 before
+// any stream header and without registering a connection.
+// Requirement: 36-REQ-5.3
+func TestSSE_FilterOutsideSet404_TS_36_25(t *testing.T) {
+	env, mgr := newMemberQueryEnv(t)
+	rec := refusedStream(t, env, "?workspace=w-x", patAuth("u2", "audit:read"))
+	if rec.Code != http.StatusNotFound || errOf(t, rec).Error.Message != "workspace not found" {
+		t.Errorf("(%d, %s); want 404 workspace not found", rec.Code, rec.Body)
+	}
+	if ct := rec.Header().Get("Content-Type"); strings.HasPrefix(ct, "text/event-stream") {
+		t.Errorf("Content-Type %q; want no event stream", ct)
+	}
+	if n := mgr.ConnCount(); n != 0 {
+		t.Errorf("%d connections registered; want 0", n)
+	}
+}
+
+// TS-36-26: events with an empty workspace reach only admin-token streams.
+// Requirement: 36-REQ-5.4
+func TestSSE_WorkspacelessToAdminOnly_TS_36_26(t *testing.T) {
+	env, mgr := newMemberQueryEnv(t)
+	ts := memberStreamServer(t, env)
+	streams := map[string]*bufio.Scanner{}
+	for i, c := range []struct {
+		name string
+		auth *apikit.AuthInfo
+	}{{"owner", patAuth("u1", "audit:read")}, {"member", patAuth("u2", "audit:read")}, {"admin", adminAuth()}} {
+		streams[c.name] = openMemberStream(t, ts, mgr, c.auth, i+1)
+	}
+	mgr.Broadcast(HubEvent{ID: "ev-none", EventType: "hub.user.updated", Timestamp: "2026-09-01T11:00:00Z"})
+	mgr.Broadcast(liveEvent("end", "w"))
+	for name, stream := range streams {
+		got := receivedUntil(t, stream, "end")
+		if want := name == "admin"; got["ev-none"] != want {
+			t.Errorf("%s received %v; want the workspace-less event: %v", name, got, want)
+		}
+	}
+}
+
+// TS-36-42: a failed readable-set or binding lookup on GET /events answers
+// 500 before any stream header and without registering a connection.
+// Requirement: 36-REQ-9.4
+func TestSSE_DatabaseFailure500_TS_36_42(t *testing.T) {
+	for table, auth := range map[string]*apikit.AuthInfo{
+		"org_members":              patAuth("u2", "audit:read"),
+		"token_workspace_bindings": boundPatAuth("u2", "tokU", "audit:read"),
+	} {
+		t.Run(table, func(t *testing.T) {
+			env, mgr := newMemberQueryEnv(t)
+			if _, err := env.sqliteDB.Exec("DROP TABLE " + table); err != nil {
+				t.Fatal(err)
+			}
+			rec := refusedStream(t, env, "", auth)
+			if rec.Code != http.StatusInternalServerError || errOf(t, rec).Error.Message != "internal server error" {
+				t.Errorf("(%d, %s); want 500 internal server error", rec.Code, rec.Body)
+			}
+			if ct := rec.Header().Get("Content-Type"); strings.HasPrefix(ct, "text/event-stream") {
+				t.Errorf("Content-Type %q; want no event stream", ct)
+			}
+			if n := mgr.ConnCount(); n != 0 {
+				t.Errorf("%d connections registered; want 0", n)
+			}
+		})
+	}
+}

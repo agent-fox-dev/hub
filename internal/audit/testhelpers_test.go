@@ -255,14 +255,27 @@ func openTestSQLiteDB(t *testing.T) *sql.DB {
 	db.SetMaxIdleConns(1)
 	t.Cleanup(func() { db.Close() })
 
-	// Create a minimal workspaces table for access checks.
+	// Create a minimal workspaces table for access checks, with the columns
+	// wsaccess.AuthorizeWorkspace reads, and apikit's org_members table, from
+	// which it decides org membership (spec 35).
 	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS workspaces (
-		slug     TEXT PRIMARY KEY,
-		owner_id TEXT NOT NULL,
-		status   TEXT NOT NULL DEFAULT 'active'
+		slug         TEXT PRIMARY KEY,
+		owner_id     TEXT NOT NULL,
+		status       TEXT NOT NULL DEFAULT 'active',
+		org_id       TEXT,
+		clone_status TEXT NOT NULL DEFAULT 'ready'
 	)`)
 	if err != nil {
 		t.Fatalf("create workspaces table: %v", err)
+	}
+	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS org_members (
+		org_id     TEXT NOT NULL,
+		user_id    TEXT NOT NULL,
+		created_at TEXT NOT NULL DEFAULT '',
+		PRIMARY KEY (org_id, user_id)
+	)`)
+	if err != nil {
+		t.Fatalf("create org_members table: %v", err)
 	}
 	// The token workspace bindings (spec 33), as MountWorkspaceHandlers
 	// creates them.
@@ -787,6 +800,28 @@ func (env *auditTestEnv) seedWorkspaceWithStatus(t *testing.T, slug, ownerID, st
 	}
 }
 
+// seedWorkspaceInOrg inserts a workspace with a status in the org orgID.
+func (env *auditTestEnv) seedWorkspaceInOrg(t *testing.T, slug, ownerID, orgID, status string) {
+	t.Helper()
+	if env.sqliteDB == nil {
+		t.Fatal("seedWorkspaceInOrg requires SQLite DB; use newAuditTestEnvWithSQLite")
+	}
+	if _, err := env.sqliteDB.Exec(
+		`INSERT INTO workspaces (slug, owner_id, org_id, status) VALUES (?, ?, ?, ?)`,
+		slug, ownerID, orgID, status,
+	); err != nil {
+		t.Fatalf("seedWorkspaceInOrg(%q): %v", slug, err)
+	}
+}
+
+// seedOrgMember makes userID a member of the org orgID.
+func seedOrgMember(t *testing.T, db *sql.DB, orgID, userID string) {
+	t.Helper()
+	if _, err := db.Exec(`INSERT INTO org_members (org_id, user_id) VALUES (?, ?)`, orgID, userID); err != nil {
+		t.Fatalf("seedOrgMember(%q, %q): %v", orgID, userID, err)
+	}
+}
+
 // getSessionField returns a single string column value for a session.
 func (env *auditTestEnv) getSessionField(t *testing.T, id, column string) string {
 	t.Helper()
@@ -962,5 +997,40 @@ func (env *auditTestEnv) seedTrace(t *testing.T, id, runID, workspace, eventType
 	)
 	if err != nil {
 		t.Fatalf("seedTrace(%q): %v", id, err)
+	}
+}
+
+// TS-36-46: the shared SQLite fixture has the columns and the table the
+// workspace access rule reads: workspaces.org_id and clone_status, and
+// org_members(org_id, user_id). Requirement: 36-REQ-10.4
+func TestOpenTestSQLiteDB_OrgSchema_TS_36_46(t *testing.T) {
+	db := openTestSQLiteDB(t)
+	cols := map[string]bool{}
+	rows, err := db.Query(`SELECT name FROM pragma_table_info('workspaces')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatal(err)
+		}
+		cols[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	rows.Close()
+	for _, c := range []string{"org_id", "clone_status"} {
+		if !cols[c] {
+			t.Errorf("workspaces has no %s column (columns %v)", c, cols)
+		}
+	}
+	if _, err := db.Exec(`INSERT INTO org_members (org_id, user_id) VALUES (?, ?)`, "O", "u2"); err != nil {
+		t.Fatalf("insert into org_members: %v", err)
+	}
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM org_members WHERE org_id = 'O' AND user_id = 'u2'`).Scan(&n); err != nil || n != 1 {
+		t.Errorf("org_members row count %d (%v); want 1", n, err)
 	}
 }

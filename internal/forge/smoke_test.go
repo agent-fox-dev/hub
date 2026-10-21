@@ -45,13 +45,15 @@ CREATE TABLE IF NOT EXISTS workspaces (
 	integration_branch TEXT
 )`
 
-// smokeDB is a database with the production workspaces table and the real secrets
-// store on it.
+// smokeDB is a database with the production workspaces table, apikit's
+// org_members table and the real secrets store on it.
 func smokeDB(t *testing.T) (*sql.DB, *secrets.Store) {
 	t.Helper()
 	db := openTestDB(t)
-	if _, err := db.Exec(productionWorkspacesTable); err != nil {
-		t.Fatalf("create the workspaces table: %v", err)
+	for _, ddl := range []string{productionWorkspacesTable, orgMembersTable} {
+		if _, err := db.Exec(ddl); err != nil {
+			t.Fatalf("create the workspaces and org_members tables: %v", err)
+		}
 	}
 	if err := secrets.InitSchema(db); err != nil {
 		t.Fatalf("create the secrets tables: %v", err)

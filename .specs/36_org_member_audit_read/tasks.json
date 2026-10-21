@@ -45,7 +45,7 @@
       "done_when": [
         "go test ./internal/audit/... -count=1 passes with no existing assertion changed"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 2,
@@ -80,7 +80,7 @@
       "done_when": [
         "TS-33-35 and TS-34-58 still pass unchanged"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 3,
@@ -120,7 +120,7 @@
       "done_when": [
         "Existing transcript_handler_test and TS-34-58 pass unchanged"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 4,
@@ -153,7 +153,7 @@
       "done_when": [
         "TS-33-36 and TS-34-58 pass unchanged"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 5,
@@ -188,7 +188,7 @@
       "done_when": [
         "TestSessions_NoAccessibleWorkspaceListsNothing and TS-33-37 pass unchanged"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 6,
@@ -224,7 +224,7 @@
       "done_when": [
         "binding_query_test.go and TS-34-58 pass unchanged"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 7,
@@ -259,7 +259,7 @@
       "done_when": [
         "sse_handler_test.go and sse_broadcaster_test.go pass unchanged"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 8,
@@ -289,7 +289,7 @@
       "done_when": [
         "workspace_auth_test.go and TS-33-46 to 50 pass unchanged"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 9,
@@ -326,7 +326,7 @@
       "done_when": [
         "TS-34-58 and TS-33-35 to 39, 46 to 53 pass unchanged"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 10,
@@ -364,7 +364,7 @@
       "done_when": [
         "make check passes"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 11,
@@ -392,7 +392,7 @@
       "done_when": [
         "make test and make lint pass"
       ],
-      "state": "pending"
+      "state": "done"
     }
   ]
 }

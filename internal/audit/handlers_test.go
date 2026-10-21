@@ -2,9 +2,15 @@ package audit
 
 import (
 	"fmt"
+	"math/rand"
 	"net/http"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/txsvc/apikit"
+
+	"github.com/agent-fox-dev/hub/internal/wsaccess"
 )
 
 // ---------------------------------------------------------------------------
@@ -1007,5 +1013,421 @@ func TestGetPostmortem_InvalidRunID400(t *testing.T) {
 
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Spec 36 — opening a session needs write access; replay is a read
+// Requirements: 36-REQ-6
+// ---------------------------------------------------------------------------
+
+// newOrgMemberEnv is a SQLite-backed audit environment with org O, in which
+// u1 owns the active workspace w and the archived workspace w-arch, u2 is a
+// member of O, and u3 is a stranger who owns w-x outside O.
+func newOrgMemberEnv(t *testing.T) *auditTestEnv {
+	t.Helper()
+	env := newAuditTestEnvWithSQLite(t)
+	env.seedWorkspaceInOrg(t, "w", "u1", "O", "active")
+	env.seedWorkspaceInOrg(t, "w-arch", "u1", "O", "archived")
+	env.seedWorkspaceInOrg(t, "w-x", "u3", "X", "active")
+	seedOrgMember(t, env.sqliteDB, "O", "u1")
+	seedOrgMember(t, env.sqliteDB, "O", "u2")
+	seedOrgMember(t, env.sqliteDB, "X", "u3")
+	return env
+}
+
+// TS-36-27: the owner and an admin token open sessions, whatever the
+// workspace's status. Requirement: 36-REQ-6.1
+func TestCreateSession_OwnerAndAdminOpen_TS_36_27(t *testing.T) {
+	env := newOrgMemberEnv(t)
+	for _, c := range []struct {
+		id, slug string
+		auth     *apikit.AuthInfo
+	}{
+		{"sess-owner", "w", patAuth("u1", "sessions:write")},
+		{"sess-admin", "w-arch", adminAuth()},
+	} {
+		rec := env.doJSON(t, http.MethodPost, "/api/v1/sessions", `{"id":"`+c.id+`","workspace_slug":"`+c.slug+`"}`, c.auth)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("POST /sessions %s for %s: (%d, %s); want 201", c.id, c.slug, rec.Code, rec.Body)
+		}
+		if got := parseSessionJSON(t, rec); got.ID != c.id || got.WorkspaceSlug != c.slug {
+			t.Errorf("created %s in %s; want %s in %s", got.ID, got.WorkspaceSlug, c.id, c.slug)
+		}
+		if n := env.countSessions(t, c.id); n != 1 {
+			t.Errorf("%d rows for %s; want 1", n, c.id)
+		}
+	}
+}
+
+// TS-36-28: a member opening a session gets the rule's 403 forbidden and no
+// row is written. Requirement: 36-REQ-6.2
+func TestCreateSession_MemberForbidden_TS_36_28(t *testing.T) {
+	env := newOrgMemberEnv(t)
+	before := queryTableCount(t, env.db, "agent_sessions")
+	rec := env.doJSON(t, http.MethodPost, "/api/v1/sessions", `{"id":"sess-m","workspace_slug":"w"}`, patAuth("u2", "sessions:write"))
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status %d (%s); want 403", rec.Code, rec.Body)
+	}
+	e := errOf(t, rec)
+	if e.Error.Message != "org members have read-only access to this workspace" || e.Error.ErrorType != "forbidden" {
+		t.Errorf("error %+v; want the read-only message with error_type forbidden", e.Error)
+	}
+	if after := queryTableCount(t, env.db, "agent_sessions"); after != before {
+		t.Errorf("session rows %d -> %d; want unchanged", before, after)
+	}
+}
+
+// TS-36-29: a stranger, or a slug that names no workspace, gets 404 and no
+// row is written. Requirement: 36-REQ-6.3
+func TestCreateSession_StrangerAndUnknown404_TS_36_29(t *testing.T) {
+	env := newOrgMemberEnv(t)
+	before := queryTableCount(t, env.db, "agent_sessions")
+	for _, slug := range []string{"w", "missing"} {
+		rec := env.doJSON(t, http.MethodPost, "/api/v1/sessions", `{"workspace_slug":"`+slug+`"}`, patAuth("u3", "sessions:write"))
+		if rec.Code != http.StatusNotFound || errOf(t, rec).Error.Message != "workspace not found" {
+			t.Errorf("%s: (%d, %s); want 404 workspace not found", slug, rec.Code, rec.Body)
+		}
+	}
+	if after := queryTableCount(t, env.db, "agent_sessions"); after != before {
+		t.Errorf("session rows %d -> %d; want unchanged", before, after)
+	}
+}
+
+// TS-36-30: replaying an id whose session lives in another workspace the
+// caller may read returns it with 200: to the owner, a member of that
+// workspace's org and an admin token. Requirement: 36-REQ-6.4
+func TestCreateSession_ReplayReadable_TS_36_30(t *testing.T) {
+	env := newOrgMemberEnv(t)
+	env.seedWorkspaceInOrg(t, "w1", "u1", "", "active")
+	env.seedWorkspaceInOrg(t, "w-u2", "u2", "", "active")
+	env.seedSession(t, &Session{ID: "sess-s", WorkspaceSlug: "w", Status: "active", CredentialID: "u1", CredentialType: "pat"})
+	before := queryTableCount(t, env.db, "agent_sessions")
+	for name, c := range map[string]struct {
+		slug string
+		auth *apikit.AuthInfo
+	}{
+		"owner":  {"w1", patAuth("u1", "sessions:write")},
+		"member": {"w-u2", patAuth("u2", "sessions:write")},
+		"admin":  {"w1", adminAuth()},
+	} {
+		rec := env.doJSON(t, http.MethodPost, "/api/v1/sessions", `{"id":"sess-s","workspace_slug":"`+c.slug+`"}`, c.auth)
+		if rec.Code != http.StatusOK {
+			t.Errorf("%s: (%d, %s); want 200", name, rec.Code, rec.Body)
+			continue
+		}
+		if got := parseSessionJSON(t, rec); got.ID != "sess-s" || got.WorkspaceSlug != "w" {
+			t.Errorf("%s: replay returned %s in %s; want sess-s in w", name, got.ID, got.WorkspaceSlug)
+		}
+	}
+	if after := queryTableCount(t, env.db, "agent_sessions"); after != before {
+		t.Errorf("session rows %d -> %d; want unchanged", before, after)
+	}
+}
+
+// TS-36-31: replaying an id whose session lives in a workspace the caller
+// may not read answers 404 without disclosing it. Requirement: 36-REQ-6.5
+func TestCreateSession_ReplayUnreadable404_TS_36_31(t *testing.T) {
+	env := newOrgMemberEnv(t)
+	env.seedWorkspaceInOrg(t, "w1", "u1", "", "active")
+	env.seedSession(t, &Session{ID: "sess-x", WorkspaceSlug: "w-x", Status: "active", CredentialID: "u3", CredentialType: "pat", Model: "secret-model"})
+	rec := env.doJSON(t, http.MethodPost, "/api/v1/sessions", `{"id":"sess-x","workspace_slug":"w1"}`, patAuth("u1", "sessions:write"))
+	if rec.Code != http.StatusNotFound || errOf(t, rec).Error.Message != "workspace not found" {
+		t.Fatalf("(%d, %s); want 404 workspace not found", rec.Code, rec.Body)
+	}
+	if body := rec.Body.String(); strings.Contains(body, "w-x") || strings.Contains(body, "secret-model") || strings.Contains(body, "u3") {
+		t.Errorf("body discloses the session: %s", body)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Spec 36 — single-workspace session and cost reads
+// Requirements: 36-REQ-2
+// ---------------------------------------------------------------------------
+
+// newSessionReadEnv is newOrgMemberEnv with session sess-w in w carrying a
+// usage record, sess-arch in the archived w-arch and sess-x in the
+// stranger's w-x.
+func newSessionReadEnv(t *testing.T) *auditTestEnv {
+	t.Helper()
+	env := newOrgMemberEnv(t)
+	for id, ws := range map[string]string{"sess-w": "w", "sess-arch": "w-arch", "sess-x": "w-x"} {
+		owner := "u1"
+		if ws == "w-x" {
+			owner = "u3"
+		}
+		env.seedSession(t, &Session{ID: id, WorkspaceSlug: ws, Status: "active", CredentialID: owner, CredentialType: "pat"})
+	}
+	// Reported an hour ago, inside the cost route's default 24-hour window.
+	env.seedTokenUsage(t, &TokenUsage{ID: "use-w", SessionID: "sess-w", WorkspaceSlug: "w", Model: "m", InputTokens: 7, OutputTokens: 3,
+		ReportedAt: time.Now().UTC().Add(-time.Hour).Format(time.RFC3339Nano)})
+	return env
+}
+
+// sessionReadRoutes are the four session read routes for session id in
+// workspace slug.
+func sessionReadRoutes(id, slug string) []string {
+	return []string{
+		"/api/v1/sessions/" + id,
+		"/api/v1/sessions/" + id + "/usage",
+		"/api/v1/workspaces/" + slug + "/cost",
+		"/api/v1/sessions?workspace_slug=" + slug,
+	}
+}
+
+// TS-36-8: a member reads the session, its usage, the workspace's cost and
+// the workspace's session list of an active workspace.
+// Requirement: 36-REQ-2.1
+func TestSessionReads_Member_TS_36_8(t *testing.T) {
+	env := newSessionReadEnv(t)
+	member := patAuth("u2", "sessions:read")
+	paths := sessionReadRoutes("sess-w", "w")
+	for _, path := range paths {
+		if rec := env.doJSON(t, http.MethodGet, path, "", member); rec.Code != http.StatusOK {
+			t.Fatalf("%s: (%d, %s); want 200", path, rec.Code, rec.Body)
+		}
+	}
+	if s := parseSessionJSON(t, env.doJSON(t, http.MethodGet, paths[0], "", member)); s.ID != "sess-w" {
+		t.Errorf("session %q; want sess-w", s.ID)
+	}
+	if u := parseUsageListJSON(t, env.doJSON(t, http.MethodGet, paths[1], "", member)); len(u.Records) != 1 || u.Records[0].ID != "use-w" {
+		t.Errorf("usage %+v; want use-w", u.Records)
+	}
+	if c := parseCostJSON(t, env.doJSON(t, http.MethodGet, paths[2], "", member)); c.Workspace != "w" || c.Totals.InputTokens != 7 {
+		t.Errorf("cost %+v; want w's 7 input tokens", c)
+	}
+	l := parseSessionListJSON(t, env.doJSON(t, http.MethodGet, paths[3], "", member))
+	if len(l.Sessions) != 1 || l.Sessions[0].ID != "sess-w" {
+		t.Errorf("session list %+v; want sess-w only", l.Sessions)
+	}
+}
+
+// TS-36-9: session read routes refuse a workspace that is not active, not
+// readable, missing or outside a bound PAT's binding with 403 workspace
+// access denied. Requirement: 36-REQ-2.2
+func TestSessionReads_Refused403_TS_36_9(t *testing.T) {
+	env := newSessionReadEnv(t)
+	env.seedWorkspaceInOrg(t, "w-u2", "u2", "", "active")
+	bindToken(t, env.sqliteDB, "tokU2", "w-u2")
+	member := patAuth("u2", "sessions:read")
+	var cases []struct {
+		path string
+		auth *apikit.AuthInfo
+	}
+	for _, p := range sessionReadRoutes("sess-arch", "w-arch") {
+		cases = append(cases, struct {
+			path string
+			auth *apikit.AuthInfo
+		}{p, member})
+	}
+	for _, p := range append(sessionReadRoutes("sess-x", "w-x"), "/api/v1/workspaces/missing/cost", "/api/v1/sessions?workspace_slug=missing") {
+		cases = append(cases, struct {
+			path string
+			auth *apikit.AuthInfo
+		}{p, member})
+	}
+	for _, p := range sessionReadRoutes("sess-w", "w") {
+		cases = append(cases, struct {
+			path string
+			auth *apikit.AuthInfo
+		}{p, boundPatAuth("u2", "tokU2", "sessions:read")})
+	}
+	for _, c := range cases {
+		rec := env.doJSON(t, http.MethodGet, c.path, "", c.auth)
+		if rec.Code != http.StatusForbidden || errOf(t, rec).Error.Message != "workspace access denied" {
+			t.Errorf("%s as %s/%s: (%d, %s); want 403 workspace access denied", c.path, c.auth.UserID, c.auth.TokenID, rec.Code, rec.Body)
+		}
+	}
+}
+
+// TS-36-10: a session id that does not exist answers 404 session not found
+// before the workspace check. Requirement: 36-REQ-2.3
+func TestSessionReads_UnknownSession404_TS_36_10(t *testing.T) {
+	env := newSessionReadEnv(t)
+	for _, path := range []string{"/api/v1/sessions/nope", "/api/v1/sessions/nope/usage"} {
+		rec := env.doJSON(t, http.MethodGet, path, "", patAuth("u3", "sessions:read"))
+		if rec.Code != http.StatusNotFound || errOf(t, rec).Error.Message != "session not found" {
+			t.Errorf("%s: (%d, %s); want 404 session not found", path, rec.Code, rec.Body)
+		}
+	}
+}
+
+// TS-36-11: a caller without sessions:read is refused with the scope
+// message before any lookup. Requirement: 36-REQ-2.4
+func TestSessionReads_ScopeFirst_TS_36_11(t *testing.T) {
+	env := newSessionReadEnv(t)
+	for _, path := range sessionReadRoutes("sess-w", "w") {
+		rec := env.doJSON(t, http.MethodGet, path, "", patAuth("u2", "audit:read"))
+		if rec.Code != http.StatusForbidden || errOf(t, rec).Error.Message != "sessions:read scope required" {
+			t.Errorf("%s: (%d, %s); want 403 sessions:read scope required", path, rec.Code, rec.Body)
+		}
+	}
+}
+
+// TS-36-12: with a nil SQLite handle, get and usage skip the check and cost
+// refuses non-admins. Requirement: 36-REQ-2.5
+func TestSessionReads_NilSQLite_TS_36_12(t *testing.T) {
+	env := newAuditTestEnv(t)
+	env.seedSession(t, &Session{ID: "sess-n", WorkspaceSlug: "w", Status: "active", CredentialID: "u1", CredentialType: "pat"})
+	pat := patAuth("u9", "sessions:read")
+	for _, path := range []string{"/api/v1/sessions/sess-n", "/api/v1/sessions/sess-n/usage"} {
+		if rec := env.doJSON(t, http.MethodGet, path, "", pat); rec.Code != http.StatusOK {
+			t.Errorf("%s: (%d, %s); want 200", path, rec.Code, rec.Body)
+		}
+	}
+	rec := env.doJSON(t, http.MethodGet, "/api/v1/workspaces/w/cost", "", pat)
+	if rec.Code != http.StatusForbidden || errOf(t, rec).Error.Message != "workspace access denied" {
+		t.Errorf("cost: (%d, %s); want 403 workspace access denied", rec.Code, rec.Body)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Spec 36 — the session list without a workspace
+// Requirements: 36-REQ-3, 36-REQ-9.2
+// ---------------------------------------------------------------------------
+
+// listedWorkspaces lists GET /sessions as auth and returns the workspaces
+// of the sessions listed.
+func listedWorkspaces(t *testing.T, env *auditTestEnv, auth *apikit.AuthInfo) map[string]bool {
+	t.Helper()
+	rec := env.doJSON(t, http.MethodGet, "/api/v1/sessions", "", auth)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /sessions: (%d, %s); want 200", rec.Code, rec.Body)
+	}
+	out := map[string]bool{}
+	for _, s := range parseSessionListJSON(t, rec).Sessions {
+		out[s.WorkspaceSlug] = true
+	}
+	return out
+}
+
+// TS-36-13: the session list without a slug includes the sessions of the
+// caller's own and member active workspaces, and no others.
+// Requirement: 36-REQ-3.1
+func TestSessionList_OwnedAndMember_TS_36_13(t *testing.T) {
+	env := newSessionReadEnv(t)
+	env.seedWorkspaceInOrg(t, "w-own", "u2", "", "active")
+	env.seedSession(t, &Session{ID: "sess-own", WorkspaceSlug: "w-own", Status: "active", CredentialID: "u2", CredentialType: "pat"})
+	got := listedWorkspaces(t, env, patAuth("u2", "sessions:read"))
+	if len(got) != 2 || !got["w-own"] || !got["w"] {
+		t.Errorf("listed %v; want w-own and w (not the archived w-arch, not the stranger's w-x)", got)
+	}
+	rec := env.doJSON(t, http.MethodGet, "/api/v1/sessions?limit=1&order=asc", "", patAuth("u2", "sessions:read"))
+	l := parseSessionListJSON(t, rec)
+	if rec.Code != http.StatusOK || len(l.Sessions) != 1 || !l.HasMore || l.NextCursor == nil {
+		t.Errorf("limit=1: (%d, %+v); want one session and a cursor", rec.Code, l)
+	}
+}
+
+// TS-36-14: a caller with no readable active workspace gets an empty list,
+// and the restriction list is non-nil and empty. Requirement: 36-REQ-3.2
+func TestSessionList_NoneReadable_TS_36_14(t *testing.T) {
+	env := newSessionReadEnv(t)
+	lonely := patAuth("u9", "sessions:read")
+	if got := listedWorkspaces(t, env, lonely); len(got) != 0 {
+		t.Errorf("listed %v; want none", got)
+	}
+	l, err := getAccessibleWorkspaces(env.sqliteDB, lonely)
+	if err != nil || l == nil || len(l) != 0 {
+		t.Errorf("getAccessibleWorkspaces = (%v, %v, nil=%v); want a non-nil empty list", l, err, l == nil)
+	}
+}
+
+// TS-36-15: a bound PAT lists at most its bound workspace's sessions, when
+// its user may read it, with no refusal report. Requirement: 36-REQ-3.3
+func TestSessionList_BoundPAT_TS_36_15(t *testing.T) {
+	var reports []wsaccess.BoundRefusal
+	wsaccess.SetRefusalObserver(func(r wsaccess.BoundRefusal) { reports = append(reports, r) })
+	t.Cleanup(func() { wsaccess.SetRefusalObserver(nil) })
+
+	env := newSessionReadEnv(t)
+	env.seedWorkspaceInOrg(t, "w2", "u2", "", "active")
+	env.seedSession(t, &Session{ID: "sess-w2", WorkspaceSlug: "w2", Status: "active", CredentialID: "u2", CredentialType: "pat"})
+	bindToken(t, env.sqliteDB, "tokW", "w")
+	bound := boundPatAuth("u2", "tokW", "sessions:read")
+	if got := listedWorkspaces(t, env, bound); len(got) != 1 || !got["w"] {
+		t.Errorf("bound to w, listed %v; want w only", got)
+	}
+	if len(reports) != 0 {
+		t.Errorf("%d refusal reports; want 0", len(reports))
+	}
+	if _, err := env.sqliteDB.Exec(`DELETE FROM org_members WHERE org_id = 'O' AND user_id = 'u2'`); err != nil {
+		t.Fatal(err)
+	}
+	if got := listedWorkspaces(t, env, bound); len(got) != 0 {
+		t.Errorf("bound to w, no longer a member, listed %v; want none", got)
+	}
+}
+
+// TS-36-16: an admin token lists the sessions of every workspace.
+// Requirement: 36-REQ-3.4
+func TestSessionList_AdminUnrestricted_TS_36_16(t *testing.T) {
+	env := newSessionReadEnv(t)
+	if got := listedWorkspaces(t, env, adminAuth()); len(got) != 3 || !got["w"] || !got["w-arch"] || !got["w-x"] {
+		t.Errorf("admin listed %v; want w, w-arch and w-x", got)
+	}
+}
+
+// TS-36-17 (property): for any non-admin caller and any seeded workspaces,
+// memberships and sessions, GET /sessions lists exactly the sessions of
+// the active workspaces the caller owns or shares an org with.
+// Requirement: 36-REQ-3.5
+func TestSessionList_PropertyReadableActive_TS_36_17(t *testing.T) {
+	users, orgs, statuses := []string{"u1", "u2", "u3", "u4"}, []string{"", "O1", "O2"}, []string{"active", "archived"}
+	for seed := int64(1); seed <= 40; seed++ {
+		rng := rand.New(rand.NewSource(seed))
+		env := newAuditTestEnvWithSQLite(t)
+		member := map[[2]string]bool{}
+		for _, o := range orgs[1:] {
+			for _, u := range users {
+				if rng.Intn(2) == 0 {
+					seedOrgMember(t, env.sqliteDB, o, u)
+					member[[2]string{o, u}] = true
+				}
+			}
+		}
+		caller := users[rng.Intn(len(users))]
+		want := map[string]bool{}
+		for i := 0; i < 2+rng.Intn(5); i++ {
+			slug, owner := fmt.Sprintf("ws-%d", i), users[rng.Intn(len(users))]
+			org, status := orgs[rng.Intn(len(orgs))], statuses[rng.Intn(len(statuses))]
+			env.seedWorkspaceInOrg(t, slug, owner, org, status)
+			env.seedSession(t, &Session{ID: "sess-" + slug, WorkspaceSlug: slug, Status: "active", CredentialID: owner, CredentialType: "pat"})
+			if status == "active" && (owner == caller || (org != "" && member[[2]string{org, caller}])) {
+				want[slug] = true
+			}
+		}
+		got := listedWorkspaces(t, env, patAuth(caller, "sessions:read"))
+		if len(got) != len(want) {
+			t.Errorf("seed %d: %s listed %v; want %v", seed, caller, got, want)
+			continue
+		}
+		for ws := range got {
+			if !want[ws] {
+				t.Errorf("seed %d: %s listed %v; want %v", seed, caller, got, want)
+				break
+			}
+		}
+	}
+}
+
+// TS-36-40: a failed membership read refuses the session read routes with
+// 403 and returns no session from the session list (erratum 36, entry 3:
+// the list answers 500). Requirement: 36-REQ-9.2
+func TestSessionReads_DatabaseFailure_TS_36_40(t *testing.T) {
+	env := newSessionReadEnv(t)
+	if _, err := env.sqliteDB.Exec(`DROP TABLE org_members`); err != nil {
+		t.Fatal(err)
+	}
+	member := patAuth("u2", "sessions:read")
+	for _, path := range sessionReadRoutes("sess-w", "w") {
+		rec := env.doJSON(t, http.MethodGet, path, "", member)
+		if rec.Code != http.StatusForbidden || errOf(t, rec).Error.Message != "workspace access denied" {
+			t.Errorf("%s: (%d, %s); want 403 workspace access denied", path, rec.Code, rec.Body)
+		}
+	}
+	rec := env.doJSON(t, http.MethodGet, "/api/v1/sessions", "", member)
+	if rec.Code != http.StatusInternalServerError || strings.Contains(rec.Body.String(), "sess-") {
+		t.Errorf("GET /sessions: (%d, %s); want 500 with no session", rec.Code, rec.Body)
 	}
 }

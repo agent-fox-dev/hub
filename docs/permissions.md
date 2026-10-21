@@ -96,10 +96,10 @@ keys — they have implicit `git:read` + `git:write`.
 are strictly scoped to the resources they may reach:
 - REST `/api/v1/user/*` endpoints query `WHERE user_id = ?` using the
   authenticated user's ID.
-- Every REST route that names a workspace, apart from the session, cost and
-  audit routes (which keep their own owner-only checks), decides access through
+- Every REST route that names a workspace decides access through
   `wsaccess.AuthorizeWorkspace` (see [Workspace access
-  levels](#workspace-access-levels)): the owner and admin tokens may do
+  levels](#workspace-access-levels); the session, cost and audit routes keep
+  their own refusal answers): the owner and admin tokens may do
   everything, a member of the workspace's org may read, and everyone else
   gets 404 (anti-enumeration). Sync and reclone are writes like any other.
   The listing returns the caller's own workspaces plus those of the orgs
@@ -145,8 +145,20 @@ or `member`, whatever the PAT's scopes) and `org_slug`.
 | workspace update, archive, reactivate, delete, sync, reclone; patch writes; rebuild submit, cancel, requeue, rollback; `DELETE .../rerere/*`; merge submit, cancel, requeue, `rebase`; lease issue and delete; the forge writes and `PUT`/`DELETE .../forge/webhook`; variable create, update, delete | write |
 | workspace secrets (all four routes); bound tokens (`POST`, `GET .../tokens`) | private |
 
-Sessions, cost, per-run audit reads and ingestion, the unified audit query, the
-SSE stream, transcripts and the git server stay owner-only.
+The session, cost and audit routes decide through the same rule and keep their
+own refusal answers:
+
+| Routes | Need | A member gets | Anyone else gets |
+|--------|------|---------------|------------------|
+| per-run audit reads (`events`, `sessions/outcomes`, `tools/calls`, `tools/errors`, `traces`, `postmortem`) and the transcript | read, any workspace status | the owner's answer | `404 workspace not found` |
+| `GET /sessions/:id`, `GET /sessions/:id/usage`, `GET /workspaces/:slug/cost`, `GET /sessions?workspace_slug=` | read, and the workspace must be active | the owner's answer | `403 workspace access denied` |
+| `GET /sessions` | the active workspaces the caller may read | the sessions of owned and member workspaces | its own workspaces' sessions |
+| `GET /audit`, `GET /events` | the workspaces of any status the caller may read (the stream computes the set when it opens) | the events of owned and member workspaces; never a hub event without a workspace | `404 workspace not found` for a `workspace` filter outside the set |
+| `POST /sessions` | write | `403` `org members have read-only access to this workspace`, `error_type: forbidden` | `404 workspace not found` |
+| `POST /sessions/:id/complete`, `POST /sessions/:id/usage` | the session's creator (owner or admin token) | `403 not session owner` | `403 not session owner` |
+| the eight audit ingestion routes | owner (`checkWorkspaceAccess`) | `403 workspace_access_denied` (`409 workspace_archived` first on an archived workspace) | the same |
+
+The git server stays owner-only.
 
 **3. Role-based escalation.** `IsAdmin()` returns true when
 `CredentialType == "api_key"` AND `Role == "admin"`. This grants access
@@ -234,7 +246,7 @@ sit outside it.
 | `POST /api/v1/workspaces/:slug/sync` | allowed | write: must own (org member 403) |
 | `POST /api/v1/workspaces/:slug/reclone` | allowed | write: must own (org member 403) |
 | patches, merges, rebase, rebuilds, rerere, patch-status | allowed | reads: owner or org member; writes: must own (org member 403); 404 otherwise |
-| sessions, cost, audit | allowed | must own (404 or 403 as today; org members get a stranger's answer) |
+| sessions, cost, audit | allowed | reads: owner or org member (sessions and cost only on an active workspace); opening a session: must own (org member 403 `forbidden`); completing, usage reports and ingestion: owner only (org member 403) |
 
 Admin-role API keys have the same access as user-role — they do NOT see
 other users' workspaces beyond their orgs'.
@@ -565,7 +577,7 @@ at startup via the `extraPerms` parameter.
 | **Source** | hub |
 | **Grants** | Read agent session records, token usage records, and workspace cost summaries |
 | **Endpoints** | `GET /api/v1/sessions`, `GET /api/v1/sessions/:id`, `GET /api/v1/sessions/:id/usage`, `GET /api/v1/workspaces/:slug/cost` |
-| **Ownership** | Non-admin callers see only sessions in workspaces they own. Admin tokens see all workspaces. |
+| **Ownership** | Non-admin callers see only sessions of active workspaces they own or whose org they belong to; any other workspace is `403 workspace access denied`. Admin tokens see all workspaces. |
 
 ### sessions:write
 
@@ -574,7 +586,7 @@ at startup via the `extraPerms` parameter.
 | **Source** | hub |
 | **Grants** | Open, close, and report token usage on agent sessions |
 | **Endpoints** | `POST /api/v1/sessions`, `POST /api/v1/sessions/:id/complete`, `POST /api/v1/sessions/:id/usage` |
-| **Ownership** | Session mutation endpoints (complete, usage) enforce that the caller is the session owner or an admin token. |
+| **Ownership** | Opening a session needs write access to the workspace: its owner or an admin token (an org member gets `403 forbidden`). Completing a session and reporting usage enforce that the caller is the session owner or an admin token. |
 
 ### audit:read
 
@@ -583,6 +595,7 @@ at startup via the `extraPerms` parameter.
 | **Source** | hub |
 | **Grants** | Query audit events, traces, session outcomes, tool calls, tool errors, postmortems, unified audit queries, transcripts, and SSE event streams |
 | **Endpoints** | `GET /api/v1/workspaces/:slug/runs/:run_id/events`, `GET /api/v1/workspaces/:slug/runs/:run_id/traces`, `GET /api/v1/workspaces/:slug/runs/:run_id/sessions/outcomes`, `GET /api/v1/workspaces/:slug/runs/:run_id/tools/calls`, `GET /api/v1/workspaces/:slug/runs/:run_id/tools/errors`, `GET /api/v1/workspaces/:slug/runs/:run_id/postmortem`, `GET /api/v1/audit`, `GET /api/v1/workspaces/:slug/runs/:run_id/transcript`, `GET /api/v1/events` |
+| **Ownership** | The workspace's owner, a member of its org and admin tokens read a workspace's runs and transcripts (`404 workspace not found` otherwise); `GET /api/v1/audit` and `GET /api/v1/events` return non-admins the events of the workspaces they own or share an org with, and hub events without a workspace to admin tokens only. |
 
 ### audit:write
 
@@ -982,13 +995,16 @@ permissions are registered by `Permissions()` in
 
 **Ownership notes:**
 
-- **audit:read**: Not enforced. Any authenticated user with the required
-  scope can query audit events for any workspace.
-- **audit:write**: Workspace-scoped PATs must match the URL workspace slug.
-  Generic PATs and API keys are checked against workspace ownership via
-  SQLite. Admin tokens bypass all workspace checks.
-- **sessions:read**: Non-admin users are restricted to sessions for
-  workspaces they own (checked via SQLite).
+- **audit:read**: Enforced through `wsaccess`. A non-admin caller reads the
+  runs and transcripts of the workspaces it owns or whose org it belongs to,
+  of any status (`404 workspace not found` otherwise), and `GET /audit` and
+  `GET /events` return it only those workspaces' events. Admin tokens read
+  everything, hub events without a workspace included.
+- **audit:write**: PATs and API keys must own the workspace (checked via
+  SQLite; an org member gets `403 workspace_access_denied`), and a PAT bound to
+  another workspace gets `404`. Admin tokens bypass all workspace checks.
+- **sessions:read**: Non-admin users are restricted to sessions of active
+  workspaces they own or whose org they belong to (checked via SQLite).
 
 ### sessions:write
 
