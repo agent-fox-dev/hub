@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
+	"maps"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -45,11 +46,11 @@ func respondErrorWithType(c echo.Context, code int, message, errorType string) e
 	return apikit.WriteAPIErrorWithType(c, code, message, errorType)
 }
 
-// respondWorkspace writes a workspace JSON object as the response body.
-// It computes the hub_url from the workspace's org and the configured external URL.
-func respondWorkspace(c echo.Context, code int, ws *Workspace, db *sql.DB) error {
-	hubURL := buildHubURL(db, ws)
-	return c.JSON(code, workspaceResponse(ws, hubURL))
+// respondWorkspace writes a workspace JSON object as the response body, for
+// a caller with the given access. It looks up the slug of the workspace's
+// org, which gives org_slug and the hub_url.
+func respondWorkspace(c echo.Context, code int, ws *Workspace, db *sql.DB, access wsaccess.Access) error {
+	return c.JSON(code, workspaceResponse(ws, orgSlugOf(db, ws), access))
 }
 
 // respondWorkspaceWithExtras writes a workspace JSON object augmented with
@@ -60,22 +61,23 @@ func respondWorkspace(c echo.Context, code int, ws *Workspace, db *sql.DB) error
 // Extras are applied on top of the workspace fields, so a key collision
 // resolves in favour of the extra. Passing a nil or empty map is equivalent
 // to respondWorkspace.
-func respondWorkspaceWithExtras(c echo.Context, code int, ws *Workspace, db *sql.DB, extras map[string]any) error {
-	hubURL := buildHubURL(db, ws)
-	body := workspaceResponse(ws, hubURL)
+func respondWorkspaceWithExtras(c echo.Context, code int, ws *Workspace, db *sql.DB, access wsaccess.Access, extras map[string]any) error {
+	body := workspaceResponse(ws, orgSlugOf(db, ws), access)
 	for k, v := range extras {
 		body[k] = v
 	}
 	return c.JSON(code, body)
 }
 
-// workspaceResponse converts a Workspace to a JSON-serializable map.
-// hubURL is included as-is; pass nil for workspaces without a hub URL.
+// workspaceResponse converts a Workspace to a JSON-serializable map, for a
+// caller with the given access (spec 35). orgSlug is the slug of the
+// workspace's org, nil when it has none; it is rendered as org_slug and
+// builds the hub_url.
 //
 // sync_mode and sync_status are coalesced to their defaults ("pull_only" and
 // "idle" respectively) when empty, providing defensive handling for
 // pre-migration rows (13-REQ-1.E2).
-func workspaceResponse(ws *Workspace, hubURL *string) map[string]any {
+func workspaceResponse(ws *Workspace, orgSlug *string, access wsaccess.Access) map[string]any {
 	// 13-REQ-1.E2: Coalesce empty sync_mode/sync_status to defaults.
 	syncMode := ws.SyncMode
 	if syncMode == "" {
@@ -95,10 +97,12 @@ func workspaceResponse(ws *Workspace, hubURL *string) map[string]any {
 	return map[string]any{
 		"slug":               ws.Slug,
 		"git_url":            ws.GitURL,
-		"hub_url":            hubURL,
+		"hub_url":            hubURLOf(ws, orgSlug),
 		"branch":             ws.Branch,
 		"owner_id":           ws.OwnerID,
 		"org_id":             ws.OrgID,
+		"org_slug":           orgSlug,
+		"access":             string(access),
 		"status":             ws.Status,
 		"display_name":       ws.DisplayName,
 		"description":        ws.Description,
@@ -118,55 +122,47 @@ func workspaceResponse(ws *Workspace, hubURL *string) map[string]any {
 	}
 }
 
-// buildHubURL constructs the hub git server URL for a workspace.
-// Returns nil if the external URL is not configured or the workspace has no org.
-func buildHubURL(db *sql.DB, ws *Workspace) *string {
-	if defaultExternalURL == "" || ws.OrgID == nil {
+// orgSlugOf returns the slug of the workspace's org, or nil when the
+// workspace has no org or the org row cannot be read.
+func orgSlugOf(db *sql.DB, ws *Workspace) *string {
+	if ws.OrgID == nil {
 		return nil
 	}
 	var orgSlug string
-	err := db.QueryRow("SELECT slug FROM orgs WHERE id = ?", *ws.OrgID).Scan(&orgSlug)
-	if err != nil {
+	if err := db.QueryRow("SELECT slug FROM orgs WHERE id = ?", *ws.OrgID).Scan(&orgSlug); err != nil {
 		return nil
 	}
-	url := defaultExternalURL + "/git/" + orgSlug + "/" + ws.Slug + ".git"
-	return &url
+	return &orgSlug
 }
 
-// buildHubURLMap builds hub URLs for a batch of workspaces in a single query.
-func buildHubURLMap(db *sql.DB, workspaces []*Workspace) map[string]*string {
+// orgSlugsOf returns orgSlugOf for a batch of workspaces, keyed by workspace
+// slug, with one query per distinct org.
+func orgSlugsOf(db *sql.DB, workspaces []*Workspace) map[string]*string {
+	byOrg := make(map[string]*string)
 	result := make(map[string]*string, len(workspaces))
-	if defaultExternalURL == "" {
-		return result
-	}
-
-	orgIDs := make(map[string]bool)
 	for _, ws := range workspaces {
-		if ws.OrgID != nil {
-			orgIDs[*ws.OrgID] = true
+		if ws.OrgID == nil {
+			continue
 		}
-	}
-	if len(orgIDs) == 0 {
-		return result
-	}
-
-	orgSlugs := make(map[string]string)
-	for id := range orgIDs {
-		var slug string
-		if err := db.QueryRow("SELECT slug FROM orgs WHERE id = ?", id).Scan(&slug); err == nil {
-			orgSlugs[id] = slug
+		orgSlug, seen := byOrg[*ws.OrgID]
+		if !seen {
+			orgSlug = orgSlugOf(db, ws)
+			byOrg[*ws.OrgID] = orgSlug
 		}
-	}
-
-	for _, ws := range workspaces {
-		if ws.OrgID != nil {
-			if orgSlug, ok := orgSlugs[*ws.OrgID]; ok {
-				url := defaultExternalURL + "/git/" + orgSlug + "/" + ws.Slug + ".git"
-				result[ws.Slug] = &url
-			}
-		}
+		result[ws.Slug] = orgSlug
 	}
 	return result
+}
+
+// hubURLOf constructs the hub git server URL of a workspace whose org has
+// the slug orgSlug. Returns nil if the external URL is not configured or the
+// workspace has no org.
+func hubURLOf(ws *Workspace, orgSlug *string) *string {
+	if defaultExternalURL == "" || orgSlug == nil {
+		return nil
+	}
+	url := defaultExternalURL + "/git/" + *orgSlug + "/" + ws.Slug + ".git"
+	return &url
 }
 
 // validSyncModes lists the accepted values for the sync_mode field.
@@ -222,37 +218,35 @@ func normalizeDescription(input *string) string {
 	return *input
 }
 
-// lookupWorkspaceForAuth retrieves a workspace and enforces ownership-based access.
-// Admin credentials can access any workspace; non-admin credentials can only access
-// workspaces they own. Returns the workspace and nil error on success; on failure
-// writes an error response and returns nil workspace with the response error.
-func lookupWorkspaceForAuth(c echo.Context, db *sql.DB, slug string, auth *apikit.AuthInfo) (*Workspace, error) {
+// afterAccessDecision, when a test sets it, runs in lookupWorkspaceForAuth
+// between the access decision and the full-row load.
+var afterAccessDecision func(slug string)
+
+// lookupWorkspaceForAuth decides the caller's access to the workspace with
+// wsaccess.AuthorizeWorkspaceAt for an endpoint that needs need, then loads
+// the full workspace row. A binding refusal is reported with the request's
+// method and route (spec 34). It returns the workspace and the caller's
+// access; on a refusal, or when the row is gone by the time it is loaded, it
+// writes the error response and returns nil.
+func lookupWorkspaceForAuth(c echo.Context, db *sql.DB, slug string, auth *apikit.AuthInfo, need wsaccess.Need) (*Workspace, wsaccess.Access) {
+	decision, status, msg := wsaccess.AuthorizeWorkspaceAt(db, auth, slug, need, wsaccess.SiteOf(c, http.StatusNotFound))
+	if decision == nil {
+		_ = wsaccess.WriteRefusal(c, status, msg)
+		return nil, wsaccess.AccessNone
+	}
+	if afterAccessDecision != nil {
+		afterAccessDecision(slug)
+	}
 	ws, err := getWorkspaceBySlug(db, slug)
 	if err != nil {
-		return nil, respondError(c, http.StatusInternalServerError, "internal server error")
+		_ = respondError(c, http.StatusInternalServerError, "internal server error")
+		return nil, wsaccess.AccessNone
 	}
 	if ws == nil {
-		return nil, respondError(c, http.StatusNotFound, "workspace not found")
+		_ = respondError(c, http.StatusNotFound, "workspace not found")
+		return nil, wsaccess.AccessNone
 	}
-
-	if isAdmin(auth) {
-		return ws, nil
-	}
-
-	if ws.OwnerID != auth.UserID {
-		return nil, respondError(c, http.StatusNotFound, "workspace not found")
-	}
-
-	// A PAT bound to another workspace must not see this one (spec 33).
-	denied, err := wsaccess.DeniesWorkspace(db, auth, ws.Slug, wsaccess.SiteOf(c, http.StatusNotFound))
-	if err != nil {
-		return nil, respondError(c, http.StatusInternalServerError, "internal server error")
-	}
-	if denied {
-		return nil, respondError(c, http.StatusNotFound, "workspace not found")
-	}
-
-	return ws, nil
+	return ws, decision.Access
 }
 
 // handleCreateWorkspace handles POST /api/v1/workspaces.
@@ -578,7 +572,7 @@ func handleCreateWorkspace(db *sql.DB) echo.HandlerFunc {
 			},
 		})
 
-		return respondWorkspace(c, http.StatusCreated, ws, db)
+		return respondWorkspace(c, http.StatusCreated, ws, db, wsaccess.AccessOwner)
 	}
 }
 
@@ -779,7 +773,7 @@ func handleUpdateWorkspace(db *sql.DB) echo.HandlerFunc {
 		}
 
 		// Look up workspace and verify ownership / anti-enumeration.
-		ws, _ := lookupWorkspaceForAuth(c, db, slug, auth)
+		ws, access := lookupWorkspaceForAuth(c, db, slug, auth, wsaccess.NeedWrite)
 		if ws == nil {
 			return nil // Response already written by lookupWorkspaceForAuth.
 		}
@@ -861,7 +855,7 @@ func handleUpdateWorkspace(db *sql.DB) echo.HandlerFunc {
 			},
 		})
 
-		return respondWorkspace(c, http.StatusOK, updated, db)
+		return respondWorkspace(c, http.StatusOK, updated, db, access)
 	}
 }
 
@@ -879,32 +873,33 @@ func handleListWorkspaces(db *sql.DB) echo.HandlerFunc {
 
 		includeArchived := c.QueryParam("include_archived") == "true"
 
-		// A bound PAT lists at most its own workspace (spec 33). The
-		// binding is resolved before any rows are opened.
-		boundSlug, bound, err := wsaccess.BoundSlug(db, auth)
+		// The caller's readable set decides the listing (spec 35): every
+		// workspace for an admin token, else the caller's own workspaces and
+		// those of the caller's orgs, at most the bound one for a bound PAT.
+		readable, all, err := wsaccess.ReadableSlugs(db, auth)
 		if err != nil {
 			return respondError(c, http.StatusInternalServerError, "internal server error")
 		}
 
 		var workspaces []*Workspace
-
-		if isAdmin(auth) {
+		if all {
 			workspaces, err = listAllWorkspaces(db, includeArchived)
 		} else {
-			workspaces, err = listWorkspacesByOwner(db, auth.UserID, includeArchived)
+			workspaces, err = listWorkspacesBySlugs(db, slices.Collect(maps.Keys(readable)), includeArchived)
 		}
 		if err != nil {
 			return respondError(c, http.StatusInternalServerError, "internal server error")
 		}
-		if bound {
-			workspaces = slices.DeleteFunc(workspaces, func(ws *Workspace) bool { return ws.Slug != boundSlug })
-		}
 
 		// Build response array.
-		hubURLs := buildHubURLMap(db, workspaces)
+		orgSlugs := orgSlugsOf(db, workspaces)
 		result := make([]map[string]any, 0, len(workspaces))
 		for _, ws := range workspaces {
-			result = append(result, workspaceResponse(ws, hubURLs[ws.Slug]))
+			access := wsaccess.AccessAdmin
+			if !all {
+				access = readable[ws.Slug]
+			}
+			result = append(result, workspaceResponse(ws, orgSlugs[ws.Slug], access))
 		}
 
 		return c.JSON(http.StatusOK, result)
@@ -924,12 +919,12 @@ func handleGetWorkspace(db *sql.DB) echo.HandlerFunc {
 		}
 
 		slug := c.Param("slug")
-		ws, _ := lookupWorkspaceForAuth(c, db, slug, auth)
+		ws, access := lookupWorkspaceForAuth(c, db, slug, auth, wsaccess.NeedRead)
 		if ws == nil {
 			return nil // Response already written by lookupWorkspaceForAuth.
 		}
 
-		return respondWorkspace(c, http.StatusOK, ws, db)
+		return respondWorkspace(c, http.StatusOK, ws, db, access)
 	}
 }
 
@@ -950,7 +945,7 @@ func handleArchiveWorkspace(db *sql.DB) echo.HandlerFunc {
 		}
 
 		slug := c.Param("slug")
-		ws, _ := lookupWorkspaceForAuth(c, db, slug, auth)
+		ws, access := lookupWorkspaceForAuth(c, db, slug, auth, wsaccess.NeedWrite)
 		if ws == nil {
 			return nil // Response already written by lookupWorkspaceForAuth.
 		}
@@ -1069,7 +1064,7 @@ func handleArchiveWorkspace(db *sql.DB) echo.HandlerFunc {
 			Metadata:     archiveMetadata,
 		})
 
-		return respondWorkspace(c, http.StatusOK, updated, db)
+		return respondWorkspace(c, http.StatusOK, updated, db, access)
 	}
 }
 
@@ -1086,7 +1081,7 @@ func handleReactivateWorkspace(db *sql.DB) echo.HandlerFunc {
 		}
 
 		slug := c.Param("slug")
-		ws, _ := lookupWorkspaceForAuth(c, db, slug, auth)
+		ws, access := lookupWorkspaceForAuth(c, db, slug, auth, wsaccess.NeedWrite)
 		if ws == nil {
 			return nil // Response already written by lookupWorkspaceForAuth.
 		}
@@ -1123,7 +1118,7 @@ func handleReactivateWorkspace(db *sql.DB) echo.HandlerFunc {
 			Metadata:     map[string]any{},
 		})
 
-		return respondWorkspace(c, http.StatusOK, updated, db)
+		return respondWorkspace(c, http.StatusOK, updated, db, access)
 	}
 }
 
@@ -1140,7 +1135,7 @@ func handleDeleteWorkspace(db *sql.DB) echo.HandlerFunc {
 		}
 
 		slug := c.Param("slug")
-		ws, _ := lookupWorkspaceForAuth(c, db, slug, auth)
+		ws, _ := lookupWorkspaceForAuth(c, db, slug, auth, wsaccess.NeedWrite)
 		if ws == nil {
 			return nil // Response already written by lookupWorkspaceForAuth.
 		}

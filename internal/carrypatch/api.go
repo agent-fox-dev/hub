@@ -272,12 +272,13 @@ func hasScope(auth *apikit.AuthInfo, scopes ...string) bool {
 	return false
 }
 
-// authorizeWorkspace enforces workspace ownership for carry-patch endpoints
-// (owner or admin token; non-owners get 404). It writes the error response
-// and returns false when access is denied.
-func authorizeWorkspace(c echo.Context, db *sql.DB, auth *apikit.AuthInfo, slug string) bool {
-	if _, code, msg := wsaccess.AuthorizeWorkspace(db, auth, slug); code != 0 {
-		_ = apikit.WriteAPIError(c, code, msg)
+// authorizeWorkspace applies wsaccess.AuthorizeWorkspace with the endpoint's
+// need to a carry-patch endpoint: members of the workspace's org read, owners
+// and admin tokens also write, a member's write is 403 and anyone else gets
+// 404. It writes the refusal and returns false when access is denied.
+func authorizeWorkspace(c echo.Context, db *sql.DB, auth *apikit.AuthInfo, slug string, need wsaccess.Need) bool {
+	if _, code, msg := wsaccess.AuthorizeWorkspace(db, auth, slug, need); code != 0 {
+		_ = wsaccess.WriteRefusal(c, code, msg)
 		return false
 	}
 	return true
@@ -336,7 +337,7 @@ func handleRebuildPreview(cfg RebuildPreviewAPIConfig) echo.HandlerFunc {
 		}
 
 		slug := c.Param("slug")
-		if !authorizeWorkspace(c, cfg.DB, auth, slug) {
+		if !authorizeWorkspace(c, cfg.DB, auth, slug, wsaccess.NeedRead) {
 			return nil
 		}
 
@@ -473,7 +474,7 @@ func handleSubmitRebuild(cfg RebuildAPIConfig) echo.HandlerFunc {
 		}
 
 		slug := c.Param("slug")
-		if !authorizeWorkspace(c, cfg.DB, auth, slug) {
+		if !authorizeWorkspace(c, cfg.DB, auth, slug, wsaccess.NeedWrite) {
 			return nil
 		}
 
@@ -630,7 +631,7 @@ func handleListRebuilds(cfg RebuildAPIConfig) echo.HandlerFunc {
 		}
 
 		slug := c.Param("slug")
-		if !authorizeWorkspace(c, cfg.DB, auth, slug) {
+		if !authorizeWorkspace(c, cfg.DB, auth, slug, wsaccess.NeedRead) {
 			return nil
 		}
 
@@ -668,7 +669,7 @@ func handleGetRebuild(cfg RebuildAPIConfig) echo.HandlerFunc {
 
 		slug := c.Param("slug")
 		jobID := c.Param("id")
-		if !authorizeWorkspace(c, cfg.DB, auth, slug) {
+		if !authorizeWorkspace(c, cfg.DB, auth, slug, wsaccess.NeedRead) {
 			return nil
 		}
 
@@ -709,7 +710,7 @@ func handleCancelRebuild(cfg RebuildAPIConfig) echo.HandlerFunc {
 
 		slug := c.Param("slug")
 		jobID := c.Param("id")
-		if !authorizeWorkspace(c, cfg.DB, auth, slug) {
+		if !authorizeWorkspace(c, cfg.DB, auth, slug, wsaccess.NeedWrite) {
 			return nil
 		}
 
@@ -767,7 +768,7 @@ func handleRequeueRebuild(cfg RebuildAPIConfig) echo.HandlerFunc {
 
 		slug := c.Param("slug")
 		jobID := c.Param("id")
-		if !authorizeWorkspace(c, cfg.DB, auth, slug) {
+		if !authorizeWorkspace(c, cfg.DB, auth, slug, wsaccess.NeedWrite) {
 			return nil
 		}
 
@@ -824,7 +825,7 @@ func handleRollbackRebuild(cfg RebuildRollbackAPIConfig) echo.HandlerFunc {
 
 		slug := c.Param("slug")
 		jobID := c.Param("id")
-		if !authorizeWorkspace(c, cfg.DB, auth, slug) {
+		if !authorizeWorkspace(c, cfg.DB, auth, slug, wsaccess.NeedWrite) {
 			return nil
 		}
 
@@ -982,7 +983,7 @@ func handlePatchStatus(cfg PatchStatusAPIConfig) echo.HandlerFunc {
 		}
 
 		slug := c.Param("slug")
-		if !authorizeWorkspace(c, cfg.DB, auth, slug) {
+		if !authorizeWorkspace(c, cfg.DB, auth, slug, wsaccess.NeedRead) {
 			return nil
 		}
 

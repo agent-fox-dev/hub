@@ -30,7 +30,7 @@ func TestLookupWorkspaceForAuth_ReportsRefusal_TS_34_58(t *testing.T) {
 
 	c := echo.New().NewContext(httptest.NewRequest(http.MethodGet, "/api/v1/workspaces/x", nil), httptest.NewRecorder())
 	c.SetPath("/api/v1/workspaces/:slug")
-	if ws, _ := lookupWorkspaceForAuth(c, db, "x", bound); ws != nil {
+	if ws, _ := lookupWorkspaceForAuth(c, db, "x", bound, wsaccess.NeedRead); ws != nil {
 		t.Fatal("lookupWorkspaceForAuth(x) granted a bound token another workspace")
 	}
 	want := wsaccess.BoundRefusal{TokenID: "tokB", UserID: "u1", BoundSlug: "s", RequestedSlug: "x", Method: "GET",
@@ -39,7 +39,7 @@ func TestLookupWorkspaceForAuth_ReportsRefusal_TS_34_58(t *testing.T) {
 		t.Errorf("reports %+v; want exactly %+v", reports, want)
 	}
 	c = echo.New().NewContext(httptest.NewRequest(http.MethodGet, "/api/v1/workspaces/s", nil), httptest.NewRecorder())
-	if ws, _ := lookupWorkspaceForAuth(c, db, "s", bound); ws == nil || len(reports) != 1 {
+	if ws, _ := lookupWorkspaceForAuth(c, db, "s", bound, wsaccess.NeedRead); ws == nil || len(reports) != 1 {
 		t.Errorf("its own workspace: %v, reports %d; want it granted without a report", ws, len(reports))
 	}
 }

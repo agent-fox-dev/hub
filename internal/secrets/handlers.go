@@ -8,6 +8,8 @@ import (
 
 	"github.com/labstack/echo/v4"
 	"github.com/txsvc/apikit"
+
+	"github.com/agent-fox-dev/hub/internal/wsaccess"
 )
 
 // --- Auth helpers using apikit.AuthInfo directly ---
@@ -102,18 +104,19 @@ func isOrgMember(db *sql.DB, orgID, userID string) bool {
 	return n > 0
 }
 
-// lookupWorkspaceOwner retrieves a workspace and checks ownership.
-// Returns the workspace owner_id or an error code for anti-enumeration.
-func lookupWorkspaceOwner(db *sql.DB, slug, userID string, admin bool) (string, int, string) {
-	var ownerID string
-	err := db.QueryRow("SELECT owner_id FROM workspaces WHERE slug = ?", slug).Scan(&ownerID)
-	if err != nil {
-		return "", http.StatusNotFound, "not found"
+// authorizeWorkspace applies wsaccess.AuthorizeWorkspace with the route's
+// need to a workspace-scoped secret or variable route: members of the
+// workspace's org read its variables, its owner and admin tokens also write
+// them and reach its secrets; a member's variable write is 403 forbidden, and
+// a member on a secret route gets the stranger's 404. It writes the refusal
+// and returns nil when access is denied.
+func authorizeWorkspace(c echo.Context, db *sql.DB, auth *apikit.AuthInfo, slug string, need wsaccess.Need) *wsaccess.WorkspaceAccess {
+	ws, code, msg := wsaccess.AuthorizeWorkspace(db, auth, slug, need)
+	if code != 0 {
+		_ = wsaccess.WriteRefusal(c, code, msg)
+		return nil
 	}
-	if !admin && ownerID != userID {
-		return "", http.StatusNotFound, "not found"
-	}
-	return ownerID, 0, ""
+	return ws
 }
 
 // --- Request types ---
@@ -381,9 +384,8 @@ func handleCreateWorkspaceSecrets(store *Store, db *sql.DB) echo.HandlerFunc {
 			return respondError(c, http.StatusForbidden, "insufficient permission scope")
 		}
 		slug := c.Param("slug")
-		_, code, msg := lookupWorkspaceOwner(db, slug, auth.UserID, isAdmin(auth))
-		if code != 0 {
-			return respondError(c, code, msg)
+		if authorizeWorkspace(c, db, auth, slug, wsaccess.NeedPrivate) == nil {
+			return nil
 		}
 		return doCreateSecrets(c, store, "workspace", slug)
 	}
@@ -399,9 +401,8 @@ func handleListWorkspaceSecrets(store *Store, db *sql.DB) echo.HandlerFunc {
 			return respondError(c, http.StatusForbidden, "insufficient permission scope")
 		}
 		slug := c.Param("slug")
-		_, code, msg := lookupWorkspaceOwner(db, slug, auth.UserID, isAdmin(auth))
-		if code != 0 {
-			return respondError(c, code, msg)
+		if authorizeWorkspace(c, db, auth, slug, wsaccess.NeedPrivate) == nil {
+			return nil
 		}
 		return doListSecrets(c, store, "workspace", slug)
 	}
@@ -417,9 +418,8 @@ func handleUpdateWorkspaceSecret(store *Store, db *sql.DB) echo.HandlerFunc {
 			return respondError(c, http.StatusForbidden, "insufficient permission scope")
 		}
 		slug := c.Param("slug")
-		_, code, msg := lookupWorkspaceOwner(db, slug, auth.UserID, isAdmin(auth))
-		if code != 0 {
-			return respondError(c, code, msg)
+		if authorizeWorkspace(c, db, auth, slug, wsaccess.NeedPrivate) == nil {
+			return nil
 		}
 		return doUpdateSecret(c, store, "workspace", slug)
 	}
@@ -435,9 +435,8 @@ func handleDeleteWorkspaceSecret(store *Store, db *sql.DB) echo.HandlerFunc {
 			return respondError(c, http.StatusForbidden, "insufficient permission scope")
 		}
 		slug := c.Param("slug")
-		_, code, msg := lookupWorkspaceOwner(db, slug, auth.UserID, isAdmin(auth))
-		if code != 0 {
-			return respondError(c, code, msg)
+		if authorizeWorkspace(c, db, auth, slug, wsaccess.NeedPrivate) == nil {
+			return nil
 		}
 		return doDeleteSecret(c, store, "workspace", slug)
 	}
@@ -649,9 +648,8 @@ func handleCreateWorkspaceVars(store *Store, db *sql.DB) echo.HandlerFunc {
 			return respondError(c, http.StatusForbidden, "insufficient permission scope")
 		}
 		slug := c.Param("slug")
-		_, code, msg := lookupWorkspaceOwner(db, slug, auth.UserID, isAdmin(auth))
-		if code != 0 {
-			return respondError(c, code, msg)
+		if authorizeWorkspace(c, db, auth, slug, wsaccess.NeedWrite) == nil {
+			return nil
 		}
 		return doCreateVars(c, store, "workspace", slug)
 	}
@@ -667,9 +665,8 @@ func handleListWorkspaceVars(store *Store, db *sql.DB) echo.HandlerFunc {
 			return respondError(c, http.StatusForbidden, "insufficient permission scope")
 		}
 		slug := c.Param("slug")
-		_, code, msg := lookupWorkspaceOwner(db, slug, auth.UserID, isAdmin(auth))
-		if code != 0 {
-			return respondError(c, code, msg)
+		if authorizeWorkspace(c, db, auth, slug, wsaccess.NeedRead) == nil {
+			return nil
 		}
 		return doListVars(c, store, "workspace", slug)
 	}
@@ -685,9 +682,8 @@ func handleUpdateWorkspaceVar(store *Store, db *sql.DB) echo.HandlerFunc {
 			return respondError(c, http.StatusForbidden, "insufficient permission scope")
 		}
 		slug := c.Param("slug")
-		_, code, msg := lookupWorkspaceOwner(db, slug, auth.UserID, isAdmin(auth))
-		if code != 0 {
-			return respondError(c, code, msg)
+		if authorizeWorkspace(c, db, auth, slug, wsaccess.NeedWrite) == nil {
+			return nil
 		}
 		return doUpdateVar(c, store, "workspace", slug)
 	}
@@ -703,37 +699,14 @@ func handleDeleteWorkspaceVar(store *Store, db *sql.DB) echo.HandlerFunc {
 			return respondError(c, http.StatusForbidden, "insufficient permission scope")
 		}
 		slug := c.Param("slug")
-		_, code, msg := lookupWorkspaceOwner(db, slug, auth.UserID, isAdmin(auth))
-		if code != 0 {
-			return respondError(c, code, msg)
+		if authorizeWorkspace(c, db, auth, slug, wsaccess.NeedWrite) == nil {
+			return nil
 		}
 		return doDeleteVar(c, store, "workspace", slug)
 	}
 }
 
 // --- Resolved variables handler ---
-
-// lookupWorkspaceForResolution retrieves a workspace's owner_id and org_id
-// for the resolved variables endpoint. Returns (ownerID, orgID, httpCode, message).
-// orgID may be empty if the workspace has no org association.
-func lookupWorkspaceForResolution(db *sql.DB, slug, userID string, admin bool) (string, string, int, string) {
-	var ownerID string
-	var orgID sql.NullString
-	err := db.QueryRow(
-		"SELECT owner_id, org_id FROM workspaces WHERE slug = ?", slug,
-	).Scan(&ownerID, &orgID)
-	if err != nil {
-		return "", "", http.StatusNotFound, "not found"
-	}
-	if !admin && ownerID != userID {
-		return "", "", http.StatusNotFound, "not found"
-	}
-	orgIDStr := ""
-	if orgID.Valid {
-		orgIDStr = orgID.String
-	}
-	return ownerID, orgIDStr, 0, ""
-}
 
 func handleResolvedWorkspaceVars(store *Store, db *sql.DB) echo.HandlerFunc {
 	return func(c echo.Context) error {
@@ -746,10 +719,13 @@ func handleResolvedWorkspaceVars(store *Store, db *sql.DB) echo.HandlerFunc {
 		}
 
 		slug := c.Param("slug")
-		wsOwnerID, orgID, code, msg := lookupWorkspaceForResolution(db, slug, auth.UserID, isAdmin(auth))
-		if code != 0 {
-			return respondError(c, code, msg)
+		// A member of the workspace's org reads the owner's document: the
+		// resolution describes what the workspace runs with.
+		ws := authorizeWorkspace(c, db, auth, slug, wsaccess.NeedRead)
+		if ws == nil {
+			return nil
 		}
+		wsOwnerID, orgID := ws.OwnerID, ws.OrgID
 
 		// The org tier is only visible to org members, matching the org
 		// endpoints. A workspace whose owner has since left the org must not

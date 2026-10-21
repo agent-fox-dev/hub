@@ -42,12 +42,10 @@ func handleList(cfg Config) echo.HandlerFunc {
 		}
 
 		slug := c.Param("slug")
-		ws, code, msg := wsaccess.AuthorizeWorkspace(cfg.DB, auth, slug)
-		if code != 0 {
-			return apikit.WriteAPIError(c, code, msg)
-		}
-		if !isAdmin(auth) && ws.OwnerID != auth.UserID {
-			return apikit.WriteAPIError(c, http.StatusNotFound, "workspace not found")
+		// The owner and admin tokens list; to a member of the workspace's org
+		// the workspace is private.
+		if _, code, msg := wsaccess.AuthorizeWorkspace(cfg.DB, auth, slug, wsaccess.NeedPrivate); code != 0 {
+			return wsaccess.WriteRefusal(c, code, msg)
 		}
 
 		tokens, err := wsaccess.ListBoundTokens(cfg.DB, slug)

@@ -43,14 +43,11 @@ func handleMint(cfg Config) echo.HandlerFunc {
 				"admin tokens cannot mint bound tokens; a real user is required as the token's owner")
 		}
 		slug := c.Param("slug")
-		ws, code, msg := wsaccess.AuthorizeWorkspace(cfg.DB, auth, slug)
+		// The owner, not merely a caller who may read the workspace, may mint
+		// for it (spec 34, Decision 4): to a member of its org it is private.
+		ws, code, msg := wsaccess.AuthorizeWorkspace(cfg.DB, auth, slug, wsaccess.NeedPrivate)
 		if code != 0 {
-			return apikit.WriteAPIError(c, code, msg)
-		}
-		// The owner, not merely a caller AuthorizeWorkspace lets read the
-		// workspace, may mint for it (spec 34, Decision 4).
-		if ws.OwnerID != auth.UserID {
-			return apikit.WriteAPIError(c, http.StatusNotFound, "workspace not found")
+			return wsaccess.WriteRefusal(c, code, msg)
 		}
 		if ws.Status != "active" {
 			return apikit.WriteAPIError(c, http.StatusBadRequest, "workspace is not active")

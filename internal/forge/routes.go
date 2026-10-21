@@ -69,24 +69,28 @@ type access struct {
 	verb string
 	// allowed reports whether the credential may use the route at all.
 	allowed func(*apikit.AuthInfo) bool
-	// active makes a workspace that is not active a 400, after the ownership check.
+	// active makes a workspace that is not active a 400, after the access check.
 	active bool
+	// need is what the route needs of the caller's access to the workspace: a
+	// member of the workspace's org reads, only its owner or an admin token writes.
+	need wsaccess.Need
 }
 
 var (
-	readAccess  = access{verb: "read", allowed: canReadForge}
-	writeAccess = access{verb: "write", allowed: canWriteForge, active: true}
+	readAccess  = access{verb: "read", allowed: canReadForge, need: wsaccess.NeedRead}
+	writeAccess = access{verb: "write", allowed: canWriteForge, active: true, need: wsaccess.NeedWrite}
 	// writeAnyStatusAccess is writeAccess for a route that must work on a workspace that is
 	// not active, such as the one that turns the webhook off.
-	writeAnyStatusAccess = access{verb: "write", allowed: canWriteForge}
+	writeAnyStatusAccess = access{verb: "write", allowed: canWriteForge, need: wsaccess.NeedWrite}
 )
 
 // authorize applies, in this order, the checks every forge route shares: no
 // credential is 401; a credential that acc does not allow, a PAT without the scope
 // of the verb or a credential type hub does not know, is 403, before the workspace
-// is looked up; a workspace that does not exist or is not the caller's is 404,
-// without saying which; a workspace that is not active is 400 where acc asks for an
-// active one. It then reads the workspace's remotes.
+// is looked up; a workspace that does not exist or that the caller may not read is
+// 404, without saying which, and a member of its org on a route that needs to write
+// is 403 forbidden (acc.need); a workspace that is not active is 400 where acc asks
+// for an active one. It then reads the workspace's remotes.
 //
 // It returns the request to go on with, or nil after writing the refusal, in which
 // case the caller returns err.
@@ -103,9 +107,9 @@ func (h *handlers) authorize(c echo.Context, acc access) (req *request, err erro
 		return nil, apikit.WriteAPIError(c, http.StatusForbidden, msg)
 	}
 	slug := c.Param("slug")
-	found, status, msg := wsaccess.AuthorizeWorkspace(h.cfg.DB, auth, slug)
+	found, status, msg := wsaccess.AuthorizeWorkspace(h.cfg.DB, auth, slug, acc.need)
 	if found == nil {
-		return nil, apikit.WriteAPIError(c, status, msg)
+		return nil, wsaccess.WriteRefusal(c, status, msg)
 	}
 	if acc.active && found.Status != "active" {
 		return nil, apikit.WriteAPIError(c, http.StatusBadRequest, "workspace is not active")

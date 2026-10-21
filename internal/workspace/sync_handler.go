@@ -15,6 +15,7 @@ import (
 
 	"github.com/agent-fox-dev/hub/internal/audit"
 	"github.com/agent-fox-dev/hub/internal/secrets"
+	"github.com/agent-fox-dev/hub/internal/wsaccess"
 	"github.com/agent-fox-dev/hub/internal/wslock"
 )
 
@@ -87,9 +88,10 @@ func handleSyncWorkspace(db *sql.DB) echo.HandlerFunc {
 
 		// ---- Precondition checks (13-REQ-3) ----
 
-		// 13-REQ-3.5: Workspace must exist and be owned by the caller
-		// (admin tokens may sync any workspace). Non-owners get 404.
-		ws, _ := lookupWorkspaceForAuth(c, db, slug, auth)
+		// 13-REQ-3.5: Workspace must exist and the caller must own it or
+		// hold an admin token (spec 35: a member of its org gets 403, anyone
+		// else 404).
+		ws, access := lookupWorkspaceForAuth(c, db, slug, auth, wsaccess.NeedWrite)
 		if ws == nil {
 			return nil // Response already written by lookupWorkspaceForAuth.
 		}
@@ -141,7 +143,7 @@ func handleSyncWorkspace(db *sql.DB) echo.HandlerFunc {
 					return respondError(c, http.StatusInternalServerError,
 						"failed to read workspace after sync")
 				}
-				return respondWorkspaceWithExtras(c, http.StatusOK, updated, db, extras)
+				return respondWorkspaceWithExtras(c, http.StatusOK, updated, db, access, extras)
 			}
 			// If not handled, fall through to standard sync.
 		}
@@ -206,7 +208,7 @@ func handleSyncWorkspace(db *sql.DB) echo.HandlerFunc {
 
 		// ---- Check for reset-to-upstream mode (13-REQ-6) ----
 		if c.QueryParam("reset_to_upstream") == "true" {
-			return handleResetToUpstream(c, db, slug, ws, repoPath, fetchAuth, &syncCompleted)
+			return handleResetToUpstream(c, db, slug, ws, access, repoPath, fetchAuth, &syncCompleted)
 		}
 
 		// ---- Standard sync: git operations (13-REQ-4.1 through 13-REQ-4.4) ----
@@ -282,7 +284,7 @@ func handleSyncWorkspace(db *sql.DB) echo.HandlerFunc {
 				Workspace:    slug,
 				Metadata:     map[string]any{"result": "up_to_date"},
 			})
-			return respondWorkspace(c, http.StatusOK, updated, db)
+			return respondWorkspace(c, http.StatusOK, updated, db, access)
 
 		case "fast_forward":
 			// 13-REQ-4.3: Fast-forward the integration branch.
@@ -316,7 +318,7 @@ func handleSyncWorkspace(db *sql.DB) echo.HandlerFunc {
 				Workspace:    slug,
 				Metadata:     map[string]any{"result": "fast_forward"},
 			})
-			return respondWorkspace(c, http.StatusOK, updated, db)
+			return respondWorkspace(c, http.StatusOK, updated, db, access)
 
 		case "diverged":
 			// 13-REQ-4.4: Upstream has diverged (force-push detected).
@@ -341,7 +343,7 @@ func handleSyncWorkspace(db *sql.DB) echo.HandlerFunc {
 // This function is called from handleSyncWorkspace when reset_to_upstream=true.
 // The syncCompleted pointer allows this function to coordinate with the
 // deferred cleanup in the parent handler.
-func handleResetToUpstream(c echo.Context, db *sql.DB, slug string, ws *Workspace, repoPath string, fetchAuth transport.AuthMethod, syncCompleted *bool) error {
+func handleResetToUpstream(c echo.Context, db *sql.DB, slug string, ws *Workspace, access wsaccess.Access, repoPath string, fetchAuth transport.AuthMethod, syncCompleted *bool) error {
 	// Verify sync functions are initialized.
 	if syncFetchAndCompareFn == nil {
 		syncError := "sync system not initialized"
@@ -417,7 +419,7 @@ func handleResetToUpstream(c echo.Context, db *sql.DB, slug string, ws *Workspac
 		Workspace:    slug,
 		Metadata:     map[string]any{"result": "reset_to_upstream"},
 	})
-	return respondWorkspace(c, http.StatusOK, updated, db)
+	return respondWorkspace(c, http.StatusOK, updated, db, access)
 }
 
 // claimSyncStatus atomically transitions sync_status to 'syncing' and reports

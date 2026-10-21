@@ -244,7 +244,7 @@ func TestBindingGuard_PropertyOtherSlugs_TS_33_15(t *testing.T) {
 	handler := func(c echo.Context) error {
 		calls++
 		auth := apikit.GetAuthInfo(c)
-		if _, code, msg := wsaccess.AuthorizeWorkspace(db, auth, c.Param("slug")); code != 0 {
+		if _, code, msg := wsaccess.AuthorizeWorkspace(db, auth, c.Param("slug"), wsaccess.NeedPrivate); code != 0 {
 			return apikit.WriteAPIError(c, code, msg)
 		}
 		if !slices.Contains(auth.Permissions, "workspaces:read") {

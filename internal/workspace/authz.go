@@ -15,6 +15,6 @@ type WorkspaceAccess = wsaccess.WorkspaceAccess
 // AuthorizeWorkspace delegates to wsaccess.AuthorizeWorkspace. It is kept as
 // a thin wrapper so that callers inside and outside the workspace package do
 // not need to change their import paths.
-func AuthorizeWorkspace(db *sql.DB, auth *apikit.AuthInfo, slug string) (*WorkspaceAccess, int, string) {
-	return wsaccess.AuthorizeWorkspace(db, auth, slug)
+func AuthorizeWorkspace(db *sql.DB, auth *apikit.AuthInfo, slug string, need wsaccess.Need) (*WorkspaceAccess, int, string) {
+	return wsaccess.AuthorizeWorkspace(db, auth, slug, need)
 }

@@ -10,6 +10,7 @@ import (
 	"github.com/labstack/echo/v4"
 	"github.com/txsvc/apikit"
 
+	"github.com/agent-fox-dev/hub/internal/wsaccess"
 	"github.com/agent-fox-dev/hub/internal/wslock"
 )
 
@@ -35,8 +36,8 @@ func handleListRerere(cfg RerereAPIConfig) echo.HandlerFunc {
 
 		slug := c.Param("slug")
 
-		// Verify workspace exists and is owned by the caller.
-		if !authorizeWorkspace(c, cfg.DB, auth, slug) {
+		// Verify the workspace exists and the caller may read it.
+		if !authorizeWorkspace(c, cfg.DB, auth, slug, wsaccess.NeedRead) {
 			return nil
 		}
 
@@ -80,8 +81,8 @@ func handleForgetRerere(cfg RerereAPIConfig) echo.HandlerFunc {
 			return apikit.WriteAPIError(c, http.StatusBadRequest, "pathspec must not start with '-'")
 		}
 
-		// Verify workspace exists and is owned by the caller.
-		if !authorizeWorkspace(c, cfg.DB, auth, slug) {
+		// Verify the workspace exists and the caller may write to it.
+		if !authorizeWorkspace(c, cfg.DB, auth, slug, wsaccess.NeedWrite) {
 			return nil
 		}
 

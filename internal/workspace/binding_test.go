@@ -210,7 +210,7 @@ func TestLookupWorkspaceForAuth_Binding_TS_33_18(t *testing.T) {
 	bound := &apikit.AuthInfo{CredentialType: "pat", UserID: "u1", TokenID: "tokB", Permissions: []string{"workspaces:read"}}
 
 	c, rec := boundAuthCtx()
-	ws, _ := lookupWorkspaceForAuth(c, db, "x", bound)
+	ws, _ := lookupWorkspaceForAuth(c, db, "x", bound, wsaccess.NeedRead)
 	if ws != nil || rec.Code != http.StatusNotFound {
 		t.Fatalf("lookupWorkspaceForAuth(x) = %v, status %d; want nil and 404", ws, rec.Code)
 	}
@@ -219,9 +219,9 @@ func TestLookupWorkspaceForAuth_Binding_TS_33_18(t *testing.T) {
 	}
 
 	c, _ = boundAuthCtx()
-	ws, err := lookupWorkspaceForAuth(c, db, "s", bound)
-	if ws == nil || ws.Slug != "s" || err != nil {
-		t.Errorf("lookupWorkspaceForAuth(s) = (%v, %v); want workspace s", ws, err)
+	ws, access := lookupWorkspaceForAuth(c, db, "s", bound, wsaccess.NeedRead)
+	if ws == nil || ws.Slug != "s" || access != wsaccess.AccessOwner {
+		t.Errorf("lookupWorkspaceForAuth(s) = (%v, %q); want workspace s, owner", ws, access)
 	}
 }
 
@@ -240,11 +240,11 @@ func TestBindingLookupFailure_Is500_TS_33_19(t *testing.T) {
 	}
 	pat := &apikit.AuthInfo{CredentialType: "pat", UserID: "u1", TokenID: "tokB", Permissions: []string{"workspaces:read"}}
 
-	if a, code, msg := AuthorizeWorkspace(db, pat, "s"); a != nil || code != http.StatusInternalServerError || msg != "internal server error" {
+	if a, code, msg := AuthorizeWorkspace(db, pat, "s", wsaccess.NeedPrivate); a != nil || code != http.StatusInternalServerError || msg != "internal server error" {
 		t.Errorf("AuthorizeWorkspace = (%v, %d, %q); want (nil, 500, internal server error)", a, code, msg)
 	}
 	c, rec := boundAuthCtx()
-	if ws, _ := lookupWorkspaceForAuth(c, db, "s", pat); ws != nil || rec.Code != http.StatusInternalServerError {
+	if ws, _ := lookupWorkspaceForAuth(c, db, "s", pat, wsaccess.NeedRead); ws != nil || rec.Code != http.StatusInternalServerError {
 		t.Errorf("lookupWorkspaceForAuth = %v, status %d; want nil and 500", ws, rec.Code)
 	} else if env := parseErrorEnvelope(t, rec); env.Error.Message != "internal server error" {
 		t.Errorf("message %q; want internal server error", env.Error.Message)

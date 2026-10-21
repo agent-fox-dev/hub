@@ -45,8 +45,10 @@ func (s *LeaseService) begin(c echo.Context) (auth *apikit.AuthInfo, err error) 
 
 // authorize applies, in this order, the checks every per-workspace lease route
 // shares: begin's, then a PAT without the scope is 403 before the workspace is
-// looked up, then a workspace that does not exist or is not the caller's is 404,
-// without saying which. write selects sandboxes:write over the read scope.
+// looked up, then wsaccess decides the workspace: a workspace that does not
+// exist or that the caller may not read is 404, without saying which, and a
+// member of the workspace's org who asks to write is 403 forbidden. write
+// selects sandboxes:write over the read scope and NeedWrite over NeedRead.
 //
 // It returns the request to go on with, or nil after writing the refusal, in
 // which case the caller returns err.
@@ -61,9 +63,13 @@ func (s *LeaseService) authorize(c echo.Context, write bool) (req *leaseRequest,
 	if !write && !canReadSandboxes(auth) {
 		return nil, apikit.WriteAPIError(c, http.StatusForbidden, "PAT requires sandboxes:read scope")
 	}
-	access, status, msg := wsaccess.AuthorizeWorkspace(s.db, auth, c.Param("slug"))
+	need := wsaccess.NeedRead
+	if write {
+		need = wsaccess.NeedWrite
+	}
+	access, status, msg := wsaccess.AuthorizeWorkspace(s.db, auth, c.Param("slug"), need)
 	if access == nil {
-		return nil, apikit.WriteAPIError(c, status, msg)
+		return nil, wsaccess.WriteRefusal(c, status, msg)
 	}
 	return &leaseRequest{auth: auth, workspace: access}, nil
 }

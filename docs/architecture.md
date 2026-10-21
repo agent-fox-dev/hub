@@ -635,7 +635,8 @@ interface.
 `internal/wsaccess` imports neither of the two packages, so both can import
 it. It holds:
 
-- `AuthorizeWorkspace`, the per-workspace ownership check.
+- The workspace access rule (spec 35, see below): `AuthorizeWorkspace`,
+  `AuthorizeWorkspaceAt`, `ReadableSlugs` and `WriteRefusal`.
   `workspace.AuthorizeWorkspace` delegates to it, and `carrypatch`, which
   cannot import `workspace`, calls it directly.
 - A per-request scope, `WithRequestScope` and `RequestScoped`: a small
@@ -643,6 +644,45 @@ it. It holds:
   request-scoped state to the hook through the hook's fixed signature.
 - The token workspace binding (spec 33): the table, its lookup, both guards and
   the allowlist of routes bound tokens may call (see below).
+
+### Workspace access (`internal/wsaccess`)
+
+Who may see and change a workspace is decided in one place (spec 35). No REST
+handler in `workspace`, `carrypatch`, `merge`, `sandboxes`, `forge`,
+`boundtoken` or `secrets` compares `owner_id` with the caller itself.
+
+- **`Access`** (`wsaccess.go`) is the caller's level on one workspace:
+  `AccessAdmin` for an admin token, `AccessOwner` for a user id equal to
+  `owner_id`, `AccessMember` for a user id with an `org_members` row for the
+  workspace's `org_id`, else `AccessNone`. Admins and owners are decided
+  without reading `org_members`; membership is one `COUNT(*)` per request, not
+  cached, so a removed member loses access on the next request.
+- **`Need`** is what an endpoint requires: `NeedRead` (member, owner, admin),
+  `NeedWrite` (owner, admin; a member gets `403` with `error_type: forbidden`),
+  `NeedPrivate` (owner, admin; a member gets the stranger's `404`).
+- **`AuthorizeWorkspaceAt(db, auth, slug, need, site)`** checks, in order: nil
+  auth 401; unknown slug 404; `AccessNone` 404 (no binding lookup, no report);
+  a PAT bound to another workspace 404, reported once with `site`; then the
+  need. It returns `WorkspaceAccess{Slug, OwnerID, OrgID, Status, CloneStatus,
+  Access}`. Any database error is 500. `AuthorizeWorkspace` is the same with
+  the request-less site `{404, api}`; `lookupWorkspaceForAuth` uses
+  `SiteOf(c, 404)` so its reports carry the method and route, then loads the
+  full row.
+- **`WriteRefusal`** (`refusal.go`) writes a refusal in the apikit envelope,
+  with `error_type: forbidden` (`ErrorTypeForbidden`) on a 403 only. Like
+  apikit's writers it returns nil once written, so every caller decides that it
+  refused from the status, not from the error.
+- **`ReadableSlugs(db, auth)`** (`readable.go`) is the readable set in one
+  query: owned workspaces of any status as owner, the workspaces of the
+  caller's orgs as member; `all == true` for an admin token, an empty map for a
+  credential with no user id, at most the bound slug for a bound PAT (resolved
+  before rows open). The listing loads those slugs with
+  `listWorkspacesBySlugs` (chunks of 500, sorted by `created_at` descending),
+  so the membership predicate exists only in `wsaccess`.
+
+The need of each route sits where the ownership check sat: after the PAT scope
+check, before status and precondition checks. Sessions, cost, audit, SSE,
+transcripts and the git server keep their owner-only checks.
 
 ### Token workspace bindings
 
@@ -665,7 +705,7 @@ Everything lives in `internal/wsaccess`:
 | `BindingGuard` (`guard.go`) | Middleware on the API group, after apikit's auth middleware. For a bound PAT, a route whose template has `workspaces/:slug` passes only for its own slug (else `404 workspace not found`). Any other route passes only if it is on the allowlist (else `403 token_bound`). A PAT without a `TokenID` gets the id from its Bearer header. |
 | `APIKitRouteGuard` (`apikit_guard.go`) | Deny-only middleware on the root Echo instance for the routes apikit's `MountHandlers` registered, which never see API-group middleware added later. It runs after routing and before apikit authenticates. A Bearer PAT id with a binding row gets `403 token_bound` without the slug. It never sets `AuthInfo` and never looks at the secret. |
 | `AllowBoundTokens`, `IsAllowed` (`allowlist.go`) | The routes a bound token may call although they are not workspace-scoped, marked with the `*echo.Route` values returned at registration: `GET /workspaces`, the six session routes, `GET /audit`, `GET /events`, `GET /sandbox-profiles`. |
-| `AuthorizeWorkspace` | Applies the same rule after its existence and ownership checks, for the code paths that reach a workspace without the guard. |
+| `AuthorizeWorkspace` | Applies the same rule after its existence and access checks (a caller with no access is refused before the binding is looked up), for the code paths that reach a workspace without the guard. |
 
 The wiring in `MountWorkspaceHandlers` is:
 

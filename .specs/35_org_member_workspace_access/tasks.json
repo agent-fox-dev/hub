@@ -85,7 +85,7 @@
       "done_when": [
         "`make test` passes with every existing ownership test unchanged"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 2,
@@ -120,7 +120,7 @@
       "depends_on": [
         1
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 3,
@@ -152,7 +152,7 @@
       "depends_on": [
         2
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 4,
@@ -193,7 +193,7 @@
       "depends_on": [
         2
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 5,
@@ -226,7 +226,7 @@
         3,
         4
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 6,
@@ -259,7 +259,7 @@
       "depends_on": [
         2
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 7,
@@ -292,7 +292,7 @@
       "depends_on": [
         2
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 8,
@@ -327,7 +327,7 @@
       "depends_on": [
         2
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 9,
@@ -367,7 +367,7 @@
         7,
         8
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 10,
@@ -398,7 +398,7 @@
       "done_when": [
         "`make test` and `make lint` pass"
       ],
-      "state": "pending"
+      "state": "done"
     }
   ]
 }

@@ -18,6 +18,7 @@ import (
 	"github.com/agent-fox-dev/hub/internal/gitcmd"
 	"github.com/agent-fox-dev/hub/internal/jobqueue"
 	"github.com/agent-fox-dev/hub/internal/workspace"
+	"github.com/agent-fox-dev/hub/internal/wsaccess"
 	"github.com/agent-fox-dev/hub/internal/wslock"
 )
 
@@ -221,54 +222,66 @@ func mergeHasScope(auth *apikit.AuthInfo, scopes ...string) bool {
 }
 
 // requireMergeWriteScope checks that the caller has merges:write permission
-// when using a PAT. Returns an error response if forbidden, or nil to proceed.
-func requireMergeWriteScope(c echo.Context, auth *apikit.AuthInfo) error {
+// when using a PAT. It writes the 403 and returns false if forbidden, true to
+// proceed: it cannot report the refusal as an error, because the apikit
+// writers return nil once the response is written.
+func requireMergeWriteScope(c echo.Context, auth *apikit.AuthInfo) bool {
 	if mergeIsPAT(auth) && !mergeHasScope(auth, "merges:write") {
-		return apikit.WriteAPIError(c, http.StatusForbidden, "PAT requires merges:write scope")
+		_ = apikit.WriteAPIError(c, http.StatusForbidden, "PAT requires merges:write scope")
+		return false
 	}
-	return nil
+	return true
 }
 
 // requireMergeReadScope checks that the caller has merges:read permission
-// when using a PAT. Returns an error response if forbidden, or nil to proceed.
-func requireMergeReadScope(c echo.Context, auth *apikit.AuthInfo) error {
+// when using a PAT. It writes the 403 and returns false if forbidden, true to
+// proceed.
+func requireMergeReadScope(c echo.Context, auth *apikit.AuthInfo) bool {
 	if mergeIsPAT(auth) && !mergeHasScope(auth, "merges:read") {
-		return apikit.WriteAPIError(c, http.StatusForbidden, "PAT requires merges:read scope")
+		_ = apikit.WriteAPIError(c, http.StatusForbidden, "PAT requires merges:read scope")
+		return false
 	}
-	return nil
+	return true
 }
 
 // ---------------------------------------------------------------------------
 // Workspace lookup helpers
 // ---------------------------------------------------------------------------
 
-// authorizeMergeWorkspace enforces workspace ownership (owner or admin token;
-// non-owners get 404) for merge endpoints that do not need the full
-// precondition check. It writes the error response and returns false when
-// access is denied.
-func authorizeMergeWorkspace(c echo.Context, db *sql.DB, auth *apikit.AuthInfo, slug string) bool {
-	if _, code, msg := workspace.AuthorizeWorkspace(db, auth, slug); code != 0 {
-		_ = apikit.WriteAPIError(c, code, msg)
+// authorizeMergeWorkspace applies wsaccess.AuthorizeWorkspace with the
+// endpoint's need to a merge endpoint that does not need the full
+// precondition check: members of the workspace's org read, owners and admin
+// tokens also write, a member's write is 403 and anyone else gets 404. It
+// writes the refusal and returns false when access is denied.
+func authorizeMergeWorkspace(c echo.Context, db *sql.DB, auth *apikit.AuthInfo, slug string, need wsaccess.Need) bool {
+	if _, code, msg := workspace.AuthorizeWorkspace(db, auth, slug, need); code != 0 {
+		_ = wsaccess.WriteRefusal(c, code, msg)
 		return false
 	}
 	return true
 }
 
-// validateWorkspaceForMerge checks that the workspace exists, is active, and
-// has a ready clone. Writes an error response and returns non-nil error if
-// validation fails. Returns nil to proceed.
-func validateWorkspaceForMerge(c echo.Context, db *sql.DB, auth *apikit.AuthInfo, slug string) error {
-	ws, code, msg := workspace.AuthorizeWorkspace(db, auth, slug)
+// validateWorkspaceForMerge checks that the caller may write to the workspace
+// (NeedWrite), that it is active, and that its clone is ready. It writes the
+// error response and returns false if a check fails, true to proceed.
+//
+// It reports the refusal as its result rather than as an error, because the
+// apikit writers return nil once the response is written.
+func validateWorkspaceForMerge(c echo.Context, db *sql.DB, auth *apikit.AuthInfo, slug string) bool {
+	ws, code, msg := workspace.AuthorizeWorkspace(db, auth, slug, wsaccess.NeedWrite)
 	if code != 0 {
-		return apikit.WriteAPIError(c, code, msg)
+		_ = wsaccess.WriteRefusal(c, code, msg)
+		return false
 	}
 	if ws.Status != "active" {
-		return apikit.WriteAPIError(c, http.StatusBadRequest, "workspace is not active")
+		_ = apikit.WriteAPIError(c, http.StatusBadRequest, "workspace is not active")
+		return false
 	}
 	if ws.CloneStatus != "ready" {
-		return apikit.WriteAPIError(c, http.StatusBadRequest, "workspace clone is not ready")
+		_ = apikit.WriteAPIError(c, http.StatusBadRequest, "workspace clone is not ready")
+		return false
 	}
-	return nil
+	return true
 }
 
 // ---------------------------------------------------------------------------
@@ -290,7 +303,7 @@ func handleSubmitMerge(cfg MergeAPIConfig) echo.HandlerFunc {
 		if auth == nil {
 			return apikit.WriteAPIError(c, http.StatusUnauthorized, "authentication required")
 		}
-		if err := requireMergeWriteScope(c, auth); err != nil {
+		if !requireMergeWriteScope(c, auth) {
 			return nil // Response already written.
 		}
 
@@ -317,7 +330,7 @@ func handleSubmitMerge(cfg MergeAPIConfig) echo.HandlerFunc {
 		}
 
 		// Validate workspace exists, is active, and clone is ready.
-		if err := validateWorkspaceForMerge(c, cfg.DB, auth, slug); err != nil {
+		if !validateWorkspaceForMerge(c, cfg.DB, auth, slug) {
 			return nil // Response already written.
 		}
 
@@ -410,12 +423,12 @@ func handleListMerges(cfg MergeAPIConfig) echo.HandlerFunc {
 		if auth == nil {
 			return apikit.WriteAPIError(c, http.StatusUnauthorized, "authentication required")
 		}
-		if err := requireMergeReadScope(c, auth); err != nil {
+		if !requireMergeReadScope(c, auth) {
 			return nil
 		}
 
 		slug := c.Param("slug")
-		if !authorizeMergeWorkspace(c, cfg.DB, auth, slug) {
+		if !authorizeMergeWorkspace(c, cfg.DB, auth, slug, wsaccess.NeedRead) {
 			return nil
 		}
 
@@ -453,13 +466,13 @@ func handleGetMerge(cfg MergeAPIConfig) echo.HandlerFunc {
 		if auth == nil {
 			return apikit.WriteAPIError(c, http.StatusUnauthorized, "authentication required")
 		}
-		if err := requireMergeReadScope(c, auth); err != nil {
+		if !requireMergeReadScope(c, auth) {
 			return nil
 		}
 
 		slug := c.Param("slug")
 		jobID := c.Param("id")
-		if !authorizeMergeWorkspace(c, cfg.DB, auth, slug) {
+		if !authorizeMergeWorkspace(c, cfg.DB, auth, slug, wsaccess.NeedRead) {
 			return nil
 		}
 
@@ -495,13 +508,13 @@ func handleCancelMerge(cfg MergeAPIConfig) echo.HandlerFunc {
 		if auth == nil {
 			return apikit.WriteAPIError(c, http.StatusUnauthorized, "authentication required")
 		}
-		if err := requireMergeWriteScope(c, auth); err != nil {
+		if !requireMergeWriteScope(c, auth) {
 			return nil
 		}
 
 		slug := c.Param("slug")
 		jobID := c.Param("id")
-		if !authorizeMergeWorkspace(c, cfg.DB, auth, slug) {
+		if !authorizeMergeWorkspace(c, cfg.DB, auth, slug, wsaccess.NeedWrite) {
 			return nil
 		}
 
@@ -557,13 +570,13 @@ func handleRequeueMerge(cfg MergeAPIConfig) echo.HandlerFunc {
 		if auth == nil {
 			return apikit.WriteAPIError(c, http.StatusUnauthorized, "authentication required")
 		}
-		if err := requireMergeWriteScope(c, auth); err != nil {
+		if !requireMergeWriteScope(c, auth) {
 			return nil // Response already written.
 		}
 
 		slug := c.Param("slug")
 		jobID := c.Param("id")
-		if !authorizeMergeWorkspace(c, cfg.DB, auth, slug) {
+		if !authorizeMergeWorkspace(c, cfg.DB, auth, slug, wsaccess.NeedWrite) {
 			return nil
 		}
 
@@ -613,7 +626,7 @@ func handleBatchRebase(cfg MergeAPIConfig) echo.HandlerFunc {
 		if auth == nil {
 			return apikit.WriteAPIError(c, http.StatusUnauthorized, "authentication required")
 		}
-		if err := requireMergeWriteScope(c, auth); err != nil {
+		if !requireMergeWriteScope(c, auth) {
 			return nil // Response already written.
 		}
 
@@ -643,7 +656,7 @@ func handleBatchRebase(cfg MergeAPIConfig) echo.HandlerFunc {
 		}
 
 		// Validate workspace exists and is active.
-		if err := validateWorkspaceForMerge(c, cfg.DB, auth, slug); err != nil {
+		if !validateWorkspaceForMerge(c, cfg.DB, auth, slug) {
 			return nil // Response already written.
 		}
 
