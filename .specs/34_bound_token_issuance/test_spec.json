@@ -1,0 +1,1283 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/test_spec.v2.json",
+  "spec_id": "34",
+  "spec_name": "bound_token_issuance",
+  "schema_version": 2,
+  "tests": [
+    {
+      "id": "TS-34-1",
+      "kind": "integration",
+      "verifies": [
+        "34-REQ-1.1"
+      ],
+      "title": "RegisterRoutes mounts POST and GET /workspaces/:slug/tokens on the API group behind authentication",
+      "given": [
+        "an echo instance with an auth middleware that injects AuthInfo from a test header and an /api/v1 group",
+        "boundtoken.RegisterRoutes(group, Config{DB, APIKit stub, Audit recorder}) has been called"
+      ],
+      "when": "the registered routes are listed and POST and GET /api/v1/workspaces/s/tokens are sent without credentials",
+      "then": [
+        "both routes exist with the template /api/v1/workspaces/:slug/tokens",
+        "both requests are answered 401 by the middleware/handler chain",
+        "the apikit stub receives no request"
+      ],
+      "pseudocode": "routes = e.Routes(); assert has(POST,tmpl) && has(GET,tmpl); assert do(POST).status==401 && do(GET).status==401; assert stub.calls==0"
+    },
+    {
+      "id": "TS-34-2",
+      "kind": "unit",
+      "verifies": [
+        "34-REQ-1.2"
+      ],
+      "title": "Minting with no credential is answered 401 without contacting apikit",
+      "given": [
+        "a handler reached with apikit.GetAuthInfo returning nil",
+        "a stub apikit handler counting calls"
+      ],
+      "when": "POST /workspaces/s/tokens is called",
+      "then": [
+        "status is 401",
+        "error message is authentication required",
+        "the stub is called 0 times"
+      ],
+      "pseudocode": "r = post(noAuth); assert r.status==401; assert msg(r)=='authentication required'; assert stub.calls==0"
+    },
+    {
+      "id": "TS-34-3",
+      "kind": "unit",
+      "verifies": [
+        "34-REQ-1.3"
+      ],
+      "title": "A PAT bound to any workspace, including the path's own, is refused with token_bound and reported",
+      "given": [
+        "a PAT with token id T bound to workspace S in token_workspace_bindings",
+        "a registered refusal observer recording reports",
+        "active workspaces S and X"
+      ],
+      "when": "POST /workspaces/S/tokens and POST /workspaces/X/tokens are called with that PAT",
+      "then": [
+        "both answers are 403 with error_type token_bound and message 'this token is bound to workspace S'",
+        "each request produced one report with status 403 and surface api",
+        "the stub apikit is not called and no pats row is created"
+      ],
+      "pseudocode": "for slug in [S,X]: r=post(slug, pat T); assert 403, type=='token_bound', msg=='this token is bound to workspace S'; assert reports[-1].Status==403 && Surface=='api'; assert stub.calls==0"
+    },
+    {
+      "id": "TS-34-4",
+      "kind": "unit",
+      "verifies": [
+        "34-REQ-1.4"
+      ],
+      "title": "A binding lookup database error for a PAT caller answers 500",
+      "given": [
+        "a PAT caller",
+        "the token_workspace_bindings table dropped so the lookup errors"
+      ],
+      "when": "POST /workspaces/s/tokens is called",
+      "then": [
+        "status is 500",
+        "message is internal server error",
+        "the stub apikit is not called"
+      ],
+      "pseudocode": "drop(bindings); r=post(pat); assert r.status==500 && msg=='internal server error'; assert stub.calls==0"
+    },
+    {
+      "id": "TS-34-5",
+      "kind": "unit",
+      "verifies": [
+        "34-REQ-1.5"
+      ],
+      "title": "An admin token cannot mint a bound token",
+      "given": [
+        "an admin_token caller",
+        "an active workspace owned by some user"
+      ],
+      "when": "POST /workspaces/s/tokens is called",
+      "then": [
+        "status is 403",
+        "message is \"admin tokens cannot mint bound tokens; a real user is required as the token's owner\"",
+        "the stub apikit is not called"
+      ],
+      "pseudocode": "r=post(admin); assert r.status==403; assert msg==\"admin tokens cannot mint bound tokens; a real user is required as the token's owner\"; assert stub.calls==0"
+    },
+    {
+      "id": "TS-34-6",
+      "kind": "unit",
+      "verifies": [
+        "34-REQ-1.6"
+      ],
+      "title": "Missing workspace, denied access and a non-owner caller all answer 404 workspace not found",
+      "given": [
+        "workspace A owned by user u1, workspace B owned by u2",
+        "an authorization state in which wsaccess.AuthorizeWorkspace would allow u1 on B (e.g. org-member read access) but owner_id differs"
+      ],
+      "when": "u1 posts to /workspaces/missing/tokens, to /workspaces/B/tokens, and u2's API key posts to /workspaces/A/tokens",
+      "then": [
+        "each answer is 404 with message workspace not found",
+        "the stub apikit is not called"
+      ],
+      "pseudocode": "for slug,caller in cases: r=post(slug,caller); assert r.status==404 && msg=='workspace not found'; assert stub.calls==0"
+    },
+    {
+      "id": "TS-34-7",
+      "kind": "unit",
+      "verifies": [
+        "34-REQ-1.7"
+      ],
+      "title": "The owner of an archived workspace is refused with 400 workspace is not active",
+      "given": [
+        "an archived workspace owned by u1"
+      ],
+      "when": "u1 posts to /workspaces/s/tokens with an API key",
+      "then": [
+        "status is 400",
+        "message is workspace is not active",
+        "the stub apikit is not called"
+      ],
+      "pseudocode": "r=post(owner,'archived-ws'); assert r.status==400 && msg=='workspace is not active'; assert stub.calls==0"
+    },
+    {
+      "id": "TS-34-8",
+      "kind": "property",
+      "verifies": [
+        "34-REQ-1.8"
+      ],
+      "title": "apikit is invoked exactly when all six checks pass and the first failing check wins",
+      "given": [
+        "a stub apikit handler counting calls that returns 201",
+        "a generator of caller states: no credential, bound PAT (with/without lookup error), admin, api_key, PAT lacking tokens:manage; workspace states: missing, other owner, archived, active"
+      ],
+      "when": "for any combination of caller state and workspace state, POST /workspaces/:slug/tokens is called",
+      "then": [
+        "the stub call count is 1 iff the credential exists, is an unbound non-admin owner of an active workspace",
+        "otherwise the status equals the status of the first failing check in order 401, 403 bound, 403 admin, 404, 400",
+        "hub performs no tokens:manage check of its own (a PAT without tokens:manage that passes the checks still reaches apikit)"
+      ],
+      "pseudocode": "for (c,w) in product(callers,workspaces): r=post(c,w); expected=firstFailing(c,w); assert (stub.calls==1)==(expected==None); if expected: assert r.status==expected.status"
+    },
+    {
+      "id": "TS-34-9",
+      "kind": "integration",
+      "verifies": [
+        "34-REQ-2.1"
+      ],
+      "title": "The inner request carries the caller's body, Authorization header, content headers and context",
+      "given": [
+        "a recording stub apikit handler returning 201 with a valid body",
+        "an owner API key and an active workspace",
+        "a request context carrying a marker value"
+      ],
+      "when": "the owner posts a body with arbitrary bytes (including whitespace and unknown fields) to /api/v1/workspaces/s/tokens",
+      "then": [
+        "the stub receives exactly one request",
+        "its method is POST and its path is /api/v1/user/tokens",
+        "its body bytes equal the caller's bytes",
+        "its Authorization header equals the caller's verbatim, Content-Type and Content-Length are set",
+        "its request context carries the marker"
+      ],
+      "pseudocode": "assert stub.calls==1; assert stub.req.Method=='POST' && stub.req.URL.Path=='/api/v1/user/tokens'; assert bytes.Equal(stub.body, sent); assert stub.req.Header['Authorization']==sent.Authorization; assert stub.ctx.Value(k)==marker"
+    },
+    {
+      "id": "TS-34-10",
+      "kind": "property",
+      "verifies": [
+        "34-REQ-2.2"
+      ],
+      "title": "The inner path is the route template minus /workspaces/:slug/tokens plus /user/tokens",
+      "given": [
+        "a generator of mount prefixes (empty, /api/v1, /x, /a/b/c)",
+        "a recording stub apikit and routes mounted at each prefix"
+      ],
+      "when": "for any mount prefix P, POST P/workspaces/s/tokens is sent by an owner",
+      "then": [
+        "the stub sees the path P/user/tokens",
+        "/api/v1 yields /api/v1/user/tokens and /x yields /x/user/tokens"
+      ],
+      "pseudocode": "for P in gen_prefixes(): mount(P); post(P+'/workspaces/s/tokens'); assert stub.path==P+'/user/tokens'"
+    },
+    {
+      "id": "TS-34-11",
+      "kind": "unit",
+      "verifies": [
+        "34-REQ-2.3"
+      ],
+      "title": "Any non-201 apikit answer is copied to the caller unchanged with no binding and no event",
+      "given": [
+        "a stub apikit answering in turn 400 bad body, 400 unknown scope, 403 missing tokens:manage, 403 escalation, 400 bad expires, each with its own Content-Type and body bytes",
+        "a recording audit emitter"
+      ],
+      "when": "the owner posts to /workspaces/s/tokens for each stub answer",
+      "then": [
+        "caller status, Content-Type and body are byte-identical to the stub's",
+        "token_workspace_bindings has no rows",
+        "the emitter recorded no hub.token.bind event"
+      ],
+      "pseudocode": "for ans in answers: r=post(); assert r.status==ans.status && r.ct==ans.ct && r.body==ans.body; assert count(bindings)==0; assert emitter.events==[]"
+    },
+    {
+      "id": "TS-34-12",
+      "kind": "unit",
+      "verifies": [
+        "34-REQ-2.4"
+      ],
+      "title": "A 201 with an undecodable body or an empty token_id or token yields 500 and revokes a known token",
+      "given": [
+        "a pats table with a live row for token id T",
+        "a stub apikit answering 201 with (a) invalid JSON, (b) token_id T and empty token, (c) empty token_id with a token, (d) token_id T with empty token_id field removed"
+      ],
+      "when": "the owner posts to /workspaces/s/tokens for each case",
+      "then": [
+        "status is 500 with message failed to bind the token to the workspace",
+        "when a token_id is known the pats row has revoked_at set",
+        "no binding row is written",
+        "logs contain the token_id at most and never the token"
+      ],
+      "pseudocode": "for case: r=post(); assert 500 && msg=='failed to bind the token to the workspace'; if case.knownId: assert revoked_at(T) != NULL; assert count(bindings)==0; assert !contains(logs, case.token)"
+    },
+    {
+      "id": "TS-34-13",
+      "kind": "integration",
+      "verifies": [
+        "34-REQ-3.1"
+      ],
+      "title": "A decodable 201 writes exactly one binding row for the token naming the slug",
+      "given": [
+        "a real SQLite database with workspaces, pats and bindings tables",
+        "a stub apikit that inserts a pats row and answers 201 with token_id T and a token"
+      ],
+      "when": "the owner posts to /workspaces/s/tokens",
+      "then": [
+        "token_workspace_bindings holds exactly one row for T",
+        "the row's slug is s and created_at is a valid UTC timestamp",
+        "wsaccess's conditional insert writes nothing when no workspaces row exists for the slug"
+      ],
+      "pseudocode": "post(); rows=select * from bindings where token_id=T; assert len(rows)==1 && rows[0].slug=='s'; assert wsaccess.InsertBinding(db,'U','ghost',now) reports no row written"
+    },
+    {
+      "id": "TS-34-15",
+      "kind": "unit",
+      "verifies": [
+        "34-REQ-3.2"
+      ],
+      "title": "Success answers 201 with no-store and the documented body",
+      "given": [
+        "a stub apikit answering 201 {token_id,name,token,permissions,expires_at,created_at}",
+        "a workspace s"
+      ],
+      "when": "the owner posts to /workspaces/s/tokens",
+      "then": [
+        "status is 201 and Cache-Control is no-store",
+        "body has exactly the keys token_id, token, name, permissions, workspace, expires_at, created_at",
+        "workspace equals s and all other values equal apikit's response"
+      ],
+      "pseudocode": "r=post(); assert r.status==201 && r.h['Cache-Control']=='no-store'; assert keys(r.json)==set(7 keys); assert r.json.workspace=='s'; assert r.json.token==stub.token"
+    },
+    {
+      "id": "TS-34-16",
+      "kind": "unit",
+      "verifies": [
+        "34-REQ-3.3"
+      ],
+      "title": "A workspace deleted between apikit's 201 and the insert yields 404 and a revoked token",
+      "given": [
+        "a stub apikit that creates the pats row and, before answering 201, deletes the workspace row (simulating a concurrent deletion)"
+      ],
+      "when": "the owner posts to /workspaces/s/tokens",
+      "then": [
+        "status is 404 with message workspace not found",
+        "the pats row has revoked_at set",
+        "token_workspace_bindings has no row for the token"
+      ],
+      "pseudocode": "stub.beforeReply = delete workspace s; r=post(); assert r.status==404 && msg=='workspace not found'; assert revoked_at(T)!=NULL; assert count(bindings)==0"
+    },
+    {
+      "id": "TS-34-17",
+      "kind": "unit",
+      "verifies": [
+        "34-REQ-3.4"
+      ],
+      "title": "A binding insert error or primary-key conflict yields 500 and a revoked token",
+      "given": [
+        "case A: the bindings table is dropped after apikit's 201",
+        "case B: a binding row for the same token_id already exists"
+      ],
+      "when": "the owner posts to /workspaces/s/tokens in each case",
+      "then": [
+        "status is 500 with message failed to bind the token to the workspace",
+        "the token's pats row has revoked_at set",
+        "no new binding row was written"
+      ],
+      "pseudocode": "for case: r=post(); assert r.status==500 && msg=='failed to bind the token to the workspace'; assert revoked_at(T)!=NULL"
+    },
+    {
+      "id": "TS-34-18",
+      "kind": "unit",
+      "verifies": [
+        "34-REQ-3.5"
+      ],
+      "title": "A failing revocation is logged with both errors and the token_id and does not change the answer",
+      "given": [
+        "a captured error-level logger",
+        "a failed insert (bindings table dropped) and a revocation that also fails (pats table dropped or read-only)"
+      ],
+      "when": "the owner posts to /workspaces/s/tokens for the insert-error, vanished-workspace and undecodable-body variants",
+      "then": [
+        "the statuses and messages are 500/500, 404/workspace not found and 500 respectively, as without the revocation failure",
+        "the log holds an error-level line naming the token_id and both errors"
+      ],
+      "pseudocode": "breakRevocation(); r=post(); assert r.status==500; assert log.level=='error' && contains(log,T) && countErrors(log)>=2"
+    },
+    {
+      "id": "TS-34-19",
+      "kind": "integration",
+      "verifies": [
+        "34-REQ-3.6"
+      ],
+      "title": "No log line on any path contains the plaintext token, apikit's 201 body or the Authorization value",
+      "given": [
+        "a captured logger at debug level",
+        "a distinctive plaintext token string and Authorization value",
+        "paths: success, passthrough error, undecodable 201, vanished workspace, insert error, revocation failure, audit emit error"
+      ],
+      "when": "each path is run through the mint handler",
+      "then": [
+        "no captured log output contains the token string, the apikit 201 body or the Authorization value",
+        "the plaintext token appears only in the 201 response body of the success path"
+      ],
+      "pseudocode": "for p in paths: run(p); assert !contains(logs, token) && !contains(logs, authz) && !contains(logs, apikitBody); for non-success: assert !contains(resp.body, token)"
+    },
+    {
+      "id": "TS-34-20",
+      "kind": "property",
+      "verifies": [
+        "34-REQ-3.7"
+      ],
+      "title": "For any failure injected after apikit's 201 the token is revoked and unbound when the response is written",
+      "given": [
+        "a stub apikit that inserts a pats row and answers 201",
+        "a failure injector over: undecodable body, vanished workspace, insert error, key conflict"
+      ],
+      "when": "for any injected failure and any token name or permission set, the owner mints",
+      "then": [
+        "status is 404 or 500",
+        "the pats row has revoked_at set",
+        "token_workspace_bindings has no row for the token_id"
+      ],
+      "pseudocode": "for f in failures, spec in gen_specs(): r=post(f,spec); assert r.status in (404,500); assert revoked_at(T)!=NULL; assert count(bindings where token_id=T)==0"
+    },
+    {
+      "id": "TS-34-21",
+      "kind": "unit",
+      "verifies": [
+        "34-REQ-4.1"
+      ],
+      "title": "Listing without a credential is answered 401",
+      "given": [
+        "no AuthInfo in the request context"
+      ],
+      "when": "GET /workspaces/s/tokens is called",
+      "then": [
+        "status is 401",
+        "message is authentication required"
+      ],
+      "pseudocode": "r=get(noAuth); assert r.status==401 && msg=='authentication required'"
+    },
+    {
+      "id": "TS-34-22",
+      "kind": "unit",
+      "verifies": [
+        "34-REQ-4.2"
+      ],
+      "title": "A bound PAT listing is refused with token_bound and reported; a lookup error answers 500",
+      "given": [
+        "a PAT bound to S and a registered refusal observer",
+        "variant: the bindings table dropped"
+      ],
+      "when": "GET /workspaces/s/tokens is called with the bound PAT, then again with the lookup failing",
+      "then": [
+        "first: 403, error_type token_bound, message 'this token is bound to workspace S', one report with status 403 surface api",
+        "second: 500 with message internal server error"
+      ],
+      "pseudocode": "r=get(boundPat); assert 403,'token_bound'; assert len(reports)==1; drop(bindings); r=get(pat); assert r.status==500 && msg=='internal server error'"
+    },
+    {
+      "id": "TS-34-23",
+      "kind": "unit",
+      "verifies": [
+        "34-REQ-4.3"
+      ],
+      "title": "An unbound PAT with neither tokens:read nor tokens:manage is refused",
+      "given": [
+        "an unbound PAT whose permissions are [workspaces:read]",
+        "control PATs holding tokens:read and tokens:manage"
+      ],
+      "when": "GET /workspaces/s/tokens is called with each",
+      "then": [
+        "the first is 403 with message PAT requires tokens:read scope",
+        "the control PATs pass the scope check (200 when owner)"
+      ],
+      "pseudocode": "r=get(patNoScope); assert 403 && msg=='PAT requires tokens:read scope'; assert get(patRead).status==200; assert get(patManage).status==200"
+    },
+    {
+      "id": "TS-34-24",
+      "kind": "unit",
+      "verifies": [
+        "34-REQ-4.4"
+      ],
+      "title": "Listing an unknown workspace or another user's workspace answers 404",
+      "given": [
+        "workspace B owned by u2",
+        "u1's API key and an admin token"
+      ],
+      "when": "u1 lists /workspaces/missing/tokens and /workspaces/B/tokens; the admin lists /workspaces/missing/tokens",
+      "then": [
+        "each answer is 404 with message workspace not found"
+      ],
+      "pseudocode": "for (caller,slug) in cases: r=get(); assert r.status==404 && msg=='workspace not found'"
+    },
+    {
+      "id": "TS-34-25",
+      "kind": "integration",
+      "verifies": [
+        "34-REQ-4.5"
+      ],
+      "title": "The listing returns every binding joined with pats, ordered, including revoked and expired, omitting orphans",
+      "given": [
+        "a real SQLite database with three bindings on s: one live, one revoked, one expired, with different pats created_at (two equal) and one binding whose pats row is missing",
+        "s may be archived",
+        "an admin token and the owner"
+      ],
+      "when": "the owner and the admin each GET /workspaces/s/tokens, and an empty workspace is listed",
+      "then": [
+        "status 200 and a JSON array of the three joined tokens",
+        "order is pats created_at then token_id",
+        "the orphan binding is absent",
+        "an archived workspace is still listed",
+        "a workspace with no bindings answers []"
+      ],
+      "pseudocode": "r=get(owner); assert ids(r)==sortBy(created_at,token_id)(three); assert 'orphan' not in ids; assert get(empty).body=='[]'"
+    },
+    {
+      "id": "TS-34-26",
+      "kind": "unit",
+      "verifies": [
+        "34-REQ-4.6"
+      ],
+      "title": "Listing renders permissions as an array, nulls for unset times, and never any secret",
+      "given": [
+        "pats rows with valid permissions JSON, with corrupt permissions JSON, with NULL expires_at and revoked_at, and a secret_hash value"
+      ],
+      "when": "the owner lists the workspace",
+      "then": [
+        "permissions is the decoded array, and [] when the stored value is corrupt",
+        "expires_at and revoked_at are JSON null when unset",
+        "entries contain exactly token_id, name, permissions, workspace, expires_at, revoked_at, created_at",
+        "the body contains neither the key token nor secret_hash nor the hash value"
+      ],
+      "pseudocode": "r=get(); assert r[0].permissions==['a','b'] && r[1].permissions==[]; assert r[0].expires_at is None; assert keys(r[0])==7keys; assert 'secret_hash' not in raw && hash not in raw"
+    },
+    {
+      "id": "TS-34-27",
+      "kind": "unit",
+      "verifies": [
+        "34-REQ-4.7"
+      ],
+      "title": "A listing query error answers 500 internal server error",
+      "given": [
+        "an owner of a workspace",
+        "the pats table dropped so the join fails"
+      ],
+      "when": "GET /workspaces/s/tokens is called",
+      "then": [
+        "status is 500",
+        "message is internal server error"
+      ],
+      "pseudocode": "drop(pats); r=get(); assert r.status==500 && msg=='internal server error'"
+    },
+    {
+      "id": "TS-34-28",
+      "kind": "integration",
+      "verifies": [
+        "34-REQ-5.1"
+      ],
+      "title": "deleteWorkspace revokes live bound tokens and removes the bindings in its transaction",
+      "given": [
+        "a database with workspaces, patches, secrets, variables, bindings and pats tables",
+        "workspace s with bindings to a live token, an already revoked token, and workspace t with its own binding"
+      ],
+      "when": "deleteWorkspace(db, 's') is called",
+      "then": [
+        "the workspace row is gone",
+        "no binding names s; t's binding and token are untouched",
+        "the live token's pats row now has revoked_at set; the already revoked token's revoked_at is unchanged"
+      ],
+      "pseudocode": "err=deleteWorkspace(db,'s'); assert err==nil; assert count(bindings where slug='s')==0; assert revoked_at(live)!=NULL; assert revoked_at(old)==before; assert revoked_at(tokenT)==NULL"
+    },
+    {
+      "id": "TS-34-29",
+      "kind": "unit",
+      "verifies": [
+        "34-REQ-5.2"
+      ],
+      "title": "Deleting a workspace with no bindings issues no statement against pats",
+      "given": [
+        "a database initialised by the workspace schema only (no pats table)",
+        "a workspace with no bindings"
+      ],
+      "when": "deleteWorkspace(db, slug) is called",
+      "then": [
+        "it returns nil",
+        "the workspace row is deleted"
+      ],
+      "pseudocode": "db=openTestDB(); insert ws; assert deleteWorkspace(db,slug)==nil; assert not exists(ws)"
+    },
+    {
+      "id": "TS-34-30",
+      "kind": "integration",
+      "verifies": [
+        "34-REQ-5.3"
+      ],
+      "title": "A failure while reading, revoking or unbinding rolls everything back and answers 500",
+      "given": [
+        "an archived workspace s owned by the caller, with one live bound token",
+        "failure injectors: bindings table unreadable, pats table update failing (e.g. a trigger raising an error), binding delete failing"
+      ],
+      "when": "DELETE /workspaces/s is called for each injector",
+      "then": [
+        "status is 500 with message failed to delete workspace",
+        "the workspace row still exists",
+        "the binding rows and the token's revoked_at are unchanged"
+      ],
+      "pseudocode": "for inj: inject(); r=delete('s'); assert r.status==500 && msg=='failed to delete workspace'; assert exists(ws); assert count(bindings)==1; assert revoked_at(T)==NULL"
+    },
+    {
+      "id": "TS-34-31",
+      "kind": "unit",
+      "verifies": [
+        "34-REQ-5.4"
+      ],
+      "title": "hub.workspace.delete carries revoked_tokens with the sorted ids this deletion revoked",
+      "given": [
+        "a recording audit emitter",
+        "archived workspace with bound tokens tok_b and tok_a live and tok_c already revoked",
+        "a second archived workspace with no bindings"
+      ],
+      "when": "each workspace is deleted through DELETE /workspaces/:slug",
+      "then": [
+        "the first event metadata.revoked_tokens is [\"tok_a\",\"tok_b\"] (sorted, tok_c absent)",
+        "the second event metadata.revoked_tokens is []"
+      ],
+      "pseudocode": "assert ev1.Metadata['revoked_tokens']==['tok_a','tok_b']; assert ev2.Metadata['revoked_tokens']==[]"
+    },
+    {
+      "id": "TS-34-32",
+      "kind": "integration",
+      "verifies": [
+        "34-REQ-5.5"
+      ],
+      "title": "Archiving and reactivating leave bindings and pats untouched",
+      "given": [
+        "an active workspace with a live and a revoked bound token"
+      ],
+      "when": "the workspace is archived and then reactivated through the HTTP handlers",
+      "then": [
+        "token_workspace_bindings and pats contents are equal before and after each step"
+      ],
+      "pseudocode": "snap=dump(bindings,pats); archive(); assert dump==snap; reactivate(); assert dump==snap"
+    },
+    {
+      "id": "TS-34-33",
+      "kind": "integration",
+      "verifies": [
+        "34-REQ-5.6"
+      ],
+      "title": "After workspace deletion the revoked token is refused by REST authentication and the git server",
+      "given": [
+        "a real apikit server and the git server mounted on it, a real pats row for a bound token T",
+        "workspace s deleted through DELETE /workspaces/s"
+      ],
+      "when": "a REST request and a git smart-HTTP request carry T",
+      "then": [
+        "the REST request is answered 401",
+        "the git server refuses authentication (401)"
+      ],
+      "pseudocode": "delete(s); assert rest(T).status==401; assert git(T).status==401"
+    },
+    {
+      "id": "TS-34-34",
+      "kind": "unit",
+      "verifies": [
+        "34-REQ-5.7"
+      ],
+      "title": "Workspace schema initialisation creates the binding table idempotently",
+      "given": [
+        "an empty in-memory database"
+      ],
+      "when": "the workspace initSchema runs twice",
+      "then": [
+        "token_workspace_bindings exists with columns token_id, slug, created_at",
+        "the second run returns no error and no row is lost"
+      ],
+      "pseudocode": "initSchema(db); initSchema(db); assert tableExists('token_workspace_bindings'); assert columns==['token_id','slug','created_at']"
+    },
+    {
+      "id": "TS-34-35",
+      "kind": "unit",
+      "verifies": [
+        "34-REQ-6.1"
+      ],
+      "title": "StartBindingSweep runs a pass immediately, then per interval, and returns after cancel",
+      "given": [
+        "the sweep interval package variable shortened to 20ms",
+        "a database with an orphan binding"
+      ],
+      "when": "StartBindingSweep(ctx, db) runs in a goroutine, a second orphan is added later, then ctx is cancelled",
+      "then": [
+        "the first orphan is removed before the first interval elapses",
+        "the second orphan is removed by a later pass",
+        "the function returns within one interval after cancel"
+      ],
+      "pseudocode": "go Start(ctx,db); eventually(count==0, <interval); add orphan; eventually(count==0); cancel(); assert returned within interval"
+    },
+    {
+      "id": "TS-34-36",
+      "kind": "integration",
+      "verifies": [
+        "34-REQ-6.2"
+      ],
+      "title": "A sweep pass revokes and unbinds orphan-workspace bindings and deletes bindings without a pats row",
+      "given": [
+        "bindings: (a) workspace gone and token live, (b) workspace gone and token already revoked, (c) workspace present but pats row gone, (d) workspace present and token live"
+      ],
+      "when": "one sweep pass runs",
+      "then": [
+        "after the pass no binding names a missing workspace or a missing pats row",
+        "token (a) has revoked_at set",
+        "binding (d) and its token are unchanged"
+      ],
+      "pseudocode": "sweepOnce(db); assert bindings==[d]; assert revoked_at(a)!=NULL; assert revoked_at(d)==NULL"
+    },
+    {
+      "id": "TS-34-37",
+      "kind": "unit",
+      "verifies": [
+        "34-REQ-6.3"
+      ],
+      "title": "Bindings of revoked or expired tokens with an existing workspace survive the sweep and stay listed",
+      "given": [
+        "workspace s with a binding to a revoked token and one to an expired token"
+      ],
+      "when": "a sweep pass runs and the owner then lists /workspaces/s/tokens",
+      "then": [
+        "both bindings still exist",
+        "the listing contains both tokens with their revoked_at/expires_at"
+      ],
+      "pseudocode": "sweepOnce(db); assert count(bindings)==2; assert ids(list('s'))==[revoked,expired]"
+    },
+    {
+      "id": "TS-34-38",
+      "kind": "unit",
+      "verifies": [
+        "34-REQ-6.4"
+      ],
+      "title": "A failing pass rolls back, is logged at error level, and the loop continues",
+      "given": [
+        "interval shortened, a captured logger",
+        "an orphan-workspace binding whose token revocation fails (pats update blocked by trigger) in pass 1, the blocker removed afterwards"
+      ],
+      "when": "the sweep starts and runs several ticks",
+      "then": [
+        "after the failed pass the binding and the token are unchanged (no partial commit)",
+        "an error-level line is logged",
+        "a later pass succeeds and removes the binding, proving the loop kept running"
+      ],
+      "pseudocode": "block(); go Start(); eventually(log has error); assert count(bindings)==1; unblock(); eventually(count(bindings)==0)"
+    },
+    {
+      "id": "TS-34-39",
+      "kind": "unit",
+      "verifies": [
+        "34-REQ-6.5"
+      ],
+      "title": "Cancelling the context during a pass is not logged as a failure",
+      "given": [
+        "a captured logger",
+        "a pass blocked or slowed so ctx can be cancelled mid-pass (e.g. a context-aware DB that returns context.Canceled)"
+      ],
+      "when": "ctx is cancelled while a pass runs",
+      "then": [
+        "the sweep returns",
+        "no error-level log line is produced for the interrupted pass"
+      ],
+      "pseudocode": "go Start(ctx,db); cancelDuringPass(); wait(); assert noErrorLines(log)"
+    },
+    {
+      "id": "TS-34-40",
+      "kind": "unit",
+      "verifies": [
+        "34-REQ-6.6"
+      ],
+      "title": "cmd/af-hub/main.go starts the sweep with go after the binding table exists",
+      "given": [
+        "the source of cmd/af-hub/main.go parsed with go/parser"
+      ],
+      "when": "the call positions are inspected",
+      "then": [
+        "StartBindingSweep appears as a go statement",
+        "it comes after the call that creates the binding table (workspace schema init / InitBindingSchema)",
+        "boundtoken.RegisterRoutes appears after workspace.MountWorkspaceHandlers and the reporter is registered"
+      ],
+      "pseudocode": "ast=parse('cmd/af-hub/main.go'); assert isGoStmt(StartBindingSweep); assert pos(initSchema)<pos(StartBindingSweep); assert pos(Mount)<pos(RegisterRoutes)"
+    },
+    {
+      "id": "TS-34-41",
+      "kind": "unit",
+      "verifies": [
+        "34-REQ-7.1"
+      ],
+      "title": "The hub TokensCmd adds --workspace to apikit's create and list and fails if either is missing",
+      "given": [
+        "the root command from cli.BuildRootCommand",
+        "a hub TokensCmd built from an apikit tokens command stripped of one subcommand"
+      ],
+      "when": "the tree is inspected",
+      "then": [
+        "the root contains one tokens command whose create and list subcommands both have a --workspace string flag",
+        "building from a tokens command lacking create or lacking list fails the unit test/returns an error"
+      ],
+      "pseudocode": "tc=find(root,'tokens'); for n in [create,list]: assert tc.sub(n).Flags().Lookup('workspace')!=nil; assert wrap(stripped(create)) errors"
+    },
+    {
+      "id": "TS-34-42",
+      "kind": "unit",
+      "verifies": [
+        "34-REQ-7.2"
+      ],
+      "title": "tokens create without --workspace behaves as apikit's own command",
+      "given": [
+        "a stub hub httptest server recording requests and answering apikit's POST /user/tokens"
+      ],
+      "when": "afc tokens create --name n --permissions workspaces:read is run without --workspace",
+      "then": [
+        "the request is apikit's POST /user/tokens, not /workspaces/<slug>/tokens",
+        "output and exit code equal those of the unwrapped apikit command"
+      ],
+      "pseudocode": "r=run('tokens','create','--name','n','--permissions','x'); assert stub.path=='/api/v1/user/tokens'; assert r.out==apikitRun.out && r.exit==apikitRun.exit"
+    },
+    {
+      "id": "TS-34-43",
+      "kind": "unit",
+      "verifies": [
+        "34-REQ-7.3"
+      ],
+      "title": "Invalid create flags exit 2 before any request is sent",
+      "given": [
+        "a stub hub counting requests"
+      ],
+      "when": "tokens create --workspace is run with: an empty --workspace, a missing --name, an empty --name, a missing --permissions, --permissions ' , ,'",
+      "then": [
+        "every run exits with code 2",
+        "the stub received 0 requests"
+      ],
+      "pseudocode": "for args in bad: r=run(args); assert r.exit==2; assert stub.calls==0"
+    },
+    {
+      "id": "TS-34-44",
+      "kind": "unit",
+      "verifies": [
+        "34-REQ-7.4"
+      ],
+      "title": "tokens create --workspace posts the cleaned request and prints the token once",
+      "given": [
+        "a stub hub answering POST /workspaces/s/tokens with 201 and the documented body"
+      ],
+      "when": "afc tokens create --workspace s --name svc --permissions ' workspaces:read, ,patches:write' --expires 30 is run",
+      "then": [
+        "the stub received POST /workspaces/s/tokens with body {name:svc, permissions:[workspaces:read,patches:write], expires:30}",
+        "exit code 0 and stdout parses as one JSON object containing the token",
+        "stderr holds exactly one warning line saying the token will not be shown again"
+      ],
+      "pseudocode": "r=run(...); assert stub.body=={'name':'svc','permissions':[..],'expires':30}; assert r.exit==0; json.loads(r.stdout); assert lines(r.stderr)==1 && contains(r.stderr,'will not be shown again')"
+    },
+    {
+      "id": "TS-34-45",
+      "kind": "unit",
+      "verifies": [
+        "34-REQ-7.5"
+      ],
+      "title": "A hub refusal of create exits 1 and shows the hub's message",
+      "given": [
+        "a stub hub answering 404 {error:{message:'workspace not found'}}"
+      ],
+      "when": "afc tokens create --workspace s --name n --permissions p is run",
+      "then": [
+        "exit code is 1",
+        "stderr or output shows 'workspace not found'"
+      ],
+      "pseudocode": "r=run(); assert r.exit==1; assert contains(r.stderr,'workspace not found')"
+    },
+    {
+      "id": "TS-34-46",
+      "kind": "unit",
+      "verifies": [
+        "34-REQ-7.6"
+      ],
+      "title": "Create with no API key or an unreachable hub exits 2",
+      "given": [
+        "case A: no api key configured",
+        "case B: endpoint pointing at a closed port"
+      ],
+      "when": "afc tokens create --workspace s --name n --permissions p is run in each case",
+      "then": [
+        "both exit with code 2"
+      ],
+      "pseudocode": "assert run(noKey).exit==2; assert run(closedPort).exit==2"
+    },
+    {
+      "id": "TS-34-47",
+      "kind": "unit",
+      "verifies": [
+        "34-REQ-8.1"
+      ],
+      "title": "tokens list without --workspace behaves as apikit's own command",
+      "given": [
+        "a stub hub answering apikit's GET /user/tokens"
+      ],
+      "when": "afc tokens list is run without --workspace",
+      "then": [
+        "the request is GET /user/tokens",
+        "output and exit code equal those of apikit's unwrapped command"
+      ],
+      "pseudocode": "r=run('tokens','list'); assert stub.path=='/api/v1/user/tokens'; assert r.out==apikitRun.out"
+    },
+    {
+      "id": "TS-34-48",
+      "kind": "unit",
+      "verifies": [
+        "34-REQ-8.2"
+      ],
+      "title": "tokens list --workspace prints the returned array without secrets",
+      "given": [
+        "a stub hub answering GET /workspaces/s/tokens with a 200 array of two entries"
+      ],
+      "when": "afc tokens list --workspace s is run",
+      "then": [
+        "the stub received GET /workspaces/s/tokens",
+        "exit code 0 and stdout parses as one JSON array of two elements",
+        "stdout contains no token or secret_hash field"
+      ],
+      "pseudocode": "r=run(); assert stub.path.endswith('/workspaces/s/tokens'); assert r.exit==0; arr=json.loads(r.stdout); assert len(arr)==2; assert 'secret_hash' not in r.stdout"
+    },
+    {
+      "id": "TS-34-49",
+      "kind": "unit",
+      "verifies": [
+        "34-REQ-8.3"
+      ],
+      "title": "tokens list with an empty --workspace exits 2 and sends nothing",
+      "given": [
+        "a stub hub counting requests"
+      ],
+      "when": "afc tokens list --workspace '' is run",
+      "then": [
+        "exit code is 2",
+        "the stub received 0 requests"
+      ],
+      "pseudocode": "r=run('tokens','list','--workspace',''); assert r.exit==2; assert stub.calls==0"
+    },
+    {
+      "id": "TS-34-50",
+      "kind": "unit",
+      "verifies": [
+        "34-REQ-8.4"
+      ],
+      "title": "A hub refusal of list exits 1 and shows the hub's message",
+      "given": [
+        "a stub hub answering 403 with message this token is bound to workspace S"
+      ],
+      "when": "afc tokens list --workspace s is run",
+      "then": [
+        "exit code is 1",
+        "the hub's message is shown"
+      ],
+      "pseudocode": "r=run(); assert r.exit==1 && contains(r.stderr,'bound to workspace')"
+    },
+    {
+      "id": "TS-34-51",
+      "kind": "unit",
+      "verifies": [
+        "34-REQ-9.1"
+      ],
+      "title": "The audit constants have the specified values",
+      "given": [
+        "the audit package"
+      ],
+      "when": "EventTokenBind and EventTokenBoundRefused are read",
+      "then": [
+        "EventTokenBind == \"hub.token.bind\"",
+        "EventTokenBoundRefused == \"hub.token.bound_refused\""
+      ],
+      "pseudocode": "assert audit.EventTokenBind=='hub.token.bind'; assert audit.EventTokenBoundRefused=='hub.token.bound_refused'"
+    },
+    {
+      "id": "TS-34-52",
+      "kind": "unit",
+      "verifies": [
+        "34-REQ-9.2"
+      ],
+      "title": "A successful mint emits exactly one fully populated hub.token.bind event",
+      "given": [
+        "a recording emitter",
+        "a stub apikit answering 201 with permissions [a,b] and expires_at null in one case and a timestamp in another",
+        "an api_key caller with user id u1"
+      ],
+      "when": "the owner mints in each case",
+      "then": [
+        "one event per mint with event_type hub.token.bind, resource_type token, resource_id the token_id, action bind, workspace the slug",
+        "actor id u1 and the caller's credential type",
+        "metadata has token_id, workspace, permissions and expires_at (null when no expiry)"
+      ],
+      "pseudocode": "assert len(em.events)==1; e=em.events[0]; assert e.EventType=='hub.token.bind' && e.ResourceID==T && e.Action=='bind' && e.Workspace=='s'; assert e.Metadata['expires_at'] is None"
+    },
+    {
+      "id": "TS-34-53",
+      "kind": "unit",
+      "verifies": [
+        "34-REQ-9.3"
+      ],
+      "title": "hub.token.bind is emitted on a context that a caller disconnect does not cancel",
+      "given": [
+        "an emitter recording the ctx it receives",
+        "a request context that is cancelled before the handler reaches emission"
+      ],
+      "when": "the owner mints and the request context is cancelled mid-flight",
+      "then": [
+        "the context passed to Emit has Err()==nil even after the request context is cancelled",
+        "the event is still recorded"
+      ],
+      "pseudocode": "cancel(reqCtx); assert em.ctx.Err()==nil; assert len(em.events)==1"
+    },
+    {
+      "id": "TS-34-54",
+      "kind": "unit",
+      "verifies": [
+        "34-REQ-9.4"
+      ],
+      "title": "Refused, passed-through and rolled-back mints emit no hub.token.bind event",
+      "given": [
+        "a recording emitter",
+        "scenarios: 401, bound PAT, admin, 404, 400 archived, apikit 400, undecodable 201, vanished workspace, insert error"
+      ],
+      "when": "each scenario is run",
+      "then": [
+        "the emitter recorded zero hub.token.bind events for every scenario"
+      ],
+      "pseudocode": "for s in scenarios: run(s); assert [e for e in em.events if e.EventType=='hub.token.bind']==[]"
+    },
+    {
+      "id": "TS-34-55",
+      "kind": "unit",
+      "verifies": [
+        "34-REQ-9.5"
+      ],
+      "title": "A nil emitter or an emit error leaves the 201 response unchanged",
+      "given": [
+        "case A: Config.Audit is nil",
+        "case B: an emitter whose Emit returns an error, with a captured logger"
+      ],
+      "when": "the owner mints in each case",
+      "then": [
+        "both answers are 201 with the body of the success response and Cache-Control no-store",
+        "case B logs the emit error"
+      ],
+      "pseudocode": "for c in [nil,failing]: r=post(); assert r.status==201 && keys(r.json)==7keys; if failing: assert contains(log,'emit')"
+    },
+    {
+      "id": "TS-34-56",
+      "kind": "unit",
+      "verifies": [
+        "34-REQ-10.1"
+      ],
+      "title": "The refusal observer registers and reports safely, is a no-op unset, and wsaccess does not import audit",
+      "given": [
+        "no observer registered",
+        "the wsaccess package source imports"
+      ],
+      "when": "Report is called with no observer, then an observer is registered and Report is called concurrently from many goroutines (run with -race)",
+      "then": [
+        "the first Report returns without effect or panic",
+        "every concurrent Report reaches the observer",
+        "wsaccess imports nothing from internal/audit (checked with go/parser)"
+      ],
+      "pseudocode": "wsaccess.ReportBoundRefusal(r); SetObserver(f); parallel(100, report); assert f.calls==100; assert 'internal/audit' not in imports(wsaccess)"
+    },
+    {
+      "id": "TS-34-57",
+      "kind": "unit",
+      "verifies": [
+        "34-REQ-10.2"
+      ],
+      "title": "A report carries token id, user id, bound slug, requested slug, method, route, status and surface",
+      "given": [
+        "a registered observer capturing reports",
+        "an api refusal on GET /api/v1/workspaces/:slug/patches with a request naming slug X, and a git refusal"
+      ],
+      "when": "the refusals occur",
+      "then": [
+        "the api report has token id, user id, bound slug S, requested slug X, method GET, the route template, status 403 or 404, surface api",
+        "the git report has surface git and the git route, and requested slug when named",
+        "the requested slug is empty when the request named none"
+      ],
+      "pseudocode": "assert r.TokenID==T && r.UserID==u && r.BoundSlug=='S' && r.RequestedSlug=='X' && r.Method=='GET' && r.Route==tmpl && r.Status in (403,404) && r.Surface=='api'"
+    },
+    {
+      "id": "TS-34-58",
+      "kind": "integration",
+      "verifies": [
+        "34-REQ-10.3"
+      ],
+      "title": "Every refusal point reports exactly once per refused request and filtering reports nothing",
+      "given": [
+        "spec 33's real guards and a registered counting observer",
+        "refusal points: binding guard, apikit route guard, AuthorizeWorkspace, lookupWorkspaceForAuth, git server, session and audit refusals, mint 403 token_bound, list 403 token_bound",
+        "a bound token also listing workspaces (list filtering, not a refusal)"
+      ],
+      "when": "one refused request is sent per refusal point, and one filtered list request is sent",
+      "then": [
+        "each refused request produced exactly one report",
+        "the filtered list request produced zero reports"
+      ],
+      "pseudocode": "for p in points: before=n; send(p); assert n==before+1; before=n; send(filteredList); assert n==before"
+    },
+    {
+      "id": "TS-34-59",
+      "kind": "unit",
+      "verifies": [
+        "34-REQ-10.4"
+      ],
+      "title": "The first report for a token emits one fully populated hub.token.bound_refused event",
+      "given": [
+        "the reporter with an injected clock and a recording emitter"
+      ],
+      "when": "a report for token T (user u, bound S, requested X, GET, route, 404, api) is delivered, and another for a token with no user and no requested slug",
+      "then": [
+        "event_type hub.token.bound_refused, resource_type token, resource_id T, action refuse, workspace S, actor type pat, actor id u",
+        "metadata has token_id, bound_workspace, requested_workspace, method, route, status, surface and suppressed 0",
+        "the second event has actor id empty and no requested_workspace key"
+      ],
+      "pseudocode": "rep(r1); e=em.events[0]; assert e.ActorType=='pat' && e.ActorID=='u' && e.Metadata['suppressed']==0 && e.Metadata['requested_workspace']=='X'; rep(r2); assert 'requested_workspace' not in em.events[1].Metadata"
+    },
+    {
+      "id": "TS-34-60",
+      "kind": "unit",
+      "verifies": [
+        "34-REQ-10.5"
+      ],
+      "title": "Reports inside the minute are held back and counted into the next event's suppressed",
+      "given": [
+        "the reporter with a fake clock",
+        "one event already emitted for token T at t0"
+      ],
+      "when": "three reports arrive at t0+10s, +20s, +30s and a fourth at t0+61s; a different token reports at t0+5s",
+      "then": [
+        "no events are emitted for T at +10s, +20s, +30s",
+        "the event at +61s has suppressed 3, and a later event has suppressed 0",
+        "the different token is emitted independently with suppressed 0"
+      ],
+      "pseudocode": "clock.set(t0); rep(T); clock.add(10s); rep(T); ...; clock.set(t0+61s); rep(T); assert events[T][1].suppressed==3"
+    },
+    {
+      "id": "TS-34-61",
+      "kind": "property",
+      "verifies": [
+        "34-REQ-10.6"
+      ],
+      "title": "For any timestamped report sequence events per token are at least a minute apart and suppressed counts are exact",
+      "given": [
+        "the reporter with an injected clock and a recording emitter",
+        "a generator of non-decreasing timestamps and token ids"
+      ],
+      "when": "for any sequence of timestamped reports across several tokens, they are delivered in order",
+      "then": [
+        "consecutive events of one token are at least 60 seconds apart",
+        "each event's suppressed equals the number of that token's reports since its previous emitted event",
+        "the first report of each token is emitted"
+      ],
+      "pseudocode": "for seq in gen_seq(): replay(seq); for T in tokens: ev=events[T]; assert all(ev[i+1].t-ev[i].t>=60s); assert ev[i+1].suppressed==count(reports of T in (ev[i].t, ev[i+1].t))"
+    },
+    {
+      "id": "TS-34-62",
+      "kind": "unit",
+      "verifies": [
+        "34-REQ-10.7"
+      ],
+      "title": "Limiter entries older than the window are dropped and the clock is injectable",
+      "given": [
+        "the reporter with an injected clock",
+        "1000 distinct tokens reported at t0"
+      ],
+      "when": "the clock advances beyond one minute and another report arrives",
+      "then": [
+        "the limiter's entry count falls to the tokens refused within the last minute",
+        "the injected clock, not wall time, drove the decisions"
+      ],
+      "pseudocode": "for i in range(1000): rep(tok(i)); clock.add(61s); rep(tok(0)); assert rep.entryCount()==1"
+    },
+    {
+      "id": "TS-34-63",
+      "kind": "unit",
+      "verifies": [
+        "34-REQ-10.8"
+      ],
+      "title": "Neither the token nor the Authorization header appears in an event or a log line",
+      "given": [
+        "a captured logger and recording emitter",
+        "reports for a token whose full string and Authorization header value are distinctive"
+      ],
+      "when": "reports are delivered (emitted and suppressed) and an emit error is forced",
+      "then": [
+        "serialised events and log output contain neither the token string nor the Authorization value"
+      ],
+      "pseudocode": "rep(r); assert !contains(json(events), tokenStr) && !contains(logs, tokenStr) && !contains(logs, authz)"
+    },
+    {
+      "id": "TS-34-64",
+      "kind": "smoke",
+      "verifies": [
+        "34-PATH-1",
+        "34-REQ-3.2",
+        "34-REQ-9.2"
+      ],
+      "title": "An owner mints a bound token through afc against a real apikit server",
+      "given": [
+        "a real apikit server (as in sandboxes newRealHub) with real PAT routes, a real SQLite database, hub's boundtoken routes and workspace tables, a user and API key, an active workspace S owned by the user",
+        "a real audit emitter and the hub CLI root command pointed at the server"
+      ],
+      "when": "afc tokens create --workspace S --name svc --permissions workspaces:read is run",
+      "then": [
+        "the CLI exits 0, prints one JSON document with the token and one stderr warning line",
+        "a pats row exists and a token_workspace_bindings row ties it to S",
+        "one hub.token.bind event exists for S with the token_id",
+        "the returned token authenticates against S and is confined to it"
+      ],
+      "real_components": [
+        "apikit server and real PAT handler (server.Echo())",
+        "boundtoken handlers",
+        "wsaccess binding store and guard",
+        "workspace store and schema",
+        "audit emitter and store",
+        "afc CLI root command",
+        "SQLite database"
+      ]
+    },
+    {
+      "id": "TS-34-65",
+      "kind": "smoke",
+      "verifies": [
+        "34-PATH-2",
+        "34-REQ-4.5"
+      ],
+      "title": "An owner lists bound tokens through afc without seeing any secret",
+      "given": [
+        "the real hub of the mint smoke test with two tokens minted for S, one revoked through apikit's DELETE /user/tokens/:token_id"
+      ],
+      "when": "afc tokens list --workspace S is run",
+      "then": [
+        "exit code 0 and stdout is one JSON array with both tokens, the revoked one with a non-null revoked_at",
+        "no token, secret or hash value appears in stdout"
+      ],
+      "real_components": [
+        "apikit server",
+        "boundtoken list handler",
+        "wsaccess join query",
+        "afc CLI root command",
+        "SQLite database"
+      ]
+    },
+    {
+      "id": "TS-34-66",
+      "kind": "smoke",
+      "verifies": [
+        "34-PATH-3",
+        "34-REQ-5.1",
+        "34-REQ-5.4",
+        "34-REQ-5.6"
+      ],
+      "title": "Deleting a workspace revokes its bound token and the token then gets 401",
+      "given": [
+        "the real hub with a bound token T on archived workspace S",
+        "a recording audit store"
+      ],
+      "when": "the owner sends DELETE /api/v1/workspaces/S and then GET /api/v1/user/tokens with T",
+      "then": [
+        "the delete succeeds and no binding names S",
+        "the pats row of T has revoked_at set",
+        "hub.workspace.delete metadata.revoked_tokens contains T's id",
+        "the request with T is answered 401 by apikit's authentication"
+      ],
+      "real_components": [
+        "apikit server and auth middleware",
+        "workspace handlers and store",
+        "wsaccess binding store",
+        "audit emitter and store",
+        "SQLite database"
+      ]
+    },
+    {
+      "id": "TS-34-67",
+      "kind": "smoke",
+      "verifies": [
+        "34-PATH-4",
+        "34-REQ-10.3",
+        "34-REQ-10.4",
+        "34-REQ-10.5"
+      ],
+      "title": "A bound token's refused request is audited once per minute with a suppressed count",
+      "given": [
+        "the real hub with spec 33's binding guard, a token bound to S, a workspace X owned by the same user",
+        "the real boundtoken reporter registered with an injected clock and a real audit emitter"
+      ],
+      "when": "the token sends GET /api/v1/workspaces/X/patches twice within a minute, then once more after the minute",
+      "then": [
+        "each response is 404 workspace not found",
+        "the first request records one hub.token.bound_refused event with suppressed 0",
+        "the second records none",
+        "the request after the minute records an event with suppressed 1"
+      ],
+      "real_components": [
+        "apikit server and auth middleware",
+        "spec 33 binding guard",
+        "wsaccess refusal observer",
+        "boundtoken rate-limited reporter",
+        "audit emitter and store",
+        "SQLite database"
+      ]
+    },
+    {
+      "id": "TS-34-68",
+      "kind": "smoke",
+      "verifies": [
+        "34-PATH-5",
+        "34-REQ-6.1",
+        "34-REQ-6.2"
+      ],
+      "title": "The sweep started at boot cleans up orphaned bindings",
+      "given": [
+        "a real SQLite database with workspaces, pats and bindings tables",
+        "bindings whose workspace is gone (token live), whose pats row is gone, and a healthy binding"
+      ],
+      "when": "StartBindingSweep(ctx, db) is started with go and ctx is later cancelled",
+      "then": [
+        "the first pass runs at once and removes both orphan bindings",
+        "the live token of the orphan workspace has revoked_at set",
+        "the healthy binding and its token are unchanged",
+        "the goroutine returns after cancel"
+      ],
+      "real_components": [
+        "StartBindingSweep loop",
+        "wsaccess binding store",
+        "SQLite database"
+      ]
+    }
+  ]
+}

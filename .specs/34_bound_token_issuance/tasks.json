@@ -1,0 +1,411 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/tasks.v2.json",
+  "spec_id": "34",
+  "spec_name": "bound_token_issuance",
+  "schema_version": 2,
+  "test_commands": {
+    "all_tests": "make test",
+    "linter": "make lint",
+    "spec_tests": "go test ./internal/boundtoken/... ./internal/wsaccess/... ./internal/workspace/... ./internal/cli/... ./internal/audit/... -count=1"
+  },
+  "dependencies": [
+    {
+      "spec": "33",
+      "reason": "Uses its token_workspace_bindings table and idempotent schema function (InitBindingSchema), its bound-slug lookup for a PAT, its token_bound error type and message, and its binding guard on the API group. This spec adds binding-store functions beside its lookup in internal/wsaccess and a refusal-report call at each of its refusal points."
+    }
+  ],
+  "tasks": [
+    {
+      "id": 1,
+      "kind": "implement",
+      "title": "Add audit event constants and the wsaccess refusal observer",
+      "criteria": [
+        "34-REQ-9.1",
+        "34-REQ-10.1",
+        "34-REQ-10.2"
+      ],
+      "tests": [
+        "TS-34-51",
+        "TS-34-56",
+        "TS-34-57"
+      ],
+      "steps": [
+        "Write TS-34-51, TS-34-56 and TS-34-57 and confirm they fail",
+        "In internal/audit/types.go add EventTokenBind = \"hub.token.bind\" and EventTokenBoundRefused = \"hub.token.bound_refused\" with doc comments in the existing style",
+        "Create internal/wsaccess/observer.go with type BoundRefusal {TokenID, UserID, BoundSlug, RequestedSlug, Method, Route string; Status int; Surface string}, constants SurfaceAPI=\"api\" and SurfaceGit=\"git\", SetRefusalObserver(func(BoundRefusal)) and ReportBoundRefusal(BoundRefusal)",
+        "Guard the observer with sync.RWMutex (or atomic.Pointer); Report is a no-op when nothing is registered and safe under -race with 100 concurrent callers",
+        "Do not import internal/audit from wsaccess; TS-34-56 checks the import list with go/parser",
+        "Document the exported identifiers with doc comments"
+      ],
+      "touches": [
+        "internal/audit/types.go",
+        "internal/audit/types_token_test.go",
+        "internal/wsaccess/observer.go",
+        "internal/wsaccess/observer_test.go"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 2,
+      "kind": "implement",
+      "title": "Retire bound tokens when a workspace is deleted",
+      "criteria": [
+        "34-REQ-5.1",
+        "34-REQ-5.2",
+        "34-REQ-5.3",
+        "34-REQ-5.4",
+        "34-REQ-5.5",
+        "34-REQ-5.6",
+        "34-REQ-5.7"
+      ],
+      "tests": [
+        "TS-34-28",
+        "TS-34-29",
+        "TS-34-30",
+        "TS-34-31",
+        "TS-34-32",
+        "TS-34-33",
+        "TS-34-34"
+      ],
+      "steps": [
+        "Write TS-34-28..TS-34-34 and confirm they fail; TS-34-33 uses a real apikit server (model it on newRealHub in internal/sandboxes/smoke_test.go) plus the git server mount",
+        "In internal/wsaccess add a binding-store file with RevokeAndUnbindSlug(tx *sql.Tx or a minimal exec/query interface, slug) ([]string, error): read token ids bound to slug; if none, return an empty non-nil slice without touching pats; else UPDATE pats SET revoked_at = apikit.NowUTC() WHERE token_id IN (...) AND revoked_at IS NULL, recording which ids were still live (select them first), then DELETE FROM token_workspace_bindings WHERE slug=?; return the sorted revoked ids",
+        "In internal/workspace/schema.go initSchema call spec 33's idempotent InitBindingSchema(db) so the binding table exists in every workspace database",
+        "In internal/workspace/store.go add deleteWorkspaceRevoked(db, slug) ([]string, error) that runs RevokeAndUnbindSlug inside the existing transaction BEFORE the workspace-row delete; keep deleteWorkspace(db, slug) error as a wrapper so existing tests compile",
+        "Make handleDeleteWorkspace in internal/workspace/handlers.go use the new variant, answer the existing 500 failed to delete workspace on any error, and add metadata revoked_tokens (sorted []string, [] when none) to the hub.workspace.delete event",
+        "Confirm archive and reactivate handlers touch neither token_workspace_bindings nor pats (TS-34-32)",
+        "Confirm TestCascadeDelete_SecretsDeleteFails_RollsBack and the other existing deleteWorkspace tests still pass"
+      ],
+      "touches": [
+        "internal/wsaccess/binding_store.go",
+        "internal/workspace/schema.go",
+        "internal/workspace/store.go",
+        "internal/workspace/handlers.go",
+        "internal/workspace/bound_tokens_delete_test.go"
+      ],
+      "depends_on": [
+        1
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 3,
+      "kind": "implement",
+      "title": "Add the boundtoken package and the list handler",
+      "criteria": [
+        "34-REQ-4"
+      ],
+      "tests": [
+        "TS-34-21",
+        "TS-34-22",
+        "TS-34-23",
+        "TS-34-24",
+        "TS-34-25",
+        "TS-34-26",
+        "TS-34-27"
+      ],
+      "steps": [
+        "Write TS-34-21..TS-34-27 and confirm they fail",
+        "Create internal/boundtoken with Config{DB *sql.DB; APIKit http.Handler; Audit audit.Emitter} and RegisterRoutes(api *echo.Group, cfg Config) registering GET /workspaces/:slug/tokens (the POST route is added in the mint task)",
+        "Add standalone auth helpers on *apikit.AuthInfo (isAdmin, isPAT, hasScope) following internal/workspace/auth.go",
+        "In internal/wsaccess add ListBoundTokens(db, slug): SELECT from token_workspace_bindings JOIN pats ON token_id ORDER BY pats.created_at, token_id; rows with a missing pats row are naturally omitted; close the rows cursor before further queries",
+        "Implement the list handler: 401 authentication required; for a PAT use spec 33's bound-slug lookup, on bound answer 403 error_type token_bound with message this token is bound to workspace <S> and call wsaccess.ReportBoundRefusal (status 403, surface api, route c.Path(), method, requested slug), on lookup error 500 internal server error",
+        "Then 403 PAT requires tokens:read scope for an unbound PAT with neither tokens:read nor tokens:manage; then 404 workspace not found unless admin token or owner (workspace must exist; archived allowed)",
+        "Render entries {token_id,name,permissions,workspace,expires_at,revoked_at,created_at} with permissions decoded from JSON ([] on failure), null for unset times, no secret fields; [] for no rows; 500 internal server error on DB error"
+      ],
+      "touches": [
+        "internal/boundtoken/boundtoken.go",
+        "internal/boundtoken/auth.go",
+        "internal/boundtoken/list.go",
+        "internal/boundtoken/list_test.go",
+        "internal/wsaccess/binding_store.go"
+      ],
+      "depends_on": [
+        2
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 4,
+      "kind": "implement",
+      "title": "Mint handler: ordered checks and in-process delegation to apikit",
+      "criteria": [
+        "34-REQ-1",
+        "34-REQ-2.1",
+        "34-REQ-2.2"
+      ],
+      "tests": [
+        "TS-34-1",
+        "TS-34-2",
+        "TS-34-3",
+        "TS-34-4",
+        "TS-34-5",
+        "TS-34-6",
+        "TS-34-7",
+        "TS-34-8",
+        "TS-34-9",
+        "TS-34-10"
+      ],
+      "steps": [
+        "Write TS-34-1..TS-34-10 and confirm they fail; use a counting stub http.Handler as Config.APIKit",
+        "Register POST /workspaces/:slug/tokens in RegisterRoutes",
+        "Implement the checks in order: 401 authentication required; bound PAT -> 403 token_bound with spec 33's message, call wsaccess.ReportBoundRefusal(status 403, surface api), lookup error -> 500 internal server error; admin_token -> 403 admin tokens cannot mint bound tokens; a real user is required as the token's owner; workspace missing / wsaccess.AuthorizeWorkspace denied / owner_id != auth.UserID -> 404 workspace not found; status != active -> 400 workspace is not active",
+        "Do NOT check tokens:manage in hub",
+        "Delegation: read the body bytes, build httptest.NewRequest-style POST to strings.TrimSuffix(c.Path(), \"/workspaces/:slug/tokens\")+\"/user/tokens\" with the original body, the caller's Authorization header verbatim, Content-Type and Content-Length, and c.Request().Context(); serve with cfg.APIKit into an httptest.ResponseRecorder",
+        "Pass the recorded result on to the success/rollback code added in the next task via a small function boundary that already returns a complete response for the non-201 case (copy status, Content-Type and body)",
+        "In cmd/af-hub/main.go call boundtoken.RegisterRoutes(server.APIGroup(), boundtoken.Config{DB: database.SqlDB, APIKit: server.Echo(), Audit: auditEmitter}) right after workspace.MountWorkspaceHandlers (read the file with read_file; keep OnAfterUserCreate before Mount for hook_ordering_test.go)"
+      ],
+      "touches": [
+        "internal/boundtoken/mint.go",
+        "internal/boundtoken/mint_test.go",
+        "internal/boundtoken/boundtoken.go",
+        "cmd/af-hub/main.go"
+      ],
+      "depends_on": [
+        3
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 5,
+      "kind": "implement",
+      "title": "Mint handler: write the binding, answer, and roll back on failure",
+      "criteria": [
+        "34-REQ-2.3",
+        "34-REQ-2.4",
+        "34-REQ-3"
+      ],
+      "tests": [
+        "TS-34-11",
+        "TS-34-12",
+        "TS-34-13",
+        "TS-34-15",
+        "TS-34-16",
+        "TS-34-17",
+        "TS-34-18",
+        "TS-34-19",
+        "TS-34-20"
+      ],
+      "steps": [
+        "Write TS-34-11..TS-34-13 and TS-34-15..TS-34-20 and confirm they fail; the property test TS-34-20 uses a failure injector over undecodable body, vanished workspace, insert error and key conflict",
+        "In internal/wsaccess add InsertBinding(db, tokenID, slug, createdAt) (written bool, err error) using INSERT INTO token_workspace_bindings SELECT ?, slug, ? FROM workspaces WHERE slug = ? and checking rows affected; and RevokeToken(db, tokenID) error setting revoked_at = apikit.NowUTC() WHERE token_id=? AND revoked_at IS NULL",
+        "Non-201 apikit answer: copy status, Content-Type and body byte-for-byte; write no binding, emit nothing",
+        "201 with undecodable body or empty token_id/token: revoke when token_id is known, log token_id only, answer 500 failed to bind the token to the workspace",
+        "Decodable 201: InsertBinding with apikit.NowUTC(); on success answer 201 with Cache-Control: no-store and body {token_id, token, name, permissions, workspace, expires_at, created_at}",
+        "On not written (workspace vanished) revoke and answer 404 workspace not found; on insert error or key conflict revoke and answer 500 failed to bind the token to the workspace",
+        "If revocation also fails, log both errors at error level with the token_id and keep the answer",
+        "Never log the plaintext token, apikit's 201 body or the Authorization header on any path (TS-34-19 captures the logger)"
+      ],
+      "touches": [
+        "internal/boundtoken/mint.go",
+        "internal/boundtoken/mint_bind_test.go",
+        "internal/wsaccess/binding_store.go"
+      ],
+      "depends_on": [
+        4
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 6,
+      "kind": "implement",
+      "title": "Emit hub.token.bind and the rate-limited hub.token.bound_refused reporter",
+      "criteria": [
+        "34-REQ-9.2",
+        "34-REQ-9.3",
+        "34-REQ-9.4",
+        "34-REQ-9.5",
+        "34-REQ-10.4",
+        "34-REQ-10.5",
+        "34-REQ-10.6",
+        "34-REQ-10.7",
+        "34-REQ-10.8"
+      ],
+      "tests": [
+        "TS-34-52",
+        "TS-34-53",
+        "TS-34-54",
+        "TS-34-55",
+        "TS-34-59",
+        "TS-34-60",
+        "TS-34-61",
+        "TS-34-62",
+        "TS-34-63"
+      ],
+      "steps": [
+        "Write TS-34-52..TS-34-55 and TS-34-59..TS-34-63 and confirm they fail",
+        "After a committed binding in the mint handler emit audit.HubEvent{EventType: audit.EventTokenBind, ResourceType: \"token\", ResourceID: token_id, Action: \"bind\", Workspace: slug, ActorID: auth.UserID, ActorType: auth.CredentialType, Metadata: token_id, workspace, permissions, expires_at (nil when none)} on context.WithoutCancel(request ctx)",
+        "Skip emission when cfg.Audit is nil; log an Emit error (without secrets) and leave the 201 unchanged; emit nothing on any refusal, passthrough or rollback",
+        "Create internal/boundtoken/reporter.go: NewReporter(emitter audit.Emitter, clock func() time.Time) with Report(wsaccess.BoundRefusal) method and entryCount() for tests",
+        "Per token keep lastEmitted and heldBack; when no event in the last minute emit hub.token.bound_refused (resource_type token, resource_id token_id, action refuse, workspace bound slug, actor type pat, actor id user id or empty, metadata token_id, bound_workspace, requested_workspace only when non-empty, method, route, status, surface, suppressed) and reset heldBack; otherwise heldBack++",
+        "Drop entries older than the one-minute window on each report so memory stays bounded; emit on context.WithoutCancel or Background",
+        "Never put the token or the Authorization header in an event or log; expose Install(emitter) or a helper that calls wsaccess.SetRefusalObserver(reporter.Report)"
+      ],
+      "touches": [
+        "internal/boundtoken/mint.go",
+        "internal/boundtoken/reporter.go",
+        "internal/boundtoken/mint_audit_test.go",
+        "internal/boundtoken/reporter_test.go"
+      ],
+      "depends_on": [
+        5,
+        1
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 7,
+      "kind": "implement",
+      "title": "Add the binding sweep",
+      "criteria": [
+        "34-REQ-6.1",
+        "34-REQ-6.2",
+        "34-REQ-6.3",
+        "34-REQ-6.4",
+        "34-REQ-6.5"
+      ],
+      "tests": [
+        "TS-34-35",
+        "TS-34-36",
+        "TS-34-37",
+        "TS-34-38",
+        "TS-34-39"
+      ],
+      "steps": [
+        "Write TS-34-35..TS-34-39 and confirm they fail",
+        "In internal/wsaccess add SweepBindings(ctx, db) error that, in one transaction, finds slugs of bindings with no workspaces row and revokes their live tokens and deletes those bindings (reuse the helper from RevokeAndUnbindSlug), then deletes bindings whose token_id has no pats row; keep bindings of revoked or expired tokens whose workspace exists; roll back on any error",
+        "In internal/boundtoken add a package var sweepInterval = time.Hour and StartBindingSweep(ctx, db *sql.DB) following internal/forge/retention.go: one pass at once, then a ticker; return when ctx is cancelled",
+        "A failed pass is logged at error level and retried at the next tick; if ctx.Err() != nil or the error is context.Canceled, return without logging an error",
+        "Ensure pass queries close row cursors before issuing further statements (SetMaxOpenConns(1) in tests)"
+      ],
+      "touches": [
+        "internal/boundtoken/sweep.go",
+        "internal/boundtoken/sweep_test.go",
+        "internal/wsaccess/binding_store.go"
+      ],
+      "depends_on": [
+        3,
+        2
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 8,
+      "kind": "implement",
+      "title": "Add --workspace to afc tokens create and list",
+      "criteria": [
+        "34-REQ-7",
+        "34-REQ-8"
+      ],
+      "tests": [
+        "TS-34-41",
+        "TS-34-42",
+        "TS-34-43",
+        "TS-34-44",
+        "TS-34-45",
+        "TS-34-46",
+        "TS-34-47",
+        "TS-34-48",
+        "TS-34-49",
+        "TS-34-50"
+      ],
+      "steps": [
+        "Write TS-34-41..TS-34-50 and confirm they fail; follow the stub-hub harness in internal/cli/sandbox_cmd_test.go (runRootCmd, setupTestEnv)",
+        "Create internal/cli/tokens_cmd.go with TokensCmd() that builds apikit.TokensCmd(), finds create and list in Commands(), returns an error / fails a unit test when either is missing, adds a --workspace string flag to each and wraps RunE (falling back to Run when RunE is nil)",
+        "Without --workspace (flag not Changed and empty) call the original RunE/Run unchanged",
+        "create with --workspace: empty value, missing or empty --name, missing --permissions or none left after split/trim/drop-empty -> apikit.NewCLIError(2, ...) before any request",
+        "Otherwise read --name, --permissions, --expires (GetString/GetInt), CLIClientFromCmd, DoRequest POST apiPath(\"workspaces\", slug, \"tokens\") with {name, permissions, expires}, CLIPrintResult, and write one stderr warning line: warning: the token in this output will not be shown again; save it now",
+        "list with --workspace: empty value -> exit 2; else GET workspaces/<slug>/tokens and CLIPrintResult the array",
+        "Route errors through apikit.CLIHandleError so hub refusals exit 1 with the hub message and a missing key or unreachable hub exits 2",
+        "Replace apikit.TokensCmd() with TokensCmd() in BuildRootCommand in internal/cli/workspace_cmd.go"
+      ],
+      "touches": [
+        "internal/cli/tokens_cmd.go",
+        "internal/cli/tokens_cmd_test.go",
+        "internal/cli/workspace_cmd.go"
+      ],
+      "depends_on": [
+        1
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 9,
+      "kind": "implement",
+      "title": "Report refusals at every spec 33 refusal point, wire main and update docs",
+      "criteria": [
+        "34-REQ-10.3",
+        "34-REQ-6.6"
+      ],
+      "tests": [
+        "TS-34-58",
+        "TS-34-40"
+      ],
+      "steps": [
+        "Write TS-34-58 and TS-34-40 and confirm they fail",
+        "Add exactly one wsaccess.ReportBoundRefusal call (token id, user id when authenticated, bound slug, requested slug when named, method, route template or git route, status, surface) at each spec 33 refusal point: binding guard, apikit route guard, wsaccess.AuthorizeWorkspace, lookupWorkspaceForAuth, the git server check, and the session and audit refusals; never call it when merely filtering a list",
+        "Confirm the mint and list token_bound refusals from earlier tasks report exactly once",
+        "In cmd/af-hub/main.go register the reporter (boundtoken reporter over auditEmitter, wsaccess.SetRefusalObserver) and start the sweep with go boundtoken.StartBindingSweep(ctx, database.SqlDB) near go forge.StartDeliveryRetention, after workspace schema init has created the binding table",
+        "Update docs/api.md and docs/openapi.yaml: the two routes, both events, revoked_tokens on hub.workspace.delete",
+        "Update docs/cli.md (--workspace on tokens create|list), docs/permissions.md (who may mint and list; tokens:* inert on a bound token) and docs/architecture.md (internal/boundtoken, the sweep, in-process delegation)",
+        "Run make doc and commit the generated output, then make check"
+      ],
+      "touches": [
+        "internal/wsaccess/",
+        "internal/workspace/",
+        "internal/gitserver/",
+        "internal/audit/",
+        "internal/boundtoken/",
+        "cmd/af-hub/main.go",
+        "cmd/af-hub/main_wiring_test.go",
+        "docs/api.md",
+        "docs/openapi.yaml",
+        "docs/cli.md",
+        "docs/permissions.md",
+        "docs/architecture.md"
+      ],
+      "depends_on": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 10,
+      "kind": "integration",
+      "title": "Verify mint, list, delete, refusal audit and sweep paths end to end",
+      "tests": [
+        "TS-34-64",
+        "TS-34-65",
+        "TS-34-66",
+        "TS-34-67",
+        "TS-34-68"
+      ],
+      "steps": [
+        "Write TS-34-64..TS-34-68 against a real apikit server (as in internal/sandboxes/smoke_test.go newRealHub), real SQLite, real audit emitter and the hub CLI root command, and confirm they pass",
+        "Trace 34-PATH-1 to 34-PATH-5 through the real code: afc -> POST /workspaces/:slug/tokens -> delegation to server.Echo() -> binding insert -> hub.token.bind; list; deleteWorkspace -> revoke -> 401; guard -> ReportBoundRefusal -> reporter -> hub.token.bound_refused; StartBindingSweep from main; confirm each step calls the next and no stub remains",
+        "For every criterion with a contract confirm the producer's result is consumed by a caller in production code (for example the revoked ids returned by RevokeAndUnbindSlug feed revoked_tokens, and the reporter is registered in cmd/af-hub/main.go), not only by tests",
+        "Search the files in every task's touches for panic(\"not implemented\"), TODO, and bare return nil on non-trivial paths, and remove any",
+        "Confirm spec 33's entry points (binding guard, InitBindingSchema, BoundSlug) are called from production code",
+        "Run make test and make lint"
+      ],
+      "touches": [
+        "internal/boundtoken/smoke_test.go",
+        "cmd/af-hub/main.go"
+      ],
+      "depends_on": [
+        9
+      ],
+      "done_when": [
+        "`make test` and `make lint` pass"
+      ],
+      "state": "pending"
+    }
+  ]
+}

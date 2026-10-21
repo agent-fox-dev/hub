@@ -1,0 +1,436 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/tasks.v2.json",
+  "spec_id": "33",
+  "spec_name": "token_workspace_binding",
+  "schema_version": 2,
+  "test_commands": {
+    "all_tests": "make test",
+    "linter": "make lint",
+    "spec_tests": "go test ./internal/wsaccess/... ./internal/workspace/... ./internal/gitserver/... ./internal/audit/... ./internal/sandboxes/... -count=1 -run 'TS_33|TS33'"
+  },
+  "dependencies": [
+    {
+      "spec": "25_sandbox_profiles",
+      "reason": "sandboxes.RegisterRoutes marks GET /sandbox-profiles as allowed for bound tokens."
+    },
+    {
+      "spec": "26_sandbox_leases",
+      "reason": "lease routes go through wsaccess.AuthorizeWorkspace and now honour bindings; GET /sandboxes is refused to bound tokens with 403 token_bound."
+    },
+    {
+      "spec": "30_forge_client_reads",
+      "reason": "forge read routes are workspace-scoped and are confined by the binding guard and AuthorizeWorkspace; code is unchanged."
+    },
+    {
+      "spec": "31_forge_writes",
+      "reason": "forge write and webhook routes are confined the same way; the ingress (32) sits on the root instance and is unaffected."
+    }
+  ],
+  "tasks": [
+    {
+      "id": 1,
+      "kind": "implement",
+      "title": "Add the binding table, lookup, resolver and the AuthorizeWorkspace binding rule in internal/wsaccess",
+      "criteria": [
+        "33-REQ-1.1",
+        "33-REQ-1.2",
+        "33-REQ-1.7",
+        "33-REQ-2.1",
+        "33-REQ-2.4",
+        "33-REQ-3.5",
+        "33-REQ-3.7"
+      ],
+      "tests": [
+        "TS-33-1",
+        "TS-33-2",
+        "TS-33-7",
+        "TS-33-8",
+        "TS-33-17"
+      ],
+      "steps": [
+        "Write TS-33-1, 2, 7, 8 and 17 in internal/wsaccess (and an AuthorizeWorkspace test using an in-memory SQLite DB with SetMaxOpenConns(1)); confirm they fail",
+        "Add internal/wsaccess/binding.go with const ErrorTypeTokenBound = \"token_bound\" and InitBindingSchema(db *sql.DB) error: CREATE TABLE IF NOT EXISTS token_workspace_bindings (token_id TEXT PRIMARY KEY, slug TEXT NOT NULL, created_at TEXT NOT NULL) and CREATE INDEX IF NOT EXISTS idx_token_workspace_bindings_slug ON token_workspace_bindings(slug); no foreign key",
+        "Add LookupBinding(db, tokenID) (slug string, bound bool, err error): one primary-key SELECT; sql.ErrNoRows means unbound, any other error is returned",
+        "Add BoundSlug(db, auth) (string, bool, error): only for non-nil auth with CredentialType \"pat\" and non-empty TokenID; otherwise return \"\", false, nil without touching db",
+        "Close the row (QueryRow().Scan) before returning so no cursor or transaction is open when the lookup runs",
+        "In wsaccess.AuthorizeWorkspace, after the existence and ownership checks and before building the result, call BoundSlug; if bound and slug != bound slug return (nil, 404, \"workspace not found\"); on lookup error return (nil, 500, \"internal server error\"); admin and non-PAT credentials never reach a query",
+        "Run the lookup only after the workspace row has been read and its rows closed (single-connection pools)",
+        "Run make test and make lint"
+      ],
+      "touches": [
+        "internal/wsaccess/binding.go",
+        "internal/wsaccess/wsaccess.go",
+        "internal/wsaccess/binding_test.go",
+        "internal/wsaccess/wsaccess_test.go"
+      ],
+      "done_when": [
+        "wsaccess still imports only database/sql, net/http, echo and apikit"
+      ],
+      "state": "pending",
+      "optional": false
+    },
+    {
+      "id": 2,
+      "kind": "implement",
+      "title": "Add the post-authentication binding guard and the bound-token allowlist registry",
+      "criteria": [
+        "33-REQ-2.2",
+        "33-REQ-2.3",
+        "33-REQ-2.5",
+        "33-REQ-3.1",
+        "33-REQ-3.3",
+        "33-REQ-4.1",
+        "33-REQ-4.2",
+        "33-REQ-4.3",
+        "33-REQ-4.5",
+        "33-REQ-4.6",
+        "33-REQ-4.7"
+      ],
+      "tests": [
+        "TS-33-9",
+        "TS-33-10",
+        "TS-33-12",
+        "TS-33-13",
+        "TS-33-15",
+        "TS-33-20",
+        "TS-33-22",
+        "TS-33-24",
+        "TS-33-25",
+        "TS-33-26"
+      ],
+      "steps": [
+        "Write the ten tests in internal/wsaccess using an echo group with a test auth middleware that reads JSON AuthInfo from X-Test-Auth; confirm they fail",
+        "Add internal/wsaccess/allowlist.go: AllowBoundTokens(routes ...*echo.Route) storing Method+\" \"+Path in a mutex-guarded global map, IsAllowed(method, path string) bool, and a test-only reset helper",
+        "Add internal/wsaccess/guard.go: BindingGuard(db *sql.DB) echo.MiddlewareFunc",
+        "In the guard: auth := apikit.GetAuthInfo(c); if nil or CredentialType != \"pat\" call next without any query",
+        "If auth.TokenID is empty, parse the Authorization header (scheme Bearer case-insensitive, text between af_pat_ and the next _, non-empty); if none can be derived call next unchanged without a query; otherwise copy the AuthInfo, set TokenID and write it back with apikit.SetAuthInfo",
+        "Call LookupBinding once; on error answer apikit.WriteAPIError(c, 500, \"internal server error\") without calling next; if unbound call next",
+        "Bound: if c.Path() contains the consecutive segments workspaces then :slug, compare c.Param(\"slug\") with the bound slug and answer 404 \"workspace not found\" on mismatch, else call next",
+        "Bound and not workspace-scoped: if IsAllowed(c.Request().Method, c.Path()) call next, otherwise apikit.WriteAPIErrorWithType(c, 403, \"this token is bound to workspace \"+S, ErrorTypeTokenBound); this also covers unmatched paths (route NotFound handler path) and later-registered routes",
+        "Run make test and make lint"
+      ],
+      "touches": [
+        "internal/wsaccess/guard.go",
+        "internal/wsaccess/allowlist.go",
+        "internal/wsaccess/guard_test.go",
+        "internal/wsaccess/allowlist_test.go"
+      ],
+      "depends_on": [
+        1
+      ],
+      "done_when": [
+        "a guard installed before any route is registered covers routes and subgroups added later"
+      ],
+      "state": "pending",
+      "optional": false
+    },
+    {
+      "id": 3,
+      "kind": "implement",
+      "title": "Add the pre-authentication, deny-only apikit route guard in internal/wsaccess",
+      "criteria": [
+        "33-REQ-5.2",
+        "33-REQ-5.4",
+        "33-REQ-5.5",
+        "33-REQ-5.6",
+        "33-REQ-5.7"
+      ],
+      "tests": [
+        "TS-33-30",
+        "TS-33-31",
+        "TS-33-32",
+        "TS-33-33"
+      ],
+      "steps": [
+        "Write TS-33-30 to 33 in internal/wsaccess; confirm they fail",
+        "Add internal/wsaccess/apikit_guard.go: APIKitRouteGuard(db *sql.DB, routes []*echo.Route) echo.MiddlewareFunc; build a set keyed by Method+\" \"+Path from routes",
+        "In the middleware, if c.Request().Method+\" \"+c.Path() is not in the set call next with no query",
+        "Parse the Authorization header (Bearer case-insensitive, af_pat_<id>_...); share the parsing helper with the post-auth guard (extract it to one function). No id means call next with no query",
+        "LookupBinding(db, id): on error answer apikit.WriteAPIError(c, 500, \"internal server error\") and do not call next; bound answers apikit.WriteAPIErrorWithType(c, 403, \"this token is bound to a workspace\", ErrorTypeTokenBound) without the slug; unbound calls next",
+        "Never call apikit.SetAuthInfo, never hash or verify the secret, and import no hashing package",
+        "Run make test and make lint"
+      ],
+      "touches": [
+        "internal/wsaccess/apikit_guard.go",
+        "internal/wsaccess/guard.go",
+        "internal/wsaccess/apikit_guard_test.go"
+      ],
+      "depends_on": [
+        1
+      ],
+      "done_when": [
+        "the guard source imports no hashing or token-verification package"
+      ],
+      "state": "pending",
+      "optional": false
+    },
+    {
+      "id": 4,
+      "kind": "implement",
+      "title": "Wire the binding table and both guards into MountWorkspaceHandlers and apply the rule in the workspace package",
+      "criteria": [
+        "33-REQ-1.3",
+        "33-REQ-1.5",
+        "33-REQ-1.6",
+        "33-REQ-3.2",
+        "33-REQ-3.4",
+        "33-REQ-3.6",
+        "33-REQ-3.7",
+        "33-REQ-5.1",
+        "33-REQ-5.3",
+        "33-REQ-6.1"
+      ],
+      "tests": [
+        "TS-33-3",
+        "TS-33-6",
+        "TS-33-14",
+        "TS-33-16",
+        "TS-33-18",
+        "TS-33-19",
+        "TS-33-27",
+        "TS-33-28",
+        "TS-33-29",
+        "TS-33-34"
+      ],
+      "steps": [
+        "Write the ten tests (real-apikit-server tests follow internal/sandboxes/smoke_test.go newRealHub: LoadConfig with XDG env and temp config, OpenDatabase, NewServer, MountWorkspaceHandlers, GenerateAPIKey, PAT minted via POST /api/v1/user/tokens; binding rows inserted directly); confirm they fail",
+        "In MountWorkspaceHandlers (internal/workspace/routes.go) call wsaccess.InitBindingSchema(db.SqlDB) right after initSchema, returning the error immediately before anything else is registered; keep the signature and the MountHandlers / *apikit.Server text that hook_ordering_test.go inspects",
+        "Snapshot s.Echo().Routes() before and after s.MountHandlers; record routes absent before, excluding /healthz, /readyz and /version, and keep them in a package-level accessor for tests",
+        "Install s.Echo().Use(wsaccess.APIKitRouteGuard(db.SqlDB, recorded)) and s.APIGroup().Use(wsaccess.BindingGuard(db.SqlDB)) after MountHandlers and before RegisterRoutes",
+        "In RegisterRoutes wrap api.GET(\"/workspaces\", ...) with wsaccess.AllowBoundTokens",
+        "In lookupWorkspaceForAuth, after the existence and ownership checks, call wsaccess.BoundSlug; on mismatch respondError(c, 404, \"workspace not found\") and return an error; on lookup error respondError(c, 500, \"internal server error\") and return an error; run it only after workspace rows are closed",
+        "In handleListWorkspaces, for a bound PAT filter the result of listWorkspacesByOwner to the bound slug (resolve the binding before opening any rows; a lookup error is a 500); keep the workspaces:read check and include_archived behaviour",
+        "Do not touch bindings in deleteWorkspace or the archive path",
+        "Run make test and make lint"
+      ],
+      "touches": [
+        "internal/workspace/routes.go",
+        "internal/workspace/handlers.go",
+        "internal/workspace/binding_test.go",
+        "internal/workspace/testhelpers_test.go"
+      ],
+      "depends_on": [
+        2,
+        3
+      ],
+      "done_when": [
+        "hook_ordering_test.go still passes unchanged"
+      ],
+      "state": "pending",
+      "optional": false
+    },
+    {
+      "id": 5,
+      "kind": "implement",
+      "title": "Apply the binding in the git server and ensure the table in MountGitHandlers",
+      "criteria": [
+        "33-REQ-1.4",
+        "33-REQ-1.5",
+        "33-REQ-7"
+      ],
+      "tests": [
+        "TS-33-4",
+        "TS-33-5",
+        "TS-33-42",
+        "TS-33-43",
+        "TS-33-44",
+        "TS-33-45"
+      ],
+      "steps": [
+        "Write the six tests in internal/gitserver (openTestDB single-connection SQLite; seed pats and workspaces; TS-33-5 uses an index named token_workspace_bindings to make the DDL fail and also calls workspace.MountWorkspaceHandlers on a real apikit server or an equivalent failing DB); confirm they fail",
+        "In MountGitHandlers call wsaccess.InitBindingSchema(db) before registering any git route and return its error",
+        "Change authorizeGitAccess to take the db handle (update the caller in gitResolverMiddleware, resolver.go)",
+        "In authorizeGitAccess, after the admin and ownership checks, call wsaccess.BoundSlug(db, auth); admin_token and api_key never reach a query; a bound token with ws.Slug != S gets writePktLineError(c, 404, \"repository not found\") and errAccessDenied, identical to a non-owner",
+        "On a lookup error write writePktLineError(c, 500, ...) and return an error so the repository is not served; run the lookup before any rows are open",
+        "Leave the git:read and git:write scope checks unchanged",
+        "Run make test and make lint"
+      ],
+      "touches": [
+        "internal/gitserver/handlers.go",
+        "internal/gitserver/authz.go",
+        "internal/gitserver/resolver.go",
+        "internal/gitserver/binding_test.go"
+      ],
+      "depends_on": [
+        1,
+        4
+      ],
+      "done_when": [
+        "gitserver and carrypatch ownership suites pass unchanged"
+      ],
+      "state": "pending",
+      "optional": false
+    },
+    {
+      "id": 6,
+      "kind": "implement",
+      "title": "Apply the binding to audit ingestion and the session routes",
+      "criteria": [
+        "33-REQ-6.2",
+        "33-REQ-6.3",
+        "33-REQ-6.4",
+        "33-REQ-6.5",
+        "33-REQ-8"
+      ],
+      "tests": [
+        "TS-33-35",
+        "TS-33-36",
+        "TS-33-37",
+        "TS-33-38",
+        "TS-33-46",
+        "TS-33-47",
+        "TS-33-48",
+        "TS-33-49",
+        "TS-33-50"
+      ],
+      "steps": [
+        "Write the nine tests in internal/audit using newAuditTestEnvWithSQLite and rows inserted into token_workspace_bindings; rewrite TS-17-51 in workspace_auth_test.go to seed a binding row and expect 404 workspace not found; update the workspacePatAuth fixture use accordingly; confirm the new tests fail",
+        "In internal/audit/auth.go remove the isPAT(auth) && auth.KeyID != \"\" branch of checkWorkspaceAccess and the workspace_mismatch error type; apply the shared rule (wsaccess.AuthorizeWorkspace or BoundSlug after the existence and ownership checks) so a bound token on another workspace gets 404 workspace not found; keep 403 workspace_access_denied, 409 workspace_archived, 404 unknown and the nil-SQLite skip",
+        "In requireWorkspaceRead apply the same bound-slug rule so POST /sessions with another workspace_slug answers 404 workspace not found, including the idempotent replay of another workspace's session id",
+        "In hasWorkspaceAccess and getAccessibleWorkspaces restrict a bound PAT to S so GET /sessions/:id, /usage and ?workspace_slug=<other> answer 403 workspace access denied and GET /sessions without a slug lists only S",
+        "Add the sqliteDB parameter to handleCompleteSession and handleReportUsage and pass it from RegisterSessionRoutes; a bound token whose session workspace is not S gets 403 not session owner and the session is unchanged",
+        "Resolve the binding before any rows cursor is opened (single-connection DBs)",
+        "In RegisterSessionRoutes mark the six session routes (POST/GET /sessions, GET /sessions/:id, POST /sessions/:id/complete, POST /sessions/:id/usage, GET /sessions/:id/usage) with wsaccess.AllowBoundTokens",
+        "Run make test and make lint"
+      ],
+      "touches": [
+        "internal/audit/auth.go",
+        "internal/audit/handlers.go",
+        "internal/audit/routes.go",
+        "internal/audit/workspace_auth_test.go",
+        "internal/audit/testhelpers_test.go",
+        "internal/audit/binding_test.go"
+      ],
+      "depends_on": [
+        2
+      ],
+      "done_when": [
+        "the audit suite passes except the rewritten TS-17-51 and the KeyID fixture test"
+      ],
+      "state": "pending",
+      "optional": false
+    },
+    {
+      "id": 7,
+      "kind": "implement",
+      "title": "Filter /audit and /events to S and mark the remaining allowlisted routes",
+      "criteria": [
+        "33-REQ-4.2",
+        "33-REQ-6.6",
+        "33-REQ-6.7",
+        "33-REQ-6.8"
+      ],
+      "tests": [
+        "TS-33-39",
+        "TS-33-40",
+        "TS-33-41",
+        "TS-33-21"
+      ],
+      "steps": [
+        "Write TS-33-21, 39, 40 and 41; TS-33-21 registers workspace, audit, sandboxes, secrets, merge, forge and carrypatch routes on one group as cmd/af-hub/main.go does (read main.go with read_file) and compares the allowlist with the ten routes; confirm they fail",
+        "In internal/audit/auth.go make ownedWorkspaces return only S's slug for a bound PAT (resolve binding before any rows are open) so allowedWorkspaces in handlers_unified_query.go (lines ~100 and ~630) confines /audit and /events",
+        "Make GET /audit?workspace=<other> answer 404 workspace not found for a bound token through requireWorkspaceRead",
+        "In RegisterAuditQueryRoutes mark GET /audit and GET /events with wsaccess.AllowBoundTokens",
+        "In sandboxes.RegisterRoutes (internal/sandboxes/handlers.go) mark GET /sandbox-profiles; do not mark the lease routes or GET /sandboxes",
+        "Confirm no other package marks a route, so the allowlist is exactly the ten specified routes",
+        "Run make test and make lint"
+      ],
+      "touches": [
+        "internal/audit/auth.go",
+        "internal/audit/handlers_unified_query.go",
+        "internal/audit/query_routes.go",
+        "internal/sandboxes/handlers.go",
+        "internal/audit/binding_query_test.go",
+        "internal/sandboxes/binding_test.go"
+      ],
+      "depends_on": [
+        4,
+        6
+      ],
+      "done_when": [
+        "the allowlist equals exactly the ten routes in 33-REQ-4.2"
+      ],
+      "state": "pending",
+      "optional": false
+    },
+    {
+      "id": 8,
+      "kind": "implement",
+      "title": "Prove unchanged behaviour and lifecycle for unbound credentials, refuse bound tokens on hub routes, update docs",
+      "criteria": [
+        "33-REQ-4.4",
+        "33-REQ-9"
+      ],
+      "tests": [
+        "TS-33-11",
+        "TS-33-23",
+        "TS-33-51",
+        "TS-33-52",
+        "TS-33-53",
+        "TS-33-54",
+        "TS-33-55"
+      ],
+      "steps": [
+        "Write the seven tests: real hubs (guarded and plain) for the property tests, single-connection SQLite for TS-33-11, the git server for TS-33-52/53/55; confirm any failures",
+        "Fix any behavioural drift they reveal so unbound PATs (with and without TokenID), API keys and admin tokens answer byte-identically and cause zero binding queries",
+        "Check POST /workspaces, /user/secrets*, /user/vars*, /orgs/:slug/secrets*, /orgs/:slug/vars* and GET /sandboxes are refused to a bound token with 403 token_bound and write nothing",
+        "Check a bound token reaches an archived S with the usual 400/409, and a deleted S fails closed (404 workspace-scoped, 403 token_bound elsewhere, pkt-line 404 in git)",
+        "Update docs/permissions.md, docs/api.md (token_bound error type, bound-token behaviour, removal of workspace_mismatch), docs/architecture.md (token_workspace_bindings table and guards), docs/openapi.yaml and README.md if affected; run make doc",
+        "Run make check"
+      ],
+      "touches": [
+        "internal/workspace/binding_property_test.go",
+        "internal/gitserver/binding_property_test.go",
+        "docs/permissions.md",
+        "docs/api.md",
+        "docs/architecture.md",
+        "docs/openapi.yaml",
+        "docs/generated"
+      ],
+      "depends_on": [
+        4,
+        5,
+        6,
+        7
+      ],
+      "done_when": [
+        "the ownership suites of workspace, gitserver, carrypatch, merge, sandboxes, forge, secrets and audit pass"
+      ],
+      "state": "pending",
+      "optional": false
+    },
+    {
+      "id": 9,
+      "kind": "integration",
+      "title": "Verify the five bound-token paths end to end through the running hub",
+      "tests": [
+        "TS-33-56",
+        "TS-33-57",
+        "TS-33-58",
+        "TS-33-59",
+        "TS-33-60"
+      ],
+      "steps": [
+        "Write TS-33-56 to 60 against a real apikit server, real SQLite, DuckDB audit store and (for 60) the git binary and real bare repositories; confirm they pass",
+        "Trace 33-PATH-1 to 33-PATH-5 through production code: MountWorkspaceHandlers installs both guards, the guards call wsaccess.LookupBinding, handlers and authorizeGitAccess consume the result; confirm no stub remains",
+        "For every criterion with a contract confirm the producer result is consumed by a caller in production code, not only tests: e.g. BoundSlug in AuthorizeWorkspace, lookupWorkspaceForAuth, audit helpers and authorizeGitAccess; the recorded apikit routes in APIKitRouteGuard; AllowBoundTokens marks in the registering packages",
+        "Read cmd/af-hub/main.go and confirm MountWorkspaceHandlers runs before audit, secrets, merge, sandboxes, forge and carrypatch register on server.APIGroup(), and that MountGitHandlers is called; if APIGroup() returns a fresh group per call, apply the guard to the shared group",
+        "Grep every touched file for panic(\"not implemented\"), TODO and a bare return nil on a non-trivial path, and remove any that remain",
+        "Run make check"
+      ],
+      "touches": [
+        "internal/workspace/smoke_spec33_test.go",
+        "internal/gitserver/smoke_binding_test.go",
+        "internal/audit/smoke_binding_test.go"
+      ],
+      "depends_on": [
+        8
+      ],
+      "done_when": [
+        "`make test` and `make lint` pass"
+      ],
+      "state": "pending",
+      "optional": false
+    }
+  ]
+}
