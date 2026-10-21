@@ -71,7 +71,7 @@ func handleBranchPush(db *sql.DB) echo.HandlerFunc {
 		// 38-REQ-1.4, 38-REQ-1.5
 		force, err := parseBranchPushBody(c.Request().Body)
 		if err != nil {
-			return respondError(c, http.StatusBadRequest, "invalid request body: "+err.Error())
+			return respondError(c, http.StatusBadRequest, scrubText("invalid request body: "+err.Error(), ""))
 		}
 
 		// 38-REQ-1.2, 38-REQ-3.1: the name is the segment as sent, decoded
@@ -82,7 +82,7 @@ func handleBranchPush(db *sql.DB) echo.HandlerFunc {
 		}
 		if err != nil {
 			return respondErrorWithType(c, http.StatusNotFound,
-				fmt.Sprintf("branch_not_found: %q is not a valid branch name: %v", name, err), "branch_not_found")
+				scrubText(fmt.Sprintf("branch_not_found: %q is not a valid branch name: %v", name, err), ""), "branch_not_found")
 		}
 
 		// 38-REQ-3.2, 38-REQ-3.3
@@ -152,7 +152,7 @@ func pushBranchLocked(c echo.Context, db *sql.DB, ws *Workspace, name string, fo
 	ref, err := repo.Reference(plumbing.NewBranchReferenceName(name), true)
 	if errors.Is(err, plumbing.ErrReferenceNotFound) {
 		return respondErrorWithType(c, http.StatusNotFound,
-			fmt.Sprintf("branch_not_found: branch %q does not exist in the workspace", name), "branch_not_found")
+			scrubText(fmt.Sprintf("branch_not_found: branch %q does not exist in the workspace", name), ""), "branch_not_found")
 	}
 	if err != nil {
 		return branchPushInternalError(c, slug, "resolving the branch", err, "")
@@ -181,7 +181,7 @@ func pushBranchLocked(c echo.Context, db *sql.DB, ws *Workspace, name string, fo
 	var te *trunkError
 	if errors.As(err, &te) {
 		// 38-REQ-6.8: hub's own failure, not a push attempt.
-		return branchPushInternalError(c, slug, "opening the trunk", err, secret)
+		return branchPushInternalError(c, slug, "opening the trunk or finding its origin", err, secret)
 	}
 
 	attempt := branchPushEvent{slug: slug, name: name, sha: sha, force: force, remoteURL: stripUserinfoURL(ws.GitURL), secret: secret}

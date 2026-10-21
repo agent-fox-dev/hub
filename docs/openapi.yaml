@@ -1028,7 +1028,9 @@ paths:
             `workspace_busy`; `non_fast_forward`: origin's branch has commits
             the trunk's lacks. The message names origin's commit when hub could
             list origin's refs and ends with a hint to push with force, or to
-            sync the workspace on its own branch.
+            sync the workspace on its own branch; when `force` was given and
+            origin still refused, it says origin refuses non-fast-forward
+            updates of the branch also with force.
           content:
             application/json:
               schema:

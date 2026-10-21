@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing/transport"
@@ -78,6 +79,7 @@ type pushCall struct {
 	refSpecs    []config.RefSpec
 	force       bool
 	hasDeadline bool
+	deadlineIn  time.Duration // from the call to the deadline, when there is one
 }
 
 // recordPushes wraps the shared push implementation and records every call.
@@ -86,8 +88,8 @@ func recordPushes(t *testing.T) *[]pushCall {
 	var calls []pushCall
 	orig := pushToOriginFn
 	pushToOriginFn = func(ctx context.Context, repoPath, gitURL string, auth transport.AuthMethod, refSpecs []config.RefSpec, force bool, progress io.Writer) error {
-		_, hasDeadline := ctx.Deadline()
-		calls = append(calls, pushCall{append([]config.RefSpec(nil), refSpecs...), force, hasDeadline})
+		deadline, hasDeadline := ctx.Deadline()
+		calls = append(calls, pushCall{append([]config.RefSpec(nil), refSpecs...), force, hasDeadline, time.Until(deadline)})
 		return orig(ctx, repoPath, gitURL, auth, refSpecs, force, progress)
 	}
 	t.Cleanup(func() { pushToOriginFn = orig })
@@ -135,8 +137,9 @@ func TestSharedPushImplementation_TS_38_51(t *testing.T) {
 	if len(*env.pushes) != 1 {
 		t.Fatalf("the branch push made %d calls of the shared push; want 1", len(*env.pushes))
 	}
-	if branch := (*env.pushes)[0]; len(branch.refSpecs) != 1 || branch.refSpecs[0] != "refs/heads/a:refs/heads/a" || !branch.hasDeadline {
-		t.Errorf("branch push call = %+v; want refs/heads/a:refs/heads/a with a deadline", branch)
+	if branch := (*env.pushes)[0]; len(branch.refSpecs) != 1 || branch.refSpecs[0] != "refs/heads/a:refs/heads/a" || !branch.hasDeadline ||
+		branch.deadlineIn > 2*time.Minute || branch.deadlineIn < 2*time.Minute-5*time.Second {
+		t.Errorf("branch push call = %+v; want refs/heads/a:refs/heads/a with a two-minute deadline", branch)
 	}
 }
 

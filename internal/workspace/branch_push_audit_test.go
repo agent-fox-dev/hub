@@ -369,7 +369,7 @@ func TestBranchPushEventMetadata_TS_38_43(t *testing.T) {
 	if evs[0].Metadata["ok"] != true || evs[0].Metadata["result"] != "pushed" || evs[0].Metadata["force"] != false {
 		t.Errorf("first event %v", evs[0].Metadata)
 	}
-	if evs[1].Metadata["force"] != true || evs[1].Metadata["result"] != "pushed" && evs[1].Metadata["result"] != "forced" {
+	if evs[1].Metadata["force"] != true || evs[1].Metadata["result"] != "forced" {
 		t.Errorf("forced event %v", evs[1].Metadata)
 	}
 	if evs[2].Metadata["ok"] != false || evs[2].Metadata["error_type"] != "forge_rejected" {
