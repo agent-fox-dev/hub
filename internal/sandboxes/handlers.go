@@ -9,13 +9,17 @@ import (
 
 	"github.com/labstack/echo/v4"
 	"github.com/txsvc/apikit"
+
+	"github.com/agent-fox-dev/hub/internal/wsaccess"
 )
 
 // RegisterRoutes mounts the sandbox routes on api. A nil svc means the feature
 // is off: the routes still exist and answer 404 sandboxes_disabled, so a
 // caller can tell a disabled feature from a mistyped path.
 func RegisterRoutes(api *echo.Group, svc *Service) {
-	api.GET("/sandbox-profiles", handleListProfiles(svc))
+	// The listing names no workspace, so a token bound to one may read it
+	// (spec 33).
+	wsaccess.AllowBoundTokens(api.GET("/sandbox-profiles", handleListProfiles(svc)))
 }
 
 // profileResponse is one profile as callers see it. It carries names only:

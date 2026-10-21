@@ -641,6 +641,47 @@ it. It holds:
 - A per-request scope, `WithRequestScope` and `RequestScoped`: a small
   memo carried in the `context.Context`. It lets the handler pass
   request-scoped state to the hook through the hook's fixed signature.
+- The token workspace binding (spec 33): the table, its lookup, both guards and
+  the allowlist of routes bound tokens may call (see below).
+
+### Token workspace bindings
+
+A personal access token can be bound to one workspace. The binding is hub's own
+record, the SQLite table `token_workspace_bindings` (`token_id TEXT PRIMARY
+KEY`, `slug TEXT NOT NULL`, `created_at TEXT NOT NULL`, index
+`idx_token_workspace_bindings_slug`). It has no foreign key to `workspaces`:
+archiving or deleting a workspace leaves its bindings in place, so a token bound
+to a deleted workspace reaches nothing. `MountWorkspaceHandlers` creates the
+table right after the workspaces schema, and `MountGitHandlers` creates it too,
+before it registers anything. Either returns the error if it cannot.
+
+Everything lives in `internal/wsaccess`:
+
+| Piece | What it does |
+|-------|--------------|
+| `LookupBinding`, `BoundSlug`, `DeniesWorkspace` (`binding.go`) | One primary-key lookup of a token id. `BoundSlug` only looks up a PAT that carries a `TokenID`, so API keys, admin tokens and requests without credentials never query. `DeniesWorkspace` is the rule itself: is this a PAT bound to a workspace other than this slug? A database error is returned, and every caller fails closed with it. |
+| `BindingGuard` (`guard.go`) | Middleware on the API group, after apikit's auth middleware. For a bound PAT, a route whose template has `workspaces/:slug` passes only for its own slug (else `404 workspace not found`). Any other route passes only if it is on the allowlist (else `403 token_bound`). A PAT without a `TokenID` gets the id from its Bearer header. |
+| `APIKitRouteGuard` (`apikit_guard.go`) | Deny-only middleware on the root Echo instance for the routes apikit's `MountHandlers` registered, which never see API-group middleware added later. It runs after routing and before apikit authenticates. A Bearer PAT id with a binding row gets `403 token_bound` without the slug. It never sets `AuthInfo` and never looks at the secret. |
+| `AllowBoundTokens`, `IsAllowed` (`allowlist.go`) | The routes a bound token may call although they are not workspace-scoped, marked with the `*echo.Route` values returned at registration: `GET /workspaces`, the six session routes, `GET /audit`, `GET /events`, `GET /sandbox-profiles`. |
+| `AuthorizeWorkspace` | Applies the same rule after its existence and ownership checks, for the code paths that reach a workspace without the guard. |
+
+The wiring in `MountWorkspaceHandlers` is:
+
+1. Create the table.
+2. Snapshot the Echo route table, call `MountHandlers`, and record the routes it
+   added (without `/healthz`, `/readyz`, `/version`).
+3. Install `APIKitRouteGuard` on the root instance and `BindingGuard` on the API
+   group.
+4. Register hub routes.
+
+Echo copies group middleware into every route and subgroup when it is added, so
+every hub route registered afterwards, including routes added in the future, is
+guarded. A route nobody marks is refused. The workspace handlers
+(`lookupWorkspaceForAuth`, the list), the audit helpers (`requireWorkspaceRead`,
+`ownedWorkspaces`, `checkWorkspaceAccess`, `hasWorkspaceAccess`,
+`getAccessibleWorkspaces`, the session writes) and the git server
+(`authorizeGitAccess`) apply the rule themselves too. Each resolves the binding
+before it opens any rows, because the test databases use one connection.
 
 ### Reading `PATCH_BRANCH_SOURCE` once per request
 

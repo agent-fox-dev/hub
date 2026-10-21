@@ -127,6 +127,36 @@ policy below), never 403, so slugs cannot be probed. This covers:
 
 Blocked users are rejected by the git server as well as by the API.
 
+### Workspace-Bound Tokens
+
+A personal access token can be bound to exactly one workspace. Hub keeps the
+binding in its SQLite table `token_workspace_bindings` (`token_id` primary key,
+`slug`, `created_at`), keyed by apikit's token id; a PAT without a row is
+unbound. This release enforces bindings; no API writes them yet. A bound token
+reaches its own workspace `S` under its scopes, with exactly the answers an
+unbound PAT of the same user and scopes gets, and nothing else:
+
+| Request by a token bound to `S` | Answer |
+|---|---|
+| Any route whose path template contains `workspaces/:slug`, for a slug other than `S` | `404` `workspace not found`, before the handler runs, so before any scope, existence or status check |
+| The same routes for `S` | The route's usual answer |
+| `GET /api/v1/workspaces` | At most `S`; the scope check and `include_archived` apply as usual |
+| `POST /api/v1/sessions` with another `workspace_slug`, or replaying another workspace's session id | `404` `workspace not found` |
+| `GET /api/v1/sessions/:id`, `GET /api/v1/sessions/:id/usage` or `GET /api/v1/sessions?workspace_slug=` outside `S` | `403` `workspace access denied`; `GET /api/v1/sessions` lists only `S`'s sessions |
+| `POST /api/v1/sessions/:id/complete` or `POST /api/v1/sessions/:id/usage` for a session outside `S` | `403` `not session owner` |
+| `GET /api/v1/audit`, `GET /api/v1/events` | Only `S`'s events; `GET /api/v1/audit?workspace=<other>` is `404` `workspace not found` |
+| `GET /api/v1/sandbox-profiles` | As for an unbound PAT |
+| Every other hub route: `POST /api/v1/workspaces`, `/api/v1/user/secrets`, `/api/v1/user/vars`, `/api/v1/orgs/:slug/secrets`, `/api/v1/orgs/:slug/vars`, `GET /api/v1/sandboxes`, a path under the mount point that matches no route, and any route added later | `403` with `error_type: token_bound` and the message `this token is bound to workspace <S>` |
+| Every route apikit mounts (`/auth/...`, `/user`, `/user/keys`, `/user/tokens`, `/users`, `/orgs`) | `403` with `error_type: token_bound` and the message `this token is bound to a workspace`, answered before apikit authenticates the token, so the workspace is not named |
+| The git server, for a repository other than `S`'s | pkt-line `404 repository not found` |
+
+A token bound to an archived workspace still reaches it and gets its usual
+`400`/`409` answers. Deleting the workspace leaves the binding in place, so the
+token then reaches nothing. The binding guard answers a failed binding lookup
+with `500 internal server error` (a pkt-line 500 in git), and no layer lets the
+token through as unbound. API keys, admin tokens and unbound PATs are not affected,
+and API keys and admin tokens never cause a binding lookup.
+
 ### Workspace Lock
 
 Operations that modify a workspace clone (sync, reclone, archive, rebuild,
@@ -202,6 +232,7 @@ The `error_type` field is omitted when not applicable. Known error types:
 | `missing_on_origin` | POST /api/v1/workspaces/:slug/patches/:id/reset-to-origin | The patch branch does not exist on the fork |
 | `ref_changed` | POST /api/v1/workspaces/:slug/patches/:id/reset-to-origin | The patch branch was modified by another operation between the SHA resolution and the compare-and-swap write; retry |
 | `workspace_busy` | archive, sync, reclone, rollback, batch rebase, rerere forget, reset-to-origin | Another operation currently holds the workspace lock; retry later. A rebuild holds the lock only in its fetch phase and final phase, so sync, rollback, rerere forget and batch rebase are rejected only then; archive and reclone are rejected for the whole rebuild |
+| `token_bound` | every route a workspace-bound token may not call | 403. The token is bound to one workspace and the route is neither scoped to a workspace nor allowed for bound tokens. The message is `this token is bound to workspace <S>`, or `this token is bound to a workspace` on the routes apikit mounts (see [Workspace-Bound Tokens](#workspace-bound-tokens)) |
 | `sandboxes_disabled` | GET /api/v1/sandbox-profiles and every sandbox lease route | The hub has no `[sandbox]` section in its `config.toml`, so sandboxes are not enabled. Answered with 404 to every authenticated caller before any scope is checked |
 | `sandbox_capacity` | POST /api/v1/workspaces/:slug/sandboxes | The deployment's `max_sandboxes` limit on live leases is reached |
 | `secret_missing` | POST /api/v1/workspaces/:slug/sandboxes | A secret the profile requires exists in no searched scope of the workspace |
@@ -5130,10 +5161,12 @@ POST endpoints require the `audit:write` permission scope. GET endpoints
 require `audit:read`. Admin tokens and API keys have implicit access; PATs
 require explicit scope grants.
 
-All POST endpoints enforce workspace access control: workspace-scoped PATs
-must match the URL `:slug`, generic tokens must own the workspace, and
-archived workspaces return `409`. All use `INSERT OR IGNORE` for idempotent
-ingestion — duplicates return `200` instead of `201`.
+All POST endpoints enforce workspace access control: an unknown workspace
+returns `404`, a workspace other than a bound token's own returns `404`
+`workspace not found`, archived workspaces return `409`, and the caller must
+own the workspace (`403 workspace_access_denied`). A refused request stores
+nothing. All use `INSERT OR IGNORE` for idempotent ingestion — duplicates
+return `200` instead of `201`.
 
 The `run_id` URL parameter must match the format `YYYYMMDD_HHMMSS_6hexchars`
 (e.g. `20260704_143022_a1b2c3`).
@@ -5169,7 +5202,8 @@ Ingest a single audit event.
 | Status | Condition |
 |--------|-----------|
 | 400 | Missing `event_type`, invalid `run_id`, or `run_id` mismatch between URL and body |
-| 403 | Insufficient scope (`workspace_mismatch`, `workspace_access_denied`) |
+| 403 | Insufficient scope, or the caller does not own the workspace (`workspace_access_denied`) |
+| 404 | Unknown workspace, or a workspace other than a bound token's own (`workspace not found`) |
 | 409 | Workspace archived (`workspace_archived`) |
 
 ---

@@ -66,7 +66,7 @@
       "done_when": [
         "wsaccess still imports only database/sql, net/http, echo and apikit"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     },
     {
@@ -121,7 +121,7 @@
       "done_when": [
         "a guard installed before any route is registered covers routes and subgroups added later"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     },
     {
@@ -161,7 +161,7 @@
       "done_when": [
         "the guard source imports no hashing or token-verification package"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     },
     {
@@ -216,7 +216,7 @@
       "done_when": [
         "hook_ordering_test.go still passes unchanged"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     },
     {
@@ -258,7 +258,7 @@
       "done_when": [
         "gitserver and carrypatch ownership suites pass unchanged"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     },
     {
@@ -307,7 +307,7 @@
       "done_when": [
         "the audit suite passes except the rewritten TS-17-51 and the KeyID fixture test"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     },
     {
@@ -350,7 +350,7 @@
       "done_when": [
         "the allowlist equals exactly the ten routes in 33-REQ-4.2"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     },
     {
@@ -396,7 +396,7 @@
       "done_when": [
         "the ownership suites of workspace, gitserver, carrypatch, merge, sandboxes, forge, secrets and audit pass"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     },
     {
@@ -429,7 +429,7 @@
       "done_when": [
         "`make test` and `make lint` pass"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     }
   ]

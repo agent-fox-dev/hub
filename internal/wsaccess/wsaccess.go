@@ -37,7 +37,8 @@ type WorkspaceAccess struct {
 // On success it returns the workspace access record and (0, ""). On failure
 // it returns nil and the HTTP status plus message the caller should respond
 // with. A workspace the caller does not own is reported as 404 (not 403) to
-// avoid disclosing which slugs exist (anti-enumeration).
+// avoid disclosing which slugs exist (anti-enumeration), and so is every
+// workspace other than the one a bound PAT is bound to (see DeniesWorkspace).
 func AuthorizeWorkspace(db *sql.DB, auth *apikit.AuthInfo, slug string) (*WorkspaceAccess, int, string) {
 	if auth == nil {
 		return nil, http.StatusUnauthorized, "authentication required"
@@ -53,6 +54,16 @@ func AuthorizeWorkspace(db *sql.DB, auth *apikit.AuthInfo, slug string) (*Worksp
 		return nil, http.StatusInternalServerError, "internal server error"
 	}
 	if !isAdmin(auth) && ws.OwnerID != auth.UserID {
+		return nil, http.StatusNotFound, "workspace not found"
+	}
+	// A PAT bound to another workspace must not see this one (spec 33). The
+	// workspace row is closed by now, so the lookup can run on a
+	// single-connection pool; a failed lookup denies access.
+	denied, err := DeniesWorkspace(db, auth, ws.Slug)
+	if err != nil {
+		return nil, http.StatusInternalServerError, "internal server error"
+	}
+	if denied {
 		return nil, http.StatusNotFound, "workspace not found"
 	}
 	return &ws, 0, ""

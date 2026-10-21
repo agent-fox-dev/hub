@@ -22,7 +22,8 @@ The project produces two binaries:
 Primary data is stored in an embedded SQLite database (modernc.org/sqlite,
 pure Go). Audit logs use an embedded DuckDB database (requires CGo).
 Authentication supports three credential types: admin tokens, user API keys,
-and workspace-scoped tokens.
+and personal access tokens (PATs). A PAT can be bound to a single workspace,
+which confines it to that workspace (see `docs/permissions.md`).
 
 The hub binary includes a built-in git smart HTTP server that exposes
 workspace repositories at `/git/<org>/<slug>.git` for clone, fetch, and push

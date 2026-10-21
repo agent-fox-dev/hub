@@ -11,6 +11,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
 	"github.com/txsvc/apikit"
+
+	"github.com/agent-fox-dev/hub/internal/wsaccess"
 )
 
 // handleCreateSession handles POST /api/v1/sessions.
@@ -87,7 +89,7 @@ func handleCreateSession(store Store, metrics *Metrics, sqliteDB *sql.DB) echo.H
 
 // handleCompleteSession handles POST /api/v1/sessions/:id/complete.
 // Transitions an active session to a terminal state.
-func handleCompleteSession(store Store, metrics *Metrics) echo.HandlerFunc {
+func handleCompleteSession(store Store, metrics *Metrics, sqliteDB *sql.DB) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		auth := apikit.GetAuthInfo(c)
 		if auth == nil {
@@ -127,6 +129,16 @@ func handleCompleteSession(store Store, metrics *Metrics) echo.HandlerFunc {
 		if !isAdmin(auth) && auth.UserID != sess.CredentialID {
 			return apikit.WriteAPIError(c, http.StatusForbidden, "not session owner")
 		}
+		// A PAT bound to another workspace does not own the session (spec 33).
+		if sqliteDB != nil {
+			denied, err := wsaccess.DeniesWorkspace(sqliteDB, auth, sess.WorkspaceSlug)
+			if err != nil {
+				return apikit.WriteAPIError(c, http.StatusInternalServerError, "internal server error")
+			}
+			if denied {
+				return apikit.WriteAPIError(c, http.StatusForbidden, "not session owner")
+			}
+		}
 
 		// If session is already terminal, return idempotently (no gauge decrement).
 		if isTerminalStatus(sess.Status) {
@@ -160,7 +172,7 @@ func handleCompleteSession(store Store, metrics *Metrics) echo.HandlerFunc {
 
 // handleReportUsage handles POST /api/v1/sessions/:id/usage.
 // Records incremental token usage for an active session.
-func handleReportUsage(store Store, metrics *Metrics) echo.HandlerFunc {
+func handleReportUsage(store Store, metrics *Metrics, sqliteDB *sql.DB) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		auth := apikit.GetAuthInfo(c)
 		if auth == nil {
@@ -199,6 +211,16 @@ func handleReportUsage(store Store, metrics *Metrics) echo.HandlerFunc {
 		// Ownership check.
 		if !isAdmin(auth) && auth.UserID != sess.CredentialID {
 			return apikit.WriteAPIError(c, http.StatusForbidden, "not session owner")
+		}
+		// A PAT bound to another workspace does not own the session (spec 33).
+		if sqliteDB != nil {
+			denied, err := wsaccess.DeniesWorkspace(sqliteDB, auth, sess.WorkspaceSlug)
+			if err != nil {
+				return apikit.WriteAPIError(c, http.StatusInternalServerError, "internal server error")
+			}
+			if denied {
+				return apikit.WriteAPIError(c, http.StatusForbidden, "not session owner")
+			}
 		}
 
 		// Session must be active.
@@ -496,7 +518,9 @@ func handleWorkspaceCost(store Store, sqliteDB *sql.DB) echo.HandlerFunc {
 // ---------------------------------------------------------------------------
 
 // hasWorkspaceAccess checks if a non-admin caller can access a workspace.
-// Returns true if the workspace exists in SQLite and the caller is the owner.
+// Returns true if the workspace exists in SQLite, the caller is the owner and,
+// for a PAT bound to a workspace (spec 33), it is that workspace. A failed
+// binding lookup denies access.
 func hasWorkspaceAccess(sqliteDB *sql.DB, auth *apikit.AuthInfo, slug string) bool {
 	var ownerID string
 	err := sqliteDB.QueryRow(
@@ -509,11 +533,21 @@ func hasWorkspaceAccess(sqliteDB *sql.DB, auth *apikit.AuthInfo, slug string) bo
 	if err != nil {
 		return false
 	}
-	return ownerID == auth.UserID
+	if ownerID != auth.UserID {
+		return false
+	}
+	denied, err := wsaccess.DeniesWorkspace(sqliteDB, auth, slug)
+	return err == nil && !denied
 }
 
-// getAccessibleWorkspaces returns workspace slugs the caller owns.
+// getAccessibleWorkspaces returns workspace slugs the caller owns; for a PAT
+// bound to a workspace (spec 33) at most that one. The binding is resolved
+// before any rows are opened.
 func getAccessibleWorkspaces(sqliteDB *sql.DB, auth *apikit.AuthInfo) ([]string, error) {
+	boundSlug, bound, err := wsaccess.BoundSlug(sqliteDB, auth)
+	if err != nil {
+		return nil, err
+	}
 	rows, err := sqliteDB.Query(
 		"SELECT slug FROM workspaces WHERE owner_id = ? AND status = 'active'",
 		auth.UserID,
@@ -523,11 +557,16 @@ func getAccessibleWorkspaces(sqliteDB *sql.DB, auth *apikit.AuthInfo) ([]string,
 	}
 	defer rows.Close()
 
-	var slugs []string
+	// Never nil: ListSessions reads a nil list as "no restriction", so a
+	// caller with no readable workspace must get an empty one.
+	slugs := []string{}
 	for rows.Next() {
 		var slug string
 		if err := rows.Scan(&slug); err != nil {
 			return nil, err
+		}
+		if bound && slug != boundSlug {
+			continue
 		}
 		slugs = append(slugs, slug)
 	}
