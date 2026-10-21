@@ -330,3 +330,17 @@ func TestLoader_SlugExtraction(t *testing.T) {
 		t.Error("Load() returned nil storer; want non-nil")
 	}
 }
+
+// TS-37-33: WorkspaceLoader.Load reports a workspace with a NULL org_id as
+// not found, with no scan error. Requirement: 37-REQ-9.2
+func TestLoader_NullOrg_NotFound_TS_37_33(t *testing.T) {
+	env := newGitTestEnv(t)
+	env.seedOrg(t, "org-1", "My Org", "myorg")
+	env.seedNoOrgWorkspace(t, "noorg", "user-a")
+
+	loader := NewWorkspaceLoader(env.db, env.workspaceRoot)
+	_, err := loader.Load(&transport.Endpoint{Path: "/git/myorg/noorg.git"})
+	if !errors.Is(err, transport.ErrRepositoryNotFound) {
+		t.Errorf("Load() = %v; want transport.ErrRepositoryNotFound", err)
+	}
+}

@@ -48,7 +48,7 @@
       "done_when": [
         "a NULL-org workspace yields 404 'repository not found' for every caller, never a 500"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 2,
