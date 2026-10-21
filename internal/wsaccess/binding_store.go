@@ -1,6 +1,7 @@
 package wsaccess
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"slices"
@@ -129,4 +130,34 @@ func InsertBinding(db *sql.DB, tokenID, slug, createdAt string) (bool, error) {
 func RevokeToken(db *sql.DB, tokenID string) error {
 	_, err := db.Exec(`UPDATE pats SET revoked_at = ? WHERE token_id = ? AND revoked_at IS NULL`, apikit.NowUTC(), tokenID)
 	return err
+}
+
+// SweepBindings is one pass of the binding sweep (spec 34), in one
+// transaction: for every slug with bindings but no workspaces row it revokes
+// the live tokens and deletes the bindings (as RevokeAndUnbindSlug does),
+// then it deletes the bindings whose token has no pats row. Bindings of
+// revoked or expired tokens whose workspace exists are kept. Any error rolls
+// the whole pass back; a cancelled ctx ends it.
+func SweepBindings(ctx context.Context, db *sql.DB) error {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	orphans, err := queryStrings(tx, `SELECT DISTINCT slug FROM token_workspace_bindings
+		WHERE slug NOT IN (SELECT slug FROM workspaces)`)
+	if err != nil {
+		return fmt.Errorf("read the bindings of missing workspaces: %w", err)
+	}
+	for _, slug := range orphans {
+		if _, err := RevokeAndUnbindSlug(tx, slug); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.Exec(`DELETE FROM token_workspace_bindings
+		WHERE token_id NOT IN (SELECT token_id FROM pats)`); err != nil {
+		return fmt.Errorf("delete the bindings of missing tokens: %w", err)
+	}
+	return tx.Commit()
 }

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -18,14 +19,33 @@ import (
 	"github.com/agent-fox-dev/hub/internal/wsaccess"
 )
 
+// logBuffer is a log sink that background goroutines may write while the
+// test reads it.
+type logBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *logBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *logBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
 // captureLogs sends slog's default logger to a buffer for the test.
-func captureLogs(t *testing.T) *bytes.Buffer {
+func captureLogs(t *testing.T) *logBuffer {
 	t.Helper()
-	var buf bytes.Buffer
+	buf := &logBuffer{}
 	prev := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	slog.SetDefault(slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
 	t.Cleanup(func() { slog.SetDefault(prev) })
-	return &buf
+	return buf
 }
 
 // mintingStub answers like apikit's POST /user/tokens: it writes the pats row
