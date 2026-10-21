@@ -66,7 +66,7 @@ func TestRefusalPoints_ReportOnce_TS_34_58(t *testing.T) {
 
 	// AuthorizeWorkspace has no request: it reports without method and route.
 	before := len(*reports)
-	if _, code, _ := wsaccess.AuthorizeWorkspace(h.db, &apikit.AuthInfo{CredentialType: "pat", UserID: "u1", TokenID: id}, "X"); code != http.StatusNotFound {
+	if _, code, _ := wsaccess.AuthorizeWorkspace(h.db, &apikit.AuthInfo{CredentialType: "pat", UserID: "u1", TokenID: id}, "X", wsaccess.NeedPrivate); code != http.StatusNotFound {
 		t.Fatalf("AuthorizeWorkspace(X) = %d; want 404", code)
 	}
 	if got := (*reports)[before:]; len(got) != 1 || got[0] != (wsaccess.BoundRefusal{TokenID: id, UserID: "u1", BoundSlug: "S", RequestedSlug: "X", Status: 404, Surface: wsaccess.SurfaceAPI}) {

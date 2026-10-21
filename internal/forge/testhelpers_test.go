@@ -72,6 +72,7 @@ func createWorkspacesTable(t *testing.T, db *sql.DB) {
 			slug           TEXT PRIMARY KEY,
 			git_url        TEXT NOT NULL,
 			owner_id       TEXT NOT NULL,
+			org_id         TEXT,
 			status         TEXT NOT NULL DEFAULT 'active',
 			clone_status   TEXT NOT NULL DEFAULT 'pending',
 			workspace_mode TEXT,

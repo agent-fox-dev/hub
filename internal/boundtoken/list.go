@@ -42,7 +42,7 @@ func handleList(cfg Config) echo.HandlerFunc {
 		}
 
 		slug := c.Param("slug")
-		ws, code, msg := wsaccess.AuthorizeWorkspace(cfg.DB, auth, slug)
+		ws, code, msg := wsaccess.AuthorizeWorkspace(cfg.DB, auth, slug, wsaccess.NeedPrivate)
 		if code != 0 {
 			return apikit.WriteAPIError(c, code, msg)
 		}

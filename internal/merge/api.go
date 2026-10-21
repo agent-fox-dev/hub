@@ -18,6 +18,7 @@ import (
 	"github.com/agent-fox-dev/hub/internal/gitcmd"
 	"github.com/agent-fox-dev/hub/internal/jobqueue"
 	"github.com/agent-fox-dev/hub/internal/workspace"
+	"github.com/agent-fox-dev/hub/internal/wsaccess"
 	"github.com/agent-fox-dev/hub/internal/wslock"
 )
 
@@ -247,7 +248,7 @@ func requireMergeReadScope(c echo.Context, auth *apikit.AuthInfo) error {
 // precondition check. It writes the error response and returns false when
 // access is denied.
 func authorizeMergeWorkspace(c echo.Context, db *sql.DB, auth *apikit.AuthInfo, slug string) bool {
-	if _, code, msg := workspace.AuthorizeWorkspace(db, auth, slug); code != 0 {
+	if _, code, msg := workspace.AuthorizeWorkspace(db, auth, slug, wsaccess.NeedPrivate); code != 0 {
 		_ = apikit.WriteAPIError(c, code, msg)
 		return false
 	}
@@ -258,7 +259,7 @@ func authorizeMergeWorkspace(c echo.Context, db *sql.DB, auth *apikit.AuthInfo, 
 // has a ready clone. Writes an error response and returns non-nil error if
 // validation fails. Returns nil to proceed.
 func validateWorkspaceForMerge(c echo.Context, db *sql.DB, auth *apikit.AuthInfo, slug string) error {
-	ws, code, msg := workspace.AuthorizeWorkspace(db, auth, slug)
+	ws, code, msg := workspace.AuthorizeWorkspace(db, auth, slug, wsaccess.NeedPrivate)
 	if code != 0 {
 		return apikit.WriteAPIError(c, code, msg)
 	}

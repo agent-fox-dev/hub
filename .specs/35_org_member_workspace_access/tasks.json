@@ -85,7 +85,7 @@
       "done_when": [
         "`make test` passes with every existing ownership test unchanged"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 2,

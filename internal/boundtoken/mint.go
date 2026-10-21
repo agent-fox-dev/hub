@@ -43,7 +43,7 @@ func handleMint(cfg Config) echo.HandlerFunc {
 				"admin tokens cannot mint bound tokens; a real user is required as the token's owner")
 		}
 		slug := c.Param("slug")
-		ws, code, msg := wsaccess.AuthorizeWorkspace(cfg.DB, auth, slug)
+		ws, code, msg := wsaccess.AuthorizeWorkspace(cfg.DB, auth, slug, wsaccess.NeedPrivate)
 		if code != 0 {
 			return apikit.WriteAPIError(c, code, msg)
 		}

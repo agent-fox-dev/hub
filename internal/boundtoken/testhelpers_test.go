@@ -34,6 +34,7 @@ func openTestDB(t *testing.T) *sql.DB {
 		`CREATE TABLE workspaces (
 			slug TEXT PRIMARY KEY,
 			owner_id TEXT NOT NULL,
+			org_id TEXT,
 			status TEXT NOT NULL DEFAULT 'active',
 			clone_status TEXT NOT NULL DEFAULT 'ready'
 		)`,

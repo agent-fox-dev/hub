@@ -103,7 +103,7 @@ func (h *handlers) authorize(c echo.Context, acc access) (req *request, err erro
 		return nil, apikit.WriteAPIError(c, http.StatusForbidden, msg)
 	}
 	slug := c.Param("slug")
-	found, status, msg := wsaccess.AuthorizeWorkspace(h.cfg.DB, auth, slug)
+	found, status, msg := wsaccess.AuthorizeWorkspace(h.cfg.DB, auth, slug, wsaccess.NeedPrivate)
 	if found == nil {
 		return nil, apikit.WriteAPIError(c, status, msg)
 	}

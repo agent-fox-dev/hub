@@ -177,8 +177,8 @@ func TestBinding_SingleConnectionNoDeadlock_TS_33_11(t *testing.T) {
 	} {
 		within("GET "+c.path, c.want, func() int { return env.doRequest(t, http.MethodGet, c.path, "", bound).Code })
 	}
-	within("AuthorizeWorkspace(s)", 0, func() int { _, code, _ := wsaccess.AuthorizeWorkspace(db, bound, "s"); return code })
-	within("AuthorizeWorkspace(x)", http.StatusNotFound, func() int { _, code, _ := wsaccess.AuthorizeWorkspace(db, bound, "x"); return code })
+	within("AuthorizeWorkspace(s)", 0, func() int { _, code, _ := wsaccess.AuthorizeWorkspace(db, bound, "s", wsaccess.NeedPrivate); return code })
+	within("AuthorizeWorkspace(x)", http.StatusNotFound, func() int { _, code, _ := wsaccess.AuthorizeWorkspace(db, bound, "x", wsaccess.NeedPrivate); return code })
 }
 
 // TS-33-23: A bound token with full scopes is refused on POST /workspaces,

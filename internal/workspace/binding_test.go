@@ -240,7 +240,7 @@ func TestBindingLookupFailure_Is500_TS_33_19(t *testing.T) {
 	}
 	pat := &apikit.AuthInfo{CredentialType: "pat", UserID: "u1", TokenID: "tokB", Permissions: []string{"workspaces:read"}}
 
-	if a, code, msg := AuthorizeWorkspace(db, pat, "s"); a != nil || code != http.StatusInternalServerError || msg != "internal server error" {
+	if a, code, msg := AuthorizeWorkspace(db, pat, "s", wsaccess.NeedPrivate); a != nil || code != http.StatusInternalServerError || msg != "internal server error" {
 		t.Errorf("AuthorizeWorkspace = (%v, %d, %q); want (nil, 500, internal server error)", a, code, msg)
 	}
 	c, rec := boundAuthCtx()

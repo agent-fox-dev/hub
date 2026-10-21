@@ -87,7 +87,7 @@ func TestRefusalObserver_ReportFields_TS_34_57(t *testing.T) {
 
 	serve(e, "GET", "/api/v1/workspaces/X/patches", pat, "")
 	serve(e, "GET", "/api/v1/widgets", pat, "")
-	wsaccess.AuthorizeWorkspace(db, pat, "X")
+	wsaccess.AuthorizeWorkspace(db, pat, "X", wsaccess.NeedPrivate)
 
 	want := []wsaccess.BoundRefusal{
 		{TokenID: "T", UserID: "u", BoundSlug: "S", RequestedSlug: "X", Method: "GET",

@@ -61,7 +61,7 @@ func (s *LeaseService) authorize(c echo.Context, write bool) (req *leaseRequest,
 	if !write && !canReadSandboxes(auth) {
 		return nil, apikit.WriteAPIError(c, http.StatusForbidden, "PAT requires sandboxes:read scope")
 	}
-	access, status, msg := wsaccess.AuthorizeWorkspace(s.db, auth, c.Param("slug"))
+	access, status, msg := wsaccess.AuthorizeWorkspace(s.db, auth, c.Param("slug"), wsaccess.NeedPrivate)
 	if access == nil {
 		return nil, apikit.WriteAPIError(c, status, msg)
 	}
