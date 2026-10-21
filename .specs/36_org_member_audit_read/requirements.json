@@ -1,0 +1,611 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/requirements.v2.json",
+  "spec_id": "36",
+  "spec_name": "org_member_audit_read",
+  "schema_version": 2,
+  "introduction": "The hub's audit package (internal/audit) serves agent sessions, token usage, cost, per-run audit records, transcripts, the unified audit query and the live SSE event stream. This spec lets members of a workspace's organization read all of these for that workspace, through hub's shared workspace access rule (wsaccess), while opening and completing sessions, reporting usage and ingesting audit data stay with the workspace's owner and admin tokens.",
+  "glossary": {
+    "SQLite handle": "The *sql.DB passed to the audit route registration functions (database.SqlDB in cmd/af-hub/main.go); nil in unit tests that register routes without SQLite.",
+    "bound PAT": "A personal access token bound to exactly one workspace slug (spec 33); wsaccess.BoundSlug returns that slug.",
+    "ingestion routes": "The eight audit POST routes of a workspace in internal/audit/handlers_audit.go that call checkWorkspaceAccess.",
+    "member": "A caller whose UserID has a row in org_members for the org_id of the workspace and who is not its owner; wsaccess.AccessMember.",
+    "per-run read routes": "GET /api/v1/workspaces/:slug/runs/:run_id/events, /sessions/outcomes, /tools/calls, /tools/errors, /traces, /postmortem and /transcript.",
+    "readable set": "The result of wsaccess.ReadableSlugs(db, auth): every workspace slug of any status the caller may read, or all=true for an admin token; at most the bound slug for a bound PAT.",
+    "reader": "A caller that wsaccess.AuthorizeWorkspace(..., NeedRead) admits for a workspace: an admin token, the owner or a member.",
+    "refusal report": "One call to the wsaccess bound-refusal observer made by wsaccess.DeniesWorkspace, carrying TokenID, UserID, BoundSlug, RequestedSlug, Method, Route template, Status and Surface (spec 34).",
+    "session read routes": "GET /api/v1/sessions/:id, GET /api/v1/sessions/:id/usage, GET /api/v1/workspaces/:slug/cost and GET /api/v1/sessions?workspace_slug=W.",
+    "stranger": "A caller that is not the workspace's owner, not a member of its org and not an admin token."
+  },
+  "requirements": [
+    {
+      "id": "36-REQ-1",
+      "title": "Per-run audit reads and the transcript",
+      "rationale": "Members need to see what agents did on a workspace of their org, exactly as the owner does today.",
+      "criteria": [
+        {
+          "id": "36-REQ-1.1",
+          "pattern": "event_driven",
+          "condition": "a caller holding audit:read requests any per-run read route for workspace W and the caller is an admin token, W's owner or a member of W's org",
+          "system": "audit API",
+          "action": "decide access by calling wsaccess.DeniesWorkspace(db, auth, W, wsaccess.SiteOf(c, 404)) and then wsaccess.AuthorizeWorkspace(db, auth, W, wsaccess.NeedRead), and serve the route as it serves the owner today",
+          "contract": "HTTP 200 with the same body shape the owner receives for the same run"
+        },
+        {
+          "id": "36-REQ-1.2",
+          "pattern": "complex_event",
+          "condition": "a member requests a per-run read route for workspace W",
+          "guard": "W has status archived",
+          "system": "audit API",
+          "action": "serve the route without checking the workspace status",
+          "contract": "HTTP 200"
+        },
+        {
+          "id": "36-REQ-1.3",
+          "pattern": "unwanted",
+          "condition": "the caller lacks the audit:read scope",
+          "system": "audit API",
+          "action": "refuse before any workspace lookup with today's scope refusal",
+          "contract": "HTTP 403 with the unchanged audit:read scope message"
+        },
+        {
+          "id": "36-REQ-1.4",
+          "pattern": "unwanted",
+          "condition": "workspace W does not exist or the caller is a stranger to W",
+          "system": "audit API",
+          "action": "refuse without querying any audit rows",
+          "contract": "HTTP 404 with body {error: \"workspace not found\"}"
+        },
+        {
+          "id": "36-REQ-1.5",
+          "pattern": "event_driven",
+          "condition": "a reader's per-run request passes the workspace check",
+          "system": "audit API",
+          "action": "apply the existing validations unchanged: the run_id format check, node_id is required on the transcript, and postmortem_not_found when no postmortem exists",
+          "contract": "the same 400/404 status and error body the owner receives today for the same invalid input"
+        },
+        {
+          "id": "36-REQ-1.6",
+          "pattern": "state_driven",
+          "condition": "the per-run read routes are registered with a nil SQLite handle",
+          "system": "audit API",
+          "action": "skip the workspace check for every caller, as today"
+        }
+      ]
+    },
+    {
+      "id": "36-REQ-2",
+      "title": "Single-workspace session and cost reads",
+      "rationale": "Members get the session, usage and cost reads owners have, with the same active restriction and the same refusal shape.",
+      "criteria": [
+        {
+          "id": "36-REQ-2.1",
+          "pattern": "event_driven",
+          "condition": "a caller holding sessions:read requests a session read route for a session or workspace in W, W has status active, and the caller is an admin token, W's owner or a member of W's org",
+          "system": "audit API",
+          "action": "decide access in hasWorkspaceAccess by calling wsaccess.DeniesWorkspace(db, auth, W, wsaccess.SiteOf(c, 403)), then wsaccess.AuthorizeWorkspace(db, auth, W, wsaccess.NeedRead), then requiring status active, and return W's data",
+          "contract": "HTTP 200 with the session, usage list, cost summary or session list of W"
+        },
+        {
+          "id": "36-REQ-2.2",
+          "pattern": "unwanted",
+          "condition": "W does not exist, W is not active, the caller is a stranger to W, or W is outside a bound PAT's binding",
+          "system": "audit API",
+          "action": "refuse the session read route",
+          "contract": "HTTP 403 with body {error: \"workspace access denied\"}"
+        },
+        {
+          "id": "36-REQ-2.3",
+          "pattern": "unwanted",
+          "condition": "GET /sessions/:id or GET /sessions/:id/usage names a session id that does not exist",
+          "system": "audit API",
+          "action": "refuse before the workspace check",
+          "contract": "HTTP 404 with body {error: \"session not found\"}"
+        },
+        {
+          "id": "36-REQ-2.4",
+          "pattern": "unwanted",
+          "condition": "the caller lacks the sessions:read scope",
+          "system": "audit API",
+          "action": "refuse before any session or workspace lookup with today's scope refusal",
+          "contract": "HTTP 403 with the unchanged sessions:read scope message"
+        },
+        {
+          "id": "36-REQ-2.5",
+          "pattern": "state_driven",
+          "condition": "the session routes are registered with a nil SQLite handle",
+          "system": "audit API",
+          "action": "skip the workspace check on GET /sessions/:id and GET /sessions/:id/usage, and refuse GET /workspaces/:slug/cost for every non-admin caller, as today",
+          "contract": "cost for a non-admin: HTTP 403 with body {error: \"workspace access denied\"}"
+        }
+      ]
+    },
+    {
+      "id": "36-REQ-3",
+      "title": "Session list without a workspace",
+      "rationale": "A member's session list shows the team's sessions next to the member's own without ever widening to workspaces the member may not read.",
+      "criteria": [
+        {
+          "id": "36-REQ-3.1",
+          "pattern": "event_driven",
+          "condition": "a non-admin caller holding sessions:read requests GET /sessions without workspace_slug",
+          "system": "audit API",
+          "action": "build the restriction list in getAccessibleWorkspaces from wsaccess.ReadableSlugs, keeping only active workspaces, and list the sessions of every workspace in it with filters, ordering and cursors unchanged",
+          "contract": "HTTP 200 listing the sessions of owned and member active workspaces"
+        },
+        {
+          "id": "36-REQ-3.2",
+          "pattern": "unwanted",
+          "condition": "the non-admin caller has no active readable workspace",
+          "system": "audit API",
+          "action": "pass a non-nil empty restriction list to Store.ListSessions",
+          "contract": "HTTP 200 with an empty session list"
+        },
+        {
+          "id": "36-REQ-3.3",
+          "pattern": "complex_event",
+          "condition": "a non-admin caller requests GET /sessions without workspace_slug",
+          "guard": "the caller is a bound PAT",
+          "system": "audit API",
+          "action": "list at most the sessions of the bound workspace, and only when the token's user may read it and it is active",
+          "contract": "HTTP 200; zero refusal reports"
+        },
+        {
+          "id": "36-REQ-3.4",
+          "pattern": "event_driven",
+          "condition": "an admin token requests GET /sessions without workspace_slug",
+          "system": "audit API",
+          "action": "list sessions of every workspace without restriction, as today",
+          "contract": "HTTP 200"
+        },
+        {
+          "id": "36-REQ-3.5",
+          "pattern": "ubiquitous",
+          "system": "audit API",
+          "action": "for any non-admin caller and any set of seeded workspaces, memberships and sessions, return from GET /sessions only sessions whose workspace is active and in the caller's readable set"
+        }
+      ]
+    },
+    {
+      "id": "36-REQ-4",
+      "title": "Unified audit query",
+      "rationale": "Members see the events of their org's workspaces in the unified audit query, while hub-wide events stay admin-only.",
+      "criteria": [
+        {
+          "id": "36-REQ-4.1",
+          "pattern": "event_driven",
+          "condition": "a non-admin caller holding audit:read requests GET /audit",
+          "system": "audit API",
+          "action": "restrict the query to the events of every workspace in the caller's readable set from wsaccess.ReadableSlugs, of any status",
+          "contract": "HTTP 200 listing events of owned and member workspaces"
+        },
+        {
+          "id": "36-REQ-4.2",
+          "pattern": "ubiquitous",
+          "system": "audit API",
+          "action": "exclude hub events with an empty workspace from every GET /audit answer to a non-admin caller"
+        },
+        {
+          "id": "36-REQ-4.3",
+          "pattern": "unwanted",
+          "condition": "GET /audit carries a workspace filter naming a workspace outside the caller's readable set",
+          "system": "audit API",
+          "action": "refuse, and when a bound PAT's binding causes the refusal, report it once through wsaccess.DeniesWorkspace with wsaccess.SiteOf(c, 404)",
+          "contract": "HTTP 404 with body {error: \"workspace not found\"}"
+        },
+        {
+          "id": "36-REQ-4.4",
+          "pattern": "event_driven",
+          "condition": "an admin token requests GET /audit",
+          "system": "audit API",
+          "action": "query without a workspace restriction, as today",
+          "contract": "HTTP 200 including hub events with an empty workspace"
+        },
+        {
+          "id": "36-REQ-4.5",
+          "pattern": "ubiquitous",
+          "system": "audit API",
+          "action": "for any non-admin caller and any seeded events, return from GET /audit only events whose workspace is non-empty and in the caller's readable set"
+        }
+      ]
+    },
+    {
+      "id": "36-REQ-5",
+      "title": "SSE event stream",
+      "rationale": "Members follow their org's workspaces live with the same set the unified query uses.",
+      "criteria": [
+        {
+          "id": "36-REQ-5.1",
+          "pattern": "event_driven",
+          "condition": "a non-admin caller holding audit:read opens GET /events",
+          "system": "audit SSE stream",
+          "action": "compute the readable set once from wsaccess.ReadableSlugs before registering the connection, and deliver only events whose workspace is in that set",
+          "contract": "events of owned and member workspaces arrive on the stream"
+        },
+        {
+          "id": "36-REQ-5.2",
+          "pattern": "complex_event",
+          "condition": "a non-admin SSE connection is open",
+          "guard": "the caller's org membership is added or removed after the connection opened",
+          "system": "audit SSE stream",
+          "action": "keep filtering by the readable set computed at connect until the connection closes"
+        },
+        {
+          "id": "36-REQ-5.3",
+          "pattern": "unwanted",
+          "condition": "GET /events carries a workspace filter naming a workspace outside the caller's readable set",
+          "system": "audit SSE stream",
+          "action": "refuse before writing any stream header and without registering a connection",
+          "contract": "HTTP 404 with body {error: \"workspace not found\"}; no text/event-stream header"
+        },
+        {
+          "id": "36-REQ-5.4",
+          "pattern": "ubiquitous",
+          "system": "audit SSE stream",
+          "action": "deliver events with an empty workspace only to connections opened by an admin token"
+        }
+      ]
+    },
+    {
+      "id": "36-REQ-6",
+      "title": "Opening a session",
+      "rationale": "Opening a session is a write and stays with the owner and admin tokens; replaying an existing id is a read.",
+      "criteria": [
+        {
+          "id": "36-REQ-6.1",
+          "pattern": "event_driven",
+          "condition": "W's owner or an admin token holding sessions:write submits POST /sessions with workspace_slug W",
+          "system": "audit API",
+          "action": "decide access through a write helper that calls wsaccess.DeniesWorkspace(db, auth, W, wsaccess.SiteOf(c, 404)) and then wsaccess.AuthorizeWorkspace(db, auth, W, wsaccess.NeedWrite), without checking W's status, and create the session as today",
+          "contract": "HTTP 201 with the created session for a new id"
+        },
+        {
+          "id": "36-REQ-6.2",
+          "pattern": "unwanted",
+          "condition": "a member of W's org submits POST /sessions with workspace_slug W",
+          "system": "audit API",
+          "action": "refuse and write no session row",
+          "contract": "HTTP 403 with body {error: \"org members have read-only access to this workspace\", error_type: \"forbidden\"}; session row count unchanged"
+        },
+        {
+          "id": "36-REQ-6.3",
+          "pattern": "unwanted",
+          "condition": "a stranger submits POST /sessions with workspace_slug W, or W names no workspace",
+          "system": "audit API",
+          "action": "refuse and write no session row",
+          "contract": "HTTP 404 with body {error: \"workspace not found\"}; session row count unchanged"
+        },
+        {
+          "id": "36-REQ-6.4",
+          "pattern": "complex_event",
+          "condition": "POST /sessions passes the write check and names an existing session id whose session belongs to another workspace W2",
+          "guard": "the caller is W2's owner or a member of W2's org",
+          "system": "audit API",
+          "action": "return the existing session, deciding through wsaccess.AuthorizeWorkspace(db, auth, W2, wsaccess.NeedRead)",
+          "contract": "HTTP 200 with the existing session record"
+        },
+        {
+          "id": "36-REQ-6.5",
+          "pattern": "unwanted",
+          "condition": "POST /sessions names an existing session id whose session belongs to another workspace W2 that the caller may not read",
+          "system": "audit API",
+          "action": "refuse without disclosing the session",
+          "contract": "HTTP 404 with body {error: \"workspace not found\"}"
+        }
+      ]
+    },
+    {
+      "id": "36-REQ-7",
+      "title": "Writes that do not change",
+      "rationale": "Completing sessions, reporting usage and ingesting audit data keep their published answers, which already refuse members.",
+      "criteria": [
+        {
+          "id": "36-REQ-7.1",
+          "pattern": "unwanted",
+          "condition": "a member of W's org submits POST /sessions/:id/complete or POST /sessions/:id/usage for a session another user opened in W",
+          "system": "audit API",
+          "action": "refuse with the unchanged session-creator check and change no row",
+          "contract": "HTTP 403 with body {error: \"not session owner\"}; session and usage rows unchanged"
+        },
+        {
+          "id": "36-REQ-7.2",
+          "pattern": "unwanted",
+          "condition": "a member of W's org submits any ingestion route for active workspace W",
+          "system": "audit API",
+          "action": "refuse through the unchanged checkWorkspaceAccess and write no row",
+          "contract": "HTTP 403 with error_type workspace_access_denied; audit row count unchanged"
+        },
+        {
+          "id": "36-REQ-7.3",
+          "pattern": "ubiquitous",
+          "system": "audit API",
+          "action": "keep checkWorkspaceAccess's order for every caller, members included: missing workspace 404, binding 404, archived 409 workspace_archived, then non-owner 403 workspace_access_denied",
+          "contract": "a member on an archived W receives HTTP 409 with error_type workspace_archived"
+        }
+      ]
+    },
+    {
+      "id": "36-REQ-8",
+      "title": "Bound tokens and refusal reports",
+      "rationale": "Spec 33 confinement and spec 34 reporting must answer exactly as today whether the token's user is an owner or a member.",
+      "criteria": [
+        {
+          "id": "36-REQ-8.1",
+          "pattern": "complex_event",
+          "condition": "a bound PAT requests a per-run read route, a session read route or GET /audit for its bound workspace W",
+          "guard": "the token's user is a member of W's org",
+          "system": "audit API",
+          "action": "grant access as for an unbound member of W",
+          "contract": "HTTP 200"
+        },
+        {
+          "id": "36-REQ-8.2",
+          "pattern": "unwanted",
+          "condition": "a bound PAT names a workspace other than its bound workspace on a route of this spec",
+          "system": "audit API",
+          "action": "refuse with the route's usual refusal",
+          "contract": "HTTP 404 {error: \"workspace not found\"} on per-run reads, the transcript, POST /sessions and the GET /audit workspace filter; HTTP 403 {error: \"workspace access denied\"} on session read routes"
+        },
+        {
+          "id": "36-REQ-8.3",
+          "pattern": "ubiquitous",
+          "system": "audit API",
+          "action": "produce exactly one refusal report for each request refused because of a binding, carrying the request's method, its route template (for example /api/v1/sessions/:id) and the status answered, whether the requested slug exists, is readable or neither",
+          "contract": "the bound-refusal observer is called once per refused request with {TokenID, UserID, BoundSlug, RequestedSlug, Method, Route, Status, Surface: api}"
+        },
+        {
+          "id": "36-REQ-8.4",
+          "pattern": "ubiquitous",
+          "system": "audit API",
+          "action": "produce no refusal report when a bound PAT's GET /sessions, GET /audit or GET /events is filtered to its bound workspace without a workspace filter outside it",
+          "contract": "the bound-refusal observer is called 0 times"
+        }
+      ]
+    },
+    {
+      "id": "36-REQ-9",
+      "title": "Failures fail closed",
+      "rationale": "A database error while deciding access must never grant access, and each route keeps its existing refusal shape.",
+      "criteria": [
+        {
+          "id": "36-REQ-9.1",
+          "pattern": "unwanted",
+          "condition": "reading the workspace, the org membership or the token binding fails while deciding access on a per-run read route, the transcript or POST /sessions",
+          "system": "audit API",
+          "action": "refuse, return no audit data and write no session row",
+          "contract": "HTTP 500 with body {error: \"internal server error\"}"
+        },
+        {
+          "id": "36-REQ-9.2",
+          "pattern": "unwanted",
+          "condition": "reading the workspace, the org membership or the token binding fails while deciding access on a session read route or the session list",
+          "system": "audit API",
+          "action": "refuse and return no session data",
+          "contract": "HTTP 403 with body {error: \"workspace access denied\"} on session read routes; GET /sessions without workspace_slug returns no session"
+        },
+        {
+          "id": "36-REQ-9.3",
+          "pattern": "unwanted",
+          "condition": "wsaccess.ReadableSlugs or the binding lookup fails on GET /audit",
+          "system": "audit API",
+          "action": "refuse and return no events",
+          "contract": "HTTP 500 with body {error: \"internal server error\"}"
+        },
+        {
+          "id": "36-REQ-9.4",
+          "pattern": "unwanted",
+          "condition": "wsaccess.ReadableSlugs or the binding lookup fails on GET /events",
+          "system": "audit SSE stream",
+          "action": "refuse before writing any stream header and without registering a connection",
+          "contract": "HTTP 500 with body {error: \"internal server error\"}; no text/event-stream header"
+        }
+      ]
+    },
+    {
+      "id": "36-REQ-10",
+      "title": "Compatibility and the single rule",
+      "rationale": "Existing owners, strangers and tests see no change, and every audit read decision lives in wsaccess.",
+      "criteria": [
+        {
+          "id": "36-REQ-10.1",
+          "pattern": "ubiquitous",
+          "system": "audit API",
+          "action": "for any stranger to workspace W and any route of this spec, answer with the same status and error body as before this spec",
+          "contract": "per-run reads, the transcript, POST /sessions and the GET /audit workspace filter answer HTTP 404 {error: \"workspace not found\"}; session read routes answer HTTP 403 {error: \"workspace access denied\"}; ingestion answers HTTP 403 workspace_access_denied"
+        },
+        {
+          "id": "36-REQ-10.2",
+          "pattern": "ubiquitous",
+          "system": "audit API",
+          "action": "for any workspace in a personal org whose only member is its owner, or with a NULL org_id, answer every request on the routes of this spec with the same status and body as before this spec"
+        },
+        {
+          "id": "36-REQ-10.3",
+          "pattern": "ubiquitous",
+          "system": "audit package",
+          "action": "make no read decision in internal/audit by comparing owner_id with the caller: requireWorkspaceRead and hasWorkspaceAccess decide through wsaccess.AuthorizeWorkspace with wsaccess.NeedRead, readableWorkspaces and getAccessibleWorkspaces derive their sets from wsaccess.ReadableSlugs, and ownedWorkspaces no longer exists",
+          "contract": "a source scan of internal/audit's non-test files finds no ownedWorkspaces declaration and no owner_id query outside checkWorkspaceAccess"
+        },
+        {
+          "id": "36-REQ-10.4",
+          "pattern": "ubiquitous",
+          "system": "audit test fixture",
+          "action": "give openTestSQLiteDB in internal/audit/testhelpers_test.go a workspaces table with org_id and clone_status columns and an org_members(org_id, user_id) table, so every existing internal/audit test passes with no assertion changed",
+          "contract": "go test ./internal/audit/... passes"
+        }
+      ]
+    }
+  ],
+  "execution_paths": [
+    {
+      "id": "36-PATH-1",
+      "title": "An org member reads a teammate's workspace sessions, cost and run audit",
+      "steps": [
+        {
+          "actor": "org member U2",
+          "action": "sends GET /api/v1/workspaces/W/runs/R/events with a PAT holding audit:read"
+        },
+        {
+          "actor": "audit API",
+          "action": "checks the binding with wsaccess.DeniesWorkspace and calls wsaccess.AuthorizeWorkspace(W, NeedRead), which reads W's org_id and finds U2 in org_members"
+        },
+        {
+          "actor": "audit API",
+          "action": "returns 200 with the run's events"
+        },
+        {
+          "actor": "org member U2",
+          "action": "sends GET /api/v1/sessions?workspace_slug=W and GET /api/v1/workspaces/W/cost with sessions:read"
+        },
+        {
+          "actor": "audit API",
+          "action": "admits U2 through hasWorkspaceAccess because W is active and readable, and returns 200 with W's sessions and cost"
+        }
+      ]
+    },
+    {
+      "id": "36-PATH-2",
+      "title": "An org member sees the workspace in the unified audit query and the live stream",
+      "steps": [
+        {
+          "actor": "org member U2",
+          "action": "sends GET /api/v1/audit and opens GET /api/v1/events"
+        },
+        {
+          "actor": "audit API",
+          "action": "computes U2's readable set once with wsaccess.ReadableSlugs (owned plus member workspaces)"
+        },
+        {
+          "actor": "audit API",
+          "action": "returns 200 with events of W and of U2's own workspaces, and no hub event with an empty workspace"
+        },
+        {
+          "actor": "hub event emitter",
+          "action": "publishes an event for workspace W"
+        },
+        {
+          "actor": "audit SSE stream",
+          "action": "delivers the event to U2's open connection"
+        }
+      ]
+    },
+    {
+      "id": "36-PATH-3",
+      "title": "An org member tries to change the workspace and is refused",
+      "steps": [
+        {
+          "actor": "org member U2",
+          "action": "sends POST /api/v1/sessions with workspace_slug W"
+        },
+        {
+          "actor": "audit API",
+          "action": "calls wsaccess.AuthorizeWorkspace(W, NeedWrite), which refuses a member, and writes no session row"
+        },
+        {
+          "actor": "audit API",
+          "action": "returns 403 with error_type forbidden"
+        },
+        {
+          "actor": "org member U2",
+          "action": "sends POST /api/v1/sessions/S/complete for owner U1's session S"
+        },
+        {
+          "actor": "audit API",
+          "action": "returns 403 not session owner and leaves session S unchanged"
+        }
+      ]
+    }
+  ],
+  "external_apis": [
+    {
+      "package": "github.com/txsvc/apikit",
+      "version": "replace => ../apikit",
+      "verified": false,
+      "symbols": [
+        {
+          "name": "GetAuthInfo",
+          "import_path": "github.com/txsvc/apikit",
+          "signature": "func GetAuthInfo(c echo.Context) *apikit.AuthInfo",
+          "notes": "Taken from existing call sites in internal/audit; source outside the repository."
+        },
+        {
+          "name": "WriteAPIError",
+          "import_path": "github.com/txsvc/apikit",
+          "signature": "func WriteAPIError(c echo.Context, status int, message string) error",
+          "notes": "Taken from existing call sites."
+        },
+        {
+          "name": "WriteAPIErrorWithType",
+          "import_path": "github.com/txsvc/apikit",
+          "signature": "func WriteAPIErrorWithType(c echo.Context, status int, message, errorType string) error",
+          "notes": "Taken from existing call sites (checkWorkspaceAccess)."
+        },
+        {
+          "name": "AuthInfo",
+          "import_path": "github.com/txsvc/apikit",
+          "signature": "type AuthInfo struct { CredentialType string; UserID string; TokenID string; Permissions []string; ... }",
+          "notes": "CredentialType is admin_token, api_key or pat."
+        }
+      ]
+    },
+    {
+      "package": "internal/wsaccess (current tree)",
+      "version": "in-repo",
+      "verified": true,
+      "symbols": [
+        {
+          "name": "DeniesWorkspace",
+          "import_path": "github.com/agent-fox-dev/hub/internal/wsaccess",
+          "signature": "func DeniesWorkspace(db *sql.DB, auth *apikit.AuthInfo, slug string, site RefusalSite) (bool, error)",
+          "notes": "Reports once when a bound PAT names another slug; a failed lookup returns denied true with the error."
+        },
+        {
+          "name": "SiteOf",
+          "import_path": "github.com/agent-fox-dev/hub/internal/wsaccess",
+          "signature": "func SiteOf(c echo.Context, status int) RefusalSite",
+          "notes": "Method, route template c.Path(), status, SurfaceAPI."
+        },
+        {
+          "name": "BoundSlug",
+          "import_path": "github.com/agent-fox-dev/hub/internal/wsaccess",
+          "signature": "func BoundSlug(db *sql.DB, auth *apikit.AuthInfo) (string, bool, error)",
+          "notes": "No query for a non-PAT or a PAT without TokenID."
+        },
+        {
+          "name": "RefusalSite",
+          "import_path": "github.com/agent-fox-dev/hub/internal/wsaccess",
+          "signature": "type RefusalSite struct { Method, Route string; Status int; Surface string }"
+        }
+      ]
+    },
+    {
+      "package": "internal/wsaccess (delivered by spec 35)",
+      "version": "spec 35_org_member_workspace_access",
+      "verified": false,
+      "symbols": [
+        {
+          "name": "AuthorizeWorkspace",
+          "import_path": "github.com/agent-fox-dev/hub/internal/wsaccess",
+          "signature": "func AuthorizeWorkspace(db *sql.DB, auth *apikit.AuthInfo, slug string, need Need) (*WorkspaceAccess, int, string)",
+          "notes": "Per 35-REQ-2: AccessNone or unknown slug gives (nil, 404, \"workspace not found\") with no report; member with NeedWrite gives (nil, 403, \"org members have read-only access to this workspace\"); DB error gives (nil, 500, \"internal server error\"). WorkspaceAccess carries Slug, OwnerID, OrgID, Status, CloneStatus, Access."
+        },
+        {
+          "name": "ReadableSlugs",
+          "import_path": "github.com/agent-fox-dev/hub/internal/wsaccess",
+          "signature": "func ReadableSlugs(db *sql.DB, auth *apikit.AuthInfo) (map[string]Access, bool, error)",
+          "notes": "Per 35-REQ-3: (nil, true, nil) for admin; owned plus member-org workspaces of any status otherwise; at most the bound slug for a bound PAT; never reports."
+        },
+        {
+          "name": "Need",
+          "import_path": "github.com/agent-fox-dev/hub/internal/wsaccess",
+          "signature": "type Need string // NeedRead, NeedWrite, NeedPrivate"
+        },
+        {
+          "name": "WriteRefusal",
+          "import_path": "github.com/agent-fox-dev/hub/internal/wsaccess",
+          "signature": "func WriteRefusal(c echo.Context, status int, msg string) error",
+          "notes": "Adds error_type ErrorTypeForbidden (\"forbidden\") only on a 403."
+        }
+      ]
+    }
+  ]
+}

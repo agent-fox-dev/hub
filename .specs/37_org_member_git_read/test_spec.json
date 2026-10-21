@@ -1,0 +1,716 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/test_spec.v2.json",
+  "spec_id": "37",
+  "spec_name": "org_member_git_read",
+  "schema_version": 2,
+  "tests": [
+    {
+      "id": "TS-37-1",
+      "kind": "unit",
+      "verifies": [
+        "37-REQ-1.1"
+      ],
+      "title": "authorizeGitAccess returns nil for owner, member and admin token, taking the decision from wsaccess",
+      "given": [
+        "workspace W in org O owned by user-a with a ready clone",
+        "user-b is a member of O, user-2 is a stranger",
+        "an echo context with c.Path() set to the upload-pack route template"
+      ],
+      "when": "authorizeGitAccess is called with the AuthInfo of the owner, the member, an admin token with UserID empty, and the stranger",
+      "then": [
+        "owner, member and admin token calls return nil and write no response",
+        "the stranger call writes HTTP 404 and returns errAccessDenied",
+        "the admin token passes although it has no org_members row and no owner match, proving the decision is not made by a local owner/admin check"
+      ],
+      "pseudocode": "for who in [owner, member, admin]: assert authorizeGitAccess(c, db, ws) == nil; assert authorizeGitAccess(ctx(stranger), db, ws) == errAccessDenied; assert rec.Code == 404"
+    },
+    {
+      "id": "TS-37-2",
+      "kind": "unit",
+      "verifies": [
+        "37-REQ-1.2"
+      ],
+      "title": "authorizeGitAccess returns 401 when no AuthInfo is on the context",
+      "given": [
+        "an echo context with no AuthInfo set",
+        "a ready workspace W"
+      ],
+      "when": "authorizeGitAccess is called",
+      "then": [
+        "it returns an *echo.HTTPError with Code 401",
+        "no response body is written",
+        "no membership or binding query was made"
+      ],
+      "pseudocode": "err = authorizeGitAccess(c, db, ws); he = err.(*echo.HTTPError); assert he.Code == 401; assert rec.Body.Len() == 0"
+    },
+    {
+      "id": "TS-37-3",
+      "kind": "unit",
+      "verifies": [
+        "37-REQ-1.3"
+      ],
+      "title": "No non-test Go source in internal/gitserver compares an owner id with the caller",
+      "given": [
+        "the non-test .go files of internal/gitserver parsed with go/parser"
+      ],
+      "when": "the syntax trees are scanned for binary == or != expressions with a selector or identifier named OwnerID/owner_id on one side and UserID on the other, and for calls to DeniesWorkspace and string comparisons against \"admin_token\" in authz.go",
+      "then": [
+        "no such comparison exists",
+        "authz.go contains no call to wsaccess.DeniesWorkspace and no CredentialType admin_token check",
+        "authz.go contains a call to wsaccess.AuthorizeWorkspaceAt"
+      ],
+      "pseudocode": "for f in nonTestFiles: ast.Inspect(f, func(n){ if be is BinaryExpr && mentions(be,'OwnerID') && mentions(be,'UserID') -> fail })"
+    },
+    {
+      "id": "TS-37-4",
+      "kind": "integration",
+      "verifies": [
+        "37-REQ-1.4"
+      ],
+      "title": "A refusal from authorizeGitAccess yields exactly one response through the resolver",
+      "given": [
+        "the full git handler chain mounted on an echo server with an in-memory database",
+        "workspace W with a ready clone and a stranger's API key"
+      ],
+      "when": "the stranger sends GET info/refs?service=git-upload-pack, and POST git-upload-pack",
+      "then": [
+        "each response is HTTP 404 with body exactly the single pkt-line \"ERR repository not found\\n\"",
+        "the body contains no second response or appended handler output",
+        "authorizeGitAccess still has the signature (echo.Context, *sql.DB, *workspaceInfo) error"
+      ],
+      "pseudocode": "code, body = infoRefs(W, upload, strangerKey); assert body == encodePktLine('ERR repository not found\\n')"
+    },
+    {
+      "id": "TS-37-5",
+      "kind": "integration",
+      "verifies": [
+        "37-REQ-2.1"
+      ],
+      "title": "Receive-pack requests carry NeedWrite so a member is refused and the owner is not",
+      "given": [
+        "workspace W in org O owned by user-a with a ready repository",
+        "user-b is a member of O"
+      ],
+      "when": "user-b and user-a (API keys) send GET info/refs?service=git-receive-pack and POST git-receive-pack (empty body)",
+      "then": [
+        "user-b gets HTTP 403 pkt-line \"ERR org members have read-only access to this workspace\\n\" on both requests",
+        "user-a gets HTTP 200 on both requests"
+      ],
+      "pseudocode": "for req in [infoRefs(receive), postReceivePack]: assert do(member,req).code == 403; assert do(owner,req).code == 200"
+    },
+    {
+      "id": "TS-37-6",
+      "kind": "integration",
+      "verifies": [
+        "37-REQ-2.2"
+      ],
+      "title": "Upload-pack and any other info/refs service value carry NeedRead",
+      "given": [
+        "workspace W with a ready repository",
+        "user-b is a member of org O"
+      ],
+      "when": "user-b sends POST git-upload-pack, GET info/refs?service=git-upload-pack, GET info/refs with service=foo, with service empty and with no service",
+      "then": [
+        "upload-pack requests return 200",
+        "the info/refs requests with an invalid, empty or missing service return the handler's 403 \"ERR invalid or missing service parameter\\n\", not the read-only message",
+        "none of the requests is answered with 404"
+      ],
+      "pseudocode": "assert body(member, service='foo') == pktline('ERR invalid or missing service parameter\\n')"
+    },
+    {
+      "id": "TS-37-7",
+      "kind": "integration",
+      "verifies": [
+        "37-REQ-2.3"
+      ],
+      "title": "A member's malformed info/refs request gets the same refusal as the owner's",
+      "given": [
+        "workspace W with a ready clone",
+        "user-a is the owner and user-b is a member of org O"
+      ],
+      "when": "each sends GET info/refs with a missing service and with service=bogus",
+      "then": [
+        "both receive HTTP 403 with Content-Type text/plain",
+        "both bodies equal \"ERR invalid or missing service parameter\\n\" in pkt-line encoding",
+        "member and owner responses are identical"
+      ],
+      "pseudocode": "assert resp(member, q) == resp(owner, q) for q in ['', 'service=bogus']"
+    },
+    {
+      "id": "TS-37-8",
+      "kind": "property",
+      "verifies": [
+        "37-REQ-2.4"
+      ],
+      "title": "The git server never uses NeedPrivate: a member is never answered 404 for a ready workspace",
+      "given": [
+        "workspace W with a ready clone in org O, user-b a member of O"
+      ],
+      "when": "for any route among the three git routes and any service query value (random string, empty, upload-pack, receive-pack) requested by the member's API key",
+      "then": [
+        "the response is never the stranger's 404",
+        "the status is 403 read-only exactly when the need is write, otherwise it is the handler's answer (200 or invalid-service 403)"
+      ],
+      "pseudocode": "for route, svc in gen(): r = do(member, route, svc); assert r.code != 404; if need(route,svc)==WRITE: assert r.body == readOnlyMsg"
+    },
+    {
+      "id": "TS-37-9",
+      "kind": "integration",
+      "verifies": [
+        "37-REQ-3.1"
+      ],
+      "title": "A member's API key or git:read/git:write PAT gets the owner's ref advertisement",
+      "given": [
+        "workspace W in org O owned by user-a with a ready clone with a commit",
+        "user-b is a member of O with an API key, a git:read PAT and a git:write PAT"
+      ],
+      "when": "each member credential and the owner send GET info/refs?service=git-upload-pack",
+      "then": [
+        "every member response is HTTP 200",
+        "Content-Type and body equal the owner's response"
+      ],
+      "pseudocode": "ref = infoRefs(owner); for cred in memberCreds: assert infoRefs(cred) == ref"
+    },
+    {
+      "id": "TS-37-10",
+      "kind": "integration",
+      "verifies": [
+        "37-REQ-3.2"
+      ],
+      "title": "A member's upload-pack POST returns the same pack as the owner",
+      "given": [
+        "workspace W with a ready clone",
+        "user-b is a member with an API key and PATs holding git:read and git:write"
+      ],
+      "when": "owner and member credentials POST the same want/done upload-pack request body",
+      "then": [
+        "all member responses are HTTP 200",
+        "Content-Type and pack content equal the owner's response"
+      ],
+      "pseudocode": "assert post(member, body) == post(owner, body)"
+    },
+    {
+      "id": "TS-37-11",
+      "kind": "integration",
+      "verifies": [
+        "37-REQ-3.3"
+      ],
+      "title": "A member's PAT without git scopes is refused by the scope check as an owner's would be",
+      "given": [
+        "workspace W with a ready clone",
+        "a PAT of the member and a PAT of the owner, each with no git permissions"
+      ],
+      "when": "each sends GET info/refs?service=git-upload-pack and POST git-upload-pack",
+      "then": [
+        "both get HTTP 403 with the echo JSON message \"insufficient git permissions\"",
+        "the member's response equals the owner's response, and is not a pkt-line"
+      ],
+      "pseudocode": "assert resp(memberPat).code == 403 && resp(memberPat) == resp(ownerPat)"
+    },
+    {
+      "id": "TS-37-12",
+      "kind": "integration",
+      "verifies": [
+        "37-REQ-3.4"
+      ],
+      "title": "A removed member is a stranger on the next request",
+      "given": [
+        "user-b is a member of O and has just cloned from W successfully with 200"
+      ],
+      "when": "the org_members row for user-b is deleted and user-b sends the same info/refs request again",
+      "then": [
+        "the second response is HTTP 404",
+        "the body is the pkt-line \"ERR repository not found\\n\""
+      ],
+      "pseudocode": "assert infoRefs(b).code==200; delete org_members; r = infoRefs(b); assert r.code==404 and r.body==pktline('ERR repository not found\\n')"
+    },
+    {
+      "id": "TS-37-13",
+      "kind": "integration",
+      "verifies": [
+        "37-REQ-4.1"
+      ],
+      "title": "A member's push discovery and receive-pack are refused with the read-only 403 whatever the credential",
+      "given": [
+        "workspace W with a ready repository, user-b a member of O",
+        "user-b has an API key, a PAT with git:write, a PAT with git:read only and a PAT with no scopes"
+      ],
+      "when": "each credential sends GET info/refs?service=git-receive-pack and POST git-receive-pack",
+      "then": [
+        "every response is HTTP 403 with Content-Type text/plain",
+        "the body is the pkt-line \"ERR org members have read-only access to this workspace\\n\"",
+        "the scope message \"insufficient git permissions\" never appears"
+      ],
+      "pseudocode": "for cred, req in product: r = do(cred, req); assert r.code==403 and r.ct=='text/plain' and r.body==pktline(readOnlyMsg)"
+    },
+    {
+      "id": "TS-37-14",
+      "kind": "integration",
+      "verifies": [
+        "37-REQ-4.2"
+      ],
+      "title": "A refused member push changes nothing in the workspace",
+      "given": [
+        "workspace W with a ready repository with head_sha recorded and refs listed",
+        "a pre-receive hook and post-push hook installed as counters",
+        "an audit emitter counting hub.git.push events",
+        "a valid pack with a ref update to refs/heads/main built from a fresh commit"
+      ],
+      "when": "user-b (member) POSTs git-receive-pack with that pack",
+      "then": [
+        "the response is HTTP 403 read-only",
+        "the repository's refs and object count are unchanged",
+        "the pre-receive hook and post-push hook were called zero times",
+        "workspaces.head_sha is unchanged and the worktree was not reset",
+        "no hub.git.push audit event was emitted"
+      ],
+      "pseudocode": "before = snapshot(); post(member, pack); assert snapshot()==before; assert hooks.calls==0; assert auditCount==0"
+    },
+    {
+      "id": "TS-37-15",
+      "kind": "integration",
+      "verifies": [
+        "37-REQ-4.4"
+      ],
+      "title": "No audit event is written for any refused member push request",
+      "given": [
+        "an audit store attached to the git server",
+        "user-b a member of W's org"
+      ],
+      "when": "user-b sends GET info/refs?service=git-receive-pack and POST git-receive-pack",
+      "then": [
+        "both are refused with 403",
+        "the audit events table has the same row count as before the requests"
+      ],
+      "pseudocode": "n = count(audit_events); do both; assert count(audit_events) == n"
+    },
+    {
+      "id": "TS-37-16",
+      "kind": "unit",
+      "verifies": [
+        "37-REQ-5.1"
+      ],
+      "title": "A wsaccess 404 is written with the git server's own not-found text",
+      "given": [
+        "a stranger caller and a ready workspace, a caller for a workspace whose row is missing"
+      ],
+      "when": "authorizeGitAccess is called through the resolver",
+      "then": [
+        "HTTP 404, Content-Type text/plain",
+        "body is pkt-line \"ERR repository not found\\n\" and does not contain \"workspace not found\"",
+        "errAccessDenied is returned from authorizeGitAccess"
+      ],
+      "pseudocode": "assert rec.Code==404; assert rec.Body.String()==encodePktLine('ERR repository not found\\n'); assert err==errAccessDenied"
+    },
+    {
+      "id": "TS-37-17",
+      "kind": "unit",
+      "verifies": [
+        "37-REQ-5.2"
+      ],
+      "title": "A wsaccess 403 is written as a pkt-line carrying the returned message",
+      "given": [
+        "a member's AuthInfo and a ready workspace, context with receive-pack route template"
+      ],
+      "when": "authorizeGitAccess is called",
+      "then": [
+        "HTTP 403, Content-Type text/plain",
+        "body is pkt-line \"ERR org members have read-only access to this workspace\\n\"",
+        "errAccessDenied is returned"
+      ],
+      "pseudocode": "err = authorizeGitAccess(c, db, ws); assert err==errAccessDenied; assert rec.Code==403; assert body==pktline('ERR '+msg+'\\n')"
+    },
+    {
+      "id": "TS-37-18",
+      "kind": "integration",
+      "verifies": [
+        "37-REQ-5.3"
+      ],
+      "title": "A database error during the access decision yields a 500 pkt-line and no repository is served",
+      "given": [
+        "workspace W with a ready repository",
+        "the org_members table is dropped so the stranger's membership read fails"
+      ],
+      "when": "a non-owner API key sends GET info/refs?service=git-upload-pack",
+      "then": [
+        "the response is HTTP 500, Content-Type text/plain",
+        "the body is the pkt-line \"ERR internal server error\\n\"",
+        "no ref advertisement is served and the handler is not reached"
+      ],
+      "pseudocode": "exec('DROP TABLE org_members'); r = infoRefs(user2); assert r.code==500 and r.body==pktline('ERR internal server error\\n')"
+    },
+    {
+      "id": "TS-37-19",
+      "kind": "integration",
+      "verifies": [
+        "37-REQ-6.1"
+      ],
+      "title": "A stranger gets the 404 on all three routes without a binding lookup or report",
+      "given": [
+        "workspace W with a ready clone",
+        "user-2 is neither owner nor member",
+        "a refusal observer is registered and a PAT of user-2 bound to another workspace is not used"
+      ],
+      "when": "user-2 sends GET info/refs (both services), POST git-upload-pack and POST git-receive-pack with an API key and with an unbound PAT, with the binding table dropped",
+      "then": [
+        "every response is HTTP 404 text/plain with body pkt-line \"ERR repository not found\\n\"",
+        "no BoundRefusal is observed"
+      ],
+      "pseudocode": "for route in routes: r = do(stranger, route); assert r.code==404 and r.body==notFound; assert len(observed)==0"
+    },
+    {
+      "id": "TS-37-20",
+      "kind": "integration",
+      "verifies": [
+        "37-REQ-6.2"
+      ],
+      "title": "Owner and admin token answers are unchanged on all three routes",
+      "given": [
+        "workspace W with a ready repository",
+        "the owner has an API key, a PAT with git:write, and a PAT with only git:read; an admin token exists"
+      ],
+      "when": "each credential sends the info/refs (both services), upload-pack and receive-pack requests",
+      "then": [
+        "the owner's API key and write PAT and the admin token get 200 on all routes",
+        "the owner's git:read PAT gets 200 on upload-pack but HTTP 403 \"insufficient git permissions\" (echo JSON) on receive-pack",
+        "the status, Content-Type and body equal those the same fixture gave before this change"
+      ],
+      "pseudocode": "assert results == expectedToday[cred][route]"
+    },
+    {
+      "id": "TS-37-21",
+      "kind": "integration",
+      "verifies": [
+        "37-REQ-6.3"
+      ],
+      "title": "An admin-role API key is not an admin token",
+      "given": [
+        "user-2 has Role admin in users, is not W's owner and not a member of W's org",
+        "user-b has Role admin and is a member of W's org"
+      ],
+      "when": "each sends upload-pack and receive-pack requests with an API key",
+      "then": [
+        "user-2 gets 404 \"ERR repository not found\\n\" on both",
+        "user-b gets 200 on upload-pack and 403 read-only on receive-pack"
+      ],
+      "pseudocode": "assert do(adminRoleStranger).code==404; assert do(adminRoleMember, receive).code==403"
+    },
+    {
+      "id": "TS-37-22",
+      "kind": "integration",
+      "verifies": [
+        "37-REQ-6.4"
+      ],
+      "title": "API key and admin token answers do not depend on the binding table",
+      "given": [
+        "the same workspace and credentials, once with the binding table present and once with it dropped"
+      ],
+      "when": "owner, member and stranger API keys and an admin token send upload-pack and receive-pack requests",
+      "then": [
+        "each response with the table dropped equals the response with the table present",
+        "no response is a 500"
+      ],
+      "pseudocode": "a = runAll(); exec('DROP TABLE token_workspace_bindings'); b = runAll(); assert a==b"
+    },
+    {
+      "id": "TS-37-23",
+      "kind": "integration",
+      "verifies": [
+        "37-REQ-6.5"
+      ],
+      "title": "A blocked user is refused with 401 before the resolver",
+      "given": [
+        "user-blocked is blocked, owns W or is a member of W's org",
+        "a counter on the resolver's workspace lookup"
+      ],
+      "when": "the blocked user's API key and PAT hit each git route",
+      "then": [
+        "every response is HTTP 401",
+        "the resolver is not reached"
+      ],
+      "pseudocode": "for cred in [key, pat]: assert do(cred, route).code==401"
+    },
+    {
+      "id": "TS-37-24",
+      "kind": "integration",
+      "verifies": [
+        "37-REQ-7.1"
+      ],
+      "title": "A PAT bound to S is refused on another workspace the user owns or is a member of, reported once",
+      "given": [
+        "workspaces S and X in org O; X owned by user-a, and Y owned by user-b",
+        "a PAT of user-a bound to S, and a PAT of user-b (a member of O, owner of Y) bound to Y",
+        "a refusal observer is registered"
+      ],
+      "when": "user-a's bound PAT requests X (owner) and user-b's bound PAT requests X (member) for info/refs upload-pack",
+      "then": [
+        "each response is HTTP 404 pkt-line \"ERR repository not found\\n\"",
+        "exactly one BoundRefusal is observed per request with Method GET, Route \"/git/:org/:slug.git/info/refs\", Status 404 and Surface \"git\""
+      ],
+      "pseudocode": "r = infoRefs(X, boundPat); assert r.code==404; assert len(obs)==1 and obs[0].Surface=='git' and obs[0].Route==template"
+    },
+    {
+      "id": "TS-37-25",
+      "kind": "integration",
+      "verifies": [
+        "37-REQ-7.2"
+      ],
+      "title": "A binding lookup failure is a 500 and the repository is not served",
+      "given": [
+        "a PAT of the owner with a TokenID",
+        "the binding table is dropped or otherwise makes the lookup fail"
+      ],
+      "when": "that PAT sends GET info/refs?service=git-upload-pack",
+      "then": [
+        "HTTP 500 with the pkt-line body \"ERR internal server error\\n\"",
+        "no advertisement is served"
+      ],
+      "pseudocode": "exec('DROP TABLE token_workspace_bindings'); r = infoRefs(pat); assert r.code==500 and r.body==pktline('ERR internal server error\\n')"
+    },
+    {
+      "id": "TS-37-26",
+      "kind": "integration",
+      "verifies": [
+        "37-REQ-7.3"
+      ],
+      "title": "A member's PAT bound to W reads W and is refused on push like an unbound PAT",
+      "given": [
+        "user-b is a member of W's org",
+        "two PATs of user-b with the same git:write scope, one bound to W and one unbound"
+      ],
+      "when": "both send upload-pack and receive-pack requests for W",
+      "then": [
+        "upload-pack returns HTTP 200 for both with equal bodies",
+        "receive-pack returns HTTP 403 pkt-line \"ERR org members have read-only access to this workspace\\n\" for both"
+      ],
+      "pseudocode": "assert resp(boundPat)==resp(unboundPat) for each route"
+    },
+    {
+      "id": "TS-37-27",
+      "kind": "integration",
+      "verifies": [
+        "37-REQ-7.4"
+      ],
+      "title": "A stranger's bound PAT is refused without a bound-refusal report",
+      "given": [
+        "user-2 is a stranger to W; a PAT of user-2 is bound to another workspace S",
+        "a refusal observer is registered"
+      ],
+      "when": "that PAT requests W on upload-pack and receive-pack",
+      "then": [
+        "HTTP 404 pkt-line \"ERR repository not found\\n\"",
+        "no BoundRefusal is observed"
+      ],
+      "pseudocode": "assert code==404; assert len(obs)==0"
+    },
+    {
+      "id": "TS-37-28",
+      "kind": "integration",
+      "verifies": [
+        "37-REQ-8.1"
+      ],
+      "title": "Each request gets the status of the first refusing check in the documented order",
+      "given": [
+        "workspaces: ready W, not-ready N, and a stale org-mismatch URL",
+        "a blocked user, a stranger, a member, a PAT with no scopes"
+      ],
+      "when": "requests are made that trip several checks at once (blocked user on N; stranger on N; stranger with wrong org; member push on W; member push on W with scope-less PAT; owner scope-less PAT on W; URL without .git suffix)",
+      "then": [
+        "blocked user gets 401",
+        "URL without .git suffix gets 404 before the resolver lookup",
+        "stranger on N gets 404 \"repository not available\"",
+        "wrong org gets 404 \"repository not found\"",
+        "member push gets 403 read-only before the scope check",
+        "owner PAT without scope gets 403 \"insufficient git permissions\"",
+        "a database error in the resolver's own lookup is a plain 500 with no body"
+      ],
+      "pseudocode": "assert each(case).status/body == expected"
+    },
+    {
+      "id": "TS-37-29",
+      "kind": "integration",
+      "verifies": [
+        "37-REQ-8.2"
+      ],
+      "title": "A not-ready clone is refused before the access decision for every caller",
+      "given": [
+        "workspace N in org O with clone_status 'cloning'",
+        "a bound PAT bound elsewhere, a stranger, a member and the owner; a refusal observer"
+      ],
+      "when": "each caller requests N on any git route",
+      "then": [
+        "every response is HTTP 404 pkt-line \"ERR repository not available\\n\"",
+        "no BoundRefusal is observed",
+        "a member push also gets 404 not-available rather than the read-only 403"
+      ],
+      "pseudocode": "for caller in all: assert body==pktline('ERR repository not available\\n')"
+    },
+    {
+      "id": "TS-37-30",
+      "kind": "integration",
+      "verifies": [
+        "37-REQ-8.3"
+      ],
+      "title": "A URL with the wrong org slug is refused before access and reports nothing",
+      "given": [
+        "workspace W in org O and another org P",
+        "a PAT bound to a different workspace, owned by W's owner; a refusal observer"
+      ],
+      "when": "the PAT and the member's API key request /git/P/W.git/info/refs?service=git-upload-pack",
+      "then": [
+        "HTTP 404 pkt-line \"ERR repository not found\\n\"",
+        "no BoundRefusal is observed"
+      ],
+      "pseudocode": "r = get('/git/P/W.git/info/refs?service=git-upload-pack'); assert r.code==404; assert len(obs)==0"
+    },
+    {
+      "id": "TS-37-31",
+      "kind": "unit",
+      "verifies": [
+        "37-REQ-8.4"
+      ],
+      "title": "A workspace row that vanishes after the resolver lookup yields the 404",
+      "given": [
+        "a workspaceInfo for slug 'gone' resolved earlier, and the row then deleted from workspaces",
+        "an owner's AuthInfo"
+      ],
+      "when": "authorizeGitAccess is called with that workspaceInfo",
+      "then": [
+        "HTTP 404 pkt-line \"ERR repository not found\\n\" is written",
+        "errAccessDenied is returned"
+      ],
+      "pseudocode": "exec('DELETE FROM workspaces WHERE slug=?', 'gone'); err = authorizeGitAccess(c, db, ws); assert err==errAccessDenied; assert rec.Code==404"
+    },
+    {
+      "id": "TS-37-32",
+      "kind": "integration",
+      "verifies": [
+        "37-REQ-9.1"
+      ],
+      "title": "A workspace with a NULL org_id is a 404 for every caller",
+      "given": [
+        "workspace Z whose org_id is NULL, owned by user-a",
+        "an owner API key, an admin token, a stranger and a member of some org"
+      ],
+      "when": "each requests /git/<any org slug>/Z.git/info/refs?service=git-upload-pack",
+      "then": [
+        "every response is HTTP 404 pkt-line \"ERR repository not found\\n\"",
+        "none is a 500"
+      ],
+      "pseudocode": "seedWorkspace(Z, org=NULL); for c in callers: assert do(c).code==404 and body==notFound"
+    },
+    {
+      "id": "TS-37-33",
+      "kind": "unit",
+      "verifies": [
+        "37-REQ-9.2"
+      ],
+      "title": "WorkspaceLoader.Load reports a NULL-org workspace as not found",
+      "given": [
+        "workspace Z with org_id NULL in the database and a WorkspaceLoader on the workspace root"
+      ],
+      "when": "Load is called for the endpoint of Z",
+      "then": [
+        "it returns transport.ErrRepositoryNotFound",
+        "no database scan error is returned"
+      ],
+      "pseudocode": "_, err = loader.Load(ep); assert errors.Is(err, transport.ErrRepositoryNotFound)"
+    },
+    {
+      "id": "TS-37-34",
+      "kind": "integration",
+      "verifies": [
+        "37-REQ-10.1"
+      ],
+      "title": "Stranger-fixture tests and spec 33/34 git tests keep their assertions once the membership row is dropped",
+      "given": [
+        "TestAuthz_PATWrongOwner_Returns404 and TestAuthz_APIKeyWrongOwner_Returns404 (user-b), TestResolver_NonOwnerNonAdmin_Returns404 (user-2) and newBindingGitEnv (user-b) seeded without the non-owner's org_members row"
+      ],
+      "when": "internal/gitserver tests run, including TS-33-42..45, 52, 53, 55, 60 and TS-34-58",
+      "then": [
+        "every test passes with its original assertions unchanged",
+        "the non-owner callers receive 404 \"repository not found\"",
+        "TS-34-58 observes exactly one BoundRefusal with the git site"
+      ],
+      "pseudocode": "go test ./internal/gitserver -count=1 passes; git diff of these tests shows only removed seedOrgMember lines"
+    },
+    {
+      "id": "TS-37-35",
+      "kind": "integration",
+      "verifies": [
+        "37-REQ-10.2"
+      ],
+      "title": "The git case of TS-35-56 expects member read grant and member write 403",
+      "given": [
+        "a member of the workspace's org, with REST cases of TS-35-56 untouched"
+      ],
+      "when": "the member sends upload-pack and receive-pack requests, in the TS-35-56 test",
+      "then": [
+        "upload-pack requests are granted with HTTP 200",
+        "receive-pack requests get HTTP 403 with \"ERR org members have read-only access to this workspace\\n\"",
+        "the REST assertions of TS-35-56 are unchanged"
+      ],
+      "pseudocode": "in TS-35-56: assert git(upload).code==200; assert git(receive).code==403"
+    },
+    {
+      "id": "TS-37-36",
+      "kind": "smoke",
+      "verifies": [
+        "37-PATH-1",
+        "37-REQ-3.5",
+        "37-REQ-3.1"
+      ],
+      "title": "A member clones and fetches a colleague's workspace with the git CLI",
+      "given": [
+        "an httptest server running the full hub git handler chain with a real database",
+        "W in org O owned by user-a with a real git repository and commits; user-b is a member of O with an API key",
+        "a new commit is added to W after the clone"
+      ],
+      "when": "user-b runs git clone then git fetch against http://x-token-auth:<API key>@host/git/O/W.git",
+      "then": [
+        "git clone and git fetch exit 0",
+        "local refs equal the refs the owner sees via ls-remote",
+        "the new commit is fetched"
+      ],
+      "real_components": [
+        "GitAuthMiddleware",
+        "gitResolverMiddleware",
+        "authorizeGitAccess",
+        "wsaccess.AuthorizeWorkspaceAt",
+        "git CLI",
+        "SQLite database",
+        "real git repository on disk"
+      ]
+    },
+    {
+      "id": "TS-37-37",
+      "kind": "smoke",
+      "verifies": [
+        "37-PATH-2",
+        "37-REQ-4.3",
+        "37-REQ-4.2"
+      ],
+      "title": "A member's git push is refused with the read-only message and changes nothing",
+      "given": [
+        "an httptest server running the full hub git handler chain with a real database and audit store",
+        "W in org O owned by user-a; user-b a member of O who has cloned W with their API key and made a local commit"
+      ],
+      "when": "user-b runs git push to /git/O/W.git",
+      "then": [
+        "git push exits non-zero and its output contains \"org members have read-only access to this workspace\"",
+        "the workspace's refs and objects, head_sha and audit event count are unchanged",
+        "no hub.git.push audit event exists"
+      ],
+      "real_components": [
+        "GitAuthMiddleware",
+        "gitResolverMiddleware",
+        "authorizeGitAccess",
+        "wsaccess.AuthorizeWorkspaceAt",
+        "git CLI",
+        "SQLite database",
+        "real git repository on disk",
+        "audit store"
+      ]
+    }
+  ]
+}

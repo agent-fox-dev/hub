@@ -1,0 +1,398 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/tasks.v2.json",
+  "spec_id": "36",
+  "spec_name": "org_member_audit_read",
+  "schema_version": 2,
+  "test_commands": {
+    "all_tests": "make test",
+    "linter": "make lint",
+    "spec_tests": "go test ./internal/audit/... -count=1"
+  },
+  "dependencies": [
+    {
+      "spec": "35",
+      "reason": "Provides wsaccess.AuthorizeWorkspace with a need (NeedRead/NeedWrite), the member access level, the 403 forbidden refusal for a reader asking to write, and wsaccess.ReadableSlugs, all called from internal/audit"
+    },
+    {
+      "spec": "33",
+      "reason": "Bound-token confinement on session and audit routes (TS-33-35 to 39, 46 to 53) must keep answering exactly as today"
+    },
+    {
+      "spec": "34",
+      "reason": "Binding refusals must still be reported once with method, route template and status (34-REQ-10.3, TS-34-58)"
+    }
+  ],
+  "tasks": [
+    {
+      "id": 1,
+      "kind": "implement",
+      "title": "Extend the shared audit SQLite fixture with org_id, clone_status and org_members",
+      "criteria": [
+        "36-REQ-10.4"
+      ],
+      "tests": [
+        "TS-36-46"
+      ],
+      "steps": [
+        "Write TS-36-46 in internal/audit (package audit) asserting workspaces has org_id and clone_status columns and org_members(org_id, user_id) exists and accepts a row; confirm it fails",
+        "In openTestSQLiteDB (internal/audit/testhelpers_test.go) add nullable org_id and clone_status (default 'ready' or equivalent matching what wsaccess.AuthorizeWorkspace reads) to the workspaces table and create org_members(org_id TEXT NOT NULL, user_id TEXT NOT NULL, PRIMARY KEY(org_id,user_id)); keep wsaccess.InitBindingSchema",
+        "Add small test helpers seedOrgMember(t, db, orgID, userID) and a seedWorkspace variant that accepts an org_id, without changing existing helper signatures or assertions",
+        "Run go test ./internal/audit/... and confirm every existing test passes unchanged"
+      ],
+      "touches": [
+        "internal/audit/testhelpers_test.go"
+      ],
+      "done_when": [
+        "go test ./internal/audit/... -count=1 passes with no existing assertion changed"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 2,
+      "kind": "implement",
+      "title": "Open a session through a write helper; replay discloses only to readers",
+      "criteria": [
+        "36-REQ-6"
+      ],
+      "tests": [
+        "TS-36-27",
+        "TS-36-28",
+        "TS-36-29",
+        "TS-36-30",
+        "TS-36-31"
+      ],
+      "steps": [
+        "Write TS-36-27 to TS-36-31 and confirm they fail (member POST currently 404, etc.)",
+        "In internal/audit/auth.go add requireWorkspaceWrite(c, auth, slug, sqliteDB) bool: admin-skip not needed (admin goes through the rule); nil sqliteDB returns true; call wsaccess.DeniesWorkspace(db, auth, slug, wsaccess.SiteOf(c, 404)) first (error -> 500 internal server error, denied -> 404 workspace not found), then wsaccess.AuthorizeWorkspace(db, auth, slug, wsaccess.NeedWrite); on non-200 status write the rule's refusal using wsaccess.WriteRefusal(c, status, msg) so a member gets 403 with error_type forbidden, a stranger/unknown slug gets 404 workspace not found, a DB error gets 500; never check workspace status",
+        "Switch POST /sessions in handlers.go (createSession, ~L43) from requireWorkspaceRead to requireWorkspaceWrite",
+        "Replace the replay check (~L83) with a read decision: DeniesWorkspace(site 404) then wsaccess.AuthorizeWorkspace(..., wsaccess.NeedRead) for the existing session's workspace W2; not readable -> 404 workspace not found without disclosing the session; readable -> 200 with the existing record; DB error -> 500",
+        "Confirm no session row is written on any refusal (member, stranger, unknown slug)",
+        "Run go test ./internal/audit/... including TS-33-35 and TS-34-58 and confirm they pass unchanged"
+      ],
+      "touches": [
+        "internal/audit/auth.go",
+        "internal/audit/handlers.go",
+        "internal/audit/handlers_test.go"
+      ],
+      "depends_on": [
+        1
+      ],
+      "done_when": [
+        "TS-33-35 and TS-34-58 still pass unchanged"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 3,
+      "kind": "implement",
+      "title": "Per-run audit reads and transcript through AuthorizeWorkspace with the read need",
+      "criteria": [
+        "36-REQ-1",
+        "36-REQ-9.1"
+      ],
+      "tests": [
+        "TS-36-1",
+        "TS-36-2",
+        "TS-36-3",
+        "TS-36-4",
+        "TS-36-5",
+        "TS-36-6",
+        "TS-36-7",
+        "TS-36-39"
+      ],
+      "steps": [
+        "Write TS-36-1 to TS-36-7 and TS-36-39 and confirm they fail",
+        "Rebuild requireWorkspaceRead (auth.go) to: return true when sqliteDB is nil; call wsaccess.DeniesWorkspace(db, auth, slug, wsaccess.SiteOf(c, 404)) first (error -> 500 internal server error; denied -> 404 workspace not found); then wsaccess.AuthorizeWorkspace(db, auth, slug, wsaccess.NeedRead); status 404 -> 404 workspace not found, 500 -> 500 internal server error; do NOT check workspace status and do not query owner_id",
+        "Keep the audit:read scope check ahead of the workspace check in the six per-run GET handlers in handlers_audit.go and in handleTranscript (handlers_unified_query.go); leave run_id format, node_id is required and postmortem_not_found validations after the check unchanged",
+        "Confirm requireWorkspaceRead is no longer used by POST /sessions (task 2) and that an archived workspace stays readable",
+        "Exercise the DB-failure case in TS-36-39 by dropping org_members (and separately the binding table) and asserting 500 with no data and no session row",
+        "Run go test ./internal/audit/... and confirm TS-33 binding tests, TS-34-58 and transcript tests pass unchanged"
+      ],
+      "touches": [
+        "internal/audit/auth.go",
+        "internal/audit/handlers_audit.go",
+        "internal/audit/handlers_unified_query.go",
+        "internal/audit/auth_test.go"
+      ],
+      "depends_on": [
+        2
+      ],
+      "done_when": [
+        "Existing transcript_handler_test and TS-34-58 pass unchanged"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 4,
+      "kind": "implement",
+      "title": "Single-workspace session and cost reads via hasWorkspaceAccess over the rule",
+      "criteria": [
+        "36-REQ-2"
+      ],
+      "tests": [
+        "TS-36-8",
+        "TS-36-9",
+        "TS-36-10",
+        "TS-36-11",
+        "TS-36-12"
+      ],
+      "steps": [
+        "Write TS-36-8 to TS-36-12 and confirm they fail",
+        "Rebuild hasWorkspaceAccess (handlers.go ~L524): call wsaccess.DeniesWorkspace(db, auth, slug, wsaccess.SiteOf(c, 403)) first; then wsaccess.AuthorizeWorkspace(db, auth, slug, wsaccess.NeedRead); require the returned access Status == 'active'; any error, non-200 status, or lookup failure returns false (fail closed); no owner_id query",
+        "Keep every caller (list with workspace_slug, get, usage list, cost) answering 403 workspace access denied on false; keep 404 session not found ahead of the workspace check on get and usage, and the sessions:read scope check first",
+        "Preserve nil SQLite handle behavior: get and usage skip the check, cost refuses non-admins with 403 workspace access denied",
+        "Run go test ./internal/audit/... and confirm TS-33-36, TS-34-58, cost_test and session_usage_test pass unchanged"
+      ],
+      "touches": [
+        "internal/audit/handlers.go",
+        "internal/audit/handlers_test.go"
+      ],
+      "depends_on": [
+        1
+      ],
+      "done_when": [
+        "TS-33-36 and TS-34-58 pass unchanged"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 5,
+      "kind": "implement",
+      "title": "Session list restriction built from ReadableSlugs",
+      "criteria": [
+        "36-REQ-3",
+        "36-REQ-9.2"
+      ],
+      "tests": [
+        "TS-36-13",
+        "TS-36-14",
+        "TS-36-15",
+        "TS-36-16",
+        "TS-36-17",
+        "TS-36-40"
+      ],
+      "steps": [
+        "Write TS-36-13 to TS-36-17 and TS-36-40 (TS-36-17 is a property test over random workspaces/memberships/sessions) and confirm they fail",
+        "Rebuild getAccessibleWorkspaces (handlers.go ~L546) on wsaccess.ReadableSlugs(db, auth): keep only slugs whose workspace status is active (read statuses from the workspaces table by slug set or from the rule's data), always return a non-nil slice (empty means no sessions; nil would mean unrestricted in Store.ListSessions), a bound PAT yields at most its bound slug; on error return an empty non-nil list so no session is returned (fail closed)",
+        "Keep admin tokens unrestricted (no restriction list) and filters, ordering and cursors unchanged; ensure filtering the list produces no refusal report",
+        "Confirm TestSessions_NoAccessibleWorkspaceListsNothing, TS-33-37 and session_list_fetch_test pass unchanged",
+        "Verify TS-36-40: with org_members dropped single-workspace reads answer 403 workspace access denied and GET /sessions returns no session"
+      ],
+      "touches": [
+        "internal/audit/handlers.go",
+        "internal/audit/handlers_test.go"
+      ],
+      "depends_on": [
+        4
+      ],
+      "done_when": [
+        "TestSessions_NoAccessibleWorkspaceListsNothing and TS-33-37 pass unchanged"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 6,
+      "kind": "implement",
+      "title": "Unified audit query restricted to the readable set",
+      "criteria": [
+        "36-REQ-4",
+        "36-REQ-9.3"
+      ],
+      "tests": [
+        "TS-36-18",
+        "TS-36-19",
+        "TS-36-20",
+        "TS-36-21",
+        "TS-36-22",
+        "TS-36-41"
+      ],
+      "steps": [
+        "Write TS-36-18 to TS-36-22 and TS-36-41 (TS-36-22 property test) and confirm they fail",
+        "Rebuild readableWorkspaces (auth.go ~L172) on wsaccess.ReadableSlugs: admin -> nil (unrestricted); otherwise convert the returned set to map[string]bool of any status; error -> 500 internal server error; when a requested workspace filter is outside the set call wsaccess.DeniesWorkspace(db, auth, requested, wsaccess.SiteOf(c, 404)) (reports once for a bound PAT) and answer 404 workspace not found",
+        "Delete ownedWorkspaces from auth.go and remove its use; leave checkWorkspaceAccess untouched in auth.go (TS-33-46 parses it)",
+        "Keep allowedWorkspacesCondition so workspace='' hub events are excluded for non-admins; admin stays unrestricted",
+        "Run TS-33-39, TS-34-58 (audit?workspace case) and binding_query_test unchanged"
+      ],
+      "touches": [
+        "internal/audit/auth.go",
+        "internal/audit/handlers_unified_query.go",
+        "internal/audit/query_handler_test.go"
+      ],
+      "depends_on": [
+        1
+      ],
+      "done_when": [
+        "binding_query_test.go and TS-34-58 pass unchanged"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 7,
+      "kind": "implement",
+      "title": "SSE stream uses the readable set computed at connect",
+      "criteria": [
+        "36-REQ-5",
+        "36-REQ-9.4"
+      ],
+      "tests": [
+        "TS-36-23",
+        "TS-36-24",
+        "TS-36-25",
+        "TS-36-26",
+        "TS-36-42"
+      ],
+      "steps": [
+        "Write TS-36-23 to TS-36-26 and TS-36-42 (real SSE manager for 23, 24, 26; a recording manager for 25 and 42) and confirm they fail",
+        "In handleSSEStream (handlers_unified_query.go ~L627) compute the readable set once through readableWorkspaces (task 6) before any header is written and before mgr.Register; refusal (404 workspace not found for a foreign workspace filter, 500 internal server error on error) must be written with no text/event-stream header and no registration",
+        "Pass the fixed set as sseFilters.allowedWorkspaces; do not re-check membership during the connection; in sse.go matchesFilters keep nil = unrestricted (admin only) and drop events with an empty workspace for non-nil sets",
+        "Leave connection limit, heartbeat and stale reaping unchanged",
+        "Run sse_handler_test, sse_broadcaster_test and TS-33-39 unchanged"
+      ],
+      "touches": [
+        "internal/audit/handlers_unified_query.go",
+        "internal/audit/sse.go",
+        "internal/audit/sse_handler_test.go"
+      ],
+      "depends_on": [
+        6
+      ],
+      "done_when": [
+        "sse_handler_test.go and sse_broadcaster_test.go pass unchanged"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 8,
+      "kind": "implement",
+      "title": "Prove complete, usage-report and ingestion writes still refuse members unchanged",
+      "criteria": [
+        "36-REQ-7"
+      ],
+      "tests": [
+        "TS-36-32",
+        "TS-36-33",
+        "TS-36-34"
+      ],
+      "steps": [
+        "Write TS-36-32, TS-36-33 and TS-36-34 (property over workspace state x caller kind with member callers added) and confirm which fail",
+        "Make no change to the session-creator check in complete/usage handlers or to checkWorkspaceAccess; only fix anything that regresses because of the earlier tasks",
+        "Assert members get 403 not session owner on complete and usage, 403 workspace_access_denied on all eight ingestion routes, 409 workspace_archived for a member on an archived workspace, and that no session, usage or audit rows change",
+        "Confirm TS-33-46 (checkWorkspaceAccess never reads KeyID) and workspace_auth_test pass unchanged"
+      ],
+      "touches": [
+        "internal/audit/ingestion_member_test.go",
+        "internal/audit/auth.go"
+      ],
+      "depends_on": [
+        3
+      ],
+      "done_when": [
+        "workspace_auth_test.go and TS-33-46 to 50 pass unchanged"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 9,
+      "kind": "implement",
+      "title": "Bound PAT confinement and refusal reports with member access",
+      "criteria": [
+        "36-REQ-8"
+      ],
+      "tests": [
+        "TS-36-35",
+        "TS-36-36",
+        "TS-36-37",
+        "TS-36-38"
+      ],
+      "steps": [
+        "Write TS-36-35 to TS-36-38 using boundPatAuth, a seeded org membership and a refusal observer counting wsaccess reports; confirm failures",
+        "Fix any helper that double-reports or reports with missing method/route/status: every audit helper calls wsaccess.DeniesWorkspace with wsaccess.SiteOf(c, <route status>) before the rule (404 for per-run reads, transcript, POST /sessions, audit workspace filter; 403 for session reads and cost), so each refused request yields exactly one report",
+        "Verify a bound PAT of a member reads its bound workspace (200) on per-run, session and audit routes, and a different workspace is refused with the route's usual refusal",
+        "Verify list filtering, GET /audit and GET /events inside the binding produce zero reports",
+        "Run refusal_report_test (TS-34-58) and binding_test unchanged"
+      ],
+      "touches": [
+        "internal/audit/auth.go",
+        "internal/audit/handlers.go",
+        "internal/audit/binding_member_test.go"
+      ],
+      "depends_on": [
+        3,
+        4,
+        5,
+        6,
+        7
+      ],
+      "done_when": [
+        "TS-34-58 and TS-33-35 to 39, 46 to 53 pass unchanged"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 10,
+      "kind": "implement",
+      "title": "Compatibility properties, owner_id scan, and documentation",
+      "criteria": [
+        "36-REQ-10.1",
+        "36-REQ-10.2",
+        "36-REQ-10.3"
+      ],
+      "tests": [
+        "TS-36-43",
+        "TS-36-44",
+        "TS-36-45"
+      ],
+      "steps": [
+        "Write TS-36-43 and TS-36-44 (property tests over strangers, personal-org and NULL org_id workspaces compared with the pre-spec answers) and TS-36-45 (go/parser scan of non-test files in internal/audit: no ownedWorkspaces FuncDecl; owner_id queries only inside checkWorkspaceAccess; the four helpers reference wsaccess.AuthorizeWorkspace or wsaccess.ReadableSlugs)",
+        "Remove any remaining owner_id comparison or helper outside checkWorkspaceAccess found by the scan",
+        "Run make doc is not needed for internal packages; update docs/api.md (Workspace Ownership, sessions list, GET /audit, GET /events, per-run GETs, transcript, POST /sessions member 403 forbidden), docs/permissions.md (sessions:read ownership row, audit:read ownership row, rewrite the stale 'Ownership notes' saying audit reads are not enforced), docs/openapi.yaml (listSessions, createSession 403, queryRunAuditEvents stale 'Ownership is not enforced', queryUnifiedAudit, streamAuditEvents), docs/architecture.md (audit helper list under token workspace bindings) and docs/errata/ownership_enforcement.md; write real content, no TODO",
+        "Run make check"
+      ],
+      "touches": [
+        "internal/audit/compat_test.go",
+        "internal/audit/auth.go",
+        "internal/audit/handlers.go",
+        "docs/api.md",
+        "docs/permissions.md",
+        "docs/openapi.yaml",
+        "docs/architecture.md",
+        "docs/errata/ownership_enforcement.md"
+      ],
+      "depends_on": [
+        9
+      ],
+      "done_when": [
+        "make check passes"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 11,
+      "kind": "integration",
+      "title": "Verify member read, stream and refused-write paths end to end",
+      "tests": [
+        "TS-36-47",
+        "TS-36-48",
+        "TS-36-49"
+      ],
+      "steps": [
+        "Write TS-36-47, TS-36-48 and TS-36-49 against a real audit server, real SQLite with org_members, wsaccess and (for 48) a real SSE manager and emitter; confirm they pass",
+        "Trace 36-PATH-1, 36-PATH-2 and 36-PATH-3 through the real code (routes.go / query_routes.go -> handlers -> wsaccess.DeniesWorkspace/AuthorizeWorkspace/ReadableSlugs -> Store); confirm each step calls the next and no stub remains",
+        "Confirm cmd/af-hub/main.go wires the audit routes with database.SqlDB so the rule runs in production, and that the contract results (403 forbidden on member POST /sessions, readable-set restriction on /audit and /events) are consumed by production callers, not only tests",
+        "Search the files in every task's touches for panic(\"not implemented\"), TODO and bare return nil on non-trivial paths and remove any that remain",
+        "Run make test and make lint"
+      ],
+      "touches": [
+        "internal/audit/smoke_member_test.go",
+        "cmd/af-hub/main.go"
+      ],
+      "depends_on": [
+        10
+      ],
+      "done_when": [
+        "make test and make lint pass"
+      ],
+      "state": "pending"
+    }
+  ]
+}

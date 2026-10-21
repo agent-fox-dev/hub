@@ -1,0 +1,450 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/requirements.v2.json",
+  "spec_id": "37",
+  "spec_name": "org_member_git_read",
+  "schema_version": 2,
+  "introduction": "Hub's git server (internal/gitserver) decides who may clone, fetch and push a workspace repository by calling the shared workspace access rule wsaccess.AuthorizeWorkspaceAt with a need taken from the git service requested: members of the workspace's org may clone and fetch, only the owner and admin tokens may push, and every other caller gets today's answer.",
+  "glossary": {
+    "admin token": "An af_admin_ credential (CredentialType \"admin_token\"); distinct from an API key whose user has the admin role.",
+    "git site": "wsaccess.RefusalSite{Method: c.Request().Method, Route: c.Path(), Status: 404, Surface: wsaccess.SurfaceGit}, the refusal site the git server reports bound-token refusals with.",
+    "member": "A user with a row in org_members for the workspace's org_id who is neither the workspace owner nor an admin token (wsaccess.AccessMember, spec 35).",
+    "need": "wsaccess.Need value passed to AuthorizeWorkspaceAt: NeedRead for upload-pack requests, NeedWrite for receive-pack requests. The git server never uses NeedPrivate.",
+    "pkt-line error": "A git smart-HTTP error body: Content-Type text/plain and the pkt-line encoding of \"ERR <message>\\n\", written by writePktLineError.",
+    "stranger": "A caller that is not the workspace owner, not a member of the workspace's org and not an admin token (wsaccess.AccessNone)."
+  },
+  "requirements": [
+    {
+      "id": "37-REQ-1",
+      "title": "One access decision, made by wsaccess",
+      "rationale": "The git server must apply hub's shared workspace access rule instead of keeping its own copy of the ownership rule.",
+      "criteria": [
+        {
+          "id": "37-REQ-1.1",
+          "pattern": "event_driven",
+          "condition": "gitResolverMiddleware has resolved a ready workspace and calls authorizeGitAccess with a non-nil AuthInfo",
+          "system": "authorizeGitAccess",
+          "action": "obtain the decision from exactly one call to wsaccess.AuthorizeWorkspaceAt(db, info, ws.Slug, need, site) where site is the git site, without checking CredentialType == \"admin_token\", comparing UserID with OwnerID, or calling wsaccess.DeniesWorkspace itself",
+          "contract": "returns nil when AuthorizeWorkspaceAt returns status 0; otherwise writes a pkt-line refusal and returns errAccessDenied"
+        },
+        {
+          "id": "37-REQ-1.2",
+          "pattern": "unwanted",
+          "condition": "the request context carries no AuthInfo",
+          "system": "authorizeGitAccess",
+          "action": "return before calling AuthorizeWorkspaceAt",
+          "contract": "returns echo.NewHTTPError(401)"
+        },
+        {
+          "id": "37-REQ-1.3",
+          "pattern": "ubiquitous",
+          "system": "git server package",
+          "action": "contain no Go code outside test files that compares a workspace owner_id or OwnerID field with the caller's UserID"
+        },
+        {
+          "id": "37-REQ-1.4",
+          "pattern": "ubiquitous",
+          "system": "authorizeGitAccess",
+          "action": "keep its name, its signature (c echo.Context, db *sql.DB, ws *workspaceInfo) error and its errAccessDenied contract, so that gitResolverMiddleware returns nil without writing a second response when it receives errAccessDenied",
+          "contract": "on errAccessDenied the client receives exactly one response, the pkt-line refusal authorizeGitAccess wrote"
+        }
+      ]
+    },
+    {
+      "id": "37-REQ-2",
+      "title": "Need derived from the git request",
+      "rationale": "Read and write must be distinguished before the handler runs so that the access rule can refuse a member's push.",
+      "criteria": [
+        {
+          "id": "37-REQ-2.1",
+          "pattern": "event_driven",
+          "condition": "the matched route template c.Path() is /git/:org/:slug.git/git-receive-pack, or is /git/:org/:slug.git/info/refs and the first service query value is git-receive-pack",
+          "system": "authorizeGitAccess",
+          "action": "pass wsaccess.NeedWrite to AuthorizeWorkspaceAt"
+        },
+        {
+          "id": "37-REQ-2.2",
+          "pattern": "event_driven",
+          "condition": "the matched route template is /git/:org/:slug.git/git-upload-pack, or is /git/:org/:slug.git/info/refs and the first service query value is anything other than git-receive-pack, including missing or empty",
+          "system": "authorizeGitAccess",
+          "action": "pass wsaccess.NeedRead to AuthorizeWorkspaceAt"
+        },
+        {
+          "id": "37-REQ-2.3",
+          "pattern": "complex_event",
+          "condition": "a member or owner sends GET .../info/refs with a missing or invalid service value",
+          "guard": "the workspace clone is ready",
+          "system": "git server",
+          "action": "grant access with NeedRead and let handleInfoRefs answer its existing invalid-service refusal",
+          "contract": "HTTP 403, Content-Type text/plain, pkt-line body \"ERR invalid or missing service parameter\\n\", identical for member and owner"
+        },
+        {
+          "id": "37-REQ-2.4",
+          "pattern": "ubiquitous",
+          "system": "git server",
+          "action": "for any git request, pass only NeedRead or NeedWrite to AuthorizeWorkspaceAt and never NeedPrivate"
+        }
+      ]
+    },
+    {
+      "id": "37-REQ-3",
+      "title": "Members clone and fetch",
+      "rationale": "Spec 35 lists org workspaces to members with their hub_url, so members must be able to read the repository it points to.",
+      "criteria": [
+        {
+          "id": "37-REQ-3.1",
+          "pattern": "event_driven",
+          "condition": "a member's API key, or a member's PAT holding git:read or git:write, sends GET .../info/refs?service=git-upload-pack for a workspace in their org with a ready clone",
+          "system": "git server",
+          "action": "serve the upload-pack ref advertisement exactly as it serves the workspace owner",
+          "contract": "HTTP 200 with the same Content-Type and the same advertised refs as the owner's response"
+        },
+        {
+          "id": "37-REQ-3.2",
+          "pattern": "event_driven",
+          "condition": "a member's API key, or a member's PAT holding git:read or git:write, sends POST .../git-upload-pack for a workspace in their org with a ready clone",
+          "system": "git server",
+          "action": "serve the pack exactly as it serves the workspace owner for the same request body",
+          "contract": "HTTP 200 with the same Content-Type and pack content as the owner's response"
+        },
+        {
+          "id": "37-REQ-3.3",
+          "pattern": "unwanted",
+          "condition": "a member's PAT holds neither git:read nor git:write and sends an upload-pack request",
+          "system": "git server",
+          "action": "grant access in the resolver and refuse in requireGitScope as for an owner's PAT",
+          "contract": "HTTP 403 \"insufficient git permissions\" from echo.NewHTTPError, identical to the owner's PAT answer"
+        },
+        {
+          "id": "37-REQ-3.4",
+          "pattern": "event_driven",
+          "condition": "a user's org_members row for the workspace's org is deleted between two git requests",
+          "system": "git server",
+          "action": "read membership on the second request and treat the user as a stranger",
+          "contract": "the second request gets HTTP 404 with pkt-line body \"ERR repository not found\\n\""
+        },
+        {
+          "id": "37-REQ-3.5",
+          "pattern": "event_driven",
+          "condition": "a member runs git clone and then git fetch of /git/<org>/<slug>.git with their API key",
+          "system": "git server",
+          "action": "complete both operations through the git CLI",
+          "contract": "git clone and git fetch exit 0 and the local refs equal the refs the owner sees"
+        }
+      ]
+    },
+    {
+      "id": "37-REQ-4",
+      "title": "Members cannot push",
+      "rationale": "Members have read-only access; a 403 tells them and their tooling why a push fails.",
+      "criteria": [
+        {
+          "id": "37-REQ-4.1",
+          "pattern": "unwanted",
+          "condition": "a member sends GET .../info/refs?service=git-receive-pack or POST .../git-receive-pack, with an API key or a PAT holding any scopes",
+          "system": "gitResolverMiddleware",
+          "action": "refuse the request before git.PlainOpen and before the handler runs",
+          "contract": "HTTP 403, Content-Type text/plain, pkt-line body \"ERR org members have read-only access to this workspace\\n\" using the message AuthorizeWorkspaceAt returns"
+        },
+        {
+          "id": "37-REQ-4.2",
+          "pattern": "unwanted",
+          "condition": "a member's POST .../git-receive-pack carrying a pack and ref updates is refused",
+          "system": "git server",
+          "action": "write no object and no ref, not call the pre-receive hook, not update head_sha, not reset the worktree, emit no hub.git.push audit event and not run the post-push hook",
+          "contract": "the workspace's refs, objects, head_sha and audit event count are unchanged after the request"
+        },
+        {
+          "id": "37-REQ-4.3",
+          "pattern": "unwanted",
+          "condition": "a member runs git push to the workspace with their API key",
+          "system": "git server",
+          "action": "refuse at ref discovery",
+          "contract": "git push exits non-zero, its output contains \"org members have read-only access to this workspace\", and the workspace refs are unchanged"
+        },
+        {
+          "id": "37-REQ-4.4",
+          "pattern": "ubiquitous",
+          "system": "git server",
+          "action": "emit no audit event for a refused member push request"
+        }
+      ]
+    },
+    {
+      "id": "37-REQ-5",
+      "title": "Refusal statuses written as pkt-lines",
+      "rationale": "Git clients read pkt-line errors, and existing tests and users read the git server's existing \"repository not found\" text.",
+      "criteria": [
+        {
+          "id": "37-REQ-5.1",
+          "pattern": "unwanted",
+          "condition": "AuthorizeWorkspaceAt returns status 404",
+          "system": "authorizeGitAccess",
+          "action": "write the git server's not-found text instead of wsaccess's message and return errAccessDenied",
+          "contract": "HTTP 404, Content-Type text/plain, pkt-line body \"ERR repository not found\\n\""
+        },
+        {
+          "id": "37-REQ-5.2",
+          "pattern": "unwanted",
+          "condition": "AuthorizeWorkspaceAt returns status 403",
+          "system": "authorizeGitAccess",
+          "action": "write the returned message as a pkt-line error and return errAccessDenied",
+          "contract": "HTTP 403, Content-Type text/plain, pkt-line body \"ERR <returned message>\\n\""
+        },
+        {
+          "id": "37-REQ-5.3",
+          "pattern": "unwanted",
+          "condition": "AuthorizeWorkspaceAt returns status 500 or any other non-zero status other than 403 and 404, including after a membership or binding database error",
+          "system": "authorizeGitAccess",
+          "action": "deny access, write a pkt-line internal error and return errAccessDenied",
+          "contract": "HTTP 500, Content-Type text/plain, pkt-line body \"ERR internal server error\\n\"; the repository is not opened or served"
+        }
+      ]
+    },
+    {
+      "id": "37-REQ-6",
+      "title": "Everyone else answers as today",
+      "rationale": "Only members' answers change; strangers, owners and admin tokens keep their exact status and body.",
+      "criteria": [
+        {
+          "id": "37-REQ-6.1",
+          "pattern": "unwanted",
+          "condition": "a stranger's API key or PAT sends a request to any of the three git routes of a workspace with a ready clone",
+          "system": "git server",
+          "action": "refuse without a binding lookup and without a bound-refusal report",
+          "contract": "HTTP 404, Content-Type text/plain, pkt-line body \"ERR repository not found\\n\"; no BoundRefusal is observed"
+        },
+        {
+          "id": "37-REQ-6.2",
+          "pattern": "event_driven",
+          "condition": "the workspace owner or an admin token sends a request to any of the three git routes",
+          "system": "git server",
+          "action": "answer with today's status and body, including the scope 403 \"insufficient git permissions\" for an owner's PAT that lacks the required git scope",
+          "contract": "status and body equal to the pre-change answers"
+        },
+        {
+          "id": "37-REQ-6.3",
+          "pattern": "ubiquitous",
+          "system": "git server",
+          "action": "treat an API key whose user has Role admin as owner, member or stranger by the same rule as any other API key, never as an admin token"
+        },
+        {
+          "id": "37-REQ-6.4",
+          "pattern": "ubiquitous",
+          "system": "git server",
+          "action": "decide API key and admin token requests without querying the binding table, so they get the same answers with that table dropped"
+        },
+        {
+          "id": "37-REQ-6.5",
+          "pattern": "unwanted",
+          "condition": "a blocked user's credential is presented to any git route",
+          "system": "GitAuthMiddleware",
+          "action": "refuse before the resolver runs",
+          "contract": "HTTP 401"
+        }
+      ]
+    },
+    {
+      "id": "37-REQ-7",
+      "title": "Bound tokens keep spec 33 and 34 behaviour",
+      "rationale": "Token binding narrows access after the access decision, so it must hold for members as it does for owners.",
+      "criteria": [
+        {
+          "id": "37-REQ-7.1",
+          "pattern": "unwanted",
+          "condition": "a PAT bound to workspace S requests another workspace whose access step grants its user (owner or member)",
+          "system": "git server",
+          "action": "refuse the request and report the refusal exactly once to the refusal observer with the git site",
+          "contract": "HTTP 404 pkt-line \"ERR repository not found\\n\"; one BoundRefusal with Method, Route = c.Path(), Status 404 and Surface \"git\""
+        },
+        {
+          "id": "37-REQ-7.2",
+          "pattern": "unwanted",
+          "condition": "the binding lookup fails with a database error",
+          "system": "git server",
+          "action": "not serve the repository",
+          "contract": "HTTP 500 pkt-line \"ERR internal server error\\n\""
+        },
+        {
+          "id": "37-REQ-7.3",
+          "pattern": "event_driven",
+          "condition": "a member's PAT bound to the workspace W requests W",
+          "system": "git server",
+          "action": "answer exactly as for an unbound PAT of the same user and scopes: grant upload-pack requests and refuse receive-pack requests with the member 403",
+          "contract": "upload-pack HTTP 200; receive-pack HTTP 403 pkt-line \"ERR org members have read-only access to this workspace\\n\""
+        },
+        {
+          "id": "37-REQ-7.4",
+          "pattern": "unwanted",
+          "condition": "a stranger's PAT bound to some workspace requests W",
+          "system": "git server",
+          "action": "refuse without reporting a bound refusal",
+          "contract": "HTTP 404 pkt-line \"ERR repository not found\\n\"; no BoundRefusal is observed"
+        }
+      ]
+    },
+    {
+      "id": "37-REQ-8",
+      "title": "Order of checks",
+      "rationale": "Moving the access decision would change strangers' answers and bound-refusal reporting, which is out of scope.",
+      "criteria": [
+        {
+          "id": "37-REQ-8.1",
+          "pattern": "ubiquitous",
+          "system": "git server",
+          "action": "apply the checks in this order: GitAuthMiddleware (401), requireDotGitSuffix (404), the resolver's own lookup (unknown slug or org mismatch 404 \"repository not found\", database error plain 500, clone not ready 404 \"repository not available\"), authorizeGitAccess, git.PlainOpen (500), then the handler's invalid-service 403 and scope 403",
+          "contract": "each request receives the status of the first check in this order that refuses it"
+        },
+        {
+          "id": "37-REQ-8.2",
+          "pattern": "unwanted",
+          "condition": "any caller, including a stranger, requests a workspace whose clone_status is not ready",
+          "system": "gitResolverMiddleware",
+          "action": "refuse before the access decision runs",
+          "contract": "HTTP 404 pkt-line \"ERR repository not available\\n\""
+        },
+        {
+          "id": "37-REQ-8.3",
+          "pattern": "unwanted",
+          "condition": "the URL's org slug does not match the workspace's org",
+          "system": "gitResolverMiddleware",
+          "action": "refuse before the access decision runs and report no bound refusal",
+          "contract": "HTTP 404 pkt-line \"ERR repository not found\\n\""
+        },
+        {
+          "id": "37-REQ-8.4",
+          "pattern": "unwanted",
+          "condition": "the workspace row is deleted after the resolver's lookup and before AuthorizeWorkspaceAt reads it",
+          "system": "authorizeGitAccess",
+          "action": "refuse the request",
+          "contract": "HTTP 404 pkt-line \"ERR repository not found\\n\""
+        }
+      ]
+    },
+    {
+      "id": "37-REQ-9",
+      "title": "Workspace without an org",
+      "rationale": "A NULL org_id currently yields a 500 that reveals the slug exists, which anti-enumeration forbids.",
+      "criteria": [
+        {
+          "id": "37-REQ-9.1",
+          "pattern": "unwanted",
+          "condition": "any caller, including the owner or an admin token, requests /git/<org>/<slug>.git for a workspace whose org_id is NULL",
+          "system": "gitResolverMiddleware",
+          "action": "read the NULL org_id as no org, match no URL org and refuse",
+          "contract": "HTTP 404 pkt-line \"ERR repository not found\\n\" instead of a 500"
+        },
+        {
+          "id": "37-REQ-9.2",
+          "pattern": "unwanted",
+          "condition": "WorkspaceLoader.Load is asked for a workspace whose org_id is NULL",
+          "system": "WorkspaceLoader",
+          "action": "report the repository as not found",
+          "contract": "returns transport.ErrRepositoryNotFound"
+        }
+      ]
+    },
+    {
+      "id": "37-REQ-10",
+      "title": "Existing tests keep their assertions",
+      "rationale": "The change must not alter any answer existing gitserver tests assert, except spec 35's git clause this spec supersedes.",
+      "criteria": [
+        {
+          "id": "37-REQ-10.1",
+          "pattern": "ubiquitous",
+          "system": "gitserver test suite",
+          "action": "pass every existing internal/gitserver test with no assertion changed, where TestAuthz_PATWrongOwner_Returns404, TestAuthz_APIKeyWrongOwner_Returns404, TestResolver_NonOwnerNonAdmin_Returns404 and newBindingGitEnv drop only their seedOrgMember row for the non-owner caller, and TS-33-42..45, 52, 53, 55, 60 and TS-34-58 pass unchanged"
+        },
+        {
+          "id": "37-REQ-10.2",
+          "pattern": "ubiquitous",
+          "system": "spec 35 test suite",
+          "action": "change the git case of TS-35-56 (35-REQ-10.6) to expect a member's upload-pack requests to be granted and a member's receive-pack requests to get the member 403, leaving its REST cases unchanged"
+        }
+      ]
+    }
+  ],
+  "execution_paths": [
+    {
+      "id": "37-PATH-1",
+      "title": "An org member clones and fetches a colleague's workspace",
+      "steps": [
+        {
+          "actor": "member",
+          "action": "runs git clone http://x-token-auth:<member API key>@hub/git/<org>/<slug>.git"
+        },
+        {
+          "actor": "GitAuthMiddleware",
+          "action": "resolves the API key to the member's AuthInfo"
+        },
+        {
+          "actor": "gitResolverMiddleware",
+          "action": "resolves the workspace, checks the org match and clone_status ready, and calls authorizeGitAccess"
+        },
+        {
+          "actor": "authorizeGitAccess",
+          "action": "derives NeedRead from the upload-pack service and calls wsaccess.AuthorizeWorkspaceAt with the git site, which decides AccessMember and grants"
+        },
+        {
+          "actor": "git server",
+          "action": "serves the ref advertisement and the pack"
+        },
+        {
+          "actor": "member",
+          "action": "git clone exits 0; a later git fetch also exits 0 and the local refs equal the owner's refs"
+        }
+      ]
+    },
+    {
+      "id": "37-PATH-2",
+      "title": "An org member's push is refused with a read-only 403",
+      "steps": [
+        {
+          "actor": "member",
+          "action": "commits in the clone and runs git push to /git/<org>/<slug>.git with their API key"
+        },
+        {
+          "actor": "gitResolverMiddleware",
+          "action": "resolves the ready workspace and calls authorizeGitAccess for GET info/refs?service=git-receive-pack"
+        },
+        {
+          "actor": "authorizeGitAccess",
+          "action": "derives NeedWrite and calls wsaccess.AuthorizeWorkspaceAt, which returns 403 \"org members have read-only access to this workspace\""
+        },
+        {
+          "actor": "authorizeGitAccess",
+          "action": "writes HTTP 403 with the pkt-line ERR message and returns errAccessDenied before PlainOpen"
+        },
+        {
+          "actor": "member",
+          "action": "git push exits non-zero printing the read-only message; the workspace refs, head_sha and audit log are unchanged"
+        }
+      ]
+    }
+  ],
+  "external_apis": [
+    {
+      "package": "github.com/txsvc/apikit",
+      "version": "replace ../apikit",
+      "verified": false,
+      "symbols": [
+        {
+          "name": "AuthInfo",
+          "import_path": "github.com/txsvc/apikit",
+          "signature": "type AuthInfo struct { CredentialType string; UserID string; Role string; TokenID string; KeyID string; Permissions []string }",
+          "notes": "Seen constructed in internal/gitserver/auth.go; source outside the repository."
+        },
+        {
+          "name": "GetAuthInfo",
+          "import_path": "github.com/txsvc/apikit",
+          "signature": "func GetAuthInfo(c echo.Context) *AuthInfo",
+          "notes": "Returns nil when unauthenticated."
+        },
+        {
+          "name": "SetAuthInfo",
+          "import_path": "github.com/txsvc/apikit",
+          "signature": "func SetAuthInfo(c echo.Context, info *AuthInfo)"
+        }
+      ]
+    }
+  ]
+}

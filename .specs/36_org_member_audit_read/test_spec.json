@@ -1,0 +1,875 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/test_spec.v2.json",
+  "spec_id": "36",
+  "spec_name": "org_member_audit_read",
+  "schema_version": 2,
+  "tests": [
+    {
+      "id": "TS-36-1",
+      "kind": "integration",
+      "verifies": [
+        "36-REQ-1.1"
+      ],
+      "title": "A member of the workspace's org gets 200 on every per-run read route and the transcript",
+      "given": [
+        "org O holds U1 (owner) and U2 (member); workspace W is owned by U1 in O and is active",
+        "run R has events, session outcomes, tool calls, tool errors, traces, a postmortem and a transcript node",
+        "U2 holds a PAT with audit:read"
+      ],
+      "when": "U2 sends GET to /workspaces/W/runs/R/{events,sessions/outcomes,tools/calls,tools/errors,traces,postmortem} and /transcript?node_id=N",
+      "then": [
+        "every response status is 200",
+        "each body carries the same shape and rows the owner U1 receives for the same route"
+      ],
+      "pseudocode": "seedOrg(O,[U1,U2]); seedWorkspace(W,U1,org=O); for route in routes: r=get(route, patAuth(U2,'audit:read')); assert r.status==200; assert r.json==get(route, patAuth(U1,'audit:read')).json"
+    },
+    {
+      "id": "TS-36-2",
+      "kind": "integration",
+      "verifies": [
+        "36-REQ-1.1"
+      ],
+      "title": "Owner and admin token keep reading per-run routes and the access decision goes binding check then NeedRead",
+      "given": [
+        "workspace W owned by U1; admin token available"
+      ],
+      "when": "U1 and an admin token each call every per-run read route for W",
+      "then": [
+        "every answer is 200",
+        "the owner's body equals the admin's body"
+      ],
+      "pseudocode": "for route in routes: assert get(route, owner).status==200; assert get(route, admin).status==200"
+    },
+    {
+      "id": "TS-36-3",
+      "kind": "integration",
+      "verifies": [
+        "36-REQ-1.2"
+      ],
+      "title": "A member can read the per-run routes of an archived workspace",
+      "given": [
+        "U2 is a member of org O; workspace W in O has status archived and holds run data"
+      ],
+      "when": "U2 requests each per-run read route and the transcript for W",
+      "then": [
+        "every answer is 200, not 404 and not 403"
+      ],
+      "pseudocode": "seedWorkspaceWithStatus(W,U1,'archived',org=O); for route in routes: assert get(route,U2).status==200"
+    },
+    {
+      "id": "TS-36-4",
+      "kind": "unit",
+      "verifies": [
+        "36-REQ-1.3"
+      ],
+      "title": "A caller without audit:read is refused with the scope message before any workspace lookup",
+      "given": [
+        "U2 is a member of W's org with a PAT lacking audit:read",
+        "the request names a workspace slug that does not exist"
+      ],
+      "when": "U2 requests a per-run read route",
+      "then": [
+        "the status is 403",
+        "the error is today's audit:read scope message, not 'workspace not found'"
+      ],
+      "pseudocode": "r=get('/workspaces/nope/runs/R/events', patAuth(U2,'sessions:read')); assert r.status==403; assert errOf(r)==scopeMsg('audit:read')"
+    },
+    {
+      "id": "TS-36-5",
+      "kind": "integration",
+      "verifies": [
+        "36-REQ-1.4"
+      ],
+      "title": "A stranger or an unknown workspace gets 404 workspace not found on all per-run routes and no audit rows are queried",
+      "given": [
+        "workspace W in org O with run data; U3 is neither owner nor member nor admin; slug 'missing' does not exist"
+      ],
+      "when": "U3 requests every per-run read route and the transcript for W, and for 'missing'",
+      "then": [
+        "every status is 404",
+        "every body error is 'workspace not found'",
+        "no audit data appears in the body"
+      ],
+      "pseudocode": "for slug in [W,'missing']: for route in routes: r=get(route, patAuth(U3,'audit:read')); assert r.status==404; assert errOf(r)=='workspace not found'"
+    },
+    {
+      "id": "TS-36-6",
+      "kind": "integration",
+      "verifies": [
+        "36-REQ-1.5"
+      ],
+      "title": "Per-run validations still apply to a member after the access check",
+      "given": [
+        "U2 is a member of W's org; W has no postmortem for run R2"
+      ],
+      "when": "U2 sends a malformed run_id, a transcript request without node_id, and a postmortem request for R2",
+      "then": [
+        "malformed run_id answers the same 400 as the owner",
+        "missing node_id answers 400 'node_id is required'",
+        "postmortem answers 404 with error postmortem_not_found"
+      ],
+      "pseudocode": "assert get(badRunIdRoute,U2).status==400; assert get(transcriptNoNode,U2).status==400 and 'node_id is required' in err; assert errType(get(postmortemR2,U2))=='postmortem_not_found'"
+    },
+    {
+      "id": "TS-36-7",
+      "kind": "unit",
+      "verifies": [
+        "36-REQ-1.6"
+      ],
+      "title": "With a nil SQLite handle the per-run routes skip the workspace check for every caller",
+      "given": [
+        "audit routes are registered with a nil SQLite handle"
+      ],
+      "when": "a PAT caller with audit:read requests a per-run read route for any slug",
+      "then": [
+        "the workspace check does not refuse; the status is the handler's normal non-access status, not 404 workspace not found",
+        "no panic occurs"
+      ],
+      "pseudocode": "env=newAuditTestEnv(nilSQLite); r=get(eventsRoute, patAuth(U9,'audit:read')); assert r.status==200"
+    },
+    {
+      "id": "TS-36-8",
+      "kind": "integration",
+      "verifies": [
+        "36-REQ-2.1"
+      ],
+      "title": "A member reads session, usage, cost and the workspace session list of an active workspace",
+      "given": [
+        "W is active in org O owned by U1; session S belongs to W with usage rows; U2 is a member with sessions:read"
+      ],
+      "when": "U2 calls GET /sessions/S, GET /sessions/S/usage, GET /workspaces/W/cost and GET /sessions?workspace_slug=W",
+      "then": [
+        "each answers 200",
+        "the bodies carry S, its usage, W's cost summary and a list containing S"
+      ],
+      "pseudocode": "for p in [sessions/S, sessions/S/usage, workspaces/W/cost, sessions?workspace_slug=W]: assert get(p,U2).status==200"
+    },
+    {
+      "id": "TS-36-9",
+      "kind": "integration",
+      "verifies": [
+        "36-REQ-2.2"
+      ],
+      "title": "Session read routes refuse non-active, unreadable, missing and out-of-binding workspaces with 403 workspace access denied",
+      "given": [
+        "session S1 in archived W_a (member U2), S2 in W_s of a stranger, a missing workspace slug, and a PAT of U2 bound to another workspace"
+      ],
+      "when": "U2 reads S1, S2, cost of the missing slug, and the bound PAT reads a session of W",
+      "then": [
+        "every answer is 403 with error 'workspace access denied'"
+      ],
+      "pseudocode": "for req in cases: r=get(req); assert r.status==403; assert errOf(r)=='workspace access denied'"
+    },
+    {
+      "id": "TS-36-10",
+      "kind": "unit",
+      "verifies": [
+        "36-REQ-2.3"
+      ],
+      "title": "A missing session id answers 404 session not found before the workspace check",
+      "given": [
+        "any caller with sessions:read, including a stranger"
+      ],
+      "when": "GET /sessions/nope and GET /sessions/nope/usage",
+      "then": [
+        "both answer 404 with error 'session not found'"
+      ],
+      "pseudocode": "for p in ['sessions/nope','sessions/nope/usage']: r=get(p,stranger); assert r.status==404; assert errOf(r)=='session not found'"
+    },
+    {
+      "id": "TS-36-11",
+      "kind": "unit",
+      "verifies": [
+        "36-REQ-2.4"
+      ],
+      "title": "A caller without sessions:read is refused with the scope message before any lookup",
+      "given": [
+        "member U2 with a PAT lacking sessions:read"
+      ],
+      "when": "U2 calls the four session read routes",
+      "then": [
+        "each answers 403 with the unchanged sessions:read scope message"
+      ],
+      "pseudocode": "for p in sessionReadRoutes: r=get(p, patAuth(U2,'audit:read')); assert r.status==403; assert errOf(r)==scopeMsg('sessions:read')"
+    },
+    {
+      "id": "TS-36-12",
+      "kind": "unit",
+      "verifies": [
+        "36-REQ-2.5"
+      ],
+      "title": "With a nil SQLite handle get and usage skip the check and cost refuses non-admins",
+      "given": [
+        "session routes registered with a nil SQLite handle; one session stored"
+      ],
+      "when": "a non-admin calls GET /sessions/:id, GET /sessions/:id/usage and GET /workspaces/W/cost",
+      "then": [
+        "get and usage answer 200",
+        "cost answers 403 with error 'workspace access denied'"
+      ],
+      "pseudocode": "assert get(sess,pat).status==200; assert get(usage,pat).status==200; r=get(cost,pat); assert r.status==403 and errOf(r)=='workspace access denied'"
+    },
+    {
+      "id": "TS-36-13",
+      "kind": "integration",
+      "verifies": [
+        "36-REQ-3.1"
+      ],
+      "title": "The session list without a slug includes owned and member active workspaces' sessions",
+      "given": [
+        "U2 owns W_own and is a member in W_team (both active); a stranger's workspace W_x has a session"
+      ],
+      "when": "U2 calls GET /sessions with no workspace_slug",
+      "then": [
+        "status 200",
+        "sessions of W_own and W_team are listed",
+        "sessions of W_x are not listed",
+        "filters, order and cursor behave as before"
+      ],
+      "pseudocode": "r=get('/sessions',U2); assert slugs(r)=={'W_own','W_team'}"
+    },
+    {
+      "id": "TS-36-14",
+      "kind": "unit",
+      "verifies": [
+        "36-REQ-3.2"
+      ],
+      "title": "A caller with no readable active workspace gets an empty list, not an unrestricted one",
+      "given": [
+        "sessions exist in other users' workspaces; the caller has no workspace and no membership"
+      ],
+      "when": "the caller calls GET /sessions; and getAccessibleWorkspaces is called for the caller",
+      "then": [
+        "status 200 with an empty sessions list",
+        "the restriction list is non-nil and empty"
+      ],
+      "pseudocode": "r=get('/sessions',lonely); assert r.status==200 and len(r.sessions)==0; l,_=getAccessibleWorkspaces(db,lonely); assert l!=nil and len(l)==0"
+    },
+    {
+      "id": "TS-36-15",
+      "kind": "integration",
+      "verifies": [
+        "36-REQ-3.3"
+      ],
+      "title": "A bound PAT lists at most its bound workspace's sessions and no refusal report is made",
+      "given": [
+        "U2 is a member of W's org (W active) and owns W2; U2's PAT is bound to W; sessions exist in both; an observer counts refusal reports"
+      ],
+      "when": "the bound PAT calls GET /sessions with no slug",
+      "then": [
+        "status 200 with only W's sessions",
+        "the observer was called 0 times",
+        "when the user may not read W (membership removed) the list is empty"
+      ],
+      "pseudocode": "r=get('/sessions',boundPatAuth(U2,tok)); assert slugs(r)=={'W'}; assert reports==0"
+    },
+    {
+      "id": "TS-36-16",
+      "kind": "integration",
+      "verifies": [
+        "36-REQ-3.4"
+      ],
+      "title": "An admin token lists sessions of every workspace",
+      "given": [
+        "sessions in three workspaces of different owners"
+      ],
+      "when": "an admin token calls GET /sessions",
+      "then": [
+        "status 200 and all three workspaces' sessions are returned"
+      ],
+      "pseudocode": "r=get('/sessions',adminAuth()); assert slugs(r)==all"
+    },
+    {
+      "id": "TS-36-17",
+      "kind": "property",
+      "verifies": [
+        "36-REQ-3.5"
+      ],
+      "title": "The session list never shows a session outside the caller's active readable workspaces",
+      "given": [
+        "a fixture with random workspaces (active/archived, org_id null or set), random memberships, random sessions"
+      ],
+      "when": "for any non-admin caller and any seeded workspaces, memberships and sessions, the caller lists GET /sessions",
+      "then": [
+        "every returned session's workspace is active",
+        "and is owned by the caller or in an org the caller belongs to",
+        "every such session is returned (when within page size)"
+      ],
+      "pseudocode": "for seed in gen(): r=get('/sessions',caller); for s in r.sessions: assert active(s.ws) and readable(caller,s.ws)"
+    },
+    {
+      "id": "TS-36-18",
+      "kind": "integration",
+      "verifies": [
+        "36-REQ-4.1"
+      ],
+      "title": "GET /audit for a member lists events of owned and member workspaces of any status",
+      "given": [
+        "U2 owns W_own, is a member of W_team and W_arch (archived); events exist in all three and in a stranger's W_x"
+      ],
+      "when": "U2 calls GET /audit",
+      "then": [
+        "status 200",
+        "events of W_own, W_team and W_arch are listed",
+        "no event of W_x"
+      ],
+      "pseudocode": "r=get('/audit',U2); assert workspaces(r)=={'W_own','W_team','W_arch'}"
+    },
+    {
+      "id": "TS-36-19",
+      "kind": "integration",
+      "verifies": [
+        "36-REQ-4.2"
+      ],
+      "title": "Hub events with an empty workspace are never returned to a non-admin on GET /audit",
+      "given": [
+        "a hub event with workspace '' and events in U2's workspaces"
+      ],
+      "when": "owner U1 and member U2 call GET /audit",
+      "then": [
+        "neither response contains the empty-workspace event"
+      ],
+      "pseudocode": "for u in [U1,U2]: assert all(e.workspace!='' for e in get('/audit',u).events)"
+    },
+    {
+      "id": "TS-36-20",
+      "kind": "integration",
+      "verifies": [
+        "36-REQ-4.3"
+      ],
+      "title": "A workspace filter outside the readable set answers 404 and a binding refusal is reported once",
+      "given": [
+        "U2 is not a member of W_x; a PAT of U2 bound to W_team; an observer counts reports"
+      ],
+      "when": "U2 calls GET /audit?workspace=W_x; the bound PAT calls GET /audit?workspace=W_other",
+      "then": [
+        "both answer 404 with error 'workspace not found'",
+        "the unbound call produces no report",
+        "the bound call produces exactly one report with Method GET, Route /api/v1/audit, Status 404"
+      ],
+      "pseudocode": "r=get('/audit?workspace=W_x',U2); assert 404 and errOf=='workspace not found'; get('/audit?workspace=W_other',bound); assert reports==1"
+    },
+    {
+      "id": "TS-36-21",
+      "kind": "integration",
+      "verifies": [
+        "36-REQ-4.4"
+      ],
+      "title": "An admin token's GET /audit is unrestricted and includes empty-workspace hub events",
+      "given": [
+        "hub event with workspace '' and events in several workspaces"
+      ],
+      "when": "an admin token calls GET /audit",
+      "then": [
+        "status 200",
+        "the response includes the empty-workspace event and events of all workspaces"
+      ],
+      "pseudocode": "r=get('/audit',adminAuth()); assert '' in workspaces(r) and len(workspaces(r))>=3"
+    },
+    {
+      "id": "TS-36-22",
+      "kind": "property",
+      "verifies": [
+        "36-REQ-4.5"
+      ],
+      "title": "GET /audit only returns events with a non-empty workspace in the caller's readable set",
+      "given": [
+        "a fixture with random workspaces, memberships and events including empty-workspace hub events"
+      ],
+      "when": "for any non-admin caller and any seeded events, the caller calls GET /audit",
+      "then": [
+        "every returned event has a non-empty workspace",
+        "and that workspace is owned by or org-shared with the caller"
+      ],
+      "pseudocode": "for seed in gen(): for e in get('/audit',caller).events: assert e.workspace!='' and readable(caller,e.workspace)"
+    },
+    {
+      "id": "TS-36-23",
+      "kind": "integration",
+      "verifies": [
+        "36-REQ-5.1"
+      ],
+      "title": "A member's SSE stream delivers events of owned and member workspaces only",
+      "given": [
+        "U2 owns W_own and is a member of W_team; stranger workspace W_x; a real SSE manager"
+      ],
+      "when": "U2 opens GET /events and events are published for W_own, W_team and W_x",
+      "then": [
+        "events of W_own and W_team arrive on the stream",
+        "the event of W_x does not arrive"
+      ],
+      "pseudocode": "stream=open('/events',U2); publish(W_own); publish(W_team); publish(W_x); assert received(stream)=={W_own,W_team}"
+    },
+    {
+      "id": "TS-36-24",
+      "kind": "integration",
+      "verifies": [
+        "36-REQ-5.2"
+      ],
+      "title": "The readable set of an open SSE connection is fixed at connect",
+      "given": [
+        "U2 opens a stream as a member of W_team; then U2 is removed from W_team and added to W_new"
+      ],
+      "when": "events are published for W_team and W_new",
+      "then": [
+        "the W_team event is still delivered",
+        "the W_new event is not delivered"
+      ],
+      "pseudocode": "stream=open(U2); removeMember(W_team,U2); addMember(W_new,U2); publish both; assert received(stream)=={W_team}"
+    },
+    {
+      "id": "TS-36-25",
+      "kind": "unit",
+      "verifies": [
+        "36-REQ-5.3"
+      ],
+      "title": "GET /events with a workspace filter outside the readable set answers 404 with no stream header",
+      "given": [
+        "U2 is not a member of W_x; a recording SSE manager"
+      ],
+      "when": "U2 calls GET /events?workspace=W_x",
+      "then": [
+        "status 404 with error 'workspace not found'",
+        "Content-Type is not text/event-stream",
+        "no connection was registered"
+      ],
+      "pseudocode": "r=get('/events?workspace=W_x',U2); assert r.status==404; assert r.header['Content-Type']!='text/event-stream'; assert mgr.registered==0"
+    },
+    {
+      "id": "TS-36-26",
+      "kind": "integration",
+      "verifies": [
+        "36-REQ-5.4"
+      ],
+      "title": "Events with an empty workspace reach only admin-token streams",
+      "given": [
+        "an owner stream, a member stream and an admin stream are open"
+      ],
+      "when": "a hub event with an empty workspace is published",
+      "then": [
+        "only the admin stream receives it"
+      ],
+      "pseudocode": "publish(Event{Workspace:''}); assert received(admin)==1; assert received(owner)==0 and received(member)==0"
+    },
+    {
+      "id": "TS-36-27",
+      "kind": "integration",
+      "verifies": [
+        "36-REQ-6.1"
+      ],
+      "title": "The owner and an admin token can open a session, regardless of workspace status",
+      "given": [
+        "W owned by U1 (active) and W_arch owned by U1 (archived)"
+      ],
+      "when": "U1 posts a new session id for W, and an admin token posts one for W_arch",
+      "then": [
+        "both answer 201 with the created session",
+        "session rows were written"
+      ],
+      "pseudocode": "assert post('/sessions',{id:'a',workspace_slug:'W'},U1).status==201; assert post('/sessions',{id:'b',workspace_slug:'W_arch'},admin).status==201"
+    },
+    {
+      "id": "TS-36-28",
+      "kind": "integration",
+      "verifies": [
+        "36-REQ-6.2"
+      ],
+      "title": "A member opening a session gets 403 forbidden and no row is written",
+      "given": [
+        "U2 is a member of W's org with sessions:write; session count recorded"
+      ],
+      "when": "U2 posts POST /sessions with workspace_slug W",
+      "then": [
+        "status 403",
+        "error 'org members have read-only access to this workspace' with error_type 'forbidden'",
+        "session row count is unchanged"
+      ],
+      "pseudocode": "n=count(sessions); r=post('/sessions',body,U2); assert r.status==403 and r.json.error_type=='forbidden'; assert count(sessions)==n"
+    },
+    {
+      "id": "TS-36-29",
+      "kind": "integration",
+      "verifies": [
+        "36-REQ-6.3"
+      ],
+      "title": "A stranger or unknown slug opening a session gets 404 and no row is written",
+      "given": [
+        "stranger U3 with sessions:write; slug 'missing' does not exist"
+      ],
+      "when": "U3 posts POST /sessions for W and for 'missing'",
+      "then": [
+        "both answer 404 with error 'workspace not found'",
+        "session row count unchanged"
+      ],
+      "pseudocode": "for slug in [W,'missing']: r=post('/sessions',{workspace_slug:slug},U3); assert r.status==404 and errOf(r)=='workspace not found'"
+    },
+    {
+      "id": "TS-36-30",
+      "kind": "integration",
+      "verifies": [
+        "36-REQ-6.4"
+      ],
+      "title": "Replaying an existing session id of another readable workspace returns the session with 200",
+      "given": [
+        "U1 owns W1 and W2; session S exists in W2; U1 posts for W1 with S's id",
+        "a second case: an admin token replays"
+      ],
+      "when": "POST /sessions with id S and workspace_slug W1",
+      "then": [
+        "status 200 with the existing session record of W2",
+        "no new row written"
+      ],
+      "pseudocode": "r=post('/sessions',{id:'S',workspace_slug:'W1'},U1); assert r.status==200; assert r.json.workspace_slug=='W2'"
+    },
+    {
+      "id": "TS-36-31",
+      "kind": "integration",
+      "verifies": [
+        "36-REQ-6.5"
+      ],
+      "title": "Replaying an id whose session lives in an unreadable workspace answers 404 without disclosure",
+      "given": [
+        "session S exists in stranger's W2; caller U1 owns W1"
+      ],
+      "when": "U1 posts id S with workspace_slug W1",
+      "then": [
+        "status 404 with error 'workspace not found'",
+        "the body does not contain S's data"
+      ],
+      "pseudocode": "r=post('/sessions',{id:'S',workspace_slug:'W1'},U1); assert r.status==404 and errOf(r)=='workspace not found'"
+    },
+    {
+      "id": "TS-36-32",
+      "kind": "integration",
+      "verifies": [
+        "36-REQ-7.1"
+      ],
+      "title": "A member completing or reporting usage on the owner's session gets 403 not session owner",
+      "given": [
+        "session S opened by U1 in W; U2 is a member with sessions:write; rows snapshotted"
+      ],
+      "when": "U2 posts /sessions/S/complete and /sessions/S/usage",
+      "then": [
+        "both answer 403 with error 'not session owner'",
+        "session and usage rows are unchanged"
+      ],
+      "pseudocode": "for p in ['complete','usage']: r=post('/sessions/S/'+p,body,U2); assert r.status==403 and errOf(r)=='not session owner'; assert snapshot()==before"
+    },
+    {
+      "id": "TS-36-33",
+      "kind": "integration",
+      "verifies": [
+        "36-REQ-7.2"
+      ],
+      "title": "A member is refused on every ingestion route of an active workspace with workspace_access_denied",
+      "given": [
+        "U2 is a member of active W with audit:write; row counts recorded"
+      ],
+      "when": "U2 posts to each of the eight ingestion routes of W",
+      "then": [
+        "each answers 403 with error_type 'workspace_access_denied'",
+        "audit row counts are unchanged"
+      ],
+      "pseudocode": "for route in ingestionRoutes: r=post(route,validBody,U2); assert r.status==403 and r.json.error_type=='workspace_access_denied'; assert counts()==before"
+    },
+    {
+      "id": "TS-36-34",
+      "kind": "property",
+      "verifies": [
+        "36-REQ-7.3"
+      ],
+      "title": "Ingestion keeps checkWorkspaceAccess's order for every caller kind including members",
+      "given": [
+        "workspaces that are missing, archived or active; callers who are owner, member, stranger, admin, bound elsewhere"
+      ],
+      "when": "for any combination of workspace state and caller kind, an ingestion route is posted",
+      "then": [
+        "the answer follows the order: missing 404, binding 404, archived 409 workspace_archived, non-owner 403 workspace_access_denied",
+        "a member on an archived workspace gets 409 workspace_archived"
+      ],
+      "pseudocode": "for (state,caller) in product(): assert post(route,caller).status==expectedLadder(state,caller)"
+    },
+    {
+      "id": "TS-36-35",
+      "kind": "integration",
+      "verifies": [
+        "36-REQ-8.1"
+      ],
+      "title": "A bound PAT of a member reads its bound workspace on per-run, session and audit routes",
+      "given": [
+        "U2 is a member of W's org; U2's PAT is bound to W; W has run data, a session and events"
+      ],
+      "when": "the bound PAT calls a per-run route, GET /sessions/:id and GET /audit?workspace=W",
+      "then": [
+        "all answer 200"
+      ],
+      "pseudocode": "t=boundPatAuth(U2,tok,'audit:read','sessions:read'); assert get(eventsRoute,t).status==200; assert get(sessions/S,t).status==200; assert get('/audit?workspace=W',t).status==200"
+    },
+    {
+      "id": "TS-36-36",
+      "kind": "integration",
+      "verifies": [
+        "36-REQ-8.2"
+      ],
+      "title": "A bound PAT naming another workspace gets the route's usual refusal",
+      "given": [
+        "PAT bound to W; U2 can read W2 as a member or owner"
+      ],
+      "when": "the bound PAT requests per-run reads, the transcript, POST /sessions and GET /audit?workspace=W2, and session read routes for W2",
+      "then": [
+        "per-run reads, transcript, POST /sessions and the audit filter answer 404 'workspace not found'",
+        "session read routes answer 403 'workspace access denied'"
+      ],
+      "pseudocode": "for r in [runs,transcript,postSessions,auditFilter]: assert 404; for r in sessionReads: assert 403"
+    },
+    {
+      "id": "TS-36-37",
+      "kind": "integration",
+      "verifies": [
+        "36-REQ-8.3"
+      ],
+      "title": "Each binding refusal produces exactly one report with method, route template and status",
+      "given": [
+        "PAT bound to W; an observer records reports; target slug may exist-and-readable, exist-unreadable or missing"
+      ],
+      "when": "the bound PAT makes one refused request on each route kind for each target slug kind",
+      "then": [
+        "each refused request produces exactly one report {TokenID, UserID, BoundSlug, RequestedSlug, Method, Route, Status, Surface:'api'}",
+        "Route is the template, e.g. /api/v1/sessions/:id",
+        "Status is 404 on run reads, POST /sessions and /audit, 403 on session reads, cost"
+      ],
+      "pseudocode": "for route,slugKind in product(): reset(); do(); assert len(reports)==1; assert reports[0]=={...,Route:template,Status:expected,Surface:'api'}"
+    },
+    {
+      "id": "TS-36-38",
+      "kind": "integration",
+      "verifies": [
+        "36-REQ-8.4"
+      ],
+      "title": "Bound PAT list, audit and stream requests inside its binding produce no refusal report",
+      "given": [
+        "PAT bound to W; observer counting reports"
+      ],
+      "when": "the PAT calls GET /sessions, GET /audit and opens GET /events without a foreign workspace filter",
+      "then": [
+        "responses are 200 and the observer was called 0 times"
+      ],
+      "pseudocode": "get('/sessions',t); get('/audit',t); open('/events',t); assert reports==0"
+    },
+    {
+      "id": "TS-36-39",
+      "kind": "integration",
+      "verifies": [
+        "36-REQ-9.1"
+      ],
+      "title": "A database failure while deciding access on per-run reads, transcript and POST /sessions answers 500",
+      "given": [
+        "the org_members table is dropped (and in another case the binding table) so the membership/binding read fails; U2 not the owner; session count recorded"
+      ],
+      "when": "U2 calls a per-run read route, the transcript and POST /sessions",
+      "then": [
+        "each answers 500 with error 'internal server error'",
+        "no audit data is returned",
+        "no session row is written"
+      ],
+      "pseudocode": "exec('DROP TABLE org_members'); for req in [run,transcript,postSessions]: r=do(req,U2); assert r.status==500 and errOf(r)=='internal server error'"
+    },
+    {
+      "id": "TS-36-40",
+      "kind": "integration",
+      "verifies": [
+        "36-REQ-9.2"
+      ],
+      "title": "A database failure on session reads fails closed with 403 and the list returns nothing",
+      "given": [
+        "membership read fails (org_members dropped); sessions exist"
+      ],
+      "when": "U2 calls GET /sessions/:id, /usage, /cost, GET /sessions?workspace_slug=W and GET /sessions",
+      "then": [
+        "single-workspace reads answer 403 'workspace access denied'",
+        "GET /sessions returns no session"
+      ],
+      "pseudocode": "for p in sessionReads: assert get(p,U2).status==403; assert len(get('/sessions',U2).sessions)==0"
+    },
+    {
+      "id": "TS-36-41",
+      "kind": "integration",
+      "verifies": [
+        "36-REQ-9.3"
+      ],
+      "title": "A ReadableSlugs or binding failure on GET /audit answers 500",
+      "given": [
+        "the readable-set query fails (org_members dropped; and a bound PAT whose binding table is dropped)"
+      ],
+      "when": "a non-admin calls GET /audit",
+      "then": [
+        "status 500 with error 'internal server error'",
+        "no events in the body"
+      ],
+      "pseudocode": "exec('DROP TABLE org_members'); r=get('/audit',U2); assert r.status==500 and errOf(r)=='internal server error'"
+    },
+    {
+      "id": "TS-36-42",
+      "kind": "integration",
+      "verifies": [
+        "36-REQ-9.4"
+      ],
+      "title": "A ReadableSlugs or binding failure on GET /events answers 500 before any stream header",
+      "given": [
+        "the readable-set query fails; a recording SSE manager"
+      ],
+      "when": "a non-admin calls GET /events",
+      "then": [
+        "status 500 with error 'internal server error'",
+        "no text/event-stream header",
+        "no connection registered"
+      ],
+      "pseudocode": "r=get('/events',U2); assert r.status==500; assert r.header['Content-Type']!='text/event-stream'; assert mgr.registered==0"
+    },
+    {
+      "id": "TS-36-43",
+      "kind": "property",
+      "verifies": [
+        "36-REQ-10.1"
+      ],
+      "title": "A stranger gets exactly today's refusal on every route of this spec",
+      "given": [
+        "random workspaces in orgs where the caller has no relation"
+      ],
+      "when": "for any stranger to workspace W and any route of this spec, the stranger calls it",
+      "then": [
+        "per-run reads, transcript, POST /sessions and the audit workspace filter answer 404 'workspace not found'",
+        "session read routes answer 403 'workspace access denied'",
+        "ingestion answers 403 workspace_access_denied"
+      ],
+      "pseudocode": "for (route,seed) in gen(): r=call(route,stranger); assert (r.status,errOf(r))==today[route]"
+    },
+    {
+      "id": "TS-36-44",
+      "kind": "property",
+      "verifies": [
+        "36-REQ-10.2"
+      ],
+      "title": "Personal-org and NULL-org workspaces answer as before this spec",
+      "given": [
+        "workspaces whose org's only member is the owner, or with NULL org_id; owners, strangers and admin"
+      ],
+      "when": "for any such workspace and any request on a route of this spec",
+      "then": [
+        "status and body equal the pre-spec answer for that caller (owner allowed, stranger refused as before)"
+      ],
+      "pseudocode": "for ws in gen(personalOrNullOrg): for req in routes: assert call(req)==legacyExpected(req)"
+    },
+    {
+      "id": "TS-36-45",
+      "kind": "unit",
+      "verifies": [
+        "36-REQ-10.3"
+      ],
+      "title": "No owner_id read decision remains in internal/audit outside checkWorkspaceAccess",
+      "given": [
+        "the non-test Go sources of internal/audit"
+      ],
+      "when": "the sources are parsed and scanned",
+      "then": [
+        "no function named ownedWorkspaces is declared",
+        "owner_id queries appear only inside checkWorkspaceAccess",
+        "requireWorkspaceRead, hasWorkspaceAccess, readableWorkspaces and getAccessibleWorkspaces reference wsaccess.AuthorizeWorkspace or wsaccess.ReadableSlugs"
+      ],
+      "pseudocode": "files=parse('internal/audit/*.go' minus _test); assert no FuncDecl 'ownedWorkspaces'; for q in ownerIdQueries(files): assert enclosingFunc(q)=='checkWorkspaceAccess'"
+    },
+    {
+      "id": "TS-36-46",
+      "kind": "unit",
+      "verifies": [
+        "36-REQ-10.4"
+      ],
+      "title": "The shared SQLite fixture has org_id, clone_status and org_members",
+      "given": [
+        "openTestSQLiteDB is called"
+      ],
+      "when": "the workspaces columns and the org_members table are inspected, and a member row is inserted",
+      "then": [
+        "workspaces has org_id and clone_status columns",
+        "org_members(org_id, user_id) exists and accepts a row"
+      ],
+      "pseudocode": "db=openTestSQLiteDB(t); assert hasColumn(db,'workspaces','org_id') and hasColumn(db,'workspaces','clone_status'); exec('INSERT INTO org_members(org_id,user_id) VALUES(?,?)')"
+    },
+    {
+      "id": "TS-36-47",
+      "kind": "smoke",
+      "verifies": [
+        "36-PATH-1",
+        "36-REQ-1.1",
+        "36-REQ-2.1"
+      ],
+      "title": "A member reads a teammate's run audit, sessions and cost end to end",
+      "given": [
+        "a real hub audit server on a real SQLite database with wsaccess",
+        "U1 owns active W in org O, U2 is a member; W has run R data, a session and usage"
+      ],
+      "when": "U2 requests the run events, GET /sessions?workspace_slug=W and GET /workspaces/W/cost",
+      "then": [
+        "run events answer 200 with R's events",
+        "session list answers 200 with W's sessions",
+        "cost answers 200 with W's cost summary"
+      ],
+      "real_components": [
+        "audit HTTP handlers and routes",
+        "wsaccess.AuthorizeWorkspace and DeniesWorkspace",
+        "SQLite database with org_members",
+        "audit Store"
+      ]
+    },
+    {
+      "id": "TS-36-48",
+      "kind": "smoke",
+      "verifies": [
+        "36-PATH-2",
+        "36-REQ-4.1",
+        "36-REQ-5.1"
+      ],
+      "title": "A member sees the workspace in the unified query and the live stream",
+      "given": [
+        "a real audit server with a real SSE manager and SQLite; U2 member of W's org; a hub event with empty workspace stored"
+      ],
+      "when": "U2 calls GET /audit, opens GET /events, and an event for W is then published",
+      "then": [
+        "GET /audit lists W's and U2's own events and no empty-workspace event",
+        "the stream delivers the W event to U2's connection"
+      ],
+      "real_components": [
+        "audit HTTP handlers",
+        "SSE manager",
+        "event emitter",
+        "wsaccess.ReadableSlugs",
+        "SQLite database"
+      ]
+    },
+    {
+      "id": "TS-36-49",
+      "kind": "smoke",
+      "verifies": [
+        "36-PATH-3",
+        "36-REQ-6.2",
+        "36-REQ-7.1"
+      ],
+      "title": "A member's attempts to open or complete sessions are refused and change nothing",
+      "given": [
+        "a real audit server on real SQLite; U1 owns W and session S; U2 is a member"
+      ],
+      "when": "U2 posts POST /sessions for W and POST /sessions/S/complete",
+      "then": [
+        "POST /sessions answers 403 with error_type forbidden",
+        "complete answers 403 'not session owner'",
+        "session rows are unchanged and S is not completed"
+      ],
+      "real_components": [
+        "audit HTTP handlers",
+        "wsaccess.AuthorizeWorkspace",
+        "SQLite database",
+        "audit Store"
+      ]
+    }
+  ]
+}

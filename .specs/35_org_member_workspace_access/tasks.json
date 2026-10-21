@@ -1,0 +1,404 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/tasks.v2.json",
+  "spec_id": "35",
+  "spec_name": "org_member_workspace_access",
+  "schema_version": 2,
+  "test_commands": {
+    "all_tests": "make test",
+    "linter": "make lint",
+    "spec_tests": "go test ./internal/wsaccess/... ./internal/workspace/... ./internal/carrypatch/... ./internal/merge/... ./internal/sandboxes/... ./internal/forge/... ./internal/boundtoken/... ./internal/secrets/... -count=1"
+  },
+  "dependencies": [
+    {
+      "spec": "33_token_workspace_binding",
+      "reason": "AuthorizeWorkspace and lookupWorkspaceForAuth apply the binding rule (DeniesWorkspace, BindingGuard); a bound PAT for another slug must still get 404 whatever its membership."
+    },
+    {
+      "spec": "34_bound_token_issuance",
+      "reason": "Mint and list keep their owner-only answer (34-REQ-1.6) through NeedPrivate; refusal reporting with method and route (34-REQ-10.3, TS-34-58) is preserved."
+    },
+    {
+      "spec": "26_sandbox_leases",
+      "reason": "Lease routes' ownership 404 becomes read access for members on list/get and 403 on issue/delete."
+    },
+    {
+      "spec": "30_forge_client_reads",
+      "reason": "Forge read routes open to members."
+    },
+    {
+      "spec": "31_forge_writes",
+      "reason": "Forge write routes answer 403 to members."
+    },
+    {
+      "spec": "32_forge_webhook_ingress",
+      "reason": "Deliveries become readable by members; webhook set/unset answer 403 to members."
+    }
+  ],
+  "tasks": [
+    {
+      "id": 1,
+      "kind": "implement",
+      "title": "Add Access, Need and the new AuthorizeWorkspace/AuthorizeWorkspaceAt in wsaccess",
+      "criteria": [
+        "35-REQ-1",
+        "35-REQ-2.1",
+        "35-REQ-2.2",
+        "35-REQ-2.3"
+      ],
+      "tests": [
+        "TS-35-1",
+        "TS-35-2",
+        "TS-35-3",
+        "TS-35-4",
+        "TS-35-5",
+        "TS-35-6",
+        "TS-35-7",
+        "TS-35-8",
+        "TS-35-9"
+      ],
+      "steps": [
+        "Write TS-35-1..9 in internal/wsaccess (external package wsaccess_test, style of wsaccess_test.go) and confirm they fail",
+        "In internal/wsaccess/wsaccess.go add `type Access string` (AccessNone \"\", AccessMember, AccessOwner, AccessAdmin) and `type Need string` (NeedRead, NeedWrite, NeedPrivate); extend WorkspaceAccess with OrgID (\"\" for NULL) and Access",
+        "Rewrite AuthorizeWorkspace(db, auth, slug, need) as a wrapper over AuthorizeWorkspaceAt(db, auth, slug, need, RefusalSite{Status:404, Surface:SurfaceAPI}); order: nil auth -> 401 'authentication required' (no query); SELECT slug, owner_id, org_id, status, clone_status (COALESCE NULL org_id); ErrNoRows -> 404 'workspace not found'; other error -> 500 'internal server error'",
+        "Decide access: admin_token -> AccessAdmin; non-empty UserID == owner_id -> AccessOwner; both without reading org_members; otherwise only for non-empty UserID and non-empty org_id run `SELECT COUNT(*) FROM org_members WHERE org_id = ? AND user_id = ?` (no caching) -> AccessMember; else AccessNone -> 404 with no binding lookup and no report; membership read error -> 500",
+        "After a non-None access: DeniesWorkspace(db, auth, slug, site) (error -> 500, denial -> 404 'workspace not found'), then the need check: member+NeedWrite -> 403 'org members have read-only access to this workspace'; member+NeedPrivate -> 404 'workspace not found'; success returns the filled WorkspaceAccess and (0, \"\")",
+        "Update workspace.AuthorizeWorkspace in internal/workspace/authz.go to take and pass the need",
+        "Keep the build green: update every existing caller (internal/merge/api.go, internal/carrypatch/api.go, internal/sandboxes/routes.go, internal/forge/routes.go, internal/boundtoken/mint.go and list.go, internal/wsaccess/guard_test.go) to pass NeedPrivate mechanically (owner-only, as today); later tasks set the real needs",
+        "Add an org_id column to workspace fixtures that lack it: internal/wsaccess/binding_test.go openBindingDB, internal/boundtoken/testhelpers_test.go, internal/forge/testhelpers_test.go createWorkspacesTable; no assertion changes",
+        "Run make test and make lint"
+      ],
+      "touches": [
+        "internal/wsaccess/wsaccess.go",
+        "internal/wsaccess/wsaccess_test.go",
+        "internal/wsaccess/binding_test.go",
+        "internal/wsaccess/guard_test.go",
+        "internal/workspace/authz.go",
+        "internal/merge/api.go",
+        "internal/carrypatch/api.go",
+        "internal/sandboxes/routes.go",
+        "internal/forge/routes.go",
+        "internal/forge/testhelpers_test.go",
+        "internal/boundtoken/mint.go",
+        "internal/boundtoken/list.go",
+        "internal/boundtoken/testhelpers_test.go"
+      ],
+      "done_when": [
+        "`make test` passes with every existing ownership test unchanged"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 2,
+      "kind": "implement",
+      "title": "Complete refusal semantics: binding report, need check, fail-closed 500, WriteRefusal",
+      "criteria": [
+        "35-REQ-2.4",
+        "35-REQ-2.5",
+        "35-REQ-2.6",
+        "35-REQ-2.7",
+        "35-REQ-2.8"
+      ],
+      "tests": [
+        "TS-35-10",
+        "TS-35-11",
+        "TS-35-12",
+        "TS-35-13",
+        "TS-35-14"
+      ],
+      "steps": [
+        "Write TS-35-10..14 and confirm they fail or expose gaps (use the bound-refusal observer helpers already in wsaccess tests)",
+        "Verify AuthorizeWorkspaceAt reports a binding denial exactly once with the supplied site, for every access and need, and that AuthorizeWorkspace's site has Status 404, Surface SurfaceAPI and no method/route; fix any gap",
+        "Verify the order existence -> access -> binding -> need, so a bound PAT with NeedWrite gets 404 not 403, and a stranger never triggers a binding lookup or report",
+        "Verify the full WorkspaceAccess is returned on success (OrgID empty for NULL) and that workspace/membership/binding DB errors give (nil, 500, 'internal server error') and never a grant",
+        "Add `const ErrorTypeForbidden = \"forbidden\"` and `func WriteRefusal(c echo.Context, status int, msg string) error` in internal/wsaccess: use apikit.WriteAPIErrorWithType(c, 403, msg, ErrorTypeForbidden) for 403 and apikit.WriteAPIError for any other status (no error_type)"
+      ],
+      "touches": [
+        "internal/wsaccess/wsaccess.go",
+        "internal/wsaccess/wsaccess_test.go",
+        "internal/wsaccess/refusal.go"
+      ],
+      "depends_on": [
+        1
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 3,
+      "kind": "implement",
+      "title": "Add wsaccess.ReadableSlugs",
+      "criteria": [
+        "35-REQ-3"
+      ],
+      "tests": [
+        "TS-35-15",
+        "TS-35-16",
+        "TS-35-17",
+        "TS-35-18",
+        "TS-35-19",
+        "TS-35-20"
+      ],
+      "steps": [
+        "Write TS-35-15..20 (TS-35-20 is a property test comparing ReadableSlugs with AuthorizeWorkspace(NeedRead) over generated callers/workspaces) and confirm they fail",
+        "Add `func ReadableSlugs(db *sql.DB, auth *apikit.AuthInfo) (map[string]Access, bool, error)` in internal/wsaccess/readable.go",
+        "Admin token -> (nil, true, nil) with no query; nil auth or empty UserID non-admin -> (empty non-nil map, false, nil) with no query",
+        "Resolve the bound slug with BoundSlug(db, auth) BEFORE opening rows (single-connection test databases); a binding error returns (nil, false, err)",
+        "Run one query: owned workspaces (slug, 'owner') UNION-style with workspaces whose org_id is in `SELECT org_id FROM org_members WHERE user_id = ?`; all statuses; owner wins when both apply; query/scan/rows.Err errors return (nil, false, err)",
+        "For a bound PAT keep at most the bound slug, only if present in the set"
+      ],
+      "touches": [
+        "internal/wsaccess/readable.go",
+        "internal/wsaccess/readable_test.go"
+      ],
+      "depends_on": [
+        2
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 4,
+      "kind": "implement",
+      "title": "Workspace routes: lookupWorkspaceForAuth with Need, and access/org_slug on every workspace object",
+      "criteria": [
+        "35-REQ-5",
+        "35-REQ-6"
+      ],
+      "tests": [
+        "TS-35-28",
+        "TS-35-29",
+        "TS-35-30",
+        "TS-35-31",
+        "TS-35-32",
+        "TS-35-33",
+        "TS-35-34",
+        "TS-35-35"
+      ],
+      "steps": [
+        "Write TS-35-28..35 in internal/workspace using newTestEnv, seedOrg and seedOrgMember, and confirm they fail",
+        "Change lookupWorkspaceForAuth in internal/workspace/handlers.go to take a wsaccess.Need and return the workspace plus the caller's wsaccess.Access: call wsaccess.AuthorizeWorkspaceAt(db, auth, slug, need, wsaccess.SiteOf(c, 404)), write refusals with wsaccess.WriteRefusal, then load the full row with getWorkspaceBySlug (not found -> 404 'workspace not found'); remove the inline owner_id/DeniesWorkspace checks",
+        "Apply needs per route: read for GET /workspaces/:slug and patch list/get (lookupPatchWorkspace in patch_handlers.go gains a need); write for update, archive, reactivate, delete, sync (sync_handler.go), reclone (reclone_handler.go), patch add/update/remove/reorder/restore and reset-to-origin (patch_reset_handler.go)",
+        "Keep the check position unchanged: after the PAT scope check and, for PATCH /workspaces/:slug, after body parsing and immutable-field validation, before status/precondition checks",
+        "Extend workspaceResponse/respondWorkspace/respondWorkspaceWithExtras (sync with carry-patch extras) and reclone to take the caller's Access and add `access` plus `org_slug` (reuse the org lookup that builds hub_url; JSON null when org_id is NULL or the org row is missing); the create response always says 'owner'",
+        "Make the member's object identical to the owner's except for access (hub_url included, no credential values)",
+        "Update existing workspace test helpers only where fixtures need new columns/tables; no assertion changes"
+      ],
+      "touches": [
+        "internal/workspace/handlers.go",
+        "internal/workspace/patch_handlers.go",
+        "internal/workspace/patch_reset_handler.go",
+        "internal/workspace/sync_handler.go",
+        "internal/workspace/reclone_handler.go",
+        "internal/workspace/store.go",
+        "internal/workspace/testhelpers_test.go"
+      ],
+      "depends_on": [
+        2
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 5,
+      "kind": "implement",
+      "title": "Workspace listing from ReadableSlugs with a by-slug store query",
+      "criteria": [
+        "35-REQ-4"
+      ],
+      "tests": [
+        "TS-35-21",
+        "TS-35-22",
+        "TS-35-23",
+        "TS-35-24",
+        "TS-35-25",
+        "TS-35-26",
+        "TS-35-27"
+      ],
+      "steps": [
+        "Write TS-35-21..27 in internal/workspace and confirm they fail",
+        "In internal/workspace/store.go add a by-slug list query (`WHERE slug IN (...)`, chunks of at most 500 slugs, status != 'archived' unless include_archived) that sorts the merged result by created_at descending",
+        "Rewrite handleListWorkspaces: keep the PAT scope check (404) first, before ReadableSlugs; admin token keeps listAllWorkspaces with access 'admin'; other callers call wsaccess.ReadableSlugs and load the slugs by the new query, attaching the recorded access to each object; no membership predicate in the workspace package",
+        "Keep bound-PAT confinement (ReadableSlugs already limits it; keep wsaccess.BoundSlug filter only if still needed), include_archived and created_at DESC ordering",
+        "A ReadableSlugs or by-slug query error -> 500 'internal server error'; an empty set -> 200 with []"
+      ],
+      "touches": [
+        "internal/workspace/handlers.go",
+        "internal/workspace/store.go"
+      ],
+      "depends_on": [
+        3,
+        4
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 6,
+      "kind": "implement",
+      "title": "Carry-patch and merge routes use Need and WriteRefusal",
+      "criteria": [
+        "35-REQ-7"
+      ],
+      "tests": [
+        "TS-35-36",
+        "TS-35-37",
+        "TS-35-38",
+        "TS-35-39"
+      ],
+      "steps": [
+        "Write TS-35-36..39 in internal/carrypatch and internal/merge and confirm they fail",
+        "Give carrypatch authorizeWorkspace (api.go) a wsaccess.Need parameter, call wsaccess.AuthorizeWorkspace(..., need) and write refusals through wsaccess.WriteRefusal; read for rebuild list/get/preview/patch-status (api.go) and rerere list (rerere_handlers.go); write for submit, cancel, requeue, rollback, rerere forget and runCarryPatchSync (sync_handlers.go)",
+        "Do the same in internal/merge/api.go: authorizeMergeWorkspace takes a need (read for list/get, write for cancel/requeue); validateWorkspaceForMerge uses NeedWrite (submit, rebase); update workspace.AuthorizeWorkspace calls",
+        "Keep the check where the ownership step is today (after scope checks, before status/precondition checks) so a member gets 403 before 400",
+        "Fix carrypatch/merge fixtures that need an org_members table for member tests; no assertion changes"
+      ],
+      "touches": [
+        "internal/carrypatch/api.go",
+        "internal/carrypatch/rerere_handlers.go",
+        "internal/carrypatch/sync_handlers.go",
+        "internal/merge/api.go",
+        "internal/merge/testhelpers_test.go",
+        "internal/carrypatch/testhelpers_test.go"
+      ],
+      "depends_on": [
+        2
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 7,
+      "kind": "implement",
+      "title": "Sandbox lease and forge routes use Need",
+      "criteria": [
+        "35-REQ-8"
+      ],
+      "tests": [
+        "TS-35-40",
+        "TS-35-41",
+        "TS-35-42",
+        "TS-35-43",
+        "TS-35-44"
+      ],
+      "steps": [
+        "Write TS-35-40..44 in internal/sandboxes and internal/forge and confirm they fail",
+        "In internal/sandboxes/routes.go map (*LeaseService).authorize(c, write) to NeedWrite when true and NeedRead when false; write refusals with wsaccess.WriteRefusal; keep the scope 403 first",
+        "In internal/forge/routes.go map readAccess to NeedRead and writeAccess/writeAnyStatusAccess to NeedWrite; write refusals with wsaccess.WriteRefusal; keep the `active` 400 check after the access step",
+        "Confirm forge reads by a member use the workspace's forge credential, expose only the credential kind and never its value",
+        "Confirm member forge writes and webhook PUT/DELETE issue 0 outbound requests and leave the webhook config unchanged; member lease issue/delete call no backend",
+        "Update forge/sandbox fixtures (org_members) as needed without changing assertions"
+      ],
+      "touches": [
+        "internal/sandboxes/routes.go",
+        "internal/sandboxes/testhelpers_test.go",
+        "internal/forge/routes.go",
+        "internal/forge/testhelpers_test.go"
+      ],
+      "depends_on": [
+        2
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 8,
+      "kind": "implement",
+      "title": "Secrets, variables and bound tokens use wsaccess",
+      "criteria": [
+        "35-REQ-9"
+      ],
+      "tests": [
+        "TS-35-45",
+        "TS-35-46",
+        "TS-35-47",
+        "TS-35-48",
+        "TS-35-49",
+        "TS-35-50",
+        "TS-35-51"
+      ],
+      "steps": [
+        "Write TS-35-45..51 in internal/secrets and internal/boundtoken and confirm they fail",
+        "In internal/secrets/handlers.go remove lookupWorkspaceOwner and lookupWorkspaceForResolution; call wsaccess.AuthorizeWorkspace with NeedPrivate for workspace secret create/list/update/delete, NeedRead for vars list and vars/resolved, NeedWrite for vars create/update/delete; write refusals with wsaccess.WriteRefusal (404 'workspace not found' in the apikit envelope, 403 with error_type forbidden)",
+        "handleResolvedWorkspaceVars: use the returned WorkspaceAccess OwnerID/OrgID; keep isOrgMember(db, orgID, wsOwnerID) for the org tier and store.ResolveVariables(wsOwnerID, orgID, slug) so a member gets the owner's document",
+        "In internal/boundtoken/mint.go and list.go replace the second owner comparison with AuthorizeWorkspace(..., NeedPrivate); mint still refuses bound PATs and admin tokens before the workspace lookup, list keeps its scope check order",
+        "Update secrets tests/fixtures for the new message only where they assert the body; status-code assertions remain unchanged"
+      ],
+      "touches": [
+        "internal/secrets/handlers.go",
+        "internal/secrets/handler_testhelpers_test.go",
+        "internal/boundtoken/mint.go",
+        "internal/boundtoken/list.go",
+        "internal/boundtoken/testhelpers_test.go"
+      ],
+      "depends_on": [
+        2
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 9,
+      "kind": "implement",
+      "title": "Verify unchanged answers (order, scopes, strangers, owners, bound PATs, owner-only routes) and update docs",
+      "criteria": [
+        "35-REQ-10"
+      ],
+      "tests": [
+        "TS-35-52",
+        "TS-35-53",
+        "TS-35-54",
+        "TS-35-55",
+        "TS-35-56"
+      ],
+      "steps": [
+        "Write TS-35-52..56 (cross-package route tables may live in internal/workspace plus per-package tests) and confirm they pass or expose gaps",
+        "Fix any route where the access step sits after a status/precondition check or before a body validation that precedes ownership today, so members get 403 and invalid bodies keep their 400",
+        "Confirm PAT scope answers (404 for workspace CRUD, scope 403 without error_type elsewhere) precede the workspace lookup and do not depend on slug existence",
+        "Confirm session, cost, audit, SSE, transcript and the git server are untouched and a member gets a stranger's answers there",
+        "Run `make doc`, then update docs/permissions.md (rewrite 'Ownership enforcement' around admin/owner/member and read/write/private, remove the stale sync/reclone exception and the stale 'Not enforced' rows), docs/api.md (ownership, anti-enumeration, error_type table with forbidden, Workspace Response Schema with access and org_slug, per-route errors), docs/architecture.md (wsaccess section), docs/openapi.yaml (Workspace schema, 403 forbidden) and docs/errata/ownership_enforcement.md",
+        "Run make check"
+      ],
+      "touches": [
+        "internal/workspace/handlers.go",
+        "internal/workspace/acl_matrix_test.go",
+        "docs/permissions.md",
+        "docs/api.md",
+        "docs/architecture.md",
+        "docs/openapi.yaml",
+        "docs/errata/ownership_enforcement.md"
+      ],
+      "depends_on": [
+        4,
+        5,
+        6,
+        7,
+        8
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 10,
+      "kind": "integration",
+      "title": "Verify the member read, refused write, private and removed-member paths end to end",
+      "tests": [
+        "TS-35-57",
+        "TS-35-58",
+        "TS-35-59",
+        "TS-35-60"
+      ],
+      "steps": [
+        "Write smoke tests TS-35-57..60 against real handlers and a real (in-memory SQLite) database with the apikit schema, and confirm they pass",
+        "Trace 35-PATH-1 through the code: handleListWorkspaces -> wsaccess.ReadableSlugs -> by-slug store query -> response with access/org_slug, then the patch list route -> lookupWorkspaceForAuth -> AuthorizeWorkspaceAt; confirm each step calls the next and no stub remains",
+        "Trace 35-PATH-2 (carrypatch rebuild submit -> AuthorizeWorkspace NeedWrite -> WriteRefusal, no job enqueued), 35-PATH-3 (secrets and boundtoken NeedPrivate 404) and 35-PATH-4 (membership read on every request)",
+        "Confirm the contracts are consumed in production code: ReadableSlugs by handleListWorkspaces, WriteRefusal by carrypatch/merge/sandboxes/forge/secrets/workspace handlers, WorkspaceAccess.Access by workspaceResponse, AuthorizeWorkspace(Need) by boundtoken",
+        "Grep every file in all tasks' touches for panic(\"not implemented\"), TODO and bare `return nil` on non-trivial paths and remove any; confirm no REST handler in the listed packages compares owner_id with the caller itself",
+        "Run make test and make lint"
+      ],
+      "touches": [
+        "internal/workspace/smoke_spec35_test.go",
+        "internal/carrypatch/smoke_spec35_test.go",
+        "internal/secrets/smoke_spec35_test.go"
+      ],
+      "depends_on": [
+        9
+      ],
+      "done_when": [
+        "`make test` and `make lint` pass"
+      ],
+      "state": "pending"
+    }
+  ]
+}

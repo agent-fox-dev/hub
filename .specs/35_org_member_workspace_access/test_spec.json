@@ -1,0 +1,1041 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/test_spec.v2.json",
+  "spec_id": "35",
+  "spec_name": "org_member_workspace_access",
+  "schema_version": 2,
+  "tests": [
+    {
+      "id": "TS-35-1",
+      "kind": "unit",
+      "verifies": [
+        "35-REQ-1.1",
+        "35-REQ-2.1"
+      ],
+      "title": "Access and Need types expose the specified constants and the new function signatures",
+      "given": [
+        "the wsaccess package"
+      ],
+      "when": "the constants are read and AuthorizeWorkspace, AuthorizeWorkspaceAt and workspace.AuthorizeWorkspace are called with a Need argument",
+      "then": [
+        "AccessNone == \"\", AccessMember == \"member\", AccessOwner == \"owner\", AccessAdmin == \"admin\"",
+        "NeedRead, NeedWrite and NeedPrivate are three distinct Need values",
+        "workspace.AuthorizeWorkspace returns the same (access, status, message) as wsaccess.AuthorizeWorkspace for the same inputs"
+      ],
+      "pseudocode": "assert Access(\"member\") == AccessMember; assert len({NeedRead,NeedWrite,NeedPrivate}) == 3; assert workspace.AuthorizeWorkspace(db,a,s,NeedRead) == wsaccess.AuthorizeWorkspace(db,a,s,NeedRead)"
+    },
+    {
+      "id": "TS-35-2",
+      "kind": "unit",
+      "verifies": [
+        "35-REQ-1.2"
+      ],
+      "title": "An admin token is AccessAdmin without reading org_members",
+      "given": [
+        "an in-memory database with a workspaces table holding W with org_id O and NO org_members table"
+      ],
+      "when": "AuthorizeWorkspace is called with an admin token and NeedWrite",
+      "then": [
+        "status is 0 and message is empty",
+        "Access == \"admin\"",
+        "no error arises from the missing org_members table"
+      ],
+      "pseudocode": "ws,st,msg = AuthorizeWorkspace(db, admin, 'w', NeedWrite); assert st==0; assert ws.Access==AccessAdmin"
+    },
+    {
+      "id": "TS-35-3",
+      "kind": "unit",
+      "verifies": [
+        "35-REQ-1.3"
+      ],
+      "title": "The owner is AccessOwner without reading org_members",
+      "given": [
+        "a workspaces table with W owned by U1 with org_id O",
+        "no org_members table"
+      ],
+      "when": "AuthorizeWorkspace is called as U1 (api_key) with NeedWrite",
+      "then": [
+        "status is 0",
+        "Access == \"owner\""
+      ],
+      "pseudocode": "ws,st,_ = AuthorizeWorkspace(db, apikey(U1), 'w', NeedWrite); assert st==0 && ws.Access==AccessOwner"
+    },
+    {
+      "id": "TS-35-4",
+      "kind": "unit",
+      "verifies": [
+        "35-REQ-1.4"
+      ],
+      "title": "A user with an org_members row for the workspace's org is a member whatever the org's status or kind",
+      "given": [
+        "W owned by U1 in org O",
+        "org_members rows (O,U2) and (P,U3) where P is a personal org with status 'suspended'"
+      ],
+      "when": "AuthorizeWorkspace(NeedRead) is called as U2, and as U3 on a workspace in P",
+      "then": [
+        "both succeed with status 0",
+        "Access == \"member\" for each"
+      ],
+      "pseudocode": "assert AuthorizeWorkspace(db, apikey(U2), 'w', NeedRead).Access == AccessMember"
+    },
+    {
+      "id": "TS-35-5",
+      "kind": "unit",
+      "verifies": [
+        "35-REQ-1.5",
+        "35-REQ-2.3"
+      ],
+      "title": "A NULL or empty org_id, or an empty UserID, gives AccessNone and 404 without an org_members read",
+      "given": [
+        "workspace W1 with NULL org_id and W2 with org_id ''",
+        "workspace W3 with org O",
+        "no org_members table",
+        "an admin-role api_key with empty UserID and a PAT with empty UserID"
+      ],
+      "when": "AuthorizeWorkspace(NeedRead) is called as a non-owner user on W1 and W2, and as the empty-UserID credentials on W3",
+      "then": [
+        "every call returns (nil, 404, \"workspace not found\")",
+        "none returns 500 (org_members is never queried)"
+      ],
+      "pseudocode": "for (a,s) in cases: ws,st,msg = AuthorizeWorkspace(db,a,s,NeedRead); assert (ws,st,msg)==(nil,404,'workspace not found')"
+    },
+    {
+      "id": "TS-35-6",
+      "kind": "integration",
+      "verifies": [
+        "35-REQ-1.6"
+      ],
+      "title": "Deleting the membership row takes effect on the next call",
+      "given": [
+        "U2 is a member of O via an org_members row and AuthorizeWorkspace(NeedRead) succeeds for U2 on W"
+      ],
+      "when": "the org_members row is deleted and AuthorizeWorkspace is called again",
+      "then": [
+        "the second call returns (nil, 404, \"workspace not found\")"
+      ],
+      "pseudocode": "assert AuthorizeWorkspace(...).Access==member; db.Exec('DELETE FROM org_members ...'); assert status==404"
+    },
+    {
+      "id": "TS-35-7",
+      "kind": "property",
+      "verifies": [
+        "35-REQ-1.7"
+      ],
+      "title": "Access is the first matching rule in the order admin, owner, member, none",
+      "given": [
+        "a database with workspaces and org_members tables"
+      ],
+      "when": "for any combination of credential type (admin_token, api_key, pat), UserID (empty or one of several), owner_id, org_id (NULL, empty, set) and org_members rows",
+      "then": [
+        "the decided Access equals the model: admin if admin_token; else owner if UserID non-empty and == owner_id; else member if UserID non-empty, org_id non-empty and a row exists; else none",
+        "AccessNone yields 404"
+      ],
+      "pseudocode": "for c in gen_cases(): got = AuthorizeWorkspace(db, c.auth, c.slug, NeedRead); assert accessOf(got) == model(c)"
+    },
+    {
+      "id": "TS-35-8",
+      "kind": "unit",
+      "verifies": [
+        "35-REQ-2.2"
+      ],
+      "title": "A nil auth is refused with 401 without a database query",
+      "given": [
+        "a database handle that has been closed so any query would error"
+      ],
+      "when": "AuthorizeWorkspace is called with nil auth",
+      "then": [
+        "returns (nil, 401, \"authentication required\")"
+      ],
+      "pseudocode": "ws,st,msg = AuthorizeWorkspace(closedDB,nil,'w',NeedRead); assert st==401 && msg=='authentication required'"
+    },
+    {
+      "id": "TS-35-9",
+      "kind": "unit",
+      "verifies": [
+        "35-REQ-2.3"
+      ],
+      "title": "An unknown slug and a stranger get 404 and trigger no bound-refusal report",
+      "given": [
+        "a bound-refusal observer counting calls",
+        "a PAT bound to W that is a stranger on W2, and an unknown slug"
+      ],
+      "when": "AuthorizeWorkspace is called for the unknown slug and for the stranger on W2",
+      "then": [
+        "both return (nil, 404, \"workspace not found\")",
+        "the observer is called 0 times"
+      ],
+      "pseudocode": "assert observer.count==0"
+    },
+    {
+      "id": "TS-35-10",
+      "kind": "unit",
+      "verifies": [
+        "35-REQ-2.4"
+      ],
+      "title": "A PAT bound to another workspace is refused with one report carrying the site, whatever its access and need",
+      "given": [
+        "U1 owns A and B; U2 is a member of the org of B; PATs bound to A for U1 and U2",
+        "an observer recording sites"
+      ],
+      "when": "AuthorizeWorkspace(NeedRead) is called for B, then AuthorizeWorkspaceAt with a site carrying method GET and route /workspaces/:slug",
+      "then": [
+        "every call returns (nil, 404, \"workspace not found\")",
+        "each call produces exactly one report",
+        "AuthorizeWorkspace's report has Status 404, Surface SurfaceAPI and no method or route",
+        "AuthorizeWorkspaceAt's report carries the given site"
+      ]
+    },
+    {
+      "id": "TS-35-11",
+      "kind": "unit",
+      "verifies": [
+        "35-REQ-2.5"
+      ],
+      "title": "A member needing write gets 403 and needing private gets 404, after the binding check",
+      "given": [
+        "U2 is a member of W's org"
+      ],
+      "when": "AuthorizeWorkspace is called as U2 with NeedWrite and with NeedPrivate; and as a PAT for U2 bound to another workspace with NeedWrite",
+      "then": [
+        "NeedWrite returns (nil, 403, \"org members have read-only access to this workspace\")",
+        "NeedPrivate returns (nil, 404, \"workspace not found\")",
+        "the bound PAT with NeedWrite gets 404 (binding precedes need) with one report"
+      ]
+    },
+    {
+      "id": "TS-35-12",
+      "kind": "unit",
+      "verifies": [
+        "35-REQ-2.6"
+      ],
+      "title": "A satisfied need returns the full WorkspaceAccess, with OrgID empty for a NULL column",
+      "given": [
+        "W1 with org_id O owned by U1, W2 with NULL org_id owned by U1"
+      ],
+      "when": "AuthorizeWorkspace(NeedWrite) is called as U1 for each",
+      "then": [
+        "status 0 and empty message",
+        "W1 result has Slug, OwnerID, OrgID=O, Status, CloneStatus and Access=owner",
+        "W2 result has OrgID == \"\""
+      ]
+    },
+    {
+      "id": "TS-35-13",
+      "kind": "unit",
+      "verifies": [
+        "35-REQ-2.7"
+      ],
+      "title": "A database error reading the workspace, membership or binding yields 500 and no grant",
+      "given": [
+        "a database where (a) the workspaces table is missing, (b) org_members is missing and the caller is a non-owner, (c) the token-binding table is broken and the caller is a PAT"
+      ],
+      "when": "AuthorizeWorkspace(NeedRead) is called in each case",
+      "then": [
+        "each returns (nil, 500, \"internal server error\")"
+      ]
+    },
+    {
+      "id": "TS-35-14",
+      "kind": "unit",
+      "verifies": [
+        "35-REQ-2.8"
+      ],
+      "title": "WriteRefusal sets error_type forbidden only on 403",
+      "given": [
+        "an echo context with a recorder"
+      ],
+      "when": "WriteRefusal is called with (403, msg), (404, \"workspace not found\") and (500, \"internal server error\")",
+      "then": [
+        "403 body is {error: msg, error_type: \"forbidden\"} and ErrorTypeForbidden == \"forbidden\"",
+        "404 and 500 bodies have the error field and no error_type key",
+        "status codes match the arguments"
+      ]
+    },
+    {
+      "id": "TS-35-15",
+      "kind": "unit",
+      "verifies": [
+        "35-REQ-3.1"
+      ],
+      "title": "ReadableSlugs for an admin token returns unrestricted without a query",
+      "given": [
+        "a closed database handle"
+      ],
+      "when": "ReadableSlugs is called with an admin token",
+      "then": [
+        "returns (nil, true, nil)"
+      ]
+    },
+    {
+      "id": "TS-35-16",
+      "kind": "unit",
+      "verifies": [
+        "35-REQ-3.2"
+      ],
+      "title": "ReadableSlugs for nil auth or an empty UserID returns an empty non-nil map without a query",
+      "given": [
+        "a closed database handle"
+      ],
+      "when": "ReadableSlugs is called with nil auth, with an api_key with empty UserID and with a PAT with empty UserID",
+      "then": [
+        "each returns (non-nil empty map, false, nil)"
+      ]
+    },
+    {
+      "id": "TS-35-17",
+      "kind": "unit",
+      "verifies": [
+        "35-REQ-3.3"
+      ],
+      "title": "ReadableSlugs returns owned workspaces as owner and org workspaces as member, all statuses",
+      "given": [
+        "U2 owns W1 (active) and W2 (archived), is a member of org O with W3 (archived) and W4 owned by U1, and also owns W5 in O",
+        "W6 in an org U2 does not belong to"
+      ],
+      "when": "ReadableSlugs is called as U2",
+      "then": [
+        "W1,W2,W5 map to owner",
+        "W3,W4 map to member",
+        "W6 is absent",
+        "all == false and err == nil"
+      ]
+    },
+    {
+      "id": "TS-35-18",
+      "kind": "unit",
+      "verifies": [
+        "35-REQ-3.4"
+      ],
+      "title": "A bound PAT gets at most its bound slug, resolved before rows open on a single-connection database",
+      "given": [
+        "a database with SetMaxOpenConns(1)",
+        "user U2 with readable set {A, B}",
+        "PAT bound to A, PAT bound to C (not readable), and PAT bound to nothing"
+      ],
+      "when": "ReadableSlugs is called for each PAT",
+      "then": [
+        "bound-to-A returns exactly {A: access}",
+        "bound-to-C returns an empty map",
+        "unbound PAT returns the full set",
+        "no call deadlocks"
+      ]
+    },
+    {
+      "id": "TS-35-19",
+      "kind": "unit",
+      "verifies": [
+        "35-REQ-3.5"
+      ],
+      "title": "A binding lookup or readable-set query failure is returned as an error",
+      "given": [
+        "a database whose workspaces table is dropped, and one whose binding table is broken"
+      ],
+      "when": "ReadableSlugs is called as a non-admin user and as a PAT",
+      "then": [
+        "each returns (nil, false, non-nil error)"
+      ]
+    },
+    {
+      "id": "TS-35-20",
+      "kind": "property",
+      "verifies": [
+        "35-REQ-3.6"
+      ],
+      "title": "ReadableSlugs agrees exactly with AuthorizeWorkspace(NeedRead)",
+      "given": [
+        "a database with workspaces of all statuses, orgs and org_members rows"
+      ],
+      "when": "for any non-admin caller (api_key or PAT, with or without binding, empty or set UserID) and any workspace W",
+      "then": [
+        "W is in ReadableSlugs with access A exactly when AuthorizeWorkspace(W, NeedRead) succeeds with Access == A"
+      ],
+      "pseudocode": "for caller in gen(): set,_,_ = ReadableSlugs(db,caller); for w in all: r = AuthorizeWorkspace(db,caller,w,NeedRead); assert (w in set) == (r.status==0); if r.status==0: assert set[w]==r.Access"
+    },
+    {
+      "id": "TS-35-21",
+      "kind": "integration",
+      "verifies": [
+        "35-REQ-4.1"
+      ],
+      "title": "An admin token lists every workspace with access admin, ordered newest first",
+      "given": [
+        "workspaces of several owners, one archived"
+      ],
+      "when": "GET /api/v1/workspaces is called with an admin token, with and without include_archived=true",
+      "then": [
+        "200 with a JSON array",
+        "every object has access == \"admin\"",
+        "archived workspaces appear only with include_archived",
+        "order is created_at descending"
+      ]
+    },
+    {
+      "id": "TS-35-22",
+      "kind": "integration",
+      "verifies": [
+        "35-REQ-4.2"
+      ],
+      "title": "A non-admin caller lists owned and org workspaces with the recorded access",
+      "given": [
+        "U2 owns W1, belongs to org O whose workspace W2 is owned by U1, and W3 (archived) in O",
+        "W4 in an unrelated org"
+      ],
+      "when": "GET /api/v1/workspaces is called as U2, then with include_archived=true",
+      "then": [
+        "first response holds W1 (owner) and W2 (member) only, newest first",
+        "second also holds W3 (member)",
+        "W4 is never listed"
+      ]
+    },
+    {
+      "id": "TS-35-23",
+      "kind": "integration",
+      "verifies": [
+        "35-REQ-4.3"
+      ],
+      "title": "A caller with 501 readable workspaces receives all of them in created_at descending order",
+      "given": [
+        "501 workspaces readable by U2 with distinct created_at values"
+      ],
+      "when": "GET /api/v1/workspaces is called as U2",
+      "then": [
+        "200 with 501 objects",
+        "created_at is non-increasing",
+        "no slug is duplicated"
+      ]
+    },
+    {
+      "id": "TS-35-24",
+      "kind": "integration",
+      "verifies": [
+        "35-REQ-4.4"
+      ],
+      "title": "A caller with an empty readable set gets an empty array",
+      "given": [
+        "a user who owns nothing and belongs to no org with workspaces"
+      ],
+      "when": "GET /api/v1/workspaces is called",
+      "then": [
+        "200 with body []"
+      ]
+    },
+    {
+      "id": "TS-35-25",
+      "kind": "integration",
+      "verifies": [
+        "35-REQ-4.5"
+      ],
+      "title": "A PAT without a read-implying scope gets 404 before ReadableSlugs runs",
+      "given": [
+        "a PAT with only tokens:read scope for a user whose org_members table is missing, so any readable-set query would fail with 500"
+      ],
+      "when": "GET /api/v1/workspaces is called",
+      "then": [
+        "404 \"workspace not found\""
+      ]
+    },
+    {
+      "id": "TS-35-26",
+      "kind": "integration",
+      "verifies": [
+        "35-REQ-4.6"
+      ],
+      "title": "A bound PAT lists at most its bound workspace and only if its user may read it",
+      "given": [
+        "U2 is a member of O containing A and B; PAT bound to A; PAT bound to C that U2 cannot read"
+      ],
+      "when": "GET /api/v1/workspaces is called with each PAT",
+      "then": [
+        "bound-to-A returns an array with only A (access member)",
+        "bound-to-C returns []"
+      ]
+    },
+    {
+      "id": "TS-35-27",
+      "kind": "integration",
+      "verifies": [
+        "35-REQ-4.7"
+      ],
+      "title": "A ReadableSlugs or by-slug query failure gives 500",
+      "given": [
+        "a database in which the by-slug workspace load fails (or org_members is missing for a non-owner caller with org workspaces)"
+      ],
+      "when": "GET /api/v1/workspaces is called as a non-admin user",
+      "then": [
+        "500 \"internal server error\"",
+        "no workspace objects in the body"
+      ]
+    },
+    {
+      "id": "TS-35-28",
+      "kind": "integration",
+      "verifies": [
+        "35-REQ-5.1"
+      ],
+      "title": "Every workspace response carries access and org_slug",
+      "given": [
+        "a workspace the caller owns, with a git-backed carry-patch configuration for sync"
+      ],
+      "when": "create, get, list, update, archive, reactivate, sync (with carry-patch extras) and reclone are called",
+      "then": [
+        "every response body (or list element) has the keys \"access\" and \"org_slug\""
+      ],
+      "pseudocode": "for r in responses: assert 'access' in obj(r) and 'org_slug' in obj(r)"
+    },
+    {
+      "id": "TS-35-29",
+      "kind": "integration",
+      "verifies": [
+        "35-REQ-5.2"
+      ],
+      "title": "access describes the caller, not the PAT's scopes, and create says owner",
+      "given": [
+        "owner U1 with a PAT holding only workspaces:read, an admin token, and a member U2"
+      ],
+      "when": "GET /workspaces/W is called by each and POST /workspaces is called by U1",
+      "then": [
+        "PAT of U1 sees access == \"owner\"",
+        "admin sees \"admin\"",
+        "U2 sees \"member\"",
+        "the create response says \"owner\""
+      ]
+    },
+    {
+      "id": "TS-35-30",
+      "kind": "integration",
+      "verifies": [
+        "35-REQ-5.3"
+      ],
+      "title": "org_slug is the org's slug, or null when org_id is NULL or the org row is missing",
+      "given": [
+        "W1 in org O (slug 'acme'), W2 with NULL org_id, W3 with an org_id naming no org row"
+      ],
+      "when": "GET each workspace as the owner",
+      "then": [
+        "W1 org_slug == \"acme\"",
+        "W2 and W3 org_slug is JSON null"
+      ]
+    },
+    {
+      "id": "TS-35-31",
+      "kind": "property",
+      "verifies": [
+        "35-REQ-5.4"
+      ],
+      "title": "A member sees the same keys and values as the owner, apart from access, and no credential value",
+      "given": [
+        "workspaces with varied org, upstream and credential settings"
+      ],
+      "when": "for any workspace, GET /workspaces/W is called as the owner and as a member",
+      "then": [
+        "the key sets are equal and hub_url is present for both",
+        "all values are equal except access",
+        "no field contains the stored credential value"
+      ],
+      "pseudocode": "o=get(W,owner); m=get(W,member); assert keys(o)==keys(m); assert {k:v for k,v in o if k!='access'}=={...m}; assert secret not in json(m)"
+    },
+    {
+      "id": "TS-35-32",
+      "kind": "integration",
+      "verifies": [
+        "35-REQ-6.1",
+        "35-REQ-6.4"
+      ],
+      "title": "lookupWorkspaceForAuth returns AuthorizeWorkspaceAt's decision and 404 if the row vanishes before the full load",
+      "given": [
+        "a member, a stranger and the owner of W",
+        "a hook that deletes W's row after the access decision and before the full-row load"
+      ],
+      "when": "a handler using lookupWorkspaceForAuth is called with NeedWrite for each caller, then with the row-deleting hook",
+      "then": [
+        "the member gets 403 forbidden with the wsaccess message; the stranger 404 \"workspace not found\"; the owner succeeds",
+        "with the row deleted in between the answer is 404 \"workspace not found\""
+      ]
+    },
+    {
+      "id": "TS-35-33",
+      "kind": "integration",
+      "verifies": [
+        "35-REQ-6.2"
+      ],
+      "title": "A member reads the workspace, the patch list and a patch",
+      "given": [
+        "U2 is a member of W's org; W has a patch; U2 uses an api_key and a PAT with workspaces:read"
+      ],
+      "when": "GET /workspaces/W, GET /workspaces/W/patches and GET /workspaces/W/patches/:id are called",
+      "then": [
+        "all answer 200",
+        "the workspace object has access == \"member\""
+      ]
+    },
+    {
+      "id": "TS-35-34",
+      "kind": "integration",
+      "verifies": [
+        "35-REQ-6.3"
+      ],
+      "title": "A member's workspace, sync, reclone and patch writes are refused with 403 and change nothing",
+      "given": [
+        "U2 is a member of W's org; PAT scopes sufficient for each route",
+        "a snapshot of workspace rows, patch rows and the clone job queue"
+      ],
+      "when": "PATCH /workspaces/W, POST archive, POST reactivate, DELETE /workspaces/W, POST sync, POST reclone, POST patches, PATCH/DELETE patches/:id, POST patches/reorder, POST patches/:id/restore and POST patches/:id/reset-to-origin are called",
+      "then": [
+        "each answers 403 with error_type \"forbidden\"",
+        "rows, git refs and job queue are identical to the snapshot"
+      ]
+    },
+    {
+      "id": "TS-35-35",
+      "kind": "integration",
+      "verifies": [
+        "35-REQ-6.5",
+        "35-REQ-10.5"
+      ],
+      "title": "A PAT bound to another workspace gets 404 and one refusal report with method and route, even for a member",
+      "given": [
+        "U2 is a member of B's org; a PAT of U2 bound to A; an observer"
+      ],
+      "when": "GET /workspaces/B (through lookupWorkspaceForAuth) and a route of B guarded by BindingGuard are called",
+      "then": [
+        "404 \"workspace not found\"",
+        "one report per refusal, carrying method and route as TS-34-58 expects",
+        "the reports equal those before this spec"
+      ]
+    },
+    {
+      "id": "TS-35-36",
+      "kind": "unit",
+      "verifies": [
+        "35-REQ-7.1"
+      ],
+      "title": "carrypatch and merge helpers pass a Need and write refusals through WriteRefusal",
+      "given": [
+        "a member, a stranger and an owner on W"
+      ],
+      "when": "authorizeWorkspace (carrypatch), authorizeMergeWorkspace and validateWorkspaceForMerge (merge) are called with read and write needs",
+      "then": [
+        "member + read passes; member + write writes a 403 with error_type forbidden",
+        "stranger gets 404 {error: \"workspace not found\"} without error_type"
+      ]
+    },
+    {
+      "id": "TS-35-37",
+      "kind": "integration",
+      "verifies": [
+        "35-REQ-7.2"
+      ],
+      "title": "A member reads rebuilds, preview, patch-status, rerere and merges like the owner",
+      "given": [
+        "U2 is a member; W has a rebuild, a merge and rerere entries; U2 holds the scopes each route needs"
+      ],
+      "when": "GET rebuilds, rebuilds/:id, rebuild-preview, patch-status, rerere, merges and merges/:id are called by U2 and by the owner",
+      "then": [
+        "every member response is 200 with the same body as the owner's"
+      ]
+    },
+    {
+      "id": "TS-35-38",
+      "kind": "integration",
+      "verifies": [
+        "35-REQ-7.3"
+      ],
+      "title": "A member's rebuild, rerere and merge writes are refused and enqueue, cancel or delete nothing",
+      "given": [
+        "U2 is a member with the needed scopes; a queued rebuild and merge job; rerere cache entries"
+      ],
+      "when": "POST rebuild, DELETE rebuilds/:id, POST rebuilds/:id/requeue, POST rebuilds/:id/rollback, DELETE rerere/*, POST merges, DELETE merges/:id, POST merges/:id/requeue and POST rebase are called",
+      "then": [
+        "each answers 403 with error_type \"forbidden\"",
+        "the job queue and the rerere cache are unchanged"
+      ]
+    },
+    {
+      "id": "TS-35-39",
+      "kind": "integration",
+      "verifies": [
+        "35-REQ-7.4"
+      ],
+      "title": "runCarryPatchSync authorizes with NeedWrite",
+      "given": [
+        "a member and an owner of W with a carry-patch workspace"
+      ],
+      "when": "runCarryPatchSync is exercised through the sync route for each",
+      "then": [
+        "the member gets 403 forbidden",
+        "the owner gets today's answer"
+      ]
+    },
+    {
+      "id": "TS-35-40",
+      "kind": "unit",
+      "verifies": [
+        "35-REQ-8.1"
+      ],
+      "title": "The lease write flag and forge access values map to the right Need",
+      "given": [
+        "a member on W"
+      ],
+      "when": "LeaseService.authorize(c, false), authorize(c, true) and forge authorize with readAccess, writeAccess and writeAnyStatusAccess are called",
+      "then": [
+        "write=false and readAccess pass for the member",
+        "write=true, writeAccess and writeAnyStatusAccess give the member 403"
+      ]
+    },
+    {
+      "id": "TS-35-41",
+      "kind": "integration",
+      "verifies": [
+        "35-REQ-8.2"
+      ],
+      "title": "A member lists and gets leases with unredacted secret names",
+      "given": [
+        "a lease on W whose secrets and optional_secrets name entries; U2 is a member with the read scope"
+      ],
+      "when": "GET /workspaces/W/sandboxes and GET /workspaces/W/sandboxes/:id are called by U2 and the owner",
+      "then": [
+        "200 for U2 with bodies equal to the owner's including secrets and optional_secrets"
+      ]
+    },
+    {
+      "id": "TS-35-42",
+      "kind": "integration",
+      "verifies": [
+        "35-REQ-8.3"
+      ],
+      "title": "A member cannot issue or delete a lease",
+      "given": [
+        "U2 is a member; a recording sandbox backend stub"
+      ],
+      "when": "POST /workspaces/W/sandboxes and DELETE /workspaces/W/sandboxes/:id are called by U2",
+      "then": [
+        "each answers 403 with error_type \"forbidden\"",
+        "no lease row is created or destroyed and the backend is called 0 times"
+      ]
+    },
+    {
+      "id": "TS-35-43",
+      "kind": "integration",
+      "verifies": [
+        "35-REQ-8.4"
+      ],
+      "title": "A member's forge reads use the workspace credential and never leak its value",
+      "given": [
+        "U2 is a member with forge:read; W has a configured forge credential; a stub forge server"
+      ],
+      "when": "GET forge, forge/repository, forge/deliveries, issues, issues/:n, issues/:n/comments, pulls/:n, pulls/:n/state, pulls/:n/files, pulls/:n/checks and pulls/:n/reviews are called",
+      "then": [
+        "each answers 200",
+        "the stub forge received the workspace credential on the outbound calls",
+        "credential in the body is only its kind",
+        "no response body contains the credential value"
+      ]
+    },
+    {
+      "id": "TS-35-44",
+      "kind": "integration",
+      "verifies": [
+        "35-REQ-8.5"
+      ],
+      "title": "A member's forge writes and webhook changes are refused without outbound calls",
+      "given": [
+        "U2 is a member with forge write and webhook scopes; a stub forge server counting requests; a webhook configuration"
+      ],
+      "when": "POST issues, PATCH issues/:n, POST issues/:n/close, POST issues/:n/comments, POST issues/:n/labels, DELETE issues/:n/labels/:name, POST labels, POST pulls, POST pulls/:n/comments, PUT forge/webhook and DELETE forge/webhook are called",
+      "then": [
+        "each answers 403 with error_type \"forbidden\"",
+        "the stub forge saw 0 requests",
+        "the webhook configuration is unchanged"
+      ]
+    },
+    {
+      "id": "TS-35-45",
+      "kind": "integration",
+      "verifies": [
+        "35-REQ-9.1"
+      ],
+      "title": "A stranger on any workspace secret or variable route gets 404 workspace not found in the apikit envelope",
+      "given": [
+        "a stranger on W; secrets and variables exist on W"
+      ],
+      "when": "every workspace secret and variable route (including vars/resolved) is called by the stranger",
+      "then": [
+        "each answers 404 with body {error: \"workspace not found\"} and no error_type"
+      ]
+    },
+    {
+      "id": "TS-35-46",
+      "kind": "integration",
+      "verifies": [
+        "35-REQ-9.2"
+      ],
+      "title": "A member gets the stranger's 404 on every workspace secret route and learns no name",
+      "given": [
+        "W has a secret named 'db_password'; U2 is a member with secrets scopes"
+      ],
+      "when": "POST and GET .../secrets and PATCH and DELETE .../secrets/:key are called by U2",
+      "then": [
+        "each answers 404 {error: \"workspace not found\"}, byte-identical to a stranger's body",
+        "the body contains no secret name",
+        "the secret is unchanged"
+      ]
+    },
+    {
+      "id": "TS-35-47",
+      "kind": "integration",
+      "verifies": [
+        "35-REQ-9.3"
+      ],
+      "title": "A member lists workspace variables like the owner",
+      "given": [
+        "W has variables; U2 is a member"
+      ],
+      "when": "GET /workspaces/W/vars is called by U2 and the owner",
+      "then": [
+        "200 with identical bodies"
+      ]
+    },
+    {
+      "id": "TS-35-48",
+      "kind": "integration",
+      "verifies": [
+        "35-REQ-9.4"
+      ],
+      "title": "A member's resolved variables equal the owner's document, with the org tier only while the owner is an org member",
+      "given": [
+        "user, org and workspace tier variables; owner U1 is a member of O; U2 is a member of O"
+      ],
+      "when": "GET /workspaces/W/vars/resolved is called by U2 and by U1; then U1's org_members row is removed and both call again",
+      "then": [
+        "200 and the same document for both calls in each round",
+        "the org tier is present in the first round and absent in the second"
+      ]
+    },
+    {
+      "id": "TS-35-49",
+      "kind": "integration",
+      "verifies": [
+        "35-REQ-9.5"
+      ],
+      "title": "A member's variable writes are refused with 403 and change nothing",
+      "given": [
+        "U2 is a member with variable write scopes; W has variable 'K'"
+      ],
+      "when": "POST vars, PATCH vars/K and DELETE vars/K are called by U2",
+      "then": [
+        "each answers 403 with error_type \"forbidden\"",
+        "variable K is unchanged and no variable was added"
+      ]
+    },
+    {
+      "id": "TS-35-50",
+      "kind": "integration",
+      "verifies": [
+        "35-REQ-9.6"
+      ],
+      "title": "A member minting or listing bound tokens gets 404 and no token is created or shown",
+      "given": [
+        "U2 is a member with tokens scopes; W has existing bound tokens"
+      ],
+      "when": "POST /workspaces/W/tokens and GET /workspaces/W/tokens are called by U2",
+      "then": [
+        "each answers 404 \"workspace not found\"",
+        "no token row is added",
+        "the list body shows no token"
+      ]
+    },
+    {
+      "id": "TS-35-51",
+      "kind": "integration",
+      "verifies": [
+        "35-REQ-9.7"
+      ],
+      "title": "Mint still refuses bound PATs and admin tokens before the workspace lookup, with spec 34's answers",
+      "given": [
+        "a bound PAT, an admin token and an observer"
+      ],
+      "when": "POST /workspaces/W/tokens is called by each, including for a nonexistent W",
+      "then": [
+        "status, body and refusal reports equal those of spec 34 (bound PAT refused as bound token; admin token 403)",
+        "the answer does not depend on whether W exists"
+      ]
+    },
+    {
+      "id": "TS-35-52",
+      "kind": "integration",
+      "verifies": [
+        "35-REQ-10.1"
+      ],
+      "title": "A member write on an archived or inactive workspace gets 403, not 400",
+      "given": [
+        "archived workspace W and a workspace with a non-active clone_status; U2 is a member; the owner for comparison"
+      ],
+      "when": "U2 calls PATCH /workspaces/W (valid body), POST merges, POST rebuild and a forge write; the owner calls the same",
+      "then": [
+        "U2 gets 403 on each",
+        "the owner gets today's 400",
+        "an invalid PATCH body from a member still gets the body-validation 400 that precedes the ownership step"
+      ]
+    },
+    {
+      "id": "TS-35-53",
+      "kind": "integration",
+      "verifies": [
+        "35-REQ-10.2"
+      ],
+      "title": "A PAT without the route's scope gets today's scope answer before the workspace lookup, even for a member",
+      "given": [
+        "U2 is a member; PATs of U2 lacking the scope each route needs; an unknown slug for comparison"
+      ],
+      "when": "workspace CRUD routes and the patch, rebuild, merge, sandbox, forge, secrets and vars routes are called",
+      "then": [
+        "CRUD routes answer 404",
+        "the other routes answer today's 403 without error_type",
+        "the answer is the same for an existing and an unknown slug"
+      ]
+    },
+    {
+      "id": "TS-35-54",
+      "kind": "property",
+      "verifies": [
+        "35-REQ-10.3"
+      ],
+      "title": "A stranger gets the same 404 on every route as before",
+      "given": [
+        "a stranger and a workspace W with secrets, tokens, patches, rebuilds, merges, sandboxes and forge state"
+      ],
+      "when": "for any route listed in this spec and any method",
+      "then": [
+        "the status is 404 and the body is {error: \"workspace not found\"} (secrets and variables in the wsaccess wording)",
+        "the body equals the body returned for an unknown slug"
+      ],
+      "pseudocode": "for r in routes: resp = call(r, stranger, W); assert resp.status==404; assert resp.body == call(r, stranger, 'nope').body"
+    },
+    {
+      "id": "TS-35-55",
+      "kind": "integration",
+      "verifies": [
+        "35-REQ-10.4"
+      ],
+      "title": "Owners and admin tokens get today's answers apart from the added fields",
+      "given": [
+        "the existing ownership suites with fixtures updated to include org_id and org_members"
+      ],
+      "when": "the owner and an admin token call every route of this spec in a personal-org workspace",
+      "then": [
+        "statuses and bodies equal today's, ignoring the new access and org_slug keys",
+        "existing ownership test assertions pass unchanged"
+      ]
+    },
+    {
+      "id": "TS-35-56",
+      "kind": "integration",
+      "verifies": [
+        "35-REQ-10.6"
+      ],
+      "title": "A member gets the stranger's answers on session, cost, audit, SSE, transcript and git routes",
+      "given": [
+        "U2 is a member of W's org with the needed scopes"
+      ],
+      "when": "U2 calls the session, cost, per-run audit, unified audit query, SSE and transcript routes and a git clone/fetch of W",
+      "then": [
+        "each status and body equals what a stranger gets today"
+      ]
+    },
+    {
+      "id": "TS-35-57",
+      "kind": "smoke",
+      "verifies": [
+        "35-PATH-1",
+        "35-REQ-4.2",
+        "35-REQ-6.2"
+      ],
+      "title": "A member finds a teammate's workspace in the listing and reads its patch stack",
+      "given": [
+        "the hub running with real handlers and database; U1 owns W in org O; U2 is a member of O with an API key"
+      ],
+      "when": "U2 calls GET /api/v1/workspaces, then GET /api/v1/workspaces/W/patches",
+      "then": [
+        "the listing is 200 and contains W with access \"member\" and org_slug of O",
+        "the patch call is 200 with W's patch stack"
+      ],
+      "real_components": [
+        "workspace HTTP handlers",
+        "wsaccess.ReadableSlugs",
+        "wsaccess.AuthorizeWorkspaceAt",
+        "workspace store",
+        "apikit schema database (workspaces, orgs, org_members)"
+      ]
+    },
+    {
+      "id": "TS-35-58",
+      "kind": "smoke",
+      "verifies": [
+        "35-PATH-2",
+        "35-REQ-7.3"
+      ],
+      "title": "A member's rebuild request is refused with 403 and no job is enqueued",
+      "given": [
+        "the hub running with carrypatch routes, the job queue and a real database; U2 is a member of W's org with the rebuild scope"
+      ],
+      "when": "U2 calls POST /api/v1/workspaces/W/rebuild",
+      "then": [
+        "403 with error_type \"forbidden\" and message \"org members have read-only access to this workspace\"",
+        "no rebuild row and no job queue entry exist"
+      ],
+      "real_components": [
+        "carrypatch handlers",
+        "wsaccess.AuthorizeWorkspace",
+        "wsaccess.WriteRefusal",
+        "job queue",
+        "database"
+      ]
+    },
+    {
+      "id": "TS-35-59",
+      "kind": "smoke",
+      "verifies": [
+        "35-PATH-3",
+        "35-REQ-9.2",
+        "35-REQ-9.6"
+      ],
+      "title": "A member gets the stranger's 404 on secrets and tokens",
+      "given": [
+        "the hub with secrets and boundtoken routes on a real database; W has a secret and a bound token; U2 is a member; a stranger S"
+      ],
+      "when": "U2 and S call GET /workspaces/W/secrets and GET /workspaces/W/tokens",
+      "then": [
+        "both calls answer 404 \"workspace not found\" for U2",
+        "U2's bodies equal S's bodies and reveal no secret name or token"
+      ],
+      "real_components": [
+        "secrets handlers",
+        "boundtoken handlers",
+        "wsaccess.AuthorizeWorkspace",
+        "database"
+      ]
+    },
+    {
+      "id": "TS-35-60",
+      "kind": "smoke",
+      "verifies": [
+        "35-PATH-4",
+        "35-REQ-1.6"
+      ],
+      "title": "A removed member loses read access on the next request",
+      "given": [
+        "the hub running with real handlers and database; U2 is a member of O and reads W"
+      ],
+      "when": "U2 calls GET /api/v1/workspaces/W (200), U2's org_members row is deleted, and U2 calls GET again",
+      "then": [
+        "first response is 200 with access \"member\"",
+        "second response is 404 \"workspace not found\""
+      ],
+      "real_components": [
+        "workspace HTTP handlers",
+        "wsaccess.AuthorizeWorkspaceAt",
+        "org_members table",
+        "database"
+      ]
+    }
+  ]
+}

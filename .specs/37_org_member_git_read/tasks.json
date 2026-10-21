@@ -1,0 +1,315 @@
+{
+  "$schema": "https://agent-fox.dev/schemas/tasks.v2.json",
+  "spec_id": "37",
+  "spec_name": "org_member_git_read",
+  "schema_version": 2,
+  "test_commands": {
+    "all_tests": "make test",
+    "linter": "make lint",
+    "spec_tests": "go test ./internal/gitserver/... -count=1"
+  },
+  "dependencies": [
+    {
+      "spec": "35_org_member_workspace_access",
+      "reason": "provides wsaccess.Need (NeedRead, NeedWrite), AccessMember and AuthorizeWorkspaceAt(db, auth, slug, need, site) with its 403 message 'org members have read-only access to this workspace'; this spec calls it and supersedes the git clause of 35-REQ-10.6 / TS-35-56. Not yet in the tree when this plan was written: it must be merged before task 2."
+    },
+    {
+      "spec": "33_token_workspace_binding",
+      "reason": "git binding rule (33-REQ-7.x, 9.x) and TS-33-42..45, 52, 53, 55, 60 must keep their answers; newBindingGitEnv fixture is adjusted"
+    },
+    {
+      "spec": "34_bound_token_issuance",
+      "reason": "git bound-refusal reports with Surface git (34-REQ-10.3, TS-34-58) must still be emitted exactly once"
+    }
+  ],
+  "tasks": [
+    {
+      "id": 1,
+      "kind": "implement",
+      "title": "Read a NULL org_id as no org in the git resolver",
+      "criteria": [
+        "37-REQ-9"
+      ],
+      "tests": [
+        "TS-37-32",
+        "TS-37-33"
+      ],
+      "steps": [
+        "Write TS-37-32 (seed a workspace with org_id NULL via the openTestDB workspaces table; owner API key, admin token, stranger and a member each GET /git/<org>/Z.git/info/refs?service=git-upload-pack and expect 404 pkt-line 'ERR repository not found') and TS-37-33 (WorkspaceLoader.Load returns transport.ErrRepositoryNotFound, no scan error); confirm they fail with a 500 / scan error",
+        "In internal/gitserver/resolver.go change the workspaces SELECT in resolveWorkspaceFromDB to read COALESCE(org_id, '') so a NULL org scans as an empty string",
+        "Make an empty org id match no org: resolveWorkspaceFromDB returns nil, nil when the workspace's org id is empty (before or instead of the orgs lookup), so gitResolverMiddleware writes pkt-line 404 'repository not found' and WorkspaceLoader.Load in gitserver.go maps nil to transport.ErrRepositoryNotFound",
+        "Do not change the order of the resolver checks or any other resolver answer"
+      ],
+      "touches": [
+        "internal/gitserver/resolver.go",
+        "internal/gitserver/gitserver.go",
+        "internal/gitserver/resolver_test.go"
+      ],
+      "done_when": [
+        "a NULL-org workspace yields 404 'repository not found' for every caller, never a 500"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 2,
+      "kind": "implement",
+      "title": "Rewrite authorizeGitAccess around wsaccess.AuthorizeWorkspaceAt",
+      "criteria": [
+        "37-REQ-1",
+        "37-REQ-2.1",
+        "37-REQ-2.2",
+        "37-REQ-5",
+        "37-REQ-10.1"
+      ],
+      "tests": [
+        "TS-37-1",
+        "TS-37-2",
+        "TS-37-3",
+        "TS-37-4",
+        "TS-37-5",
+        "TS-37-16",
+        "TS-37-17",
+        "TS-37-18",
+        "TS-37-31",
+        "TS-37-34"
+      ],
+      "steps": [
+        "Confirm spec 35's wsaccess.Need, NeedRead, NeedWrite and AuthorizeWorkspaceAt exist in internal/wsaccess; they are a prerequisite (spec 35). If absent, stop and report rather than re-implementing them",
+        "Write TS-37-1, 2, 3 (go/parser scan of non-test files in internal/gitserver for OwnerID==UserID comparisons, DeniesWorkspace calls and admin_token checks in authz.go, and a call to AuthorizeWorkspaceAt), 4, 5, 16, 17, 18, 31 and confirm they fail",
+        "In internal/gitserver/authz.go keep the signature authorizeGitAccess(c echo.Context, db *sql.DB, ws *workspaceInfo) error and var errAccessDenied. Keep only the nil AuthInfo check returning echo.NewHTTPError(401)",
+        "Add a helper gitNeed(c echo.Context) wsaccess.Need: NeedWrite when c.Path() is /git/:org/:slug.git/git-receive-pack, or is /git/:org/:slug.git/info/refs and c.QueryParam(\"service\") (first value) == \"git-receive-pack\"; NeedRead otherwise (upload-pack, missing, empty or invalid service). Never NeedPrivate",
+        "Call wsaccess.AuthorizeWorkspaceAt(db, info, ws.Slug, need, wsaccess.RefusalSite{Method: c.Request().Method, Route: c.Path(), Status: 404, Surface: wsaccess.SurfaceGit}) exactly once; remove the admin_token check, the OwnerID comparison and the DeniesWorkspace call",
+        "Map the returned status: 0 -> return nil; 404 -> writePktLineError(c, 404, \"repository not found\") (not wsaccess's message); 403 -> writePktLineError(c, 403, msg); any other non-zero status -> writePktLineError(c, 500, \"internal server error\"); after each refusal return errAccessDenied so gitResolverMiddleware returns nil without a second response",
+        "Drop only the seedOrgMember row for the non-owner caller in TestAuthz_PATWrongOwner_Returns404, TestAuthz_APIKeyWrongOwner_Returns404 (user-b), TestResolver_NonOwnerNonAdmin_Returns404 (user-2) and newBindingGitEnv (user-b); change no assertion",
+        "Write TS-37-34 as a check that these fixtures have no non-owner membership row and that the git suite (including TS-33-42..45, 52, 53, 55, 60, TS-34-58) passes; run go test ./internal/gitserver -count=1"
+      ],
+      "touches": [
+        "internal/gitserver/authz.go",
+        "internal/gitserver/authz_test.go",
+        "internal/gitserver/resolver_test.go",
+        "internal/gitserver/binding_test.go"
+      ],
+      "depends_on": [
+        1
+      ],
+      "done_when": [
+        "no non-test file in internal/gitserver compares OwnerID with UserID",
+        "go test ./internal/gitserver -count=1 passes with no existing assertion changed"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 3,
+      "kind": "implement",
+      "title": "Members clone and fetch like the owner",
+      "criteria": [
+        "37-REQ-2.3",
+        "37-REQ-2.4",
+        "37-REQ-3"
+      ],
+      "tests": [
+        "TS-37-6",
+        "TS-37-7",
+        "TS-37-8",
+        "TS-37-9",
+        "TS-37-10",
+        "TS-37-11",
+        "TS-37-12"
+      ],
+      "steps": [
+        "Write TS-37-6 to TS-37-12 using newGitTestEnv, seedOrg/seedOrgMember(user-b)/seedWorkspace/initWorkspaceRepo and env.doRequest; TS-37-8 is a property test over routes and random service values asserting a member never gets the stranger 404 and gets the read-only body exactly when the need is write",
+        "Confirm they pass or fail only for want of wiring; the production change is made by task 2, so fix any gap in gitNeed or authorizeGitAccess (still a single AuthorizeWorkspaceAt call, no NeedPrivate)",
+        "Assert member responses (API key, git:read PAT, git:write PAT) equal the owner's response in status, Content-Type and body for info/refs upload-pack and POST git-upload-pack",
+        "Assert a member PAT with no git scopes gets the echo JSON 403 'insufficient git permissions', equal to the owner PAT's answer",
+        "Assert a member with missing or invalid service on info/refs gets the handler's 403 'ERR invalid or missing service parameter' identical to the owner's",
+        "Assert that deleting the member's org_members row makes the next request a 404 'repository not found'",
+        "Leave requireGitScope and hasGitScope unchanged"
+      ],
+      "touches": [
+        "internal/gitserver/member_read_test.go",
+        "internal/gitserver/authz.go"
+      ],
+      "depends_on": [
+        2
+      ],
+      "done_when": [
+        "a member's reads are served identically to the owner's"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 4,
+      "kind": "implement",
+      "title": "Refuse member pushes with a read-only 403 and no side effects",
+      "criteria": [
+        "37-REQ-4.1",
+        "37-REQ-4.2",
+        "37-REQ-4.3",
+        "37-REQ-4.4"
+      ],
+      "tests": [
+        "TS-37-13",
+        "TS-37-14",
+        "TS-37-15"
+      ],
+      "steps": [
+        "Write TS-37-13 (API key, git:write PAT, git:read PAT and scope-less PAT of the member, on GET info/refs?service=git-receive-pack and POST git-receive-pack: 403 text/plain, body pkt-line 'ERR org members have read-only access to this workspace', never 'insufficient git permissions')",
+        "Write TS-37-14: install counting pre-receive and post-push hooks and an audit emitter, record refs, object count and head_sha, POST a valid pack with a ref update as the member, and assert the 403 and that nothing changed and no hook ran",
+        "Write TS-37-15: attach an audit store, send both receive-pack requests as the member, and assert the audit events row count is unchanged",
+        "Confirm the refusal comes from authorizeGitAccess before git.PlainOpen and the handler; fix any ordering in gitResolverMiddleware so no refusal path reaches handleReceivePack",
+        "Do not add any audit emission for refused requests"
+      ],
+      "touches": [
+        "internal/gitserver/member_push_test.go",
+        "internal/gitserver/resolver.go",
+        "internal/gitserver/authz.go"
+      ],
+      "depends_on": [
+        2
+      ],
+      "done_when": [
+        "a member's push is refused before PlainOpen and writes nothing, calls no hook and emits no audit event"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 5,
+      "kind": "implement",
+      "title": "Keep owner, admin token, stranger and blocked-user answers unchanged",
+      "criteria": [
+        "37-REQ-6"
+      ],
+      "tests": [
+        "TS-37-19",
+        "TS-37-20",
+        "TS-37-21",
+        "TS-37-22",
+        "TS-37-23"
+      ],
+      "steps": [
+        "Write TS-37-19: a stranger (user-2) with API key and unbound PAT on all three routes, with the binding table dropped, registers a refusal observer; expect 404 'repository not found' and zero BoundRefusal",
+        "Write TS-37-20: owner API key, git:write PAT, git:read-only PAT and an admin token on all routes; the read-only PAT gets the echo JSON 403 'insufficient git permissions' on receive-pack; all else 200",
+        "Write TS-37-21: an admin-role API key stranger gets 404; an admin-role member gets 200 on upload-pack and the read-only 403 on receive-pack",
+        "Write TS-37-22: run owner, member, stranger API keys and an admin token with the binding table present, drop token_workspace_bindings, rerun and compare; no 500",
+        "Write TS-37-23: a blocked user's API key and PAT get 401 on each route and the resolver is not reached",
+        "Fix any regression found; do not touch GitAuthMiddleware or requireGitScope"
+      ],
+      "touches": [
+        "internal/gitserver/unchanged_answers_test.go",
+        "internal/gitserver/authz.go"
+      ],
+      "depends_on": [
+        2
+      ],
+      "done_when": [
+        "owner, admin token, stranger and blocked-user answers equal the pre-change answers"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 6,
+      "kind": "implement",
+      "title": "Preserve bound-token behaviour and the order of checks",
+      "criteria": [
+        "37-REQ-7",
+        "37-REQ-8"
+      ],
+      "tests": [
+        "TS-37-24",
+        "TS-37-25",
+        "TS-37-26",
+        "TS-37-27",
+        "TS-37-28",
+        "TS-37-29",
+        "TS-37-30"
+      ],
+      "steps": [
+        "Write TS-37-24 using seedGitPAT/bindGitToken and a registered wsaccess refusal observer: a PAT of the owner bound to S and a PAT of a member bound to another workspace both get 404 on X with exactly one BoundRefusal each (Method GET, Route /git/:org/:slug.git/info/refs, Status 404, Surface git)",
+        "Write TS-37-25 (binding table dropped, owner PAT gets 500 'ERR internal server error'), TS-37-26 (member PAT bound to W equals unbound PAT: 200 on upload-pack, read-only 403 on receive-pack) and TS-37-27 (stranger's bound PAT gets 404 and no report)",
+        "Write TS-37-28 as a table of requests tripping several checks (blocked 401; no .git suffix 404; stranger on not-ready 'repository not available'; wrong org 'repository not found'; member push read-only 403 before the scope check; scope-less owner PAT scope 403; resolver database error plain 500 with no body)",
+        "Write TS-37-29 (every caller on a not-ready clone gets 'repository not available', no report, member push included) and TS-37-30 (wrong org URL, no report)",
+        "Fix any ordering problem in gitResolverMiddleware: lookup, clone-ready, authorizeGitAccess, PlainOpen; do not reorder checks"
+      ],
+      "touches": [
+        "internal/gitserver/bound_member_test.go",
+        "internal/gitserver/check_order_test.go",
+        "internal/gitserver/resolver.go"
+      ],
+      "depends_on": [
+        2
+      ],
+      "done_when": [
+        "TS-33-42..45, 52, 53, 55, 60 and TS-34-58 still pass unchanged"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 7,
+      "kind": "implement",
+      "title": "Supersede the git clause of TS-35-56 and update the documentation",
+      "criteria": [
+        "37-REQ-10.2"
+      ],
+      "tests": [
+        "TS-37-35"
+      ],
+      "steps": [
+        "Search the repository tests for TS-35-56 / TS_35_56 (35-REQ-10.6); if it exists, change only its git case to expect a member's upload-pack requests to get 200 and receive-pack requests to get 403 with 'ERR org members have read-only access to this workspace', leaving its REST assertions as they are",
+        "Write TS-37-35 as a gitserver test with that expectation (member upload-pack 200, receive-pack 403 read-only) so the supersession is verified even where TS-35-56 lives elsewhere",
+        "Run make doc is not needed (only cmd packages are generated); update docs/api.md: the Workspace Ownership bullet for the git server, the anti-enumeration paragraph, and Git Server Endpoints (read/write rule, 403 and 404 rows of the three routes' error tables)",
+        "Update docs/permissions.md: git bullets under Ownership enforcement and the admin-role note, the Git Endpoints table, and the anti-enumeration paragraph",
+        "Update docs/architecture.md: add an authorization step to the Git Server section and remove authorizeGitAccess from the list of places that apply the rule themselves",
+        "Add a paragraph on member read access through the git server to docs/errata/ownership_enforcement.md",
+        "Write no tests of docs; docs/openapi.yaml and docs/cli.md do not change; run make check"
+      ],
+      "touches": [
+        "internal/gitserver/member_supersede_test.go",
+        "docs/api.md",
+        "docs/permissions.md",
+        "docs/architecture.md",
+        "docs/errata/ownership_enforcement.md"
+      ],
+      "depends_on": [
+        3,
+        4
+      ],
+      "done_when": [
+        "the affected docs describe members' read access and the 403 push refusal with no TODO text"
+      ],
+      "state": "pending"
+    },
+    {
+      "id": 8,
+      "kind": "integration",
+      "title": "Verify member clone, fetch and refused push end to end with the git CLI",
+      "tests": [
+        "TS-37-36",
+        "TS-37-37"
+      ],
+      "steps": [
+        "Write TS-37-36 following smoke_binding_test.go: an httptest server running MountGitHandlers on a real database, workspace W in org O owned by user-a with a real repo, user-b a member; run git clone then git fetch with URL userinfo x-token-auth:<API key> via runGitCmd, add a commit to W between them, and compare local refs with the owner's ls-remote",
+        "Write TS-37-37: user-b clones, commits and runs git push; assert non-zero exit, output containing 'org members have read-only access to this workspace', and unchanged refs, objects, head_sha and audit event count (no hub.git.push event)",
+        "Trace 37-PATH-1 and 37-PATH-2 through the real code: GitAuthMiddleware -> gitResolverMiddleware -> authorizeGitAccess -> wsaccess.AuthorizeWorkspaceAt -> handler or pkt-line refusal; confirm each step calls the next and no stub remains",
+        "Confirm the status and message AuthorizeWorkspaceAt returns are consumed by authorizeGitAccess in production code, and errAccessDenied is consumed by gitResolverMiddleware",
+        "Grep every file in the tasks' touches for panic(\"not implemented\"), TODO and a bare return nil on a non-trivial path, and remove any",
+        "Confirm MountGitHandlers is called from production wiring (cmd/af-hub) and run make check"
+      ],
+      "touches": [
+        "internal/gitserver/smoke_member_test.go"
+      ],
+      "depends_on": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ],
+      "done_when": [
+        "make test and make lint pass"
+      ],
+      "state": "pending"
+    }
+  ]
+}
