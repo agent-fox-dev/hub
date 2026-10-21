@@ -95,13 +95,14 @@ func handleAuditQuery(store Store, sqliteDB *sql.DB) echo.HandlerFunc {
 			return apikit.WriteAPIError(c, http.StatusBadRequest, err.Error())
 		}
 
-		// Non-admin callers only see events of workspaces they own; events
-		// without a workspace (user- and org-scoped) are admin-only.
-		owned, ok := readableWorkspaces(c, auth, sqliteDB, params.workspace)
+		// Non-admin callers only see events of workspaces they may read
+		// (owned and member workspaces); events without a workspace (user-
+		// and org-scoped) are admin-only.
+		readable, ok := readableWorkspaces(c, auth, sqliteDB, params.workspace)
 		if !ok {
 			return nil
 		}
-		params.allowedWorkspaces = owned
+		params.allowedWorkspaces = readable
 
 		// Execute unified query against DuckDB.
 		ds, ok := store.(*duckDBStore)

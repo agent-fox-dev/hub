@@ -20,7 +20,8 @@ import (
 // Spec 36 opens these routes to members route by route (erratum 36, entry
 // 1); the test keeps the routes on which a member still gets the
 // stranger's answer. Opening a session is 36-REQ-6.2, the per-run reads
-// and the transcript 36-REQ-1, the session and cost reads 36-REQ-2.
+// and the transcript 36-REQ-1, the session and cost reads 36-REQ-2, the
+// unified audit query 36-REQ-4 and the SSE stream 36-REQ-5.
 func TestMemberAuditRoutesOwnerOnly_TS_35_56(t *testing.T) {
 	env := newAuditTestEnvWithSQLite(t)
 	api := env.echo.Group("/api/v1")
@@ -51,8 +52,6 @@ func TestMemberAuditRoutesOwnerOnly_TS_35_56(t *testing.T) {
 	}
 	member, stranger := apiKeyAuth("u2"), apiKeyAuth("u3")
 	for _, r := range []struct{ method, path, body string }{
-		{http.MethodGet, "/api/v1/audit?workspace=w", ""},
-		{http.MethodGet, "/api/v1/events?workspace=w", ""},
 		{http.MethodPost, "/api/v1/sessions/" + sessionID(1) + "/complete", `{"status":"completed"}`},
 		{http.MethodPost, "/api/v1/workspaces/w/runs/run-1/events", `{"event_type":"x"}`},
 	} {

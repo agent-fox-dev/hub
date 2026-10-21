@@ -62,11 +62,18 @@ func openTestDB(t *testing.T) *sql.DB {
 	return db
 }
 
+// orgMembersTable is apikit's org_members table, which wsaccess reads to decide
+// org membership (wsaccess.ReadableSlugs on every non-admin audit query).
+const orgMembersTable = `CREATE TABLE IF NOT EXISTS org_members (org_id TEXT NOT NULL, user_id TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT '', PRIMARY KEY (org_id, user_id))`
+
 // createWorkspacesTable creates the workspaces table with the columns the forge
-// routes and wsaccess read. workspace_mode is left nullable on purpose: the routes
-// treat a NULL mode as a standard workspace.
+// routes and wsaccess read, and the org_members table. workspace_mode is left
+// nullable on purpose: the routes treat a NULL mode as a standard workspace.
 func createWorkspacesTable(t *testing.T, db *sql.DB) {
 	t.Helper()
+	if _, err := db.Exec(orgMembersTable); err != nil {
+		t.Fatalf("create org_members table: %v", err)
+	}
 	_, err := db.Exec(`
 		CREATE TABLE IF NOT EXISTS workspaces (
 			slug           TEXT PRIMARY KEY,
@@ -629,7 +636,7 @@ func useClient(rc *recordingClient, built *atomic.Int64) func(*Config) {
 func addOrgMember(t *testing.T, db *sql.DB, slug, org, user string) {
 	t.Helper()
 	for _, stmt := range []string{
-		`CREATE TABLE IF NOT EXISTS org_members (org_id TEXT NOT NULL, user_id TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT '', PRIMARY KEY (org_id, user_id))`,
+		orgMembersTable,
 		`UPDATE workspaces SET org_id = '` + org + `' WHERE slug = '` + slug + `'`,
 		`INSERT OR IGNORE INTO org_members (org_id, user_id) VALUES ('` + org + `', '` + user + `')`,
 	} {

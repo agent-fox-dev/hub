@@ -224,7 +224,7 @@
       "done_when": [
         "binding_query_test.go and TS-34-58 pass unchanged"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 7,

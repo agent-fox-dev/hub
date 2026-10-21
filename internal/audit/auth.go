@@ -149,58 +149,38 @@ func authorizeWorkspace(c echo.Context, auth *apikit.AuthInfo, slug string, sqli
 	return true
 }
 
-// ownedWorkspaces returns the set of workspace slugs the caller may read for
-// cross-workspace audit endpoints. It returns nil (unrestricted) for admin
-// tokens or when sqliteDB is nil, and an empty set when the caller owns no
-// workspaces. A PAT bound to a workspace (spec 33) may read at most that one;
-// its binding is resolved before any rows are opened.
-func ownedWorkspaces(auth *apikit.AuthInfo, sqliteDB *sql.DB) (map[string]bool, error) {
-	if isAdmin(auth) || sqliteDB == nil {
-		return nil, nil
-	}
-	boundSlug, bound, err := wsaccess.BoundSlug(sqliteDB, auth)
-	if err != nil {
-		return nil, err
-	}
-	rows, err := sqliteDB.Query("SELECT slug FROM workspaces WHERE owner_id = ?", auth.UserID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	owned := make(map[string]bool)
-	for rows.Next() {
-		var slug string
-		if err := rows.Scan(&slug); err != nil {
-			return nil, err
-		}
-		if bound && slug != boundSlug {
-			continue
-		}
-		owned[slug] = true
-	}
-	return owned, rows.Err()
-}
-
 // readableWorkspaces is the workspace restriction of the cross-workspace
-// audit queries (GET /audit and GET /events): the workspaces the caller may
-// read (nil for no restriction, see ownedWorkspaces). A requested workspace
-// outside them answers 404 workspace not found, and is reported as a binding
-// refusal when the caller's binding is the cause (spec 34): ownedWorkspaces
-// has already confined a bound token, so that second lookup only decides
-// whether to report, and its error leaves the refusal as it is. It returns
-// false after writing an answer.
+// audit queries (GET /audit and GET /events): the workspaces, of any status,
+// that wsaccess.ReadableSlugs says the caller may read (owned and member
+// workspaces; for a PAT bound to a workspace at most that one), or nil for
+// no restriction (admin tokens, or no SQLite handle). A failed lookup is 500.
+// A requested workspace outside the set answers 404 workspace not found, and
+// is reported as a binding refusal when the caller's binding is the cause
+// (spec 34): ReadableSlugs has already confined a bound token, so that
+// second lookup only decides whether to report, and its error leaves the
+// refusal as it is. It returns false after writing an answer.
 func readableWorkspaces(c echo.Context, auth *apikit.AuthInfo, sqliteDB *sql.DB, requested string) (map[string]bool, bool) {
-	owned, err := ownedWorkspaces(auth, sqliteDB)
+	if sqliteDB == nil {
+		return nil, true
+	}
+	slugs, all, err := wsaccess.ReadableSlugs(sqliteDB, auth)
 	if err != nil {
 		_ = apikit.WriteAPIError(c, http.StatusInternalServerError, "internal server error")
 		return nil, false
 	}
-	if owned != nil && requested != "" && !owned[requested] {
+	if all {
+		return nil, true
+	}
+	readable := make(map[string]bool, len(slugs))
+	for slug := range slugs {
+		readable[slug] = true
+	}
+	if requested != "" && !readable[requested] {
 		_, _ = wsaccess.DeniesWorkspace(sqliteDB, auth, requested, wsaccess.SiteOf(c, http.StatusNotFound))
 		_ = apikit.WriteAPIError(c, http.StatusNotFound, "workspace not found")
 		return nil, false
 	}
-	return owned, true
+	return readable, true
 }
 
 // errWorkspaceAccessDenied is returned by checkWorkspaceAccess once it has

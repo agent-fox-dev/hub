@@ -26,7 +26,10 @@ delivered.
    The per-run reads and the transcript left it with task 3: a member reads them
    (36-REQ-1.1, `TestRunReads_MemberReads_TS_36_1`). The session, usage, cost and
    `GET /sessions?workspace_slug=` reads left it with task 4 (36-REQ-2.1,
-   `TestSessionReads_Member_TS_36_8`).
+   `TestSessionReads_Member_TS_36_8`). `GET /audit?workspace=` and `GET /events?workspace=` left it
+   with task 6, whose `readableWorkspaces` serves both (36-REQ-4.1 and 36-REQ-5.1,
+   `TestAuditQuery_MemberWorkspaces_TS_36_18`). The test keeps completing a session and
+   ingesting an event, on which a member's answer stays the stranger's (36-REQ-7).
 
 2. **Admin tokens go through the rule on per-run reads, the transcript and `POST /sessions`.**
    Before this spec `requireWorkspaceRead` returned early for an admin token, so an admin naming a
@@ -44,3 +47,11 @@ delivered.
    `handleListSessions` keeps the `500 internal server error` it has always answered when that
    lookup fails, rather than a `200` with an empty list a client could take for "no sessions".
    No session is returned either way (`TestSessionReads_DatabaseFailure_TS_36_40`).
+
+4. **The forge test fixtures gained `org_members`.** `GET /audit` and `GET /events` now take their
+   set from `wsaccess.ReadableSlugs`, whose query reads `org_members` for every non-admin caller.
+   Production always has that table (apikit creates it), but three forge tests mount the audit
+   query routes on a fixture without it (TS-31-62, TS-32-48, TS-32-64), and the first run of
+   task 6 failed them with 500. `createWorkspacesTable` (`internal/forge/testhelpers_test.go`) and
+   `smokeDB` (`internal/forge/smoke_test.go`) now create the table, with the DDL `addOrgMember`
+   already used. No assertion changed.
