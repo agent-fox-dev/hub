@@ -222,21 +222,26 @@ func mergeHasScope(auth *apikit.AuthInfo, scopes ...string) bool {
 }
 
 // requireMergeWriteScope checks that the caller has merges:write permission
-// when using a PAT. Returns an error response if forbidden, or nil to proceed.
-func requireMergeWriteScope(c echo.Context, auth *apikit.AuthInfo) error {
+// when using a PAT. It writes the 403 and returns false if forbidden, true to
+// proceed: it cannot report the refusal as an error, because the apikit
+// writers return nil once the response is written.
+func requireMergeWriteScope(c echo.Context, auth *apikit.AuthInfo) bool {
 	if mergeIsPAT(auth) && !mergeHasScope(auth, "merges:write") {
-		return apikit.WriteAPIError(c, http.StatusForbidden, "PAT requires merges:write scope")
+		_ = apikit.WriteAPIError(c, http.StatusForbidden, "PAT requires merges:write scope")
+		return false
 	}
-	return nil
+	return true
 }
 
 // requireMergeReadScope checks that the caller has merges:read permission
-// when using a PAT. Returns an error response if forbidden, or nil to proceed.
-func requireMergeReadScope(c echo.Context, auth *apikit.AuthInfo) error {
+// when using a PAT. It writes the 403 and returns false if forbidden, true to
+// proceed.
+func requireMergeReadScope(c echo.Context, auth *apikit.AuthInfo) bool {
 	if mergeIsPAT(auth) && !mergeHasScope(auth, "merges:read") {
-		return apikit.WriteAPIError(c, http.StatusForbidden, "PAT requires merges:read scope")
+		_ = apikit.WriteAPIError(c, http.StatusForbidden, "PAT requires merges:read scope")
+		return false
 	}
-	return nil
+	return true
 }
 
 // ---------------------------------------------------------------------------
@@ -298,7 +303,7 @@ func handleSubmitMerge(cfg MergeAPIConfig) echo.HandlerFunc {
 		if auth == nil {
 			return apikit.WriteAPIError(c, http.StatusUnauthorized, "authentication required")
 		}
-		if err := requireMergeWriteScope(c, auth); err != nil {
+		if !requireMergeWriteScope(c, auth) {
 			return nil // Response already written.
 		}
 
@@ -418,7 +423,7 @@ func handleListMerges(cfg MergeAPIConfig) echo.HandlerFunc {
 		if auth == nil {
 			return apikit.WriteAPIError(c, http.StatusUnauthorized, "authentication required")
 		}
-		if err := requireMergeReadScope(c, auth); err != nil {
+		if !requireMergeReadScope(c, auth) {
 			return nil
 		}
 
@@ -461,7 +466,7 @@ func handleGetMerge(cfg MergeAPIConfig) echo.HandlerFunc {
 		if auth == nil {
 			return apikit.WriteAPIError(c, http.StatusUnauthorized, "authentication required")
 		}
-		if err := requireMergeReadScope(c, auth); err != nil {
+		if !requireMergeReadScope(c, auth) {
 			return nil
 		}
 
@@ -503,7 +508,7 @@ func handleCancelMerge(cfg MergeAPIConfig) echo.HandlerFunc {
 		if auth == nil {
 			return apikit.WriteAPIError(c, http.StatusUnauthorized, "authentication required")
 		}
-		if err := requireMergeWriteScope(c, auth); err != nil {
+		if !requireMergeWriteScope(c, auth) {
 			return nil
 		}
 
@@ -565,7 +570,7 @@ func handleRequeueMerge(cfg MergeAPIConfig) echo.HandlerFunc {
 		if auth == nil {
 			return apikit.WriteAPIError(c, http.StatusUnauthorized, "authentication required")
 		}
-		if err := requireMergeWriteScope(c, auth); err != nil {
+		if !requireMergeWriteScope(c, auth) {
 			return nil // Response already written.
 		}
 
@@ -621,7 +626,7 @@ func handleBatchRebase(cfg MergeAPIConfig) echo.HandlerFunc {
 		if auth == nil {
 			return apikit.WriteAPIError(c, http.StatusUnauthorized, "authentication required")
 		}
-		if err := requireMergeWriteScope(c, auth); err != nil {
+		if !requireMergeWriteScope(c, auth) {
 			return nil // Response already written.
 		}
 

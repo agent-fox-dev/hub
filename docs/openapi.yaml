@@ -79,18 +79,33 @@ info:
 
     Workspace CRUD endpoints (list, get, update, archive, reactivate, delete)
     return `404` -- not `403` -- when a PAT lacks the required scope or the
-    workspace is not owned by the caller, so that workspace slugs cannot be
-    enumerated. The git server likewise answers `404` for non-owner access.
+    caller may not see the workspace (not its owner, not a member of its org,
+    not an admin token), so that workspace slugs cannot be enumerated. A member
+    of the workspace's org knows it exists: a member's write is `403` with
+    `error_type: forbidden`. The git server likewise answers `404` for non-owner access.
     Workspace *creation* returns `403`, because there is no existing resource
     to enumerate. Other endpoint families return `403` for a missing scope.
 
-    ## Ownership enforcement
+    ## Workspace access
 
-    Ownership is enforced on every workspace-scoped endpoint: sync, reclone,
-    patches, merges, rebuilds, rerere, patch-status, sessions and audit
-    reads look the workspace up by slug *and* owner and answer `404` for a
-    workspace the caller does not own (admin tokens bypass). The unified
-    audit query and SSE stream are restricted to the caller's workspaces.
+    Every REST route that names a workspace decides the caller's access in
+    one place (`wsaccess`): an admin token is `admin`, the workspace's owner
+    `owner`, a user with an `org_members` row for the workspace's org
+    `member`, anyone else has none (`404 workspace not found`). Each route
+    needs a level. *Read* (the workspace, patch, rebuild, rebuild-preview,
+    patch-status, rerere and merge reads, the lease list and get, the forge
+    reads and deliveries, the variable list and `vars/resolved`) admits
+    members. *Write* (every change: workspace update, archive, reactivate,
+    delete, sync and reclone, patch, rebuild, rerere-forget, merge, rebase,
+    lease, forge and webhook writes, variable writes) answers a member `403`
+    `org members have read-only access to this workspace` with
+    `error_type: forbidden`. *Private* (workspace secrets, bound tokens)
+    answers a member the stranger's `404`. The access check runs after the
+    PAT scope check and before status checks. Sessions, cost and audit
+    reads, the unified audit query, the SSE stream, transcripts and the git
+    server stay owner-only. `GET /api/v1/workspaces` lists the caller's own
+    workspaces and those of the caller's orgs, and every workspace object
+    carries `access` and `org_slug`.
 
     ## Workspace lock
 
@@ -6916,7 +6931,12 @@ components:
               message: authentication required
 
     MissingScope:
-      description: The PAT lacks a permission scope required by this endpoint.
+      description: >-
+        The PAT lacks a permission scope required by this endpoint (no
+        `error_type`). On a workspace route that needs write access, a member of
+        the workspace's organization also gets 403, with the message `org members
+        have read-only access to this workspace` and `error_type: forbidden`
+        (see MemberReadOnly).
       content:
         application/json:
           schema:
@@ -6925,7 +6945,9 @@ components:
     InsufficientScope:
       description: >-
         The PAT lacks a permission scope required by this endpoint
-        (`insufficient permission scope`).
+        (`insufficient permission scope`, no `error_type`). On a workspace
+        variable write, a member of the workspace's organization also gets 403
+        with `error_type: forbidden` (see MemberReadOnly).
       content:
         application/json:
           schema:
@@ -6937,6 +6959,21 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/Error"
+
+    MemberReadOnly:
+      description: >-
+        The caller is a member of the workspace's organization, who may read the
+        workspace but not change it. Written on every workspace route that needs
+        write access, after the PAT scope check and before status checks.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error:
+              code: 403
+              message: org members have read-only access to this workspace
+              error_type: forbidden
 
     BadRequest:
       description: The request body is missing or malformed.
@@ -6961,8 +6998,9 @@ components:
 
     WorkspaceNotFoundOrForbidden:
       description: >-
-        The workspace does not exist, is not owned by the caller, or the PAT
-        lacks the required scope. All three collapse to `404` under the
+        The workspace does not exist, the caller may not see it (not its owner,
+        not a member of its organization, not an admin token), or the PAT lacks
+        the required scope. All three collapse to `404` under the
         anti-enumeration policy.
       content:
         application/json:
@@ -6970,7 +7008,11 @@ components:
             $ref: "#/components/schemas/Error"
 
     WorkspaceNotFoundOrNotOwned:
-      description: The workspace does not exist or is not owned by the caller.
+      description: >-
+        The workspace does not exist or the caller may not see it: not its owner,
+        not a member of its organization (on a private route, such as the
+        workspace secrets and bound tokens, not even a member), not an admin
+        token.
       content:
         application/json:
           schema:
@@ -7309,6 +7351,7 @@ components:
                 - sandbox_capacity
                 - secret_missing
                 - workspace_access_denied
+                - forbidden
                 - token_bound
                 - forge_api_url_invalid
                 - forge_unknown
@@ -7400,6 +7443,8 @@ components:
         - branch
         - owner_id
         - org_id
+        - org_slug
+        - access
         - status
         - display_name
         - description
@@ -7441,6 +7486,18 @@ components:
           type: [string, "null"]
           format: uuid
           description: The organization the workspace belongs to.
+        org_slug:
+          type: [string, "null"]
+          description: >-
+            Slug of the workspace's organization; null when `org_id` is null or
+            names no organization.
+        access:
+          type: string
+          enum: [admin, owner, member]
+          description: >-
+            The caller's access to the workspace: an admin token, its owner, or a
+            member of its organization (read-only). It describes the caller, not
+            a PAT's scopes; the create response always says `owner`.
         status:
           type: string
           enum: [active, archived]

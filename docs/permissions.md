@@ -92,20 +92,60 @@ keys has `Permissions` set to nil. In the workspace subsystem,
 for API keys. In the git server, `requireGitScope` returns nil for API
 keys — they have implicit `git:read` + `git:write`.
 
-**2. Ownership enforcement.** Despite bypassing scope checks, API keys
-are strictly scoped to resources they own:
+**2. Workspace access.** Despite bypassing scope checks, API keys
+are strictly scoped to the resources they may reach:
 - REST `/api/v1/user/*` endpoints query `WHERE user_id = ?` using the
   authenticated user's ID.
-- Core workspace CRUD handlers (create, list, get, update, archive,
-  reactivate, delete) check `ws.OwnerID == auth.UserID` and return 404 on
-  mismatch (anti-enumeration). List endpoints filter by `owner_id`.
+- Every REST route that names a workspace decides access through
+  `wsaccess.AuthorizeWorkspace` (see [Workspace access
+  levels](#workspace-access-levels)): the owner and admin tokens may do
+  everything, a member of the workspace's org may read, and everyone else
+  gets 404 (anti-enumeration). Sync and reclone are writes like any other.
+  The listing returns the caller's own workspaces plus those of the orgs
+  the caller belongs to.
 - Git server checks `info.UserID != ws.OwnerID` and returns a pkt-line
-  404 on mismatch.
-- **Exception:** The sync (`POST /api/v1/workspaces/:slug/sync`) and
-  reclone (`POST /api/v1/workspaces/:slug/reclone`) handlers do NOT
-  enforce ownership. They look up the workspace by slug without checking
-  `OwnerID`, so any authenticated API key (or admin token) can trigger
-  sync or reclone on any workspace.
+  404 on mismatch; org members get the same 404 (owner-only in this
+  release).
+
+### Workspace access levels
+
+`internal/wsaccess` decides a caller's access to a workspace, in this order,
+and each REST endpoint states what it needs:
+
+| Access | Who |
+|--------|-----|
+| `admin` | an admin token (`CredentialType == "admin_token"`); an admin-role API key is not one |
+| `owner` | a credential whose user id is the workspace's `owner_id` |
+| `member` | a credential whose user id has a row `(org_id, user_id)` in `org_members` for the workspace's `org_id` (whatever the org's status or kind); read on every request, so removing a member takes effect at once |
+| none | everyone else, including a credential with no user id |
+
+| Need | Admitted | A member gets | Anyone else gets |
+|------|----------|---------------|------------------|
+| read | member, owner, admin | the answer the owner gets | `404 workspace not found` |
+| write | owner, admin | `403` `org members have read-only access to this workspace`, `error_type: forbidden` | `404 workspace not found` |
+| private | owner, admin | `404 workspace not found`, as a stranger | `404 workspace not found` |
+
+The checks run in this order: no credential is 401; an unknown slug and a
+caller with no access are 404 (with no binding lookup); a PAT bound to another
+workspace is 404 (spec 33) and the refusal is reported; then the need decides.
+A database error is 500 and never a grant. The access step sits where the
+ownership step always sat: after the PAT scope check (a PAT without the scope
+gets the scope answer whatever its membership) and before status and
+precondition checks, so a member's write to an archived workspace is 403, not
+400. A scope 403 carries no `error_type`, so a client can tell it from a
+member's `forbidden`.
+
+Every workspace object carries `access` (the caller's level, `admin`, `owner`
+or `member`, whatever the PAT's scopes) and `org_slug`.
+
+| Routes | Need |
+|--------|------|
+| `GET /workspaces/:slug`, patch reads, rebuild reads, `rebuild-preview`, `patch-status`, `GET .../rerere`, merge reads, lease list and get, the forge reads and `forge/deliveries`, `GET .../vars`, `GET .../vars/resolved` | read |
+| workspace update, archive, reactivate, delete, sync, reclone; patch writes; rebuild submit, cancel, requeue, rollback; `DELETE .../rerere/*`; merge submit, cancel, requeue, `rebase`; lease issue and delete; the forge writes and `PUT`/`DELETE .../forge/webhook`; variable create, update, delete | write |
+| workspace secrets (all four routes); bound tokens (`POST`, `GET .../tokens`) | private |
+
+Sessions, cost, per-run audit reads and ingestion, the unified audit query, the
+SSE stream, transcripts and the git server stay owner-only.
 
 **3. Role-based escalation.** `IsAdmin()` returns true when
 `CredentialType == "api_key"` AND `Role == "admin"`. This grants access
@@ -184,48 +224,51 @@ sit outside it.
 | Endpoint | Access | Ownership |
 |----------|--------|-----------|
 | `POST /api/v1/workspaces` | allowed | new workspace owned by caller |
-| `GET /api/v1/workspaces` | allowed | filtered to own workspaces |
-| `GET /api/v1/workspaces/:slug` | allowed | must own (404 if not) |
-| `PATCH /api/v1/workspaces/:slug` | allowed | must own |
-| `POST /api/v1/workspaces/:slug/archive` | allowed | must own |
-| `POST /api/v1/workspaces/:slug/reactivate` | allowed | must own |
-| `DELETE /api/v1/workspaces/:slug` | allowed | must own, must be archived |
-| `POST /api/v1/workspaces/:slug/sync` | allowed | must own |
-| `POST /api/v1/workspaces/:slug/reclone` | allowed | must own |
-| patches, merges, rebase, rebuilds, rerere, patch-status, audit | allowed | must own (404 if not) |
+| `GET /api/v1/workspaces` | allowed | own workspaces and those of the caller's orgs |
+| `GET /api/v1/workspaces/:slug` | allowed | read: owner or org member (404 if neither) |
+| `PATCH /api/v1/workspaces/:slug` | allowed | write: must own (org member 403) |
+| `POST /api/v1/workspaces/:slug/archive` | allowed | write: must own (org member 403) |
+| `POST /api/v1/workspaces/:slug/reactivate` | allowed | write: must own (org member 403) |
+| `DELETE /api/v1/workspaces/:slug` | allowed | write: must own (org member 403), must be archived |
+| `POST /api/v1/workspaces/:slug/sync` | allowed | write: must own (org member 403) |
+| `POST /api/v1/workspaces/:slug/reclone` | allowed | write: must own (org member 403) |
+| patches, merges, rebase, rebuilds, rerere, patch-status | allowed | reads: owner or org member; writes: must own (org member 403); 404 otherwise |
+| sessions, cost, audit | allowed | must own (404 or 403 as today; org members get a stranger's answer) |
 
 Admin-role API keys have the same access as user-role — they do NOT see
-other users' workspaces.
+other users' workspaces beyond their orgs'.
 
 #### Sandbox Endpoints (all API keys)
 
 | Endpoint | Access | Ownership |
 |----------|--------|-----------|
 | `GET /api/v1/sandbox-profiles` | allowed | none; every authorised caller sees the same list |
-| `POST /api/v1/workspaces/:slug/sandboxes` | allowed | must own the workspace (404 if not), which must be active |
-| `GET /api/v1/workspaces/:slug/sandboxes`, `GET .../sandboxes/:id` | allowed | must own the workspace (404 if not) |
-| `DELETE /api/v1/workspaces/:slug/sandboxes/:id` | allowed | must own the workspace (404 if not) |
+| `POST /api/v1/workspaces/:slug/sandboxes` | allowed | write: must own the workspace (org member 403, 404 otherwise), which must be active |
+| `GET /api/v1/workspaces/:slug/sandboxes`, `GET .../sandboxes/:id` | allowed | read: owner or org member (404 otherwise) |
+| `DELETE /api/v1/workspaces/:slug/sandboxes/:id` | allowed | write: must own the workspace (org member 403, 404 otherwise) |
 | `GET /api/v1/sandboxes` | **admin tokens only** (403 for an API key) | all workspaces |
 
 #### Forge Endpoints (all API keys)
 
 | Endpoint | Access | Ownership |
 |----------|--------|-----------|
-| `GET /api/v1/workspaces/:slug/forge` and the nine read routes (`.../forge/repository`, `.../issues`, `.../issues/:n`, `.../issues/:n/comments`, `.../pulls/:n`, `.../pulls/:n/state`, `.../pulls/:n/files`, `.../pulls/:n/checks`, `.../pulls/:n/reviews`) | allowed | must own the workspace (404 if not); an admin token may read any workspace |
-| the nine write routes (`POST .../issues`, `PATCH .../issues/:n`, `POST .../issues/:n/close`, `POST .../issues/:n/comments`, `POST .../issues/:n/labels`, `DELETE .../issues/:n/labels/:name`, `POST .../labels`, `POST .../pulls`, `POST .../pulls/:n/comments`) | allowed | must own the workspace (404 if not), which must be active (400 if not); an admin token may write to any workspace |
-| `GET /api/v1/workspaces/:slug/forge/deliveries` | allowed | as the reads: must own the workspace (404 if not); works on archived workspaces |
-| `PUT /api/v1/workspaces/:slug/forge/webhook` | allowed | as the writes: must own the workspace (404 if not), which must be active (400 if not) |
-| `DELETE /api/v1/workspaces/:slug/forge/webhook` | allowed | must own the workspace (404 if not); works on archived workspaces |
+| `GET /api/v1/workspaces/:slug/forge` and the nine read routes (`.../forge/repository`, `.../issues`, `.../issues/:n`, `.../issues/:n/comments`, `.../pulls/:n`, `.../pulls/:n/state`, `.../pulls/:n/files`, `.../pulls/:n/checks`, `.../pulls/:n/reviews`) | allowed | read: owner or org member (404 otherwise); an admin token may read any workspace |
+| the nine write routes (`POST .../issues`, `PATCH .../issues/:n`, `POST .../issues/:n/close`, `POST .../issues/:n/comments`, `POST .../issues/:n/labels`, `DELETE .../issues/:n/labels/:name`, `POST .../labels`, `POST .../pulls`, `POST .../pulls/:n/comments`) | allowed | write: must own the workspace (org member 403, 404 otherwise), which must be active (400 if not); an admin token may write to any workspace |
+| `GET /api/v1/workspaces/:slug/forge/deliveries` | allowed | as the reads: owner or org member (404 otherwise); works on archived workspaces |
+| `PUT /api/v1/workspaces/:slug/forge/webhook` | allowed | as the writes: must own the workspace (org member 403, 404 otherwise), which must be active (400 if not) |
+| `DELETE /api/v1/workspaces/:slug/forge/webhook` | allowed | write: must own the workspace (org member 403, 404 otherwise); works on archived workspaces |
 | `POST /hooks/forge/:slug` | **no credential** | none: outside the API group; the forge proves who it is with the HMAC signature or the token of the workspace's `FORGE_WEBHOOK_SECRET` |
 
 For a read the checks run in this order: no credential is 401; a PAT without
 `forge:read` or `forge:write` (and a credential type the hub does not know) is 403,
-before the workspace is looked up; a workspace that is missing or not the caller's is
-404. For a write: no credential is 401; a PAT without `forge:write`, `forge:read` alone
-included, is 403 (`PAT requires forge:write scope`), and so is an unknown credential
-type, before the workspace is looked up; a workspace that is missing or not the
-caller's is 404; one that is not active is 400. The hub reads and writes the forge with
-the workspace's own stored git credential, never with the caller's.
+before the workspace is looked up; a workspace that is missing or that the caller may
+not read is 404. For a write: no credential is 401; a PAT without `forge:write`,
+`forge:read` alone included, is 403 (`PAT requires forge:write scope`), and so is an
+unknown credential type, before the workspace is looked up; a workspace that is missing
+or that the caller may not read is 404; a member of its org is 403 `forbidden`; one
+that is not active is 400. The hub reads and writes the forge with the workspace's own
+stored git credential, never with the caller's, a member's reads included; the
+diagnostic names only the credential's kind.
 
 The webhook ingress `POST /hooks/forge/:slug` is the one forge route that takes no bearer
 credential and no scope: it is mounted on the server root beside `/git/...`, and a delivery
@@ -384,10 +427,10 @@ at startup.
 | | |
 |---|---|
 | **Source** | hub |
-| **Grants** | List and view workspaces owned by the authenticated user; list rerere resolutions; view patch-status dashboard |
+| **Grants** | List and view the workspaces the authenticated user owns or whose org they belong to; list rerere resolutions; view patch-status dashboard |
 | **Endpoints** | `GET /api/v1/workspaces`, `GET /api/v1/workspaces/:slug`, `GET /api/v1/workspaces/:slug/rerere`, `GET /api/v1/workspaces/:slug/patch-status` |
 | **Implied by** | `workspaces:create`, `workspaces:write` -- but only for workspace CRUD endpoints (list, get). The rerere list and patch-status handlers check for the literal `workspaces:read` scope via `hasScope(auth, "workspaces:read")` and do NOT honor these implications. A PAT with `workspaces:create` or `workspaces:write` but without `workspaces:read` can list and get workspaces but cannot access rerere list or patch-status endpoints. |
-| **Ownership** | Enforced for workspace CRUD endpoints (list, get) via `lookupWorkspaceForAuth`. NOT enforced for rerere list and patch-status endpoints -- these handlers check workspace existence but not ownership, so any authenticated user with `workspaces:read` can access rerere list and patch-status for any workspace slug. |
+| **Ownership** | Enforced through `wsaccess` with the read level: the workspace's owner, a member of its org and an admin token may read; anyone else gets `404` (anti-enumeration, see [Workspace access levels](#workspace-access-levels)). The listing returns the caller's own workspaces and those of the caller's orgs. |
 
 ### workspaces:create
 
@@ -442,7 +485,7 @@ at startup. They control access to the carry-patch patch list endpoints.
 | **Grants** | List and view patches for a workspace |
 | **Endpoints** | `GET /api/v1/workspaces/:slug/patches`, `GET /api/v1/workspaces/:slug/patches/:id` |
 | **Implied by** | `patches:write` |
-| **Ownership** | Enforced. Patch handlers resolve the workspace through `lookupWorkspaceForAuth`: the caller must be the workspace owner or hold an admin token, otherwise the answer is `404` (anti-enumeration, see `docs/errata/ownership_enforcement.md`). |
+| **Ownership** | Enforced through `wsaccess` with the read level: the workspace's owner, a member of its org and an admin token may read; anyone else gets `404` (anti-enumeration, see [Workspace access levels](#workspace-access-levels)). |
 
 ### patches:write
 
@@ -452,7 +495,7 @@ at startup. They control access to the carry-patch patch list endpoints.
 | **Grants** | Add, remove, update, restore, reorder, and reset patches for a workspace |
 | **Endpoints** | `POST /api/v1/workspaces/:slug/patches`, `PATCH /api/v1/workspaces/:slug/patches/:id`, `DELETE /api/v1/workspaces/:slug/patches/:id`, `POST /api/v1/workspaces/:slug/patches/:id/restore`, `POST /api/v1/workspaces/:slug/patches/:id/reset-to-origin`, `POST /api/v1/workspaces/:slug/patches/reorder` |
 | **Implies** | `patches:read` |
-| **Ownership** | Enforced. Patch handlers (add, update, remove, restore, reorder and reset-to-origin) resolve the workspace through `lookupWorkspaceForAuth`: the caller must be the workspace owner or hold an admin token, otherwise the answer is `404` (anti-enumeration, see `docs/errata/ownership_enforcement.md`). The check runs before any git operation. |
+| **Ownership** | Enforced through `wsaccess` with the write level: the workspace's owner or an admin token; a member of its org gets `403` with `error_type: forbidden`; anyone else gets `404`. The check runs before any git operation. |
 
 ---
 
@@ -469,7 +512,7 @@ at startup.
 | **Source** | hub |
 | **Grants** | List and view merge job status for workspaces |
 | **Endpoints** | `GET /api/v1/workspaces/:slug/merges`, `GET /api/v1/workspaces/:slug/merges/:id` |
-| **Ownership** | Not enforced. Any authenticated user with the required scope can list/view merge jobs for any workspace slug. |
+| **Ownership** | Enforced through `wsaccess` with the read level: the workspace's owner, a member of its org and an admin token may read; anyone else gets `404` (anti-enumeration, see [Workspace access levels](#workspace-access-levels)). |
 
 ### merges:write
 
@@ -478,7 +521,7 @@ at startup.
 | **Source** | hub |
 | **Grants** | Submit merge requests, cancel queued merge jobs, requeue dead-lettered merge jobs, and trigger batch rebase operations |
 | **Endpoints** | `POST /api/v1/workspaces/:slug/merges`, `DELETE /api/v1/workspaces/:slug/merges/:id`, `POST /api/v1/workspaces/:slug/merges/:id/requeue`, `POST /api/v1/workspaces/:slug/rebase` |
-| **Ownership** | Not enforced. Merge handlers check workspace existence, active status, and ready clone status but do NOT verify `ws.OwnerID == auth.UserID`. Any authenticated user with the required scope can access these endpoints for any workspace slug. |
+| **Ownership** | Enforced through `wsaccess` with the write level: the workspace's owner or an admin token; a member of its org gets `403` with `error_type: forbidden`; anyone else gets `404`. Submit and rebase then need an active workspace with a ready clone (400). |
 
 ---
 
@@ -495,7 +538,7 @@ at startup via the `extraPerms` parameter.
 | **Source** | hub |
 | **Grants** | List and view rebuild job status and history for carry-patch workspaces; preview rebuild conflict predictions |
 | **Endpoints** | `GET /api/v1/workspaces/:slug/rebuilds`, `GET /api/v1/workspaces/:slug/rebuilds/:id`, `GET /api/v1/workspaces/:slug/rebuild-preview` |
-| **Ownership** | Not enforced. Any authenticated user with the required scope can list/view rebuild jobs for any workspace slug. |
+| **Ownership** | Enforced through `wsaccess` with the read level: the workspace's owner, a member of its org and an admin token may read; anyone else gets `404` (anti-enumeration, see [Workspace access levels](#workspace-access-levels)). |
 
 ### rebuilds:write
 
@@ -504,7 +547,7 @@ at startup via the `extraPerms` parameter.
 | **Source** | hub |
 | **Grants** | Submit rebuild jobs, cancel queued rebuild jobs, requeue dead-lettered rebuild jobs, and roll back the integration branch to a previous rebuild state for carry-patch workspaces |
 | **Endpoints** | `POST /api/v1/workspaces/:slug/rebuild`, `DELETE /api/v1/workspaces/:slug/rebuilds/:id`, `POST /api/v1/workspaces/:slug/rebuilds/:id/requeue`, `POST /api/v1/workspaces/:slug/rebuilds/:id/rollback` |
-| **Ownership** | Not enforced. Rebuild handlers check workspace mode, status, and clone status but do NOT verify ownership. Any authenticated user with the required scope can submit rebuilds for any workspace slug. |
+| **Ownership** | Enforced through `wsaccess` with the write level: the workspace's owner or an admin token; a member of its org gets `403` with `error_type: forbidden`; anyone else gets `404`. Rebuild handlers then check workspace mode, status and clone status. |
 
 ---
 
@@ -682,7 +725,7 @@ them before an operator enables sandboxes.
 | **Grants** | List the deployment's sandbox profiles (names, images, resources, network, TTL, secret names and env key names, never a value), and list and read sandbox leases |
 | **Endpoints** | `GET /api/v1/sandbox-profiles`, `GET /api/v1/workspaces/:slug/sandboxes`, `GET /api/v1/workspaces/:slug/sandboxes/:id` |
 | **Implied by** | `sandboxes:write` |
-| **Ownership** | Profiles: none, every authorised caller sees the same list. Leases: enforced. The workspace is looked up through `wsaccess.AuthorizeWorkspace`; the caller must own it or hold an admin token, otherwise the answer is `404`. The scope check comes first, so a PAT without the scope gets `403` even for a workspace that does not exist. |
+| **Ownership** | Profiles: none, every authorised caller sees the same list. Leases: the workspace is looked up through `wsaccess.AuthorizeWorkspace` with the read level: its owner, a member of its org and an admin token may list and get leases, with the same bodies; anyone else gets `404`. The scope check comes first, so a PAT without the scope gets `403` even for a workspace that does not exist. |
 | **Note** | API keys and admin tokens are not scope-checked. Without a `[sandbox]` section every sandbox route answers `404` with `error_type: sandboxes_disabled` to every authenticated caller, before the scope is checked. `GET /api/v1/sandboxes` (every workspace's leases) needs an admin token: a PAT holding both scopes gets `403`. |
 
 ### sandboxes:write
@@ -693,7 +736,7 @@ them before an operator enables sandboxes.
 | **Grants** | Issue sandbox leases and end them. The lease token is returned only in the response that issues the lease. |
 | **Endpoints** | `POST /api/v1/workspaces/:slug/sandboxes`, `DELETE /api/v1/workspaces/:slug/sandboxes/:id` |
 | **Implies** | `sandboxes:read` |
-| **Ownership** | Enforced, as for the lease reads. Issuing needs an active workspace; ending works on an archived one. |
+| **Ownership** | `wsaccess` with the write level: the workspace's owner or an admin token; a member of its org gets `403` with `error_type: forbidden`; anyone else gets `404`. Issuing needs an active workspace; ending works on an archived one. |
 
 ---
 
@@ -711,7 +754,7 @@ at startup via the `extraPerms` parameter, on every start.
 | **Grants** | Read a workspace's repository, issues, comments and pull requests (state, files, CI checks, reviews) on its forge, see how the hub reaches the forge and whether its webhook is set up, and list the webhook deliveries the hub received. The hub uses the workspace's own stored git credential; the response shows its kind, never its value. |
 | **Endpoints** | `GET /api/v1/workspaces/:slug/forge`, `GET .../forge/deliveries`, `GET .../forge/repository`, `GET .../issues`, `GET .../issues/:n`, `GET .../issues/:n/comments`, `GET .../pulls/:n`, `GET .../pulls/:n/state`, `GET .../pulls/:n/files`, `GET .../pulls/:n/checks`, `GET .../pulls/:n/reviews` |
 | **Implied by** | `forge:write` |
-| **Ownership** | Enforced. The workspace is looked up through `wsaccess.AuthorizeWorkspace`; the caller must own it or hold an admin token, otherwise the answer is `404`. |
+| **Ownership** | The workspace is looked up through `wsaccess.AuthorizeWorkspace` with the read level: its owner, a member of its org and an admin token may read, with the workspace's own forge credential; anyone else gets `404`. |
 | **Note** | API keys and admin tokens are not scope-checked. The scope is checked before the workspace is looked up, so a PAT without it gets `403` also for a slug that does not exist. Reads work on archived workspaces and on workspaces that are not cloned. |
 
 ### forge:write
@@ -722,7 +765,7 @@ at startup via the `extraPerms` parameter, on every start.
 | **Grants** | Change a workspace's repository on its forge: create, update and close issues, comment on issues and pull requests, add and remove issue labels, make sure a repository label exists, and open pull requests. Also set and remove the secret the forge signs its webhook deliveries with. The hub uses the workspace's own stored git credential, never the caller's. |
 | **Endpoints** | `POST /api/v1/workspaces/:slug/issues`, `PATCH .../issues/:n`, `POST .../issues/:n/close`, `POST .../issues/:n/comments`, `POST .../issues/:n/labels`, `DELETE .../issues/:n/labels/:name`, `POST .../labels`, `POST .../pulls`, `POST .../pulls/:n/comments`, `PUT .../forge/webhook`, `DELETE .../forge/webhook`; and every `forge:read` endpoint |
 | **Implies** | `forge:read` |
-| **Ownership** | Enforced, as for `forge:read`. A write also needs the workspace to be active: an archived one is `400 workspace is not active`, after the ownership check. This holds for the nine write routes and for `PUT .../forge/webhook`; `DELETE .../forge/webhook` works on a workspace of any status. |
+| **Ownership** | `wsaccess` with the write level: the workspace's owner or an admin token; a member of its org gets `403` with `error_type: forbidden`; anyone else gets `404`. A write also needs the workspace to be active: an archived one is `400 workspace is not active`, after the access check. This holds for the nine write routes and for `PUT .../forge/webhook`; `DELETE .../forge/webhook` works on a workspace of any status. |
 | **Note** | `forge:read` does not grant a write: a PAT holding only `forge:read` gets `403 PAT requires forge:write scope` on every write route, before the workspace is looked up. API keys and admin tokens are not scope-checked. A write that reaches the forge is recorded as a `hub.forge.*` audit event naming the caller; a request the hub refuses on its own is not. `PUT` and `DELETE .../forge/webhook` record `hub.forge.webhook.set` and `.unset` (never the secret). Neither scope is needed for the ingress, which is authenticated by the signature. |
 
 ---
@@ -813,7 +856,8 @@ the handler level in `hub/internal/secrets/handlers.go`.
 |-------|-------------|---------|-----|
 | User-scoped (`/api/v1/user/secrets`, `/api/v1/user/vars`) | Full access | Full access (own user) | Requires explicit scope |
 | Org-scoped (`/api/v1/orgs/:slug/secrets`, `/api/v1/orgs/:slug/vars`) | Full access (bypasses membership) | Full access (requires org membership) | Requires explicit scope + org membership |
-| Workspace-scoped (`/api/v1/workspaces/:slug/secrets`, `/api/v1/workspaces/:slug/vars`) | Full access (bypasses ownership) | Full access (requires workspace ownership) | Requires explicit scope + workspace ownership |
+| Workspace secrets (`/api/v1/workspaces/:slug/secrets`) | Full access (bypasses ownership) | Full access (requires workspace ownership; a member of its org gets `404`) | Requires explicit scope + workspace ownership |
+| Workspace variables (`/api/v1/workspaces/:slug/vars`) | Full access (bypasses ownership) | Read (list, resolved) for the owner and members of its org; writes for the owner (a member gets `403 forbidden`) | Requires explicit scope + the same access |
 
 ### PAT Scope Requirements by Operation
 
@@ -831,14 +875,21 @@ the handler level in `hub/internal/secrets/handlers.go`.
   access secrets and variables for any user, org, or workspace.
 - **API keys** have implicit full access but are constrained by ownership:
   user-scoped operations use the authenticated user's ID; org-scoped
-  operations require org membership; workspace-scoped operations require
-  workspace ownership.
+  operations require org membership; workspace-scoped operations go through
+  `wsaccess`: workspace secrets are private to the owner, workspace
+  variables are readable by members of the workspace's org and writable by
+  the owner.
 - **PATs** require explicit scopes as listed above. Additionally, org-scoped
   operations require org membership and workspace-scoped operations require
-  workspace ownership.
+  the same access as for an API key.
 
 Non-admin credentials that fail ownership or membership checks receive
-HTTP 404 (not 403) consistent with the anti-enumeration policy.
+HTTP 404 (not 403) consistent with the anti-enumeration policy; the workspace
+routes answer `404 workspace not found` in the apikit envelope. The one 403 is
+a member's variable write (`org members have read-only access to this
+workspace`, `error_type: forbidden`). A member's `GET .../vars/resolved` is the
+owner's document: the owner's user tier, the org tier while the owner is a
+member of the org, and the workspace tier.
 
 ---
 
@@ -853,8 +904,9 @@ is open to the owner of an active workspace with an API key, or with a PAT
 holding `tokens:manage`; the token is minted by apikit's own route, so a PAT can
 grant only scopes it holds. Admin tokens cannot mint (a token needs a user as
 its owner). `GET /api/v1/workspaces/:slug/tokens` is open to the owner (a PAT
-needs `tokens:read` or `tokens:manage`) and to admin tokens. Deleting a
-workspace revokes its bound tokens.
+needs `tokens:read` or `tokens:manage`) and to admin tokens. Both routes need
+the private access level: a member of the workspace's org gets the stranger's
+`404 workspace not found`. Deleting a workspace revokes its bound tokens.
 
 For a bound PAT:
 
@@ -886,18 +938,22 @@ safe default. See `docs/api.md` (Workspace-Bound Tokens) for every answer.
 
 ## Anti-Enumeration Policy
 
-When a PAT lacks the required workspace scope, or when a workspace is
-not owned by the caller, the workspace CRUD endpoints (list, get, update,
-archive, reactivate, delete) return HTTP 404 (not 403) to avoid disclosing
-the existence of resources. The workspace create endpoint returns HTTP 403
+When a PAT lacks the required workspace scope, or when the caller may not
+read a workspace (neither its owner, nor a member of its org, nor an admin
+token), the workspace CRUD endpoints (list, get, update, archive, reactivate,
+delete) return HTTP 404 (not 403) to avoid disclosing the existence of
+resources. A member of the workspace's org can see it exists, so a member's
+write is HTTP 403 with `error_type: forbidden`. The workspace create endpoint returns HTTP 403
 (`"PAT requires workspaces:create scope to create workspaces"`) because
 there is no existing resource to enumerate. The git server returns HTTP 404
 for non-owner access (`authorizeGitAccess` writes a pkt-line 404
 `"repository not found"`) to prevent workspace slug enumeration.
 
 All workspace-scoped endpoint groups (sync, reclone, patches, merges,
-rebuilds, rerere, patch-status, sessions, audit) return HTTP 404 for a
-workspace the caller does not own, matching the CRUD endpoints. A
+rebuilds, rerere, patch-status, leases, forge, secrets, variables, bound
+tokens, sessions, audit) return HTTP 404 for a workspace the caller may not
+see, matching the CRUD endpoints, with the same body as for a slug that does
+not exist. A
 workspace-bound PAT gets the answer a non-owner gets for every workspace other
 than its own.
 

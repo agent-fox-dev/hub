@@ -106,24 +106,51 @@ Conversely, `POST /api/v1/workspaces/:slug/sync` accepts **either**
 mode. The standard sync path and `POST /api/v1/workspaces/:slug/reclone`
 require `workspaces:sync` exclusively.
 
-### Workspace Ownership
+### Workspace Access
 
-Ownership is enforced on every workspace-scoped endpoint. A workspace is
-visible only to its owner (the user behind the API key or PAT); admin tokens
-bypass the check. Non-owners receive HTTP 404 (see the anti-enumeration
-policy below), never 403, so slugs cannot be probed. This covers:
+Every REST route that names a workspace decides the caller's access through
+`wsaccess.AuthorizeWorkspace`, in this order: an admin token is `admin`; the
+user behind the API key or PAT is `owner` when they own the workspace and
+`member` when `org_members` holds a row for the workspace's org and them
+(whatever the org's status or kind, read on every request); everyone else has
+no access. Each route needs one of three levels:
 
-- workspace CRUD, sync, reclone, archive, reactivate
-- all patch endpoints, rebuild, rebuild-preview, rollback, patch-status
-- all merge endpoints and batch rebase
-- rerere list and forget
-- secrets and variables
-- agent sessions (`POST /api/v1/sessions` returns 404 for a workspace the
-  caller does not own) and every per-run audit endpoint
-- the unified audit query and the SSE stream, which return only events of
-  workspaces the caller owns (hub events without a workspace, such as user
-  or credential changes, are visible to admin tokens only)
-- the git server
+| Need | Admitted | A member gets | Anyone else gets |
+|------|----------|---------------|------------------|
+| read | owner, member, admin token | the owner's answer | `404 workspace not found` |
+| write | owner, admin token | `403 org members have read-only access to this workspace`, `error_type: forbidden` | `404 workspace not found` |
+| private | owner, admin token | `404 workspace not found`, as anyone else | `404 workspace not found` |
+
+- **Read:** `GET /workspaces/:slug`, the patch reads, `GET .../rebuilds`,
+  `GET .../rebuilds/:id`, `GET .../rebuild-preview`, `GET .../patch-status`,
+  `GET .../rerere`, `GET .../merges`, `GET .../merges/:id`, the lease list and
+  get, every forge read and `GET .../forge/deliveries`, `GET .../vars` and
+  `GET .../vars/resolved`. The listing (`GET /workspaces`) returns the caller's
+  own workspaces and those of the caller's orgs.
+- **Write:** workspace update, archive, reactivate, delete, sync and reclone;
+  every patch write; rebuild submit, cancel, requeue and rollback;
+  `DELETE .../rerere/*`; merge submit, cancel, requeue and `rebase`; lease
+  issue and delete; every forge write and `PUT`/`DELETE .../forge/webhook`;
+  variable create, update and delete.
+- **Private:** the workspace secret routes and the bound-token routes
+  (`POST`, `GET .../tokens`).
+
+"May not see the workspace" below means: not its owner, not a member of its
+org, not an admin token (and, on a private route, not its owner or an admin
+token). The 404 never says which: its body is the one a slug that does not
+exist gets. The access step runs where the ownership step always ran: after the
+PAT scope check, so a PAT without the scope gets the scope answer whatever its
+membership, and before status and precondition checks, so a member's write to an
+archived workspace is 403, not 400. A database error is 500 and never a grant.
+Every workspace object carries `access` and `org_slug` (see the [Workspace
+Response Schema](#workspace-response-schema)).
+
+These stay owner-only (a member gets the answer a stranger gets): agent
+sessions (`POST /api/v1/sessions` returns 404 for a workspace the caller does
+not own), the cost route and every per-run audit endpoint; the unified audit
+query and the SSE stream, which return only events of workspaces the caller
+owns (hub events without a workspace, such as user or credential changes, are
+visible to admin tokens only); and the git server.
 
 Blocked users are rejected by the git server as well as by the API.
 
@@ -184,10 +211,11 @@ itself is free.
 
 ### Anti-Enumeration Policy
 
-When a PAT lacks the required scope for an endpoint, or the requested
-workspace is not owned by the PAT's user, the workspace CRUD endpoints (list,
-get, update, archive, reactivate, delete) return HTTP 404 (not 403) to avoid
-disclosing the existence of resources. The git server does the same, answering
+When a PAT lacks the required scope for an endpoint, or the caller may not
+see the requested workspace, the workspace CRUD endpoints (list, get, update,
+archive, reactivate, delete) return HTTP 404 (not 403) to avoid disclosing the
+existence of resources. A member of the workspace's org knows it exists, so a
+member's write is 403 with `error_type: forbidden`. The git server does the same, answering
 a pkt-line 404 for non-owner access.
 
 `POST /api/v1/workspaces` is the exception: it returns 403, because there is no
@@ -235,6 +263,7 @@ The `error_type` field is omitted when not applicable. Known error types:
 | `missing_on_origin` | POST /api/v1/workspaces/:slug/patches/:id/reset-to-origin | The patch branch does not exist on the fork |
 | `ref_changed` | POST /api/v1/workspaces/:slug/patches/:id/reset-to-origin | The patch branch was modified by another operation between the SHA resolution and the compare-and-swap write; retry |
 | `workspace_busy` | archive, sync, reclone, rollback, batch rebase, rerere forget, reset-to-origin | Another operation currently holds the workspace lock; retry later. A rebuild holds the lock only in its fetch phase and final phase, so sync, rollback, rerere forget and batch rebase are rejected only then; archive and reclone are rejected for the whole rebuild |
+| `forbidden` | every workspace route that needs write access (see [Workspace Access](#workspace-access)) | 403. The caller is a member of the workspace's org, who may read the workspace but not change it. The message is `org members have read-only access to this workspace`. A PAT's scope 403 carries no `error_type` |
 | `token_bound` | every route a workspace-bound token may not call | 403. The token is bound to one workspace and the route is neither scoped to a workspace nor allowed for bound tokens. The message is `this token is bound to workspace <S>`, or `this token is bound to a workspace` on the routes apikit mounts (see [Workspace-Bound Tokens](#workspace-bound-tokens)) |
 | `sandboxes_disabled` | GET /api/v1/sandbox-profiles and every sandbox lease route | The hub has no `[sandbox]` section in its `config.toml`, so sandboxes are not enabled. Answered with 404 to every authenticated caller before any scope is checked |
 | `sandbox_capacity` | POST /api/v1/workspaces/:slug/sandboxes | The deployment's `max_sandboxes` limit on live leases is reached |
@@ -267,6 +296,8 @@ schema:
   "branch": "main",
   "owner_id": "uuid-string",
   "org_id": "uuid-string-or-null",
+  "org_slug": "org-slug-or-null",
+  "access": "owner",
   "status": "active",
   "display_name": "My Project",
   "description": "A description of the workspace",
@@ -294,6 +325,8 @@ schema:
 | `branch` | string or null | Git ref associated with the workspace; immutable after creation |
 | `owner_id` | string (UUID) | User who owns the workspace |
 | `org_id` | string (UUID) or null | Organization the workspace is associated with; nullable |
+| `org_slug` | string or null | Slug of the workspace's organization; null when `org_id` is null or no org has that id |
+| `access` | string | The caller's access to the workspace: `"admin"` (admin token), `"owner"` or `"member"` (member of the workspace's org). It describes the caller, not a PAT's scopes; the create response always says `"owner"`. A member sees every other field as the owner does |
 | `status` | string | Lifecycle state: `"active"` or `"archived"` |
 | `display_name` | string | Human-readable label; defaults to slug value when not set; never null or empty |
 | `description` | string | Free-form text describing the workspace; defaults to empty string; never null |
@@ -398,8 +431,10 @@ List workspaces accessible to the authenticated user.
 
 **Response:** HTTP 200 OK with a JSON array of workspace objects.
 
-- Non-admin users see only their own workspaces.
-- Admin users see all workspaces.
+- Non-admin callers see their own workspaces (`access: "owner"`) and those of
+  the orgs they belong to (`access: "member"`), newest first. A bound PAT sees
+  at most its own workspace.
+- Admin tokens see all workspaces (`access: "admin"`).
 
 **Error Codes:**
 
@@ -407,6 +442,7 @@ List workspaces accessible to the authenticated user.
 |--------|-----------|
 | 401 | Unauthenticated request |
 | 404 | PAT lacks read access (anti-enumeration) |
+| 500 | Reading the caller's readable workspaces failed |
 
 ---
 
@@ -431,7 +467,7 @@ workspace.
 | Status | Condition |
 |--------|-----------|
 | 401 | Unauthenticated request |
-| 404 | Workspace not found, or PAT lacks read access, or workspace not owned by the authenticated user (anti-enumeration) |
+| 404 | Workspace not found, or PAT lacks read access, or the caller may not see the workspace (anti-enumeration) |
 
 ---
 
@@ -488,8 +524,8 @@ mutable fields. At least one field must be provided.
 |--------|-----------|
 | 400 | Empty body (no fields provided); workspace is archived (must reactivate first); `display_name` exceeds 128 characters; `description` exceeds 1024 characters; request includes immutable fields; `sync_mode` value is invalid or null |
 | 401 | Unauthenticated request |
-| 403 | Workspace owner is not a member of the organization specified in `org_id` |
-| 404 | Workspace not found; PAT lacks `workspaces:write` scope; workspace not owned by the authenticated user (anti-enumeration) |
+| 403 | Workspace owner is not a member of the organization specified in `org_id`; the caller is a member of the workspace's org: `org members have read-only access to this workspace` (`error_type: forbidden`) |
+| 404 | Workspace not found; PAT lacks `workspaces:write` scope; the caller may not see the workspace (anti-enumeration) |
 | 500 | Internal server error (e.g., org membership check timeout or failure) |
 
 ---
@@ -529,7 +565,8 @@ tokens can archive any workspace.
 |--------|-----------|
 | 400 | Workspace is already archived |
 | 401 | Unauthenticated request |
-| 404 | Workspace not found; PAT lacks `workspaces:write` scope; workspace not owned by the authenticated user (anti-enumeration) |
+| 403 | the caller is a member of the workspace's org: `org members have read-only access to this workspace` (`error_type: forbidden`) |
+| 404 | Workspace not found; PAT lacks `workspaces:write` scope; the caller may not see the workspace (anti-enumeration) |
 | 409 | Clone is in progress; archive is rejected until the clone completes or fails. Another operation holds the workspace lock, or a rebuild is running (`error_type: workspace_busy`; archive is rejected for the whole rebuild, not only its fetch and final phases) |
 
 ---
@@ -557,7 +594,8 @@ enqueued.
 | Status | Condition |
 |--------|-----------|
 | 401 | Unauthenticated request |
-| 404 | Workspace not found; PAT lacks `workspaces:write` scope; workspace not owned by the authenticated user (anti-enumeration) |
+| 403 | the caller is a member of the workspace's org: `org members have read-only access to this workspace` (`error_type: forbidden`) |
+| 404 | Workspace not found; PAT lacks `workspaces:write` scope; the caller may not see the workspace (anti-enumeration) |
 | 409 | Workspace is not archived |
 
 ---
@@ -651,8 +689,8 @@ or unexpected failures.
 |--------|-----------|
 | 400 | Workspace is not active; clone is not ready; sync is disabled |
 | 401 | Unauthenticated request |
-| 403 | PAT lacks `workspaces:sync` scope |
-| 404 | Workspace not found or not owned by the caller |
+| 403 | PAT lacks `workspaces:sync` scope; the caller is a member of the workspace's org: `org members have read-only access to this workspace` (`error_type: forbidden`) |
+| 404 | Workspace not found or the caller may not see it |
 | 409 | Sync already in progress (concurrent sync rejected); another operation holds the workspace lock (`error_type: workspace_busy`; a rebuild holds it only during its fetch phase and final phase, not while it applies patches); upstream history has diverged (force-push detected) |
 | 500 | Carry-patch `origin` mode: the patch refresh failed for a branch. The message is `failed to update patch branch <branch>` (ref write failed), `failed to compare patch branch <branch> with origin` (ancestry check failed) or `failed to reset working tree for patch branch <branch>` (ref moved, work-tree reset failed). See the Carry-Patch Sync Flow below |
 | 502 | Upstream fetch failed (network, authentication, or repository error); credential resolution failed; origin fetch failed (`error_type: origin_fetch_failed`); failed to resolve origin credentials |
@@ -876,7 +914,7 @@ the rebuild worktree lives in.
 | Status | Condition |
 |--------|-----------|
 | 401 | Unauthenticated request |
-| 403 | PAT lacks `workspaces:sync` scope |
+| 403 | PAT lacks `workspaces:sync` scope; the caller is a member of the workspace's org: `org members have read-only access to this workspace` (`error_type: forbidden`) |
 | 404 | Workspace not found |
 | 409 | Clone operation already in progress (`clone_status` is `"pending"` or `"cloning"`) |
 | 500 | Failed to delete workspace directory; database update failed |
@@ -903,7 +941,8 @@ tokens can delete any workspace.
 | Status | Condition |
 |--------|-----------|
 | 401 | Unauthenticated request |
-| 404 | Workspace not found; PAT lacks `workspaces:delete` scope; workspace not owned by the authenticated user (anti-enumeration) |
+| 403 | the caller is a member of the workspace's org: `org members have read-only access to this workspace` (`error_type: forbidden`) |
+| 404 | Workspace not found; PAT lacks `workspaces:delete` scope; the caller may not see the workspace (anti-enumeration) |
 | 409 | Workspace is not archived (must archive before deleting) |
 | 500 | `failed to delete workspace`; nothing was deleted (the deletion, including the revocation of its bound tokens, is one transaction) |
 
@@ -931,7 +970,9 @@ Mint a personal access token bound to the workspace. Hub serves apikit's own
 rules apply unchanged, and then writes the binding.
 
 **Authentication:** API key, or PAT with `tokens:manage` (checked by apikit).
-Only the workspace's owner may mint; admin tokens cannot.
+Only the workspace's owner may mint; admin tokens cannot. The route is private:
+a member of the workspace's org gets `404 workspace not found`, as a stranger
+does.
 
 **Request Body:** apikit's, passed on unchanged.
 
@@ -964,7 +1005,7 @@ that carries the token:
 | 403 | `this token is bound to workspace <S>` with `error_type: token_bound`: the caller is a bound PAT. Behind the binding guard, a bound PAT gets `404 workspace not found` for any workspace other than its own |
 | 500 | `internal server error`: the binding lookup failed |
 | 403 | `admin tokens cannot mint bound tokens; a real user is required as the token's owner` |
-| 404 | `workspace not found`: the workspace does not exist or the caller does not own it |
+| 404 | `workspace not found`: the workspace does not exist or the caller may not see it (a member of its org included: the route is private) |
 | 400 | `workspace is not active` |
 
 Then apikit answers. Any status other than 201 (a bad body, an unknown scope, a
@@ -990,7 +1031,8 @@ workspaces. A binding whose token apikit no longer holds is left out. Never
 carries a token or its hash.
 
 **Authentication:** API key, PAT with `tokens:read` or `tokens:manage`, or
-admin token. Only the workspace's owner or an admin token may list.
+admin token. Only the workspace's owner or an admin token may list; a member of
+the workspace's org gets `404 workspace not found` (the route is private).
 
 **Response:** HTTP 200 OK with a JSON array, `[]` when there is nothing to list:
 
@@ -1343,10 +1385,9 @@ Patch endpoints manage the ordered list of patch branches for carry-patch
 workspaces. Patches represent git branches that are applied on top of the
 upstream base when rebuilding the integration branch.
 
-**Note:** Patch endpoints do not enforce workspace ownership. Any
-authenticated user with an API key, or a PAT with the appropriate scope
-(`patches:read` or `patches:write`), can read or modify patches for any
-workspace.
+**Access:** the patch reads need read access (a member of the workspace's org
+reads the patch stack), the patch writes need write access (a member gets
+`403 forbidden`); see [Workspace Access](#workspace-access).
 
 ### Patch Response Schema
 
@@ -1510,11 +1551,12 @@ branch-check hook is registered. Batch registration does not emit
 | 400 | `branch_name` is absent or empty |
 | 400 | `branch_name` equals the workspace's `integration_branch` |
 | 400 | Workspace is in `standard` mode (not `carry_patch`) |
-| 400 | Workspace does not exist or is not active |
+| 400 | Workspace is not active |
 | 400 | `position` is less than 1 |
 | 400 | Branch does not exist in repository or on origin (when `skip_branch_check` is `false`). In a batch the message is prefixed `patch[i]: `. |
 | 401 | Unauthenticated request |
-| 403 | PAT lacks `patches:write` scope |
+| 403 | PAT lacks `patches:write` scope; the caller is a member of the workspace's org: `org members have read-only access to this workspace` (`error_type: forbidden`) |
+| 404 | Workspace not found or the caller may not see it |
 | 409 | `branch_name` already exists in the patch list for this workspace (unless `if_not_exists` is `true`) |
 | 409 | Duplicate `branch_name` within a batch request |
 | 409 | Another operation holds the workspace lock (`error_type: workspace_busy`). Returned when the resolver needs to write a ref but the trunk is locked by another operation. |
@@ -1596,7 +1638,7 @@ A soft-deleted patch is returned with its `deleted` status.
 |--------|----------|
 | 401 | Unauthenticated request |
 | 403 | PAT lacks `patches:read` scope |
-| 404 | Patch ID does not exist for the given workspace; workspace not found or not owned by the caller |
+| 404 | Patch ID does not exist for the given workspace; workspace not found or the caller may not see it |
 
 ---
 
@@ -1650,8 +1692,8 @@ Update a patch's position, status, description, or upstream PR URL.
 | 400 | `status` is not one of the valid values, or is `"deleted"` |
 | 400 | `position` is less than 1 or greater than the total number of patches |
 | 401 | Unauthenticated request |
-| 403 | PAT lacks `patches:write` scope |
-| 404 | Patch ID does not exist for the given workspace; workspace not found or not owned by the caller |
+| 403 | PAT lacks `patches:write` scope; the caller is a member of the workspace's org: `org members have read-only access to this workspace` (`error_type: forbidden`) |
+| 404 | Patch ID does not exist for the given workspace; workspace not found or the caller may not see it |
 | 409 | Patch is soft-deleted; restore it first |
 
 ---
@@ -1689,7 +1731,7 @@ Remove a patch from the workspace's patch list.
 | Status | Condition |
 |--------|-----------|
 | 401 | Unauthenticated request |
-| 403 | PAT lacks `patches:write` scope |
+| 403 | PAT lacks `patches:write` scope; the caller is a member of the workspace's org: `org members have read-only access to this workspace` (`error_type: forbidden`) |
 | 404 | Patch ID does not exist for the given workspace |
 | 500 | Database transaction failure during delete and compaction (no partial state persisted) |
 
@@ -1723,7 +1765,7 @@ Restore a soft-deleted patch back to active status.
 |--------|-----------|
 | 400 | Workspace does not exist or is not active; workspace is not in `carry_patch` mode; patch is not in `"deleted"` status |
 | 401 | Unauthenticated request |
-| 403 | PAT lacks `patches:write` scope |
+| 403 | PAT lacks `patches:write` scope; the caller is a member of the workspace's org: `org members have read-only access to this workspace` (`error_type: forbidden`) |
 | 404 | Patch ID does not exist for the given workspace |
 | 500 | Internal server error |
 
@@ -1802,7 +1844,8 @@ response.
 | Status | Condition |
 |--------|----------|
 | 400 | Workspace is not active; workspace is not in `carry_patch` mode; patch branch is the integration branch |
-| 404 | Workspace not found or not owned by the caller; patch not found |
+| 403 | the caller is a member of the workspace's org: `org members have read-only access to this workspace` (`error_type: forbidden`) |
+| 404 | Workspace not found or the caller may not see it; patch not found |
 | 409 | Workspace clone is not ready; patch status cannot be reset (`merged_upstream` or `deleted`); branch does not exist on origin (`error_type: missing_on_origin`); patch branch changed during reset (`error_type: ref_changed`); another operation holds the workspace lock (`error_type: workspace_busy`) |
 | 500 | Patch reset is not configured; failed to update patch branch (including a hub configured without its origin fetch or workspace lock); failed to fetch updated patch (the branch moved, but the patch row could not be read back; the audit event was still emitted) |
 | 502 | Origin fetch failed (`error_type: origin_fetch_failed`); failed to resolve origin credentials |
@@ -1853,7 +1896,7 @@ position order.
 | 400 | `patch_ids` contains an ID that does not belong to the specified workspace |
 | 400 | Database transaction failure during bulk position update (all errors from the reorder function are returned as 400) |
 | 401 | Unauthenticated request |
-| 403 | PAT lacks `patches:write` scope |
+| 403 | PAT lacks `patches:write` scope; the caller is a member of the workspace's org: `org members have read-only access to this workspace` (`error_type: forbidden`) |
 
 ---
 
@@ -1944,8 +1987,8 @@ preferred for housekeeping.
 |--------|-----------|
 | 400 | Empty or invalid pathspec |
 | 401 | Unauthenticated request |
-| 403 | PAT lacks `workspaces:write` scope |
-| 404 | Workspace not found or not owned by the caller; no entry with the given id; no recorded resolution for the given path |
+| 403 | PAT lacks `workspaces:write` scope; the caller is a member of the workspace's org: `org members have read-only access to this workspace` (`error_type: forbidden`) |
+| 404 | Workspace not found or the caller may not see it; no entry with the given id; no recorded resolution for the given path |
 | 409 | Another operation holds the workspace lock (`error_type: workspace_busy`); a rebuild holds it only during its fetch phase and final phase, not while it applies patches |
 
 ---
@@ -1956,10 +1999,9 @@ Rebuild endpoints allow operators to submit, list, inspect, cancel, requeue,
 rollback, and preview rebuild jobs for carry-patch workspaces. A rebuild
 reconstructs the integration branch from upstream HEAD plus all active patches.
 
-**Note:** Rebuild endpoints do not enforce workspace ownership. Any
-authenticated user with an API key, or a PAT with the appropriate scope
-(`rebuilds:read` or `rebuilds:write`), can view or submit rebuild jobs for
-any workspace.
+**Access:** the rebuild reads and `rebuild-preview` need read access, the
+rebuild writes need write access (a member of the workspace's org gets
+`403 forbidden`); see [Workspace Access](#workspace-access).
 
 ### Rebuild Job Response Schema
 
@@ -2089,7 +2131,7 @@ and the executor applies `"fail_fast"` as the runtime default.
 | 202 | Job enqueued successfully |
 | 400 | Workspace not in carry_patch mode (`error_type: workspace_mode_mismatch`), not active, clone not ready, or no active patches (`error_type: no_active_patches`); invalid `strategy` or `fail_mode` value |
 | 401 | Unauthenticated request |
-| 403 | Missing required scope `rebuilds:write` |
+| 403 | Missing required scope `rebuilds:write`; the caller is a member of the workspace's org: `org members have read-only access to this workspace` (`error_type: forbidden`) |
 | 404 | Workspace not found |
 | 409 | A rebuild job is already queued or running for this workspace (`error_type: concurrent_rebuild`) |
 | 500 | Internal server error (database error, payload marshal failure, or job enqueue failure) |
@@ -2198,7 +2240,7 @@ Cancel a queued rebuild job.
 | Status | Condition |
 |--------|-----------|
 | 401 | Unauthenticated request |
-| 403 | Missing required scope `rebuilds:write` |
+| 403 | Missing required scope `rebuilds:write`; the caller is a member of the workspace's org: `org members have read-only access to this workspace` (`error_type: forbidden`) |
 | 404 | Job not found or does not belong to this workspace |
 | 409 | Job cannot be cancelled (not in `queued` status) |
 
@@ -2215,7 +2257,7 @@ Requeue a dead-lettered rebuild job.
 | Status | Condition |
 |--------|-----------|
 | 401 | Unauthenticated request |
-| 403 | Missing required scope `rebuilds:write` |
+| 403 | Missing required scope `rebuilds:write`; the caller is a member of the workspace's org: `org members have read-only access to this workspace` (`error_type: forbidden`) |
 | 404 | Job not found or does not belong to this workspace |
 | 409 | Job is not in `dead_letter` status, or an active rebuild job already exists for this workspace |
 
@@ -2240,7 +2282,7 @@ result.
 | Status | Condition |
 |--------|-----------|
 | 401 | Unauthenticated request |
-| 403 | Missing required scope `rebuilds:write` |
+| 403 | Missing required scope `rebuilds:write`; the caller is a member of the workspace's org: `org members have read-only access to this workspace` (`error_type: forbidden`) |
 | 404 | Job not found or does not belong to this workspace |
 | 409 | No previous integration head SHA available to roll back to (e.g. first-ever rebuild, or job has no result); another operation holds the workspace lock (`error_type: workspace_busy`; a rebuild holds it only during its fetch phase and final phase, not while it applies patches) |
 | 500 | Failed to initialize git runner or failed to reset integration branch |
@@ -2525,8 +2567,8 @@ Submit a merge request to integrate a source branch into a target branch.
 |--------|-----------|
 | 400 | Missing `target_branch` or `source_ref`; malformed JSON; workspace is not active; clone is not ready; source or target branch does not exist |
 | 401 | Unauthenticated request |
-| 403 | PAT lacks `merges:write` scope |
-| 404 | Workspace not found or not owned by the caller |
+| 403 | PAT lacks `merges:write` scope; the caller is a member of the workspace's org: `org members have read-only access to this workspace` (`error_type: forbidden`) |
+| 404 | Workspace not found or the caller may not see it |
 | 409 | A merge job for this source and target branch is already queued or running (`error_type: duplicate_merge`) |
 
 Branch names are validated with git's ref-name rules (no leading `-`, no
@@ -2609,7 +2651,7 @@ Cancel a queued merge job.
 | Status | Condition |
 |--------|-----------|
 | 401 | Unauthenticated request |
-| 403 | PAT lacks `merges:write` scope |
+| 403 | PAT lacks `merges:write` scope; the caller is a member of the workspace's org: `org members have read-only access to this workspace` (`error_type: forbidden`) |
 | 404 | Job not found, or job belongs to a different workspace |
 | 409 | Job cannot be cancelled (already running, completed, failed, or cancelled) |
 
@@ -2636,7 +2678,7 @@ success.
 | Status | Condition |
 |--------|-----------|
 | 401 | Unauthenticated request |
-| 403 | PAT lacks `merges:write` scope |
+| 403 | PAT lacks `merges:write` scope; the caller is a member of the workspace's org: `org members have read-only access to this workspace` (`error_type: forbidden`) |
 | 404 | Job not found, or job belongs to a different workspace |
 | 409 | Job is not in `dead_letter` status, or an active merge job already exists for this source and target |
 
@@ -2704,7 +2746,7 @@ All branches in the list are processed sequentially.
 |--------|-----------|
 | 400 | Missing `target_ref`; empty `branches` list; workspace is not active; clone is not ready |
 | 401 | Unauthenticated request |
-| 403 | PAT lacks `merges:write` scope |
+| 403 | PAT lacks `merges:write` scope; the caller is a member of the workspace's org: `org members have read-only access to this workspace` (`error_type: forbidden`) |
 | 404 | Workspace not found |
 
 ---
@@ -3145,8 +3187,7 @@ scope. Requires organization membership (admin bypasses).
 
 Create one or more workspace-scoped secrets.
 
-**Authentication:** API Key, or PAT with `secrets:manage` scope. Requires
-workspace ownership (admin bypasses ownership check).
+**Authentication:** API Key, or PAT with `secrets:manage` scope. Requires private access: the workspace's owner or an admin token; a member of its org gets the stranger's 404.
 
 **Path Parameters:**
 
@@ -3165,7 +3206,7 @@ workspace ownership (admin bypasses ownership check).
 | 400 | Validation error |
 | 401 | Unauthenticated request |
 | 403 | PAT lacks `secrets:manage` scope |
-| 404 | Workspace not found or not owned by the authenticated user |
+| 404 | Workspace not found or the caller may not see it |
 | 409 | Duplicate key (case-insensitive) |
 
 ---
@@ -3175,7 +3216,7 @@ workspace ownership (admin bypasses ownership check).
 List all workspace-scoped secrets.
 
 **Authentication:** API Key, or PAT with `secrets:list` or `secrets:manage`
-scope. Requires workspace ownership (admin bypasses).
+scope. Requires private access: the workspace's owner or an admin token; a member of its org gets the stranger's 404.
 
 **Path Parameters:**
 
@@ -3192,7 +3233,7 @@ scope. Requires workspace ownership (admin bypasses).
 |--------|-----------|
 | 401 | Unauthenticated request |
 | 403 | PAT lacks required scope |
-| 404 | Workspace not found or not owned by the authenticated user |
+| 404 | Workspace not found or the caller may not see it |
 
 ---
 
@@ -3201,7 +3242,7 @@ scope. Requires workspace ownership (admin bypasses).
 Update the value of a workspace-scoped secret.
 
 **Authentication:** API Key, or PAT with `secrets:write` or `secrets:manage`
-scope. Requires workspace ownership (admin bypasses).
+scope. Requires private access: the workspace's owner or an admin token; a member of its org gets the stranger's 404.
 
 **Path Parameters:**
 
@@ -3221,7 +3262,7 @@ scope. Requires workspace ownership (admin bypasses).
 | 400 | Missing `value` field |
 | 401 | Unauthenticated request |
 | 403 | PAT lacks required scope |
-| 404 | Workspace not found, not owned by user, or key not found |
+| 404 | Workspace not found, the caller may not see it, or key not found |
 
 ---
 
@@ -3230,7 +3271,7 @@ scope. Requires workspace ownership (admin bypasses).
 Delete a workspace-scoped secret.
 
 **Authentication:** API Key, or PAT with `secrets:delete` or `secrets:manage`
-scope. Requires workspace ownership (admin bypasses).
+scope. Requires private access: the workspace's owner or an admin token; a member of its org gets the stranger's 404.
 
 **Path Parameters:**
 
@@ -3247,7 +3288,7 @@ scope. Requires workspace ownership (admin bypasses).
 |--------|-----------|
 | 401 | Unauthenticated request |
 | 403 | PAT lacks required scope |
-| 404 | Workspace not found, not owned by user, or key not found |
+| 404 | Workspace not found, the caller may not see it, or key not found |
 
 ---
 
@@ -3494,8 +3535,7 @@ Requires organization membership (admin bypasses).
 
 Create one or more workspace-scoped variables.
 
-**Authentication:** API Key, or PAT with `vars:manage` scope. Requires
-workspace ownership (admin bypasses ownership check).
+**Authentication:** API Key, or PAT with `vars:manage` scope. Requires write access: the workspace's owner or an admin token; a member of its org gets 403 `forbidden`.
 
 **Path Parameters:**
 
@@ -3513,8 +3553,8 @@ workspace ownership (admin bypasses ownership check).
 |--------|-----------|
 | 400 | Validation error |
 | 401 | Unauthenticated request |
-| 403 | PAT lacks `vars:manage` scope |
-| 404 | Workspace not found or not owned by the authenticated user |
+| 403 | PAT lacks `vars:manage` scope; the caller is a member of the workspace's org: `org members have read-only access to this workspace` (`error_type: forbidden`) |
+| 404 | Workspace not found or the caller may not see it |
 | 409 | Duplicate key (case-insensitive) |
 
 ---
@@ -3524,7 +3564,7 @@ workspace ownership (admin bypasses ownership check).
 List all workspace-scoped variables.
 
 **Authentication:** API Key, or PAT with `vars:read`, `vars:write`, or
-`vars:manage` scope. Requires workspace ownership (admin bypasses).
+`vars:manage` scope. Requires read access: the workspace's owner, a member of its org or an admin token.
 
 **Path Parameters:**
 
@@ -3541,7 +3581,7 @@ List all workspace-scoped variables.
 |--------|-----------|
 | 401 | Unauthenticated request |
 | 403 | PAT lacks required scope |
-| 404 | Workspace not found or not owned by the authenticated user |
+| 404 | Workspace not found or the caller may not see it |
 
 ---
 
@@ -3550,7 +3590,7 @@ List all workspace-scoped variables.
 Update the value of a workspace-scoped variable.
 
 **Authentication:** API Key, or PAT with `vars:write` or `vars:manage` scope.
-Requires workspace ownership (admin bypasses).
+Requires write access: the workspace's owner or an admin token; a member of its org gets 403 `forbidden`.
 
 **Path Parameters:**
 
@@ -3569,8 +3609,8 @@ Requires workspace ownership (admin bypasses).
 |--------|-----------|
 | 400 | Missing `value` field |
 | 401 | Unauthenticated request |
-| 403 | PAT lacks required scope |
-| 404 | Workspace not found, not owned by user, or key not found |
+| 403 | PAT lacks required scope; the caller is a member of the workspace's org: `org members have read-only access to this workspace` (`error_type: forbidden`) |
+| 404 | Workspace not found, the caller may not see it, or key not found |
 
 ---
 
@@ -3579,7 +3619,7 @@ Requires workspace ownership (admin bypasses).
 Delete a workspace-scoped variable.
 
 **Authentication:** API Key, or PAT with `vars:delete` or `vars:manage` scope.
-Requires workspace ownership (admin bypasses).
+Requires write access: the workspace's owner or an admin token; a member of its org gets 403 `forbidden`.
 
 **Path Parameters:**
 
@@ -3595,8 +3635,8 @@ Requires workspace ownership (admin bypasses).
 | Status | Condition |
 |--------|-----------|
 | 401 | Unauthenticated request |
-| 403 | PAT lacks required scope |
-| 404 | Workspace not found, not owned by user, or key not found |
+| 403 | PAT lacks required scope; the caller is a member of the workspace's org: `org members have read-only access to this workspace` (`error_type: forbidden`) |
+| 404 | Workspace not found, the caller may not see it, or key not found |
 
 ---
 
@@ -3607,7 +3647,7 @@ and workspace tiers. Resolution order: workspace > org > user (workspace
 values override org, org overrides user).
 
 **Authentication:** API Key, or PAT with `vars:read`, `vars:write`, or
-`vars:manage` scope. Requires workspace ownership (admin bypasses).
+`vars:manage` scope. Requires read access: the workspace's owner, a member of its org or an admin token.
 
 **Path Parameters:**
 
@@ -3632,7 +3672,9 @@ sorted by key (case-insensitive).
 
 The `origin` field indicates which tier the value came from: `"user"`,
 `"org"`, or `"workspace"`. The org tier is only consulted when the workspace
-owner is a member of the workspace's organization.
+owner is a member of the workspace's organization. A member of the workspace's
+org gets the document the owner gets: the owner's user tier, the org tier on the
+same condition, and the workspace tier.
 
 **Error Codes:**
 
@@ -3640,7 +3682,7 @@ owner is a member of the workspace's organization.
 |--------|-----------|
 | 401 | Unauthenticated request |
 | 403 | PAT lacks required scope |
-| 404 | Workspace not found or not owned by the authenticated user |
+| 404 | Workspace not found or the caller may not see it |
 | 500 | Internal server error |
 
 ---
@@ -3781,9 +3823,11 @@ answers:
 3. A PAT without the scope the route needs: 403, before the workspace is looked
    up. `POST` and `DELETE` need `sandboxes:write`; the `GET` routes need
    `sandboxes:read` or `sandboxes:write`.
-4. A workspace that does not exist or that the caller does not own: 404
+4. A workspace that does not exist or that the caller may not see: 404
    `workspace not found`, the same for both. Admin tokens may act on any existing
-   workspace.
+   workspace. A member of the workspace's org may list and get its leases (with
+   the owner's bodies, `secrets` and `optional_secrets` included) and gets 403
+   `forbidden` on `POST` and `DELETE`.
 5. `POST` only: a workspace that is not active: 400 `workspace is not active`.
 
 ### The lease representation
@@ -3890,8 +3934,8 @@ requests never exceed the limit.
 |--------|-----------|
 | 400 | Malformed JSON, a body that cannot be read, or a body that is not an object; an unknown field (the message names it); an unknown profile, or no profile when none is the default (the message lists the profiles in configuration order); a `ttl` that does not parse, is under `1m` or is over the profile's TTL (the message names that TTL); a bad `purpose`; bad `labels` (the message names the label key); a workspace that is not active |
 | 401 | Unauthenticated request |
-| 403 | PAT lacks `sandboxes:write` scope |
-| 404 | Sandboxes are not enabled (`error_type: sandboxes_disabled`); the workspace does not exist or is not owned by the caller |
+| 403 | PAT lacks `sandboxes:write` scope; the caller is a member of the workspace's org: `org members have read-only access to this workspace` (`error_type: forbidden`) |
+| 404 | Sandboxes are not enabled (`error_type: sandboxes_disabled`); the workspace does not exist or the caller may not see it |
 | 409 | `max_sandboxes` is reached (`error_type: sandbox_capacity`) |
 | 413 | The body is larger than the server accepts |
 | 422 | A required secret exists in no searched scope (`error_type: secret_missing`) |
@@ -3968,7 +4012,7 @@ none, and the actor of the calling credential (see
 | Status | Condition |
 |--------|-----------|
 | 401 | Unauthenticated request |
-| 403 | PAT lacks `sandboxes:write` scope |
+| 403 | PAT lacks `sandboxes:write` scope; the caller is a member of the workspace's org: `org members have read-only access to this workspace` (`error_type: forbidden`) |
 | 404 | `sandboxes_disabled`; workspace not found; or `sandbox lease not found`, as above |
 | 500 | A database failure |
 | 502 | The provider could not destroy the sandbox (`error_type: sandbox_provider_error`); the lease is unchanged |
@@ -4146,8 +4190,10 @@ Every forge route checks, in this order:
    message `PAT requires forge:read scope`. A credential type the hub does not know
    is 403 too. This comes before the workspace is looked up, so it is the answer
    for a slug that does not exist as well.
-3. A workspace that does not exist or is not the caller's: 404 `workspace not found`
-   (admin tokens may read any workspace).
+3. A workspace that does not exist or that the caller may not see: 404
+   `workspace not found` (admin tokens may read any workspace; a member of the
+   workspace's org reads with the workspace's own forge credential, as the owner
+   does).
 4. The `target` parameter (all routes but `GET .../forge`): 400.
 5. The path and query parameters: 400, naming the parameter.
 6. Building the client: 422 or 500.
@@ -4160,7 +4206,8 @@ A write route checks, in this order, and answers with the first that fails:
 2. A PAT without `forge:write`, `forge:read` alone included: 403, with the message
    `PAT requires forge:write scope`. A credential type the hub does not know is 403
    too. This comes before the workspace is looked up.
-3. A workspace that does not exist or is not the caller's: 404 `workspace not found`.
+3. A workspace that does not exist or that the caller may not see: 404
+   `workspace not found`. A member of the workspace's org: 403 `forbidden`.
 4. A workspace whose status is not `active`: 400 `workspace is not active`.
 5. The request itself: 400. This is the `target` (a bad one, and `upstream` on a
    workspace that is not a `carry_patch` fork with an `upstream_url`, which is
@@ -4470,7 +4517,8 @@ fails answers:
 
 1. No credential: 401.
 2. A PAT without `forge:write`: 403, `PAT requires forge:write scope`.
-3. A workspace that does not exist or is not the caller's: 404 `workspace not found`.
+3. A workspace that does not exist or that the caller may not see: 404
+   `workspace not found`. A member of the workspace's org: 403 `forbidden`.
 4. A workspace that is not `active`: 400 `workspace is not active`.
 5. The body.
 
@@ -4510,7 +4558,7 @@ The hub emits `hub.forge.webhook.set` with the metadata `{"generated": <bool>}`.
 #### DELETE /api/v1/workspaces/:slug/forge/webhook
 
 Remove the webhook secret, so that the hub refuses the forge's deliveries (404) from then
-on. It checks the same as the `PUT` up to the workspace's ownership and not its status, so it
+on. It checks the same as the `PUT` up to the workspace's access and not its status, so it
 works on an archived workspace too. It answers 204 whether or not there was a secret, and
 emits `hub.forge.webhook.unset` with `{"existed": <bool>}`. The rows of the delivery log stay
 until they are pruned. A failure of the store is 500.
