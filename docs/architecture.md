@@ -707,9 +707,10 @@ starts `StartBindingSweep` with `go`.
   transaction, before the workspace row goes; `StartBindingSweep` runs
   `wsaccess.SweepBindings` at once and then hourly, for bindings whose
   workspace or token is gone.
-- **Refusal reporting.** Every refusal point of spec 33 (both guards,
-  `DeniesWorkspace` with the request's `RefusalSite`) calls
-  `wsaccess.ReportBoundRefusal` once per refused request. The observer is the
+- **Refusal reporting.** Every refusal point of spec 33 (both guards, and
+  `DeniesWorkspace` with the `RefusalSite` its caller passes: the request's
+  method and route, or none for `AuthorizeWorkspace`, which has no request)
+  calls `wsaccess.ReportBoundRefusal` once per refused request. The observer is the
   `Reporter`, which emits `hub.token.bound_refused` at most once per token per
   minute with a `suppressed` count; `wsaccess` never imports `audit`.
 

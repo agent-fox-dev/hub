@@ -10,6 +10,8 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/txsvc/apikit"
+
 	"github.com/agent-fox-dev/hub/internal/wsaccess"
 )
 
@@ -60,23 +62,46 @@ func TestRefusalObserver_TS_34_56(t *testing.T) {
 }
 
 // TS-34-57: A report carries the token id, user id, bound slug, requested
-// slug, method, route, status and surface to the observer unchanged, for the
-// API and the git surface. (The refusal points that fill it are covered by
-// TS-34-58.) Requirement: 34-REQ-10.2
+// slug, method, route template, status and surface, as filled by the refusal
+// points themselves: the binding guard on the API surface, and
+// AuthorizeWorkspace, which has no request (erratum 34 entry 5). The git
+// surface is asserted by TestGitBinding_ReportsRefusal_TS_34_58.
+// Requirement: 34-REQ-10.2
 func TestRefusalObserver_ReportFields_TS_34_57(t *testing.T) {
 	var mu sync.Mutex
 	var got []wsaccess.BoundRefusal
 	wsaccess.SetRefusalObserver(func(r wsaccess.BoundRefusal) { mu.Lock(); got = append(got, r); mu.Unlock() })
 	t.Cleanup(func() { wsaccess.SetRefusalObserver(nil) })
 
-	api := wsaccess.BoundRefusal{TokenID: "T", UserID: "u", BoundSlug: "S", RequestedSlug: "X", Method: "GET",
-		Route: "/api/v1/workspaces/:slug/patches", Status: 404, Surface: wsaccess.SurfaceAPI}
-	git := wsaccess.BoundRefusal{TokenID: "T", UserID: "u", BoundSlug: "S", RequestedSlug: "X", Method: "GET",
-		Route: "/git/:org/:slug.git/info/refs", Status: 404, Surface: wsaccess.SurfaceGit}
-	wsaccess.ReportBoundRefusal(api)
-	wsaccess.ReportBoundRefusal(git)
-	if len(got) != 2 || got[0] != api || got[1] != git {
-		t.Fatalf("observer got %+v; want %+v and %+v", got, api, git)
+	db := openBindingDB(t)
+	for _, slug := range []string{"S", "X"} {
+		if _, err := db.Exec(`INSERT INTO workspaces (slug, owner_id) VALUES (?, 'u')`, slug); err != nil {
+			t.Fatal(err)
+		}
+	}
+	bind(t, db, "T", "S")
+	e, api := newGuardedAPI(db)
+	api.GET("/workspaces/:slug/patches", (&probe{}).handle)
+	api.GET("/widgets", (&probe{}).handle)
+	pat := &apikit.AuthInfo{CredentialType: "pat", UserID: "u", TokenID: "T"}
+
+	serve(e, "GET", "/api/v1/workspaces/X/patches", pat, "")
+	serve(e, "GET", "/api/v1/widgets", pat, "")
+	wsaccess.AuthorizeWorkspace(db, pat, "X")
+
+	want := []wsaccess.BoundRefusal{
+		{TokenID: "T", UserID: "u", BoundSlug: "S", RequestedSlug: "X", Method: "GET",
+			Route: "/api/v1/workspaces/:slug/patches", Status: 404, Surface: wsaccess.SurfaceAPI},
+		{TokenID: "T", UserID: "u", BoundSlug: "S", Method: "GET", Route: "/api/v1/widgets", Status: 403, Surface: wsaccess.SurfaceAPI},
+		{TokenID: "T", UserID: "u", BoundSlug: "S", RequestedSlug: "X", Status: 404, Surface: wsaccess.SurfaceAPI},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("reports %+v; want %+v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("report %d = %+v; want %+v", i, got[i], want[i])
+		}
 	}
 	if wsaccess.SurfaceAPI != "api" || wsaccess.SurfaceGit != "git" {
 		t.Errorf("surfaces = %q, %q; want api, git", wsaccess.SurfaceAPI, wsaccess.SurfaceGit)

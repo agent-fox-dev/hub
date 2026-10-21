@@ -69,7 +69,11 @@ info:
     server answers a pkt-line `404 repository not found` for every repository
     but `S`'s. API keys, admin tokens and unbound PATs are not affected.
     Bound tokens are minted with `POST /api/v1/workspaces/{slug}/tokens` and
-    retired when their workspace is deleted.
+    retired when their workspace is deleted. A mint records
+    `hub.token.bind`; every request refused because of a binding is recorded
+    as `hub.token.bound_refused`, at most once per token per minute, with
+    `suppressed` counting the refusals held back since the token's previous
+    event.
 
     ## Anti-enumeration policy
 

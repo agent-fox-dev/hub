@@ -150,26 +150,34 @@ func TestSweep_FailedPassRetried_TS_34_38(t *testing.T) {
 	}
 }
 
-// TS-34-39: Cancelling the context during a pass is not logged as a failure.
+// TS-34-39: Cancelling the context while a pass runs is not logged as a
+// failure: the pass is held at its transaction (the single connection is
+// taken), the context is cancelled, and the sweep returns quietly.
 // Requirement: 34-REQ-6.5
 func TestSweep_CancelNotAFailure_TS_34_39(t *testing.T) {
 	logs := captureLogs(t)
-	db := openTestDB(t)
+	db := openTestDB(t) // one connection
 	seedPAT(t, db, patRow{id: "a"})
 	bind(t, db, "a", "gone")
+	conn, err := db.Conn(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // the hub is going down as the pass starts
 	done := make(chan struct{})
 	go func() { StartBindingSweep(ctx, db); close(done) }()
+	time.Sleep(50 * time.Millisecond) // the first pass is now waiting for the connection
+	cancel()
 	select {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("the sweep did not return")
 	}
-	if err := wsaccess.SweepBindings(ctx, db); err == nil {
-		t.Fatal("a pass on a cancelled context succeeded; the test does not interrupt a pass")
-	}
+	conn.Close()
 	if strings.Contains(logs.String(), "level=ERROR") {
 		t.Errorf("the interrupted pass was logged as a failure: %q", logs)
+	}
+	if countBindings(db) != 1 || isRevoked(t, db, "a") {
+		t.Error("the interrupted pass committed work")
 	}
 }

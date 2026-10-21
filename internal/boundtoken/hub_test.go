@@ -25,8 +25,8 @@ import (
 // guards, the bound-token routes (minting through server.Echo()), the audit
 // session, ingestion and query routes, the secrets routes and the git server.
 type realHub struct {
-	server *apikit.Server
-	db     *sql.DB
+	server  *apikit.Server
+	db      *sql.DB
 	duck    *sql.DB
 	store   audit.Store
 	emitter audit.Emitter

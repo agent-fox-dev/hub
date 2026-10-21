@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -139,6 +140,7 @@ func TestMint_UndecodableCreated_TS_34_12(t *testing.T) {
 		{"empty token", "T1", `{"token_id":"T1","token":"","name":"svc"}`, "T1"},
 		{"empty token_id", "", `{"token_id":"","token":"ak_pat_x_SECRETVALUE","name":"svc"}`, ""},
 		{"no token_id", "", `{"token":"ak_pat_x_SECRETVALUE","name":"svc"}`, ""},
+		{"cut short after token_id", "T1", `{"token_id":"T1","token":"ak_pat_T1_SECRETVALUE`, "T1"},
 	}
 	for _, c := range cases {
 		logs := captureLogs(t)
@@ -326,6 +328,7 @@ func TestMint_NothingSecretLogged_TS_34_19(t *testing.T) {
 		"insert error": func(db *sql.DB) http.Handler {
 			return mintingStub(db, "T1", token, func() { _, _ = db.Exec(`DROP TABLE token_workspace_bindings`) }, "")
 		},
+		"audit emit error": func(db *sql.DB) http.Handler { return mintingStub(db, "T1", token, nil, "") },
 		"revocation failure": func(db *sql.DB) http.Handler {
 			return mintingStub(db, "T1", token, func() {
 				_, _ = db.Exec(`DROP TABLE token_workspace_bindings`)
@@ -337,18 +340,26 @@ func TestMint_NothingSecretLogged_TS_34_19(t *testing.T) {
 		logs := captureLogs(t)
 		db := openTestDB(t)
 		seedWorkspace(t, db, "s", "u1", "active")
-		env := newTestEnv(t, Config{DB: db, APIKit: stub(db)})
+		cfg := Config{DB: db, APIKit: stub(db)}
+		if name == "audit emit error" {
+			cfg.Audit = &recordingEmitter{err: errors.New("emit failed")}
+		}
+		env := newTestEnv(t, cfg)
 		rec := env.do(http.MethodPost, mintPath, apiKey("u1"), `{"name":"svc"}`, http.Header{"Authorization": {authz}})
-		for _, secret := range []string{token, "DISTINCTIVE0SECRET", "DISTINCTIVE0AUTHZ", `"token_id":"T1"`} {
+		if name == "audit emit error" && !strings.Contains(logs.String(), "emit failed") {
+			t.Errorf("audit emit error: the emit error was not logged: %s", logs)
+		}
+		for _, secret := range []string{token, "DISTINCTIVE0SECRET", "DISTINCTIVE0AUTHZ", `"token_id":"T1"`, `"name":"svc","token"`} {
 			if strings.Contains(logs.String(), secret) {
 				t.Errorf("%s: the log contains %q: %s", name, secret, logs)
 			}
 		}
-		if name != "success" && strings.Contains(rec.Body.String(), "DISTINCTIVE0SECRET") {
+		success := name == "success" || name == "audit emit error"
+		if !success && strings.Contains(rec.Body.String(), "DISTINCTIVE0SECRET") {
 			t.Errorf("%s: the response contains the token: %s", name, rec.Body)
 		}
-		if name == "success" && !strings.Contains(rec.Body.String(), token) {
-			t.Errorf("success: the response lacks the token: %s", rec.Body)
+		if success && !strings.Contains(rec.Body.String(), token) {
+			t.Errorf("%s: the 201 lacks the token: %s", name, rec.Body)
 		}
 	}
 }

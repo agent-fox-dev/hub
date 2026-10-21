@@ -161,13 +161,26 @@ func ownedWorkspaces(auth *apikit.AuthInfo, sqliteDB *sql.DB) (map[string]bool, 
 	return owned, rows.Err()
 }
 
-// reportBindingRefusal reports the 404 of a cross-workspace query for a
-// workspace the caller may not read when the cause is the caller's binding
-// (spec 34). ownedWorkspaces has already confined a bound token, so this
-// lookup only decides whether to report; its error leaves the refusal as it
-// is.
-func reportBindingRefusal(c echo.Context, sqliteDB *sql.DB, auth *apikit.AuthInfo, slug string) {
-	_, _ = wsaccess.DeniesWorkspace(sqliteDB, auth, slug, wsaccess.SiteOf(c, http.StatusNotFound))
+// readableWorkspaces is the workspace restriction of the cross-workspace
+// audit queries (GET /audit and GET /events): the workspaces the caller may
+// read (nil for no restriction, see ownedWorkspaces). A requested workspace
+// outside them answers 404 workspace not found, and is reported as a binding
+// refusal when the caller's binding is the cause (spec 34): ownedWorkspaces
+// has already confined a bound token, so that second lookup only decides
+// whether to report, and its error leaves the refusal as it is. It returns
+// false after writing an answer.
+func readableWorkspaces(c echo.Context, auth *apikit.AuthInfo, sqliteDB *sql.DB, requested string) (map[string]bool, bool) {
+	owned, err := ownedWorkspaces(auth, sqliteDB)
+	if err != nil {
+		_ = apikit.WriteAPIError(c, http.StatusInternalServerError, "internal server error")
+		return nil, false
+	}
+	if owned != nil && requested != "" && !owned[requested] {
+		_, _ = wsaccess.DeniesWorkspace(sqliteDB, auth, requested, wsaccess.SiteOf(c, http.StatusNotFound))
+		_ = apikit.WriteAPIError(c, http.StatusNotFound, "workspace not found")
+		return nil, false
+	}
+	return owned, true
 }
 
 // errWorkspaceAccessDenied is returned by checkWorkspaceAccess once it has

@@ -176,21 +176,31 @@ func TestReporter_BoundedMemory_TS_34_62(t *testing.T) {
 }
 
 // TS-34-63: Neither the token nor the Authorization header appears in an
-// event or a log line, also when emission fails. Requirement: 34-REQ-10.8
+// event or a log line: a bound PAT, presented in its Authorization header, is
+// refused by the real guards with the reporter registered, emitted and held
+// back, with emission failing. Requirement: 34-REQ-10.8
 func TestReporter_NoSecrets_TS_34_63(t *testing.T) {
-	const secret = "ak_pat_T_DISTINCTIVE0SECRET"
+	h := newRealHub(t)
+	h.seed(t, "S", "active")
+	h.seed(t, "X", "active")
+	token, _ := h.mintBound(t, "S", "workspaces:read")
 	logs := captureLogs(t)
 	em := &recordingEmitter{err: errors.New("emit failed")}
 	clock := &fakeClock{t: t0}
-	r := NewReporter(em, clock.now)
-	r.Report(refusal("T"))
-	clock.set(t0.Add(10 * time.Second))
-	r.Report(refusal("T"))
-	raw, _ := json.Marshal(em.events())
-	if len(em.events()) != 1 || !strings.Contains(logs.String(), "emit failed") {
-		t.Fatalf("events %d, logs %q; want one event and the emit error logged", len(em.events()), logs)
+	wsaccess.SetRefusalObserver(NewReporter(em, clock.now).Report)
+	t.Cleanup(func() { wsaccess.SetRefusalObserver(nil) })
+
+	for _, path := range []string{"/api/v1/workspaces/X/patches", "/api/v1/user"} { // binding guard, apikit route guard
+		h.do("GET", path, token, "")
+		clock.set(clock.now().Add(10 * time.Second))
+		h.do("GET", path, token, "")
 	}
-	for _, s := range []string{secret, "DISTINCTIVE0SECRET", "Bearer"} {
+	if len(em.events()) == 0 || !strings.Contains(logs.String(), "emit failed") {
+		t.Fatalf("events %d, logs %q; want events and the emit error logged", len(em.events()), logs)
+	}
+	raw, _ := json.Marshal(em.events())
+	secret := token[strings.LastIndex(token, "_")+1:]
+	for _, s := range []string{token, secret, "Bearer"} {
 		if strings.Contains(string(raw), s) || strings.Contains(logs.String(), s) {
 			t.Errorf("%q appears in an event or the log", s)
 		}

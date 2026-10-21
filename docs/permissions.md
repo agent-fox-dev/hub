@@ -874,7 +874,9 @@ For a bound PAT:
 - **Git** serves `S`'s repository under the `git:read`/`git:write` scopes and
   answers a pkt-line `404 repository not found` for every other repository.
 - **`tokens:*` scopes are inert.** A bound PAT can neither mint nor list bound
-  tokens (`403 token_bound`), nor reach apikit's token routes.
+  tokens: on its own workspace's `/tokens` routes it gets `403 token_bound`, on
+  any other workspace's the guard's `404 workspace not found`. It cannot reach
+  apikit's token routes either.
 - **Refusals are audited** as `hub.token.bound_refused`, at most once per token
   per minute.
 

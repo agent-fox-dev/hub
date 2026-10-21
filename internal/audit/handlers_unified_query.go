@@ -97,15 +97,11 @@ func handleAuditQuery(store Store, sqliteDB *sql.DB) echo.HandlerFunc {
 
 		// Non-admin callers only see events of workspaces they own; events
 		// without a workspace (user- and org-scoped) are admin-only.
-		owned, ownedErr := ownedWorkspaces(auth, sqliteDB)
-		if ownedErr != nil {
-			return apikit.WriteAPIError(c, http.StatusInternalServerError, "internal server error")
+		owned, ok := readableWorkspaces(c, auth, sqliteDB, params.workspace)
+		if !ok {
+			return nil
 		}
 		params.allowedWorkspaces = owned
-		if owned != nil && params.workspace != "" && !owned[params.workspace] {
-			reportBindingRefusal(c, sqliteDB, auth, params.workspace)
-			return apikit.WriteAPIError(c, http.StatusNotFound, "workspace not found")
-		}
 
 		// Execute unified query against DuckDB.
 		ds, ok := store.(*duckDBStore)
@@ -628,13 +624,9 @@ func handleSSEStream(store Store, mgr *SSEManager, sqliteDB *sql.DB) echo.Handle
 		}
 
 		// Non-admin callers only receive events of workspaces they own.
-		owned, ownedErr := ownedWorkspaces(auth, sqliteDB)
-		if ownedErr != nil {
-			return apikit.WriteAPIError(c, http.StatusInternalServerError, "internal server error")
-		}
-		if owned != nil && c.QueryParam("workspace") != "" && !owned[c.QueryParam("workspace")] {
-			reportBindingRefusal(c, sqliteDB, auth, c.QueryParam("workspace"))
-			return apikit.WriteAPIError(c, http.StatusNotFound, "workspace not found")
+		owned, ok := readableWorkspaces(c, auth, sqliteDB, c.QueryParam("workspace"))
+		if !ok {
+			return nil
 		}
 
 		// Check connection limit (18-REQ-8.E1).
