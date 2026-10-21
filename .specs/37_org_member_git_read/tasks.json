@@ -204,7 +204,7 @@
       "done_when": [
         "owner, admin token, stranger and blocked-user answers equal the pre-change answers"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 6,
