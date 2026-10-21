@@ -26,9 +26,11 @@ type Config struct {
 	Audit audit.Emitter
 }
 
-// RegisterRoutes mounts GET /workspaces/:slug/tokens on the API group, behind
+// RegisterRoutes mounts POST and GET /workspaces/:slug/tokens on the API
+// group, behind
 // apikit's authentication and spec 33's binding guard.
 func RegisterRoutes(api *echo.Group, cfg Config) {
+	api.POST("/workspaces/:slug/tokens", handleMint(cfg))
 	api.GET("/workspaces/:slug/tokens", handleList(cfg))
 }
 
