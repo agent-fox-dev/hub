@@ -2,10 +2,13 @@ package wsaccess_test
 
 import (
 	"database/sql"
+	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"sync/atomic"
 	"testing"
 
+	"github.com/labstack/echo/v4"
 	"github.com/txsvc/apikit"
 
 	"github.com/agent-fox-dev/hub/internal/workspace"
@@ -297,5 +300,186 @@ func TestAuthorizeWorkspace_StrangerNoReport_TS_35_9(t *testing.T) {
 	}
 	if n := calls.Load(); n != 0 {
 		t.Errorf("observer calls = %d; want 0", n)
+	}
+}
+
+// recordReports registers a refusal observer for the test and returns the
+// reports it receives.
+func recordReports(t *testing.T) *[]wsaccess.BoundRefusal {
+	t.Helper()
+	var got []wsaccess.BoundRefusal
+	wsaccess.SetRefusalObserver(func(r wsaccess.BoundRefusal) { got = append(got, r) })
+	t.Cleanup(func() { wsaccess.SetRefusalObserver(nil) })
+	return &got
+}
+
+var allNeeds = []wsaccess.Need{wsaccess.NeedRead, wsaccess.NeedWrite, wsaccess.NeedPrivate}
+
+// TS-35-10: A PAT bound to another workspace is refused with one report
+// carrying the site, whatever its access and need.
+// Requirement: 35-REQ-2.4
+func TestAuthorizeWorkspace_BoundRefusalSite_TS_35_10(t *testing.T) {
+	db := openAccessDB(t, true)
+	addWorkspace(t, db, "A", "u1", "OA")
+	addWorkspace(t, db, "B", "u1", "OB")
+	addMember(t, db, "OB", "u2")
+	bind(t, db, "tok1", "A")
+	bind(t, db, "tok2", "A")
+	got := recordReports(t)
+	site := wsaccess.RefusalSite{Method: "GET", Route: "/workspaces/:slug", Status: http.StatusNotFound, Surface: wsaccess.SurfaceAPI}
+
+	for _, user := range []string{"u1", "u2"} {
+		tok := map[string]string{"u1": "tok1", "u2": "tok2"}[user]
+		pat := &apikit.AuthInfo{CredentialType: "pat", UserID: user, TokenID: tok, Permissions: []string{"workspaces:read"}}
+		for _, need := range allNeeds {
+			for _, at := range []bool{false, true} {
+				*got = nil
+				var ws *wsaccess.WorkspaceAccess
+				var code int
+				var msg string
+				want := wsaccess.BoundRefusal{TokenID: tok, UserID: user, BoundSlug: "A", RequestedSlug: "B", Status: http.StatusNotFound, Surface: wsaccess.SurfaceAPI}
+				if at {
+					ws, code, msg = wsaccess.AuthorizeWorkspaceAt(db, pat, "B", need, site)
+					want.Method, want.Route = "GET", "/workspaces/:slug"
+				} else {
+					ws, code, msg = wsaccess.AuthorizeWorkspace(db, pat, "B", need)
+				}
+				if ws != nil || code != http.StatusNotFound || msg != "workspace not found" {
+					t.Errorf("%s %s at=%v: (%v, %d, %q); want (nil, 404, workspace not found)", user, need, at, ws, code, msg)
+				}
+				if len(*got) != 1 || (*got)[0] != want {
+					t.Errorf("%s %s at=%v: reports %+v; want exactly %+v", user, need, at, *got, want)
+				}
+			}
+		}
+	}
+}
+
+// TS-35-11: A member needing write gets 403 and needing private gets 404,
+// after the binding check.
+// Requirement: 35-REQ-2.5
+func TestAuthorizeWorkspace_MemberNeeds_TS_35_11(t *testing.T) {
+	db := openAccessDB(t, true)
+	addWorkspace(t, db, "w", "u1", "O")
+	addWorkspace(t, db, "other", "u2", "P")
+	addMember(t, db, "O", "u2")
+	bind(t, db, "tokO", "other")
+	got := recordReports(t)
+	member := apiKeyOf("u2")
+
+	if ws, code, msg := wsaccess.AuthorizeWorkspace(db, member, "w", wsaccess.NeedWrite); ws != nil || code != http.StatusForbidden || msg != "org members have read-only access to this workspace" {
+		t.Errorf("member NeedWrite = (%v, %d, %q); want (nil, 403, org members have read-only access to this workspace)", ws, code, msg)
+	}
+	if ws, code, msg := wsaccess.AuthorizeWorkspace(db, member, "w", wsaccess.NeedPrivate); ws != nil || code != http.StatusNotFound || msg != "workspace not found" {
+		t.Errorf("member NeedPrivate = (%v, %d, %q); want (nil, 404, workspace not found)", ws, code, msg)
+	}
+	if ws, code, _ := wsaccess.AuthorizeWorkspace(db, member, "w", wsaccess.NeedRead); ws == nil || code != 0 || ws.Access != wsaccess.AccessMember {
+		t.Errorf("member NeedRead = (%+v, %d); want member access", ws, code)
+	}
+	if len(*got) != 0 {
+		t.Errorf("unbound member caused reports %+v; want none", *got)
+	}
+
+	bound := &apikit.AuthInfo{CredentialType: "pat", UserID: "u2", TokenID: "tokO", Permissions: []string{"workspaces:write"}}
+	if ws, code, msg := wsaccess.AuthorizeWorkspace(db, bound, "w", wsaccess.NeedWrite); ws != nil || code != http.StatusNotFound || msg != "workspace not found" {
+		t.Errorf("bound member NeedWrite = (%v, %d, %q); want (nil, 404, workspace not found)", ws, code, msg)
+	}
+	if len(*got) != 1 {
+		t.Errorf("bound member caused %d reports; want 1", len(*got))
+	}
+}
+
+// TS-35-12: A satisfied need returns the full WorkspaceAccess, with OrgID
+// empty for a NULL column.
+// Requirement: 35-REQ-2.6
+func TestAuthorizeWorkspace_FullRecord_TS_35_12(t *testing.T) {
+	db := openAccessDB(t, true)
+	if _, err := db.Exec(`INSERT INTO workspaces (slug, owner_id, org_id, status, clone_status) VALUES
+		('w1', 'u1', 'O', 'archived', 'failed'), ('w2', 'u1', NULL, 'active', 'ready')`); err != nil {
+		t.Fatal(err)
+	}
+	for slug, want := range map[string]wsaccess.WorkspaceAccess{
+		"w1": {Slug: "w1", OwnerID: "u1", OrgID: "O", Status: "archived", CloneStatus: "failed", Access: wsaccess.AccessOwner},
+		"w2": {Slug: "w2", OwnerID: "u1", OrgID: "", Status: "active", CloneStatus: "ready", Access: wsaccess.AccessOwner},
+	} {
+		ws, code, msg := wsaccess.AuthorizeWorkspace(db, apiKeyOf("u1"), slug, wsaccess.NeedWrite)
+		if ws == nil || code != 0 || msg != "" {
+			t.Errorf("AuthorizeWorkspace(%s) = (%v, %d, %q); want access", slug, ws, code, msg)
+			continue
+		}
+		if *ws != want {
+			t.Errorf("AuthorizeWorkspace(%s) = %+v; want %+v", slug, *ws, want)
+		}
+	}
+}
+
+// TS-35-13: A database error reading the workspace, the membership or the
+// binding is 500 and never a grant.
+// Requirement: 35-REQ-2.7
+func TestAuthorizeWorkspace_DatabaseErrors_TS_35_13(t *testing.T) {
+	check := func(name string, db *sql.DB, auth *apikit.AuthInfo) {
+		t.Helper()
+		if ws, code, msg := wsaccess.AuthorizeWorkspace(db, auth, "w", wsaccess.NeedRead); ws != nil || code != http.StatusInternalServerError || msg != "internal server error" {
+			t.Errorf("%s: (%v, %d, %q); want (nil, 500, internal server error)", name, ws, code, msg)
+		}
+	}
+
+	db := openAccessDB(t, true)
+	if _, err := db.Exec(`DROP TABLE workspaces`); err != nil {
+		t.Fatal(err)
+	}
+	check("no workspaces table", db, apiKeyOf("u1"))
+
+	db = openAccessDB(t, false)
+	addWorkspace(t, db, "w", "u1", "O")
+	check("no org_members table", db, apiKeyOf("u2"))
+
+	db = openAccessDB(t, true)
+	addWorkspace(t, db, "w", "u1", "O")
+	if _, err := db.Exec(`DROP TABLE token_workspace_bindings`); err != nil {
+		t.Fatal(err)
+	}
+	check("no binding table", db, &apikit.AuthInfo{CredentialType: "pat", UserID: "u1", TokenID: "tok", Permissions: []string{"workspaces:read"}})
+}
+
+// TS-35-14: WriteRefusal writes the apikit envelope, with error_type
+// forbidden only on 403.
+// Requirement: 35-REQ-2.8
+func TestWriteRefusal_TS_35_14(t *testing.T) {
+	if wsaccess.ErrorTypeForbidden != "forbidden" {
+		t.Errorf("ErrorTypeForbidden = %q; want forbidden", wsaccess.ErrorTypeForbidden)
+	}
+	for _, tc := range []struct {
+		status        int
+		msg, wantType string
+	}{
+		{http.StatusForbidden, "org members have read-only access to this workspace", "forbidden"},
+		{http.StatusNotFound, "workspace not found", ""},
+		{http.StatusInternalServerError, "internal server error", ""},
+	} {
+		rec := httptest.NewRecorder()
+		c := echo.New().NewContext(httptest.NewRequest(http.MethodGet, "/", nil), rec)
+		if err := wsaccess.WriteRefusal(c, tc.status, tc.msg); err != nil {
+			t.Fatalf("WriteRefusal(%d) = %v", tc.status, err)
+		}
+		if rec.Code != tc.status {
+			t.Errorf("WriteRefusal(%d) status = %d", tc.status, rec.Code)
+		}
+		var body struct {
+			Error map[string]any `json:"error"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			t.Fatalf("WriteRefusal(%d) body %q: %v", tc.status, rec.Body, err)
+		}
+		if body.Error["message"] != tc.msg || body.Error["code"] != float64(tc.status) {
+			t.Errorf("WriteRefusal(%d) body = %s; want code %d and message %q", tc.status, rec.Body, tc.status, tc.msg)
+		}
+		et, has := body.Error["error_type"]
+		if tc.wantType != "" && et != tc.wantType {
+			t.Errorf("WriteRefusal(%d) error_type = %v; want %q", tc.status, et, tc.wantType)
+		}
+		if tc.wantType == "" && has {
+			t.Errorf("WriteRefusal(%d) has error_type %v; want none", tc.status, et)
+		}
 	}
 }
