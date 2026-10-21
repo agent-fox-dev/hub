@@ -121,7 +121,7 @@
       "done_when": [
         "a guard installed before any route is registered covers routes and subgroups added later"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     },
     {
