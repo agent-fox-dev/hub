@@ -73,6 +73,10 @@ func TestMemberScopeAnswers_TS_35_53(t *testing.T) {
 		{workspaceRoutes[7], "workspaces:read", http.StatusForbidden},
 		{workspaceRoutes[8], "workspaces:read", http.StatusForbidden},
 		{workspaceRoutes[9], "patches:read", http.StatusForbidden},
+		{workspaceRoutes[10], "patches:read", http.StatusForbidden},
+		{workspaceRoutes[11], "patches:read", http.StatusForbidden},
+		{workspaceRoutes[12], "patches:read", http.StatusForbidden},
+		{workspaceRoutes[13], "patches:read", http.StatusForbidden},
 		{workspaceRoutes[14], "patches:read", http.StatusForbidden},
 	} {
 		pat := patAuth(specMember, tc.scope)

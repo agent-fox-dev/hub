@@ -108,8 +108,9 @@ require `workspaces:sync` exclusively.
 
 ### Workspace Access
 
-Every REST route that names a workspace decides the caller's access through
-`wsaccess.AuthorizeWorkspace`, in this order: an admin token is `admin`; the
+Every REST route that names a workspace, apart from the session, cost and
+audit routes listed at the end of this section, decides the caller's access
+through `wsaccess.AuthorizeWorkspace`, in this order: an admin token is `admin`; the
 user behind the API key or PAT is `owner` when they own the workspace and
 `member` when `org_members` holds a row for the workspace's org and them
 (whatever the org's status or kind, read on every request); everyone else has
@@ -432,7 +433,8 @@ List workspaces accessible to the authenticated user.
 **Response:** HTTP 200 OK with a JSON array of workspace objects.
 
 - Non-admin callers see their own workspaces (`access: "owner"`) and those of
-  the orgs they belong to (`access: "member"`), newest first. A bound PAT sees
+  the orgs they belong to (`access: "member"`), newest first (by slug where
+  `created_at` is equal). A bound PAT sees
   at most its own workspace.
 - Admin tokens see all workspaces (`access: "admin"`).
 

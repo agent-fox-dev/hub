@@ -29,7 +29,7 @@ func TestStrangerSecretAnswers_TS_35_54(t *testing.T) {
 	for _, r := range append(append([]route{}, workspaceSecretRoutes...), workspaceVarRoutes...) {
 		w := env.doRequest(t, r.method, r.on("team-ws"), r.body, userAuth(sStranger))
 		ghost := env.doRequest(t, r.method, r.on("ghost"), r.body, userAuth(sStranger))
-		if w.Code != http.StatusNotFound || w.Body.String() != ghost.Body.String() {
+		if w.Code != http.StatusNotFound || w.Body.String() != ghost.Body.String() || strings.TrimSpace(w.Body.String()) != wantNotFound {
 			t.Errorf("%s %s: team-ws %d %s, ghost %d %s; want the same 404", r.method, r.path, w.Code, w.Body, ghost.Code, ghost.Body)
 		}
 	}

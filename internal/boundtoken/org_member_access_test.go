@@ -87,3 +87,39 @@ func TestMintRefusalsBeforeLookup_TS_35_51(t *testing.T) {
 		t.Errorf("apikit calls = %d; want 0", stub.calls)
 	}
 }
+
+// TS-35-53/54 (bound tokens): a member's PAT without the tokens scopes gets
+// today's 403 without error_type, and a stranger gets the unknown slug's
+// 404, on both token routes.
+// Requirements: 35-REQ-10.2, 35-REQ-10.3
+func TestTokenRoutesScopeAndStranger_TS_35_53(t *testing.T) {
+	stub := newStub(http.StatusCreated, okAnswer)
+	env := newTestEnv(t, Config{APIKit: stub})
+	seedWorkspace(t, env.db, "w", "u1", "active")
+	addOrgMember(t, env.db, "w", "O", "u2")
+	for _, method := range []string{http.MethodPost, http.MethodGet} {
+		for _, tc := range []struct {
+			name string
+			auth *apikit.AuthInfo
+			want int
+		}{
+			{"member PAT without tokens scopes", pat("u2", "T2", "workspaces:read"), http.StatusForbidden},
+			{"stranger", apiKey("u3"), http.StatusNotFound},
+		} {
+			w := env.do(method, "/api/v1/workspaces/w/tokens", tc.auth, `{"name":"n"}`, nil)
+			ghost := env.do(method, "/api/v1/workspaces/ghost/tokens", tc.auth, `{"name":"n"}`, nil)
+			want := tc.want
+			if method == http.MethodPost {
+				// Mint leaves the tokens:manage check to apikit, after the workspace
+				// lookup, so a member without it gets the stranger's 404 (as today).
+				want = http.StatusNotFound
+			}
+			if w.Code != want || w.Body.String() != ghost.Body.String() || parseError(t, w).Error.ErrorType != "" {
+				t.Errorf("%s %s: w %d %s, ghost %d %s; want the same %d without error_type", method, tc.name, w.Code, w.Body, ghost.Code, ghost.Body, want)
+			}
+		}
+	}
+	if stub.calls != 0 {
+		t.Errorf("apikit calls = %d; want 0", stub.calls)
+	}
+}

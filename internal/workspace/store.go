@@ -307,10 +307,17 @@ const listSlugChunk = 500
 // listWorkspacesBySlugs loads the workspaces named by slugs, in chunks of at
 // most listSlugChunk slugs, excluding archived ones unless includeArchived,
 // and returns them ordered by created_at descending, as the listing queries
-// are. Slugs that name no workspace are skipped.
+// are, and by slug where created_at is equal. Slugs that name no workspace
+// are skipped.
 func listWorkspacesBySlugs(db *sql.DB, slugs []string, includeArchived bool) ([]*Workspace, error) {
+	return listWorkspacesBySlugChunks(db, slugs, includeArchived, listSlugChunk)
+}
+
+// listWorkspacesBySlugChunks is listWorkspacesBySlugs with chunks of at most
+// chunkSize slugs.
+func listWorkspacesBySlugChunks(db *sql.DB, slugs []string, includeArchived bool, chunkSize int) ([]*Workspace, error) {
 	var workspaces []*Workspace
-	for chunk := range slices.Chunk(slugs, listSlugChunk) {
+	for chunk := range slices.Chunk(slugs, chunkSize) {
 		query := `SELECT ` + workspaceSelectColumns + ` FROM workspaces WHERE slug IN (?` + strings.Repeat(", ?", len(chunk)-1) + `)`
 		if !includeArchived {
 			query += ` AND status != 'archived'`
@@ -330,6 +337,11 @@ func listWorkspacesBySlugs(db *sql.DB, slugs []string, includeArchived bool) ([]
 		}
 		workspaces = append(workspaces, found...)
 	}
-	slices.SortStableFunc(workspaces, func(a, b *Workspace) int { return strings.Compare(b.CreatedAt, a.CreatedAt) })
+	slices.SortFunc(workspaces, func(a, b *Workspace) int {
+		if c := strings.Compare(b.CreatedAt, a.CreatedAt); c != 0 {
+			return c
+		}
+		return strings.Compare(a.Slug, b.Slug)
+	})
 	return workspaces, nil
 }

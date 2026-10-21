@@ -386,8 +386,9 @@ func TestBoundMemberRefused_TS_35_35(t *testing.T) {
 	rec := httptest.NewRecorder()
 	c := echo.New().NewContext(httptest.NewRequest(http.MethodGet, "/api/v1/workspaces/w", nil), rec)
 	c.SetPath("/api/v1/workspaces/:slug")
-	if ws, _ := lookupWorkspaceForAuth(c, env.db, "w", bound, wsaccess.NeedRead); ws != nil || rec.Code != http.StatusNotFound {
-		t.Errorf("lookupWorkspaceForAuth: %v, %d; want nil, 404", ws, rec.Code)
+	if ws, _ := lookupWorkspaceForAuth(c, env.db, "w", bound, wsaccess.NeedRead); ws != nil || rec.Code != http.StatusNotFound ||
+		parseErrorEnvelope(t, rec).Error.Message != "workspace not found" {
+		t.Errorf("lookupWorkspaceForAuth: %v, %d %s; want nil, 404 workspace not found", ws, rec.Code, rec.Body)
 	}
 	want := wsaccess.BoundRefusal{TokenID: "tokA", UserID: specMember, BoundSlug: "a", RequestedSlug: "w", Method: "GET",
 		Route: "/api/v1/workspaces/:slug", Status: http.StatusNotFound, Surface: wsaccess.SurfaceAPI}

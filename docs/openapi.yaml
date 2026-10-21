@@ -88,8 +88,8 @@ info:
 
     ## Workspace access
 
-    Every REST route that names a workspace decides the caller's access in
-    one place (`wsaccess`): an admin token is `admin`, the workspace's owner
+    Every REST route that names a workspace, apart from the session, cost
+    and audit routes, decides the caller's access in one place (`wsaccess`): an admin token is `admin`, the workspace's owner
     `owner`, a user with an `org_members` row for the workspace's org
     `member`, anyone else has none (`404 workspace not found`). Each route
     needs a level. *Read* (the workspace, patch, rebuild, rebuild-preview,
@@ -477,7 +477,8 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
-          description: The workspace owner is not a member of the organization in `org_id`.
+          description: >-
+            The workspace owner is not a member of the organization in `org_id`. A member of the workspace's organization also gets 403, `org members have read-only access to this workspace` with `error_type: forbidden`.
           content:
             application/json:
               schema:
@@ -503,6 +504,8 @@ paths:
           description: Workspace deleted.
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/MemberReadOnly"
         "404":
           $ref: "#/components/responses/WorkspaceNotFoundOrForbidden"
         "409":
@@ -651,6 +654,8 @@ paths:
                 $ref: "#/components/schemas/Error"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/MemberReadOnly"
         "404":
           $ref: "#/components/responses/WorkspaceNotFoundOrForbidden"
         "409":
@@ -686,6 +691,8 @@ paths:
                 $ref: "#/components/schemas/Workspace"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/MemberReadOnly"
         "404":
           $ref: "#/components/responses/WorkspaceNotFoundOrForbidden"
         "409":
@@ -801,7 +808,8 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
-          description: The PAT lacks the `workspaces:sync` scope.
+          description: >-
+            The PAT lacks the `workspaces:sync` scope. A member of the workspace's organization also gets 403, `org members have read-only access to this workspace` with `error_type: forbidden`.
           content:
             application/json:
               schema:
@@ -865,7 +873,8 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
-          description: The PAT lacks the `workspaces:sync` scope.
+          description: >-
+            The PAT lacks the `workspaces:sync` scope. A member of the workspace's organization also gets 403, `org members have read-only access to this workspace` with `error_type: forbidden`.
           content:
             application/json:
               schema:
@@ -1218,9 +1227,11 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "403":
+          $ref: "#/components/responses/MemberReadOnly"
         "404":
           description: >-
-            Workspace not found or not owned by the caller; patch not found.
+            Workspace not found or the caller may not see it; patch not found.
           content:
             application/json:
               schema:
@@ -2205,7 +2216,7 @@ paths:
         "403":
           $ref: "#/components/responses/InsufficientScope"
         "404":
-          description: The workspace was not found, is not owned by the caller, or the key is unknown.
+          description: The workspace was not found, or the caller may not see it, or the key is unknown.
           content:
             application/json:
               schema:
@@ -2225,7 +2236,7 @@ paths:
         "403":
           $ref: "#/components/responses/InsufficientScope"
         "404":
-          description: The workspace was not found, is not owned by the caller, or the key is unknown.
+          description: The workspace was not found, or the caller may not see it, or the key is unknown.
           content:
             application/json:
               schema:
@@ -2531,7 +2542,7 @@ paths:
         "403":
           $ref: "#/components/responses/InsufficientScope"
         "404":
-          description: The workspace was not found, is not owned by the caller, or the key is unknown.
+          description: The workspace was not found, or the caller may not see it, or the key is unknown.
           content:
             application/json:
               schema:
@@ -2551,7 +2562,7 @@ paths:
         "403":
           $ref: "#/components/responses/InsufficientScope"
         "404":
-          description: The workspace was not found, is not owned by the caller, or the key is unknown.
+          description: The workspace was not found, or the caller may not see it, or the key is unknown.
           content:
             application/json:
               schema:
@@ -2663,7 +2674,7 @@ paths:
         "403":
           $ref: "#/components/responses/MissingScope"
         "404":
-          description: 'Sandboxes are not enabled (`error_type: sandboxes_disabled`), or the workspace does not exist or is not owned by the caller.'
+          description: 'Sandboxes are not enabled (`error_type: sandboxes_disabled`), or the workspace does not exist or the caller may not see it.'
           content:
             application/json:
               schema:
@@ -2715,7 +2726,7 @@ paths:
         "403":
           $ref: "#/components/responses/MissingScope"
         "404":
-          description: 'Sandboxes are not enabled (`error_type: sandboxes_disabled`), or the workspace does not exist or is not owned by the caller.'
+          description: 'Sandboxes are not enabled (`error_type: sandboxes_disabled`), or the workspace does not exist or the caller may not see it.'
           content:
             application/json:
               schema:
@@ -2750,7 +2761,7 @@ paths:
         "404":
           description: >-
             Sandboxes are not enabled (`error_type: sandboxes_disabled`), the
-            workspace does not exist or is not owned by the caller, or the lease
+            workspace does not exist or the caller may not see it, or the lease
             id is malformed, unknown or another workspace's (`sandbox lease not
             found`, without saying which).
           content:
@@ -7060,7 +7071,7 @@ components:
 
     ForgeNotFound:
       description: >-
-        The workspace does not exist or is not owned by the caller
+        The workspace does not exist or the caller may not see it
         (`workspace not found`), or the forge answered 404
         (`error_type: forge_not_found`).
       content:

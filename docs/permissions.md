@@ -96,7 +96,8 @@ keys — they have implicit `git:read` + `git:write`.
 are strictly scoped to the resources they may reach:
 - REST `/api/v1/user/*` endpoints query `WHERE user_id = ?` using the
   authenticated user's ID.
-- Every REST route that names a workspace decides access through
+- Every REST route that names a workspace, apart from the session, cost and
+  audit routes (which keep their own owner-only checks), decides access through
   `wsaccess.AuthorizeWorkspace` (see [Workspace access
   levels](#workspace-access-levels)): the owner and admin tokens may do
   everything, a member of the workspace's org may read, and everyone else

@@ -57,3 +57,14 @@ differ from what the spec's text says, with the code and the test of what was de
    workspace test cannot mount the merge routes without an import cycle. Each package's routes
    are tested in that package (`org_member_access_test.go`, `org_member_unchanged_test.go`),
    under the same test id.
+
+8. **"No workspace field holds a credential" holds only while `git_url` carries none.**
+   35-REQ-5.4 and R5 say that no workspace field holds a credential value, and members now see
+   every field the owner sees, `git_url` and `upstream_url` included. The URL validation
+   (`validateGitURL`, `internal/workspace/validate.go:59`) predates this spec and accepts an
+   `https://` URL with userinfo (`https://user:token@host/path`). Hub's own credential fields
+   (`git_pat`, `git_username`, `git_password`) are stored as workspace secrets and never
+   rendered (`TestWorkspaceObject_MemberSeesOwnersView_TS_35_31`), but a token written into the
+   URL itself would reach members. Rejecting or redacting userinfo would change what the owner
+   gets or what create accepts, which this spec does not ask for; it is left to a change of its
+   own.

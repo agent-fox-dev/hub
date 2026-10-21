@@ -217,3 +217,37 @@ func parseListObjects(t *testing.T, body []byte) []map[string]any {
 	}
 	return objs
 }
+
+// TS-35-23 (chunks): the by-slug query merges several chunks into one list
+// ordered by created_at descending (by slug where equal), without duplicates
+// or losses; small chunks make the merge observable.
+// Requirement: 35-REQ-4.3
+func TestListWorkspacesBySlugChunks_Merge_TS_35_23(t *testing.T) {
+	env := newTestEnv(t)
+	var slugs []string
+	for i := 0; i < 11; i++ {
+		slug := fmt.Sprintf("chunk-%02d", i)
+		// Three workspaces share each created_at, so ties need the slug order.
+		seedListed(t, env, slug, "u1", "", "active", fmt.Sprintf("2026-01-01T00:00:%02dZ", (i*7)%4))
+		slugs = append(slugs, slug)
+	}
+	want, err := listWorkspacesBySlugChunks(env.db, slugs, false, len(slugs))
+	if err != nil || len(want) != 11 {
+		t.Fatalf("one chunk: %d workspaces, %v", len(want), err)
+	}
+	for i := 1; i < len(want); i++ {
+		a, b := want[i-1], want[i]
+		if a.CreatedAt < b.CreatedAt || (a.CreatedAt == b.CreatedAt && a.Slug > b.Slug) {
+			t.Errorf("order broken at %d: %s %s before %s %s", i, a.Slug, a.CreatedAt, b.Slug, b.CreatedAt)
+		}
+	}
+	got, err := listWorkspacesBySlugChunks(env.db, slugs, false, 3)
+	if err != nil || len(got) != len(want) {
+		t.Fatalf("chunks of 3: %d workspaces, %v; want %d", len(got), err, len(want))
+	}
+	for i := range want {
+		if got[i].Slug != want[i].Slug {
+			t.Errorf("chunks of 3, position %d: %s; want %s", i, got[i].Slug, want[i].Slug)
+		}
+	}
+}

@@ -69,3 +69,21 @@ func TestStrangerMergeAnswers_TS_35_54(t *testing.T) {
 		}
 	}
 }
+
+// TS-35-52 (merge, clone not ready): a member's merge on a workspace whose
+// clone is not ready is 403; the owner's is today's 400.
+// Requirement: 35-REQ-10.1
+func TestMemberMergeCloneNotReady_TS_35_52(t *testing.T) {
+	env, _ := newMemberMergeEnv(t)
+	if _, err := env.db.Exec(`UPDATE workspaces SET clone_status = 'pending' WHERE slug = 'mw'`); err != nil {
+		t.Fatal(err)
+	}
+	body := `{"target_branch":"main","source_ref":"feature"}`
+	if rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/mw/merges", body, mergeUserAuth(mMember)); !isForbidden(rec) {
+		t.Errorf("member merge: %d %s; want 403 forbidden", rec.Code, rec.Body)
+	}
+	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/mw/merges", body, mergeUserAuth(mOwner))
+	if rec.Code != http.StatusBadRequest || parseMergeErrorEnvelope(t, rec).Error.Message != "workspace clone is not ready" {
+		t.Errorf("owner merge: %d %s; want today's 400", rec.Code, rec.Body)
+	}
+}
