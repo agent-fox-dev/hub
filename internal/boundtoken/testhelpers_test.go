@@ -1,18 +1,21 @@
 package boundtoken
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/labstack/echo/v4"
 	"github.com/txsvc/apikit"
 	_ "modernc.org/sqlite"
 
+	"github.com/agent-fox-dev/hub/internal/audit"
 	"github.com/agent-fox-dev/hub/internal/wsaccess"
 )
 
@@ -190,4 +193,26 @@ func recordRefusals(t *testing.T) *[]wsaccess.BoundRefusal {
 	wsaccess.SetRefusalObserver(func(r wsaccess.BoundRefusal) { got = append(got, r) })
 	t.Cleanup(func() { wsaccess.SetRefusalObserver(nil) })
 	return &got
+}
+
+// recordingEmitter records the events it is given.
+type recordingEmitter struct {
+	mu   sync.Mutex
+	evs  []audit.HubEvent
+	ctxs []context.Context
+	err  error
+}
+
+func (r *recordingEmitter) Emit(ctx context.Context, e audit.HubEvent) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.evs = append(r.evs, e)
+	r.ctxs = append(r.ctxs, ctx)
+	return r.err
+}
+
+func (r *recordingEmitter) events() []audit.HubEvent {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]audit.HubEvent(nil), r.evs...)
 }

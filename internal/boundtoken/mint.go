@@ -2,7 +2,11 @@ package boundtoken
 
 import (
 	"bytes"
+	"database/sql"
+	"encoding/json"
+	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -54,7 +58,7 @@ func handleMint(cfg Config) echo.HandlerFunc {
 		if err != nil {
 			return apikit.WriteAPIError(c, http.StatusBadRequest, "invalid request body")
 		}
-		return finishMint(c, answer)
+		return finishMint(c, cfg.DB, answer)
 	}
 }
 
@@ -87,12 +91,123 @@ func delegateMint(c echo.Context, apikitHandler http.Handler) (*httptest.Respons
 	return answer, nil
 }
 
-// finishMint answers the caller from apikit's recorded answer.
-func finishMint(c echo.Context, answer *httptest.ResponseRecorder) error {
-	if ct := answer.Header().Get("Content-Type"); ct != "" {
-		c.Response().Header().Set("Content-Type", ct)
+// minted is apikit's 201 answer to POST /user/tokens. Permissions and
+// ExpiresAt are kept as apikit wrote them.
+type minted struct {
+	TokenID     string          `json:"token_id"`
+	Name        string          `json:"name"`
+	Token       string          `json:"token"`
+	Permissions json.RawMessage `json:"permissions"`
+	ExpiresAt   json.RawMessage `json:"expires_at"`
+	CreatedAt   string          `json:"created_at"`
+}
+
+// mintResponse is the 201 body of POST /workspaces/:slug/tokens, the only
+// place the plaintext token is ever returned.
+type mintResponse struct {
+	TokenID     string          `json:"token_id"`
+	Token       string          `json:"token"`
+	Name        string          `json:"name"`
+	Permissions json.RawMessage `json:"permissions"`
+	Workspace   string          `json:"workspace"`
+	ExpiresAt   json.RawMessage `json:"expires_at"`
+	CreatedAt   string          `json:"created_at"`
+}
+
+// msgBindFailed is the answer when a minted token could not be bound.
+const msgBindFailed = "failed to bind the token to the workspace"
+
+// finishMint answers the caller from apikit's recorded answer
+// (34-REQ-2.3 to 34-REQ-3.7). Anything but a 201 is passed through unchanged.
+// A 201 is bound to the workspace; when that fails for any reason the token
+// is revoked before the answer, so no live unbound token is ever left. No
+// path logs the token, apikit's body or the Authorization header.
+func finishMint(c echo.Context, db *sql.DB, answer *httptest.ResponseRecorder) error {
+	if answer.Code != http.StatusCreated {
+		if ct := answer.Header().Get("Content-Type"); ct != "" {
+			c.Response().Header().Set("Content-Type", ct)
+		}
+		c.Response().WriteHeader(answer.Code)
+		_, err := c.Response().Write(answer.Body.Bytes())
+		return err
 	}
-	c.Response().WriteHeader(answer.Code)
-	_, err := c.Response().Write(answer.Body.Bytes())
-	return err
+
+	slug := c.Param("slug")
+	var m minted
+	if err := json.Unmarshal(answer.Body.Bytes(), &m); err != nil || m.TokenID == "" || m.Token == "" {
+		reason := errors.New("apikit's 201 answer lacks a token_id or a token")
+		if err != nil {
+			reason = errors.New("apikit's 201 answer is not JSON")
+			m.TokenID = tokenIDOf(answer.Body.Bytes())
+		}
+		rollBack(db, m.TokenID, slug, reason)
+		return apikit.WriteAPIError(c, http.StatusInternalServerError, msgBindFailed)
+	}
+
+	written, err := wsaccess.InsertBinding(db, m.TokenID, slug, apikit.NowUTC())
+	if err != nil {
+		rollBack(db, m.TokenID, slug, err)
+		return apikit.WriteAPIError(c, http.StatusInternalServerError, msgBindFailed)
+	}
+	if !written {
+		rollBack(db, m.TokenID, slug, errors.New("the workspace no longer exists"))
+		return apikit.WriteAPIError(c, http.StatusNotFound, "workspace not found")
+	}
+
+	c.Response().Header().Set("Cache-Control", "no-store")
+	return c.JSON(http.StatusCreated, mintResponse{
+		TokenID:     m.TokenID,
+		Token:       m.Token,
+		Name:        m.Name,
+		Permissions: m.Permissions,
+		Workspace:   slug,
+		ExpiresAt:   m.ExpiresAt,
+		CreatedAt:   m.CreatedAt,
+	})
+}
+
+// tokenIDOf reads the token_id of a 201 answer that is not valid JSON as far
+// as the answer can be read, so that a token whose answer was cut short is
+// still revoked. It returns "" when no token_id can be read.
+func tokenIDOf(body []byte) string {
+	dec := json.NewDecoder(bytes.NewReader(body))
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
+		return ""
+	}
+	for dec.More() {
+		key, err := dec.Token()
+		if err != nil {
+			return ""
+		}
+		var value json.RawMessage
+		if err := dec.Decode(&value); err != nil {
+			return ""
+		}
+		if key == "token_id" {
+			var id string
+			if json.Unmarshal(value, &id) == nil {
+				return id
+			}
+			return ""
+		}
+	}
+	return ""
+}
+
+// rollBack revokes a minted token that could not be bound, when its id is
+// known, and logs why with the token id only. A failed revocation is logged
+// with both errors and does not change the answer.
+func rollBack(db *sql.DB, tokenID, slug string, reason error) {
+	if tokenID == "" {
+		slog.Error("boundtoken: a minted token could not be bound and its id is unknown",
+			"workspace", slug, "error", reason)
+		return
+	}
+	if err := wsaccess.RevokeToken(db, tokenID); err != nil {
+		slog.Error("boundtoken: a minted token could not be bound, and revoking it failed",
+			"token_id", tokenID, "workspace", slug, "error", reason, "revoke_error", err)
+		return
+	}
+	slog.Error("boundtoken: a minted token could not be bound and was revoked",
+		"token_id", tokenID, "workspace", slug, "error", reason)
 }

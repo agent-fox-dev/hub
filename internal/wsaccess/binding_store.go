@@ -105,3 +105,28 @@ func ListBoundTokens(db *sql.DB, slug string) ([]BoundToken, error) {
 	}
 	return out, rows.Err()
 }
+
+// InsertBinding writes the binding row (tokenID, slug, createdAt), but only
+// while the workspaces row of slug exists: it reports written false and a nil
+// error when the workspace is gone. A database error, a primary-key conflict
+// included, is returned. SQLite serialises writes, so the insert is ordered
+// against a concurrent deletion of the workspace.
+func InsertBinding(db *sql.DB, tokenID, slug, createdAt string) (bool, error) {
+	res, err := db.Exec(`INSERT INTO token_workspace_bindings (token_id, slug, created_at)
+		SELECT ?, slug, ? FROM workspaces WHERE slug = ?`, tokenID, createdAt, slug)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n == 1, nil
+}
+
+// RevokeToken revokes tokenID the way apikit's own revocation does: it sets
+// revoked_at = apikit.NowUTC() on its pats row when the row is still live.
+func RevokeToken(db *sql.DB, tokenID string) error {
+	_, err := db.Exec(`UPDATE pats SET revoked_at = ? WHERE token_id = ? AND revoked_at IS NULL`, apikit.NowUTC(), tokenID)
+	return err
+}
