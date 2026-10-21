@@ -161,7 +161,7 @@
       "done_when": [
         "the guard source imports no hashing or token-verification package"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     },
     {
