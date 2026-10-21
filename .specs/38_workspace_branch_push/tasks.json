@@ -343,7 +343,7 @@
       "done_when": [
         "`afc workspace push` appears in the workspace command help"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 9,

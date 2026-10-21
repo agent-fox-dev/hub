@@ -36,6 +36,7 @@ func WorkspaceCmd() *cobra.Command {
 		newDeleteCmd(),
 		newSyncCmd(),
 		newRecloneCmd(),
+		newPushCmd(),
 		newPatchStatusCmd(),
 	)
 
@@ -653,6 +654,46 @@ func newRecloneCmd() *cobra.Command {
 	}
 
 	cmd.Flags().BoolVar(&confirm, "confirm", false, "Confirm reclone operation (required)")
+
+	return cmd
+}
+
+// newPushCmd returns the 'workspace push' subcommand. It sends
+// POST /api/v1/workspaces/:slug/branches/:name/push with {"force": <bool>},
+// the branch name as one escaped path segment, and prints the response.
+//
+// Requirements: 38-REQ-9
+func newPushCmd() *cobra.Command {
+	var force bool
+
+	cmd := &cobra.Command{
+		Use:           "push <slug> <branch>",
+		Short:         "Push a branch of a workspace's trunk to its origin",
+		Args:          cobra.ExactArgs(2),
+		SilenceErrors: true,
+		SilenceUsage:  true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			slug, branch := args[0], args[1]
+
+			client, err := apikit.CLIClientFromCmd(cmd)
+			if err != nil {
+				return apikit.CLIHandleError(cmd, err)
+			}
+
+			if force {
+				fmt.Fprintf(cmd.ErrOrStderr(), "warning: --force: origin's %s may be overwritten with the workspace's branch\n", branch)
+			}
+			result, err := client.DoRequest(cmd.Context(), http.MethodPost,
+				apiPath("workspaces", slug, "branches", branch, "push"), map[string]any{"force": force})
+			if err != nil {
+				return apikit.CLIHandleError(cmd, err)
+			}
+
+			return apikit.CLIPrintResult(cmd, result)
+		},
+	}
+
+	cmd.Flags().BoolVar(&force, "force", false, "Overwrite origin's branch even when it has commits the workspace lacks")
 
 	return cmd
 }
