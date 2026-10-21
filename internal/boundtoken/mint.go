@@ -2,6 +2,7 @@ package boundtoken
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -15,6 +16,7 @@ import (
 	"github.com/labstack/echo/v4"
 	"github.com/txsvc/apikit"
 
+	"github.com/agent-fox-dev/hub/internal/audit"
 	"github.com/agent-fox-dev/hub/internal/wsaccess"
 )
 
@@ -58,7 +60,7 @@ func handleMint(cfg Config) echo.HandlerFunc {
 		if err != nil {
 			return apikit.WriteAPIError(c, http.StatusBadRequest, "invalid request body")
 		}
-		return finishMint(c, cfg.DB, answer)
+		return finishMint(c, cfg, auth, answer)
 	}
 }
 
@@ -122,7 +124,8 @@ const msgBindFailed = "failed to bind the token to the workspace"
 // A 201 is bound to the workspace; when that fails for any reason the token
 // is revoked before the answer, so no live unbound token is ever left. No
 // path logs the token, apikit's body or the Authorization header.
-func finishMint(c echo.Context, db *sql.DB, answer *httptest.ResponseRecorder) error {
+func finishMint(c echo.Context, cfg Config, auth *apikit.AuthInfo, answer *httptest.ResponseRecorder) error {
+	db := cfg.DB
 	if answer.Code != http.StatusCreated {
 		if ct := answer.Header().Get("Content-Type"); ct != "" {
 			c.Response().Header().Set("Content-Type", ct)
@@ -154,6 +157,7 @@ func finishMint(c echo.Context, db *sql.DB, answer *httptest.ResponseRecorder) e
 		return apikit.WriteAPIError(c, http.StatusNotFound, "workspace not found")
 	}
 
+	emitBind(c, cfg, auth, slug, m)
 	c.Response().Header().Set("Cache-Control", "no-store")
 	return c.JSON(http.StatusCreated, mintResponse{
 		TokenID:     m.TokenID,
@@ -164,6 +168,42 @@ func finishMint(c echo.Context, db *sql.DB, answer *httptest.ResponseRecorder) e
 		ExpiresAt:   m.ExpiresAt,
 		CreatedAt:   m.CreatedAt,
 	})
+}
+
+// emitBind records hub.token.bind for a committed binding (34-REQ-9.2), on a
+// context the caller's disconnect does not cancel. A nil emitter skips it; an
+// emit error is logged and does not change the answer.
+func emitBind(c echo.Context, cfg Config, auth *apikit.AuthInfo, slug string, m minted) {
+	if cfg.Audit == nil {
+		return
+	}
+	permissions := []string{}
+	if err := json.Unmarshal(m.Permissions, &permissions); err != nil || permissions == nil {
+		permissions = []string{}
+	}
+	var expiresAt any
+	var at string
+	if json.Unmarshal(m.ExpiresAt, &at) == nil && at != "" {
+		expiresAt = at
+	}
+	event := audit.HubEvent{
+		EventType:    audit.EventTokenBind,
+		ActorID:      auth.UserID,
+		ActorType:    auth.CredentialType,
+		ResourceType: "token",
+		ResourceID:   m.TokenID,
+		Action:       "bind",
+		Workspace:    slug,
+		Metadata: map[string]any{
+			"token_id":    m.TokenID,
+			"workspace":   slug,
+			"permissions": permissions,
+			"expires_at":  expiresAt,
+		},
+	}
+	if err := cfg.Audit.Emit(context.WithoutCancel(c.Request().Context()), event); err != nil {
+		slog.Error("boundtoken: emitting hub.token.bind failed", "token_id", m.TokenID, "workspace", slug, "error", err)
+	}
 }
 
 // tokenIDOf reads the token_id of a 201 answer that is not valid JSON as far
