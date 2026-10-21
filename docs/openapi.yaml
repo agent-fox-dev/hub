@@ -101,9 +101,14 @@ info:
     `org members have read-only access to this workspace` with
     `error_type: forbidden`. *Private* (workspace secrets, bound tokens)
     answers a member the stranger's `404`. The access check runs after the
-    PAT scope check and before status checks. Sessions, cost and audit
-    reads, the unified audit query, the SSE stream, transcripts and the git
-    server stay owner-only. `GET /api/v1/workspaces` lists the caller's own
+    PAT scope check and before status checks. The session, cost and audit
+    routes use the same rule with their own refusals: a member reads the
+    per-run audit records and transcripts (`404 workspace not found` for
+    anyone else), the sessions, usage and cost of an active workspace (`403
+    workspace access denied` for anyone else), and the workspace's events in
+    the unified audit query and the SSE stream; opening a session answers a
+    member `403 forbidden`, and completing sessions, usage reports and
+    ingestion stay with the owner. The git server stays owner-only. `GET /api/v1/workspaces` lists the caller's own
     workspaces and those of the caller's orgs, and every workspace object
     carries `access` and `org_slug`.
 
@@ -4070,7 +4075,10 @@ paths:
       description: |
         Records which credential and workspace an agent run is using.
         Idempotent on a client-provided `id`: an existing session is returned
-        with `200` instead of `201`.
+        with `200` instead of `201`. Opening a session needs write access to
+        `workspace_slug` (its owner or an admin token, whatever its status);
+        a replayed `id` of another workspace's session is returned only when
+        the caller may read that workspace (owner, org member, admin token).
       x-required-scopes: ["sessions:write"]
       requestBody:
         required: true
@@ -4100,7 +4108,19 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
-          description: The caller lacks the `sessions:write` scope.
+          description: >-
+            The caller lacks the `sessions:write` scope, or is a member of the
+            workspace's organization (`org members have read-only access to
+            this workspace`, `error_type: forbidden`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: >-
+            The workspace does not exist, the caller may not see it, or a
+            replayed `id` belongs to a workspace the caller may not read
+            (`workspace not found`).
           content:
             application/json:
               schema:
@@ -4112,8 +4132,10 @@ paths:
       operationId: listSessions
       summary: List agent sessions
       description: |
-        Keyset-paginated. Non-admin callers see only sessions in workspaces
-        they own; admin tokens see every workspace.
+        Keyset-paginated. Non-admin callers see only sessions of active
+        workspaces they own or whose organization they belong to (an empty
+        list when there are none); a `workspace_slug` outside them is `403
+        workspace access denied`. Admin tokens see every workspace.
       x-required-scopes: ["sessions:read"]
       parameters:
         - name: workspace_slug
@@ -4162,7 +4184,7 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
-          description: The caller lacks `sessions:read`, or workspace access was denied.
+          description: The caller lacks `sessions:read`, or `workspace_slug` names a workspace that is not active or that the caller may not read (`workspace access denied`).
           content:
             application/json:
               schema:
@@ -4188,7 +4210,7 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
-          description: The caller lacks `sessions:read`, or cannot access the session's workspace.
+          description: The caller lacks `sessions:read`, or the session's workspace is not active or the caller is not its owner, a member of its organization or an admin token (`workspace access denied`).
           content:
             application/json:
               schema:
@@ -4350,7 +4372,7 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
-          description: The caller lacks `sessions:read`, or cannot access the session's workspace.
+          description: The caller lacks `sessions:read`, or the session's workspace is not active or the caller is not its owner, a member of its organization or an admin token (`workspace access denied`).
           content:
             application/json:
               schema:
@@ -4408,7 +4430,7 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
-          description: The caller lacks `sessions:read`, or cannot access the workspace.
+          description: The caller lacks `sessions:read`, or the workspace is not active or the caller is not its owner, a member of its organization or an admin token (`workspace access denied`).
           content:
             application/json:
               schema:
@@ -4477,7 +4499,9 @@ paths:
       tags: [Audit Ingestion]
       operationId: queryRunAuditEvents
       summary: Query audit events for a run
-      description: Cursor-paginated. Ownership is not enforced for audit reads.
+      description: >-
+        Cursor-paginated. The workspace's owner, a member of its organization
+        and admin tokens read it, whatever the workspace's status.
       x-required-scopes: ["audit:read"]
       parameters:
         - $ref: "#/components/parameters/FilterEventType"
@@ -4502,6 +4526,8 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/MissingScope"
+        "404":
+          $ref: "#/components/responses/AuditWorkspaceNotFound"
         "500":
           $ref: "#/components/responses/InternalServerError"
 
@@ -4625,6 +4651,8 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/MissingScope"
+        "404":
+          $ref: "#/components/responses/AuditWorkspaceNotFound"
         "500":
           $ref: "#/components/responses/InternalServerError"
 
@@ -4697,6 +4725,8 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/MissingScope"
+        "404":
+          $ref: "#/components/responses/AuditWorkspaceNotFound"
         "500":
           $ref: "#/components/responses/InternalServerError"
 
@@ -4771,6 +4801,8 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/MissingScope"
+        "404":
+          $ref: "#/components/responses/AuditWorkspaceNotFound"
         "500":
           $ref: "#/components/responses/InternalServerError"
 
@@ -4843,6 +4875,8 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/MissingScope"
+        "404":
+          $ref: "#/components/responses/AuditWorkspaceNotFound"
         "500":
           $ref: "#/components/responses/InternalServerError"
 
@@ -4965,7 +4999,7 @@ paths:
         "403":
           $ref: "#/components/responses/MissingScope"
         "404":
-          description: "No postmortem exists for this run (`error_type: postmortem_not_found`)."
+          description: "No postmortem exists for this run (`error_type: postmortem_not_found`), or the workspace does not exist or the caller is not its owner, a member of its organization or an admin token (`workspace not found`)."
           content:
             application/json:
               schema:
@@ -5012,6 +5046,8 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/MissingScope"
+        "404":
+          $ref: "#/components/responses/AuditWorkspaceNotFound"
         "500":
           $ref: "#/components/responses/InternalServerError"
 
@@ -5031,6 +5067,10 @@ paths:
         Several filters are source-specific: `actor_id`, `actor_type`,
         `resource_type`, and `action` match hub events only (and therefore
         exclude agent events), while `run_id` matches agent events only.
+
+        Non-admin callers receive only the events of workspaces they own or
+        whose organization they belong to, whatever the workspace's status;
+        events without a workspace are returned to admin tokens only.
       x-required-scopes: ["audit:read"]
       parameters:
         - name: source
@@ -5099,6 +5139,12 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/MissingScope"
+        "404":
+          description: "`workspace` names a workspace the caller may not read (`workspace not found`)."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "500":
           $ref: "#/components/responses/InternalServerError"
 
@@ -5128,6 +5174,11 @@ paths:
 
         The concurrent connection ceiling comes from `AF_SSE_MAX_CONNECTIONS`
         (default 100); beyond it new connections receive `503`.
+
+        Non-admin callers receive only the events of workspaces they own or
+        whose organization they belong to; the set is computed once when the
+        stream opens and kept until it closes. Events without a workspace go
+        to admin tokens only.
       x-required-scopes: ["audit:read"]
       parameters:
         - name: workspace
@@ -5153,6 +5204,14 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/MissingScope"
+        "404":
+          description: "`workspace` names a workspace the caller may not read (`workspace not found`); answered as JSON before any stream header."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
         "503":
           description: The maximum number of concurrent SSE connections is already in use.
           content:
@@ -7002,6 +7061,15 @@ components:
 
     WorkspaceNotFound:
       description: No workspace with this slug exists.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+    AuditWorkspaceNotFound:
+      description: >-
+        The workspace does not exist, or the caller is not its owner, a member
+        of its organization or an admin token (`workspace not found`).
       content:
         application/json:
           schema:

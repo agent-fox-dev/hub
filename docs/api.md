@@ -108,9 +108,9 @@ require `workspaces:sync` exclusively.
 
 ### Workspace Access
 
-Every REST route that names a workspace, apart from the session, cost and
-audit routes listed at the end of this section, decides the caller's access
-through `wsaccess.AuthorizeWorkspace`, in this order: an admin token is `admin`; the
+Every REST route that names a workspace decides the caller's access through
+`wsaccess.AuthorizeWorkspace` (the session, cost and audit routes keep their
+own refusal answers; see the end of this section), in this order: an admin token is `admin`; the
 user behind the API key or PAT is `owner` when they own the workspace and
 `member` when `org_members` holds a row for the workspace's org and them
 (whatever the org's status or kind, read on every request); everyone else has
@@ -146,12 +146,30 @@ archived workspace is 403, not 400. A database error is 500 and never a grant.
 Every workspace object carries `access` and `org_slug` (see the [Workspace
 Response Schema](#workspace-response-schema)).
 
-These stay owner-only (a member gets the answer a stranger gets): agent
-sessions (`POST /api/v1/sessions` returns 404 for a workspace the caller does
-not own), the cost route and every per-run audit endpoint; the unified audit
-query and the SSE stream, which return only events of workspaces the caller
-owns (hub events without a workspace, such as user or credential changes, are
-visible to admin tokens only); and the git server.
+The session, cost and audit routes apply the same rule with read or write
+access, and keep their own answers to a caller who may not read:
+
+- **Per-run audit reads and the transcript** (`GET .../runs/:run_id/events`,
+  `sessions/outcomes`, `tools/calls`, `tools/errors`, `traces`, `postmortem`,
+  `transcript`) need read access: a member reads them, whatever the
+  workspace's status; anyone else gets `404 workspace not found`.
+- **Session and cost reads** (`GET /api/v1/sessions/:id`, `.../usage`,
+  `GET /api/v1/workspaces/:slug/cost`, `GET /api/v1/sessions?workspace_slug=`)
+  need read access **and** an active workspace; everyone else, a member of an
+  archived workspace included, gets `403 workspace access denied`.
+  `GET /api/v1/sessions` without a slug lists the sessions of every active
+  workspace the caller owns or shares an org with.
+- **The unified audit query and the SSE stream** (`GET /api/v1/audit`,
+  `GET /api/v1/events`) return the events of every workspace the caller owns
+  or shares an org with, whatever its status; the SSE stream computes that set
+  once, when it opens. Hub events without a workspace, such as user or
+  credential changes, are visible to admin tokens only.
+- **Opening a session** (`POST /api/v1/sessions`) needs write access: a member
+  gets `403` with `error_type: forbidden`, anyone else `404 workspace not
+  found`. Completing a session and reporting its usage stay with the session's
+  creator (`403 not session owner`), and every audit ingestion route stays with
+  the owner (`403 workspace_access_denied`), so a member changes nothing.
+- **The git server** stays owner-only.
 
 Blocked users are rejected by the git server as well as by the API.
 
@@ -1145,6 +1163,11 @@ Open a new agent session.
 | `model` | no | string | Model name |
 | `metadata` | no | object | Arbitrary JSON metadata |
 
+**Access:** opening a session needs write access to `workspace_slug` (see
+[Workspace Access](#workspace-access)): the owner and admin tokens, whatever the
+workspace's status. Replaying an existing `id` returns that session only when
+the caller may read its workspace (owner, member of its org, admin token).
+
 **Response:** HTTP 201 Created with session JSON. HTTP 200 if `id` already
 exists (idempotent).
 
@@ -1165,7 +1188,9 @@ exists (idempotent).
 |--------|-----------|
 | 400 | `workspace_slug` is missing or empty |
 | 403 | Caller lacks `sessions:write` scope |
-| 404 | Workspace does not exist or is not owned by the caller (admin tokens bypass) |
+| 403 | Caller is a member of the workspace's org: `org members have read-only access to this workspace`, `error_type: forbidden` |
+| 404 | Workspace does not exist, the caller may not see it, or a replayed `id` belongs to a workspace the caller may not read (`workspace not found`) |
+| 500 | The access decision failed (`internal server error`) |
 
 ---
 
@@ -1274,8 +1299,11 @@ List agent sessions with filtering and cursor pagination.
 }
 ```
 
-Non-admin callers see only sessions in workspaces they own. Admin tokens see
-all workspaces.
+Non-admin callers see only sessions of active workspaces they own or whose org
+they belong to; with no such workspace the list is empty, and a failed access
+lookup answers `500`. A `workspace_slug` the caller may not read, or an
+archived one, answers `403 workspace access denied`. Admin tokens see all
+workspaces.
 
 ---
 
@@ -1291,7 +1319,7 @@ Fetch a single session by ID with token summary.
 
 | Status | Condition |
 |--------|-----------|
-| 403 | Non-admin caller cannot access the session's workspace |
+| 403 | The session's workspace is not active, or the caller is not its owner, a member of its org or an admin token (`workspace access denied`) |
 | 404 | Session not found |
 
 ---
@@ -1335,7 +1363,7 @@ for the session, independent of the current page.
 | Status | Condition |
 |--------|-----------|
 | 400 | Invalid cursor |
-| 403 | Non-admin caller cannot access the session's workspace |
+| 403 | The session's workspace is not active, or the caller is not its owner, a member of its org or an admin token (`workspace access denied`) |
 | 404 | Session not found |
 
 ---
@@ -1377,7 +1405,7 @@ Retrieve aggregated token usage for a workspace over a time period.
 | Status | Condition |
 |--------|-----------|
 | 400 | `since >= until`; invalid `group_by` value |
-| 403 | Non-admin caller cannot access the workspace |
+| 403 | The workspace is not active, or the caller is not its owner, a member of its org or an admin token (`workspace access denied`) |
 
 ---
 
@@ -5343,8 +5371,8 @@ require explicit scope grants.
 All POST endpoints enforce workspace access control: an unknown workspace
 returns `404`, a workspace other than a bound token's own returns `404`
 `workspace not found`, archived workspaces return `409`, and the caller must
-own the workspace (`403 workspace_access_denied`). A refused request stores
-nothing. All use `INSERT OR IGNORE` for idempotent ingestion — duplicates
+own the workspace (`403 workspace_access_denied`; a member of the workspace's
+org gets this too). A refused request stores nothing. All use `INSERT OR IGNORE` for idempotent ingestion — duplicates
 return `200` instead of `201`.
 
 The `run_id` URL parameter must match the format `YYYYMMDD_HHMMSS_6hexchars`
@@ -5353,7 +5381,11 @@ The `run_id` URL parameter must match the format `YYYYMMDD_HHMMSS_6hexchars`
 Client-supplied timestamps (`timestamp`, `started_at`, `completed_at`) must be
 RFC 3339; offsets are accepted and normalised to UTC. Malformed values are
 rejected with `400` (per item, in the batch endpoints). GET endpoints under
-the same prefix require the caller to own the workspace (404 otherwise).
+the same prefix need read access: the owner, a member of the workspace's org
+and admin tokens read them, whatever the workspace's status; anyone else, and a
+workspace that does not exist, gets `404 workspace not found`, and a failed
+access lookup `500`. The `run_id`, `node_id` and `postmortem_not_found` checks
+come after the access check.
 
 ### POST /api/v1/workspaces/:slug/runs/:run_id/events
 
@@ -5669,9 +5701,11 @@ Unified audit event query that merges events from `hub_audit_events` and
 | `limit` | integer | 100 | Maximum number of events to return (clamped to 1000) |
 | `cursor` | string | (none) | Opaque pagination cursor from a previous response |
 
-Non-admin callers only receive events of workspaces they own; hub events
-that carry no workspace (user, org, and credential changes) are returned to
-admin tokens only. Timestamps of both sources are compared as instants, so
+Non-admin callers only receive events of workspaces they own or whose org they
+belong to, whatever the workspace's status; hub events that carry no workspace
+(user, org, and credential changes) are returned to admin tokens only. A
+`workspace` filter naming any other workspace answers `404 workspace not
+found`, and a failed access lookup `500`. Timestamps of both sources are compared as instants, so
 hub events (recorded with microsecond precision) and agent events interleave
 correctly; `timestamp` is rendered as RFC 3339 UTC with fractional seconds
 where present.
@@ -5803,6 +5837,7 @@ Unrecognized trace event types are silently skipped.
 | 400 | Missing required `node_id` query parameter |
 | 401 | Unauthenticated request |
 | 403 | PAT lacks `audit:read` scope |
+| 404 | The workspace does not exist, or the caller is not its owner, a member of its org or an admin token (`workspace not found`) |
 | 500 | Internal server error |
 
 ---
@@ -5822,8 +5857,12 @@ to connected clients. Uses the `text/event-stream` content type.
 | `run_id` | string | Accepted for forward compatibility but currently ignored: streamed hub events carry no run id |
 | `category` | string | Filter events by category: `hub` or `agent` |
 
-Non-admin callers only receive events of workspaces they own; a `workspace`
-filter naming another user's workspace answers 404.
+Non-admin callers only receive events of workspaces they own or whose org they
+belong to. That set is computed once, when the stream opens, and kept until it
+closes: joining or leaving an org takes effect on the next connection. A
+`workspace` filter naming any other workspace answers `404 workspace not
+found`, and a failed access lookup `500`, both before any stream header is
+written.
 
 **Response:** HTTP 200 OK with `Content-Type: text/event-stream`
 
@@ -5862,4 +5901,6 @@ is reached, new connections receive HTTP 503 with an error message.
 |--------|-----------|
 | 401 | Unauthenticated request |
 | 403 | PAT lacks `audit:read` scope |
+| 404 | `workspace` names a workspace the caller may not read (`workspace not found`) |
+| 500 | The access lookup failed (`internal server error`) |
 | 503 | Maximum SSE connection limit reached |

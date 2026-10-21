@@ -681,8 +681,30 @@ handler in `workspace`, `carrypatch`, `merge`, `sandboxes`, `forge`,
   so the membership predicate exists only in `wsaccess`.
 
 The need of each route sits where the ownership check sat: after the PAT scope
-check, before status and precondition checks. Sessions, cost, audit, SSE,
-transcripts and the git server keep their owner-only checks.
+check, before status and precondition checks.
+
+`internal/audit` decides through the same rule, with its own refusal answers
+and no `owner_id` comparison of its own outside ingestion:
+
+- `requireWorkspaceRead` (per-run reads, the transcript) and
+  `requireWorkspaceWrite` (`POST /sessions`) call `wsaccess.DeniesWorkspace`
+  with the request's site (status 404) and then `AuthorizeWorkspace` with
+  `NeedRead` or `NeedWrite`, through the shared `authorizeWorkspace`; the
+  idempotent replay of another workspace's session decides with `NeedRead`.
+  Workspace status is not checked.
+- `hasWorkspaceAccess` (session get, usage, cost, the list with a slug) calls
+  `DeniesWorkspace` (status 403), then `AuthorizeWorkspace` with `NeedRead`,
+  and requires the workspace to be active; any failure is `false`, answered
+  `403 workspace access denied`.
+- `getAccessibleWorkspaces` (the list without a slug) keeps the active slugs
+  of `ReadableSlugs`, never nil; `readableWorkspaces` (`GET /audit`,
+  `GET /events`) turns `ReadableSlugs` into the `allowedWorkspaces` set (nil
+  for an admin token), which the query renders as `workspace IN (...)` and the
+  SSE stream keeps from connect to close.
+- `checkWorkspaceAccess` (ingestion) and the session-creator check of
+  complete and usage report are unchanged and stay owner-only.
+
+The git server keeps its owner-only check.
 
 ### Token workspace bindings
 
@@ -720,8 +742,8 @@ Echo copies group middleware into every route and subgroup when it is added, so
 every hub route registered afterwards, including routes added in the future, is
 guarded. A route nobody marks is refused. The workspace handlers
 (`lookupWorkspaceForAuth`, the list), the audit helpers (`requireWorkspaceRead`,
-`ownedWorkspaces`, `checkWorkspaceAccess`, `hasWorkspaceAccess`,
-`getAccessibleWorkspaces`, the session writes) and the git server
+`requireWorkspaceWrite`, `readableWorkspaces`, `checkWorkspaceAccess`,
+`hasWorkspaceAccess`, `getAccessibleWorkspaces`, the session writes) and the git server
 (`authorizeGitAccess`) apply the rule themselves too. Each resolves the binding
 before it opens any rows, because the test databases use one connection.
 

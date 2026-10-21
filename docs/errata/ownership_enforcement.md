@@ -42,9 +42,22 @@ unknown slug gets. `GET /api/v1/workspaces` lists the caller's own workspaces
 and those of the caller's orgs, and every workspace object carries `access`
 and `org_slug`.
 
-Sessions, cost, per-run audit reads and ingestion, the unified audit query,
-the SSE stream, transcripts and the git server keep the owner-only rule above;
-a member gets a stranger's answer there. Existing ownership tests for
-workspaces in a personal org pass unchanged, because a personal org's only
-member is normally its owner. See `docs/errata/35_org_member_workspace_access_divergences.md`
-for where the delivered behaviour differs from the spec.
+Spec 35 left sessions, cost, per-run audit reads and ingestion, the unified
+audit query, the SSE stream, transcripts and the git server with the owner-only
+rule above. Existing ownership tests for workspaces in a personal org pass
+unchanged, because a personal org's only member is normally its owner. See
+`docs/errata/35_org_member_workspace_access_divergences.md` for where the
+delivered behaviour differs from the spec.
+
+Spec 36 (`36_org_member_audit_read`) moves the audit package onto the same
+rule, keeping each route's refusal answer. A member of the workspace's org
+reads the per-run audit records and transcripts (any workspace status;
+`404 workspace not found` for everyone else), the sessions, usage and cost of
+an active workspace (`403 workspace access denied` for everyone else), and
+sees the workspace's events in `GET /api/v1/audit` and `GET /api/v1/events`;
+hub events without a workspace stay with admin tokens. Opening a session is a
+write (a member gets `403 forbidden`); completing a session, reporting usage
+and ingesting audit data stay with the owner and admin tokens. Audit reads
+were already restricted to owners before spec 36; notes saying they were not
+enforced were stale. The git server keeps the owner-only rule. See
+`docs/errata/36_org_member_audit_read_divergences.md`.
