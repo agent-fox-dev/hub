@@ -129,6 +129,14 @@ func pushBranchLocked(c echo.Context, db *sql.DB, ws *Workspace, name string, fo
 		return branchPushInternalError(c, slug, "opening the trunk", err, "")
 	}
 
+	// 38-REQ-5.6, 38-REQ-5.7: a push to hub's git server can move the
+	// checked-out branch while the lock is held, and skips its worktree
+	// reset because of the lock; the lock holder restores the tree.
+	var secret string
+	if head, err := repo.Head(); err == nil {
+		defer func() { restoreMovedWorktree(repo, slug, head.Hash(), secret) }()
+	}
+
 	// 38-REQ-4.5, 38-REQ-4.6: with no branch column the workspace's own
 	// branch is the one HEAD points to, read under the lock, because a merge
 	// checks out another branch while it holds the lock.
@@ -157,7 +165,7 @@ func pushBranchLocked(c echo.Context, db *sql.DB, ws *Workspace, name string, fo
 	if err != nil {
 		return branchPushInternalError(c, slug, "resolving the git credential", err, "")
 	}
-	secret := credentialSecret(gitAuth)
+	secret = credentialSecret(gitAuth)
 
 	refSpec := config.RefSpec("refs/heads/" + name + ":refs/heads/" + name)
 	if force {
@@ -234,6 +242,31 @@ func (e branchPushEvent) emit(c echo.Context, result, errorType string) {
 		Workspace:    e.slug,
 		Metadata:     metadata,
 	})
+}
+
+// restoreMovedWorktree hard-resets the trunk's worktree to the commit HEAD
+// resolves to when that is no longer before, the commit it resolved to when the
+// lock was taken. A HEAD that cannot be read leaves the worktree alone, and a
+// failed reset is logged once and changes nothing else.
+func restoreMovedWorktree(repo *git.Repository, slug string, before plumbing.Hash, secret string) {
+	head, err := repo.Head()
+	if err != nil || head.Hash() == before {
+		return
+	}
+	if err := resetTrunkWorktreeFn(repo, head.Hash()); err != nil {
+		slog.Warn("branch push: restoring the trunk's worktree failed", "workspace", slug,
+			"error", scrubText(err.Error(), secret))
+	}
+}
+
+// resetTrunkWorktreeFn hard-resets the trunk's worktree to commit. Tests make it
+// fail.
+var resetTrunkWorktreeFn = func(repo *git.Repository, commit plumbing.Hash) error {
+	wt, err := repo.Worktree()
+	if err != nil {
+		return err
+	}
+	return wt.Reset(&git.ResetOptions{Commit: commit, Mode: git.HardReset})
 }
 
 // ownBranch is the workspace's own branch: its branch column, or, when that is

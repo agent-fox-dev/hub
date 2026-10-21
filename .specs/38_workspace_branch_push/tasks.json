@@ -309,7 +309,7 @@
       "done_when": [
         "TryLock on the slug succeeds after every answer and after a disconnected push ends"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 8,
