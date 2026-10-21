@@ -147,7 +147,7 @@
       "done_when": [
         "no refusal in 38-REQ-4 sends anything to the forge and the lock is free after each answer"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 4,

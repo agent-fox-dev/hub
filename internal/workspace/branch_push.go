@@ -7,15 +7,21 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"strings"
 
+	git "github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/config"
+	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/labstack/echo/v4"
 	"github.com/txsvc/apikit"
 
 	"github.com/agent-fox-dev/hub/internal/gitcmd"
 	"github.com/agent-fox-dev/hub/internal/wsaccess"
+	"github.com/agent-fox-dev/hub/internal/wslock"
 )
 
 // maxBranchPushBody bounds the request body of the branch push, which holds at
@@ -48,7 +54,7 @@ func handleBranchPush(db *sql.DB) echo.HandlerFunc {
 		}
 
 		// 38-REQ-1.4, 38-REQ-1.5
-		_, err := parseBranchPushBody(c.Request().Body)
+		force, err := parseBranchPushBody(c.Request().Body)
 		if err != nil {
 			return respondError(c, http.StatusBadRequest, "invalid request body: "+err.Error())
 		}
@@ -74,8 +80,141 @@ func handleBranchPush(db *sql.DB) echo.HandlerFunc {
 				"workspace clone is not ready; clone_status must be 'ready' to push")
 		}
 
-		return respondError(c, http.StatusNotImplemented, "branch push is not implemented yet")
+		// 38-REQ-4.1, 38-REQ-4.2, 38-REQ-4.4, 38-REQ-4.8: the refusals that
+		// read only the database and the workspace row come before the lock,
+		// so they answer the same whether the workspace is busy or not.
+		refusal, err := ownedBranchRefusal(db, ws, name, force)
+		if err != nil {
+			return branchPushInternalError(c, slug, "deciding the branch's owner", err)
+		}
+		if refusal != nil {
+			return refusal.write(c)
+		}
+
+		// 38-REQ-5.1, 38-REQ-5.2: every read of the trunk is serialized with
+		// the other trunk operations; a rebuild between its phases does not
+		// hold the lock and does not block the push.
+		unlock, locked := wslock.TryLock(slug)
+		if !locked {
+			return respondErrorWithType(c, http.StatusConflict,
+				"another operation is running on this workspace; retry later", "workspace_busy")
+		}
+		defer unlock()
+
+		repoPath := filepath.Join(defaultWorkspaceRoot, slug, "trunk")
+		repo, err := git.PlainOpen(repoPath)
+		if err != nil {
+			return branchPushInternalError(c, slug, "opening the trunk", err)
+		}
+
+		// 38-REQ-4.5, 38-REQ-4.6: with no branch column the workspace's own
+		// branch is the one HEAD points to, read under the lock, because a
+		// merge checks out another branch while it holds the lock.
+		if force && (ws.Branch == nil || *ws.Branch == "") {
+			head, err := repo.Head()
+			if err != nil {
+				return branchPushInternalError(c, slug, "reading the trunk's HEAD", err)
+			}
+			if head.Name().IsBranch() && head.Name().Short() == name {
+				return protectedBranchRefusal(name).write(c)
+			}
+		}
+
+		// 38-REQ-5.3, 38-REQ-5.4
+		ref, err := repo.Reference(plumbing.NewBranchReferenceName(name), true)
+		if errors.Is(err, plumbing.ErrReferenceNotFound) {
+			return respondErrorWithType(c, http.StatusNotFound,
+				fmt.Sprintf("branch_not_found: branch %q does not exist in the workspace", name), "branch_not_found")
+		}
+		if err != nil {
+			return branchPushInternalError(c, slug, "resolving the branch", err)
+		}
+		sha := ref.Hash().String()
+
+		refSpec := config.RefSpec("refs/heads/" + name + ":refs/heads/" + name)
+		if force {
+			refSpec = "+" + refSpec
+		}
+		err = pushToOriginFn(c.Request().Context(), repoPath, ws.GitURL, nil, []config.RefSpec{refSpec}, force, nil)
+		var te *trunkError
+		result := "pushed"
+		switch {
+		case errors.As(err, &te):
+			return branchPushInternalError(c, slug, "opening the trunk", err)
+		case errors.Is(err, git.NoErrAlreadyUpToDate):
+			result = "up_to_date"
+		case err != nil:
+			return respondErrorWithType(c, http.StatusBadGateway, "forge_error: the push to origin failed", "forge_error")
+		case force:
+			result = "forced"
+		}
+		return c.JSON(http.StatusOK, branchPushAnswer{
+			Branch: name, SHA: sha, Remote: "origin", RemoteURL: ws.GitURL, Result: result,
+		})
 	}
+}
+
+// branchPushAnswer is the 200 answer of the branch push.
+type branchPushAnswer struct {
+	Branch    string `json:"branch"`
+	SHA       string `json:"sha"`
+	Remote    string `json:"remote"`
+	RemoteURL string `json:"remote_url"`
+	Result    string `json:"result"`
+}
+
+// pushRefusal is an answer of the branch push that refuses the request with an
+// error_type of the route's own.
+type pushRefusal struct {
+	status    int
+	errorType string
+	message   string
+}
+
+func (r *pushRefusal) write(c echo.Context) error {
+	return respondErrorWithType(c, r.status, r.message, r.errorType)
+}
+
+// ownedBranchRefusal is the refusal of a branch the route does not push that can
+// be decided from the database and the workspace row alone, nil when there is
+// none: on a carry_patch workspace the integration branch (its column, or deploy
+// when that is empty) and a registered patch (a patch row whose status is not
+// deleted); in both modes a forced push of the branch column.
+func ownedBranchRefusal(db *sql.DB, ws *Workspace, name string, force bool) (*pushRefusal, error) {
+	if ws.WorkspaceMode == "carry_patch" {
+		integration := "deploy"
+		if ws.IntegrationBranch != nil && *ws.IntegrationBranch != "" {
+			integration = *ws.IntegrationBranch
+		}
+		if name == integration {
+			return &pushRefusal{http.StatusBadRequest, "integration_branch", fmt.Sprintf(
+				"integration_branch: hub builds %q, this workspace's integration branch, on every rebuild; it reaches the fork through REBUILD_PUSH_INTEGRATION_BRANCH", name)}, nil
+		}
+		patch, err := getPatchByBranch(db, ws.Slug, name)
+		if err != nil {
+			return nil, err
+		}
+		if patch != nil && patch.Status != "deleted" {
+			return &pushRefusal{http.StatusBadRequest, "patch_branch", fmt.Sprintf(
+				"patch_branch: %q is a registered patch of this workspace; patches reach the fork through PUSH_PATCHES_TO_ORIGIN", name)}, nil
+		}
+	}
+	if force && ws.Branch != nil && *ws.Branch != "" && name == *ws.Branch {
+		return protectedBranchRefusal(name), nil
+	}
+	return nil, nil
+}
+
+// protectedBranchRefusal refuses a forced push of the workspace's own branch.
+func protectedBranchRefusal(name string) *pushRefusal {
+	return &pushRefusal{http.StatusBadRequest, "protected_branch", fmt.Sprintf(
+		"protected_branch: %q is the workspace's own branch; hub does not force-push it to origin", name)}
+}
+
+// branchPushInternalError logs a failure of hub's own and answers 500.
+func branchPushInternalError(c echo.Context, slug, what string, err error) error {
+	slog.Error("branch push: "+what+" failed", "workspace", slug, "error", scrubText(err.Error(), ""))
+	return respondError(c, http.StatusInternalServerError, "internal server error")
 }
 
 // parseBranchPushBody reads the optional body of the branch push and returns its
