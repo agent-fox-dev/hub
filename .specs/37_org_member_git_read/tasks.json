@@ -170,7 +170,7 @@
       "done_when": [
         "a member's push is refused before PlainOpen and writes nothing, calls no hook and emits no audit event"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 5,
