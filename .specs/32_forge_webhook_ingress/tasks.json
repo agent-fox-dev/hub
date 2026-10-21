@@ -178,7 +178,7 @@
       "done_when": [
         "a request without an Authorization header reaches the handler"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 5,

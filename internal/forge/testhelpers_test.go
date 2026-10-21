@@ -209,6 +209,8 @@ type env struct {
 	// secrets is the real secrets store over db, which the Config's Secrets is unless a
 	// modifier replaces it.
 	secrets *secrets.Store
+	// cfg is the Config the routes and the ingress were mounted with.
+	cfg Config
 
 	originAuth   transport.AuthMethod
 	upstreamAuth transport.AuthMethod
@@ -290,6 +292,8 @@ func newEnv(t *testing.T, mods ...func(*Config)) *env {
 	api := e.echo.Group("/api/v1")
 	api.Use(testAuthMiddleware())
 	RegisterRoutes(api, cfg)
+	MountWebhookIngress(e.echo, cfg)
+	e.cfg = cfg
 	return e
 }
 
