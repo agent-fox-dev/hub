@@ -117,7 +117,9 @@ func (h *handlers) ingress(c echo.Context) error {
 		return apikit.WriteAPIError(c, http.StatusBadRequest, "the delivery payload is not what its event needs")
 	}
 	if err := writeOutcome(c, red.outcome); err != nil {
-		return err
+		// The forge has gone. The delivery is recorded as relayed, so its redelivery is a
+		// duplicate: the events are relayed now or never.
+		slog.Warn("forge: the answer to a delivery could not be written", "slug", slug, "error", err)
 	}
 	for _, event := range red.events {
 		h.emitEvent(c.Request().Context(), event)

@@ -1,7 +1,7 @@
 # Errata: spec 32, forge webhook ingress
 
 Where the delivered code differs from `.specs/32_forge_webhook_ingress` (the spec is not
-edited), and what the code does instead. Each entry names the code and the test of the
+edited, apart from the `state` of its tasks), and what the code does instead. Each entry names the code and the test of the
 delivered behaviour. The first entries are the ones a reviewer should decide on; the later
 ones are details the spec left open.
 
@@ -17,7 +17,7 @@ and types. `POST /hooks/forge/:slug` is subject to neither (the comment on `gitB
 in `internal/gitserver/handlers.go` still describes the old placement; it was left alone).
 
 The ingress therefore refuses what it reads beyond 1 MiB itself, always with
-`413` and `error_type: body_too_large` (`readDelivery`, `internal/forge/ingress.go:195`): a
+`413` and `error_type: body_too_large` (`readDelivery`, `internal/forge/ingress.go:197`): a
 body whose `Content-Length` is over the cap is refused without being read, and any other is
 read through a limited reader. A limit installed on the whole instance, as the spec assumes,
 is honoured too: apikit's own `413` (no `error_type`) when it knows the length, and the
@@ -50,9 +50,12 @@ The spec says to bind "a delivery of a relayed kind" and to record `target` for 
 expects the row of every delivery it posts to have target `origin`, among them one whose event
 name is not one hub relays. The code binds every delivery whose payload names the workspace's
 origin or upstream and records the target, and keeps the outcome `ignored` (`reduceDelivery`,
-`internal/forge/reduce.go:49`). A delivery of a relayed kind about another repository is still
-`repository_mismatch` with no target. `TestIngressRecordsARow_TS_32_24`,
-`TestGitLabIssueUpdateWithoutChange_TS_32_40` (rows are `ignored` and bound).
+`internal/forge/reduce.go`). A delivery that has events to relay about another repository is
+`repository_mismatch` with no target; one that would relay nothing (a note on a commit, an update
+that changes nothing, a merge request update without an `oldrev`) is `ignored` whichever repository
+it names, as the spec's own examples of `ignored` say. `TestIngressRecordsARow_TS_32_24`,
+`TestGitLabIssueUpdateWithoutChange_TS_32_40` (rows are `ignored` and bound),
+`TestIngressIgnoresWhatItWouldNotRelayWhateverTheRepository`.
 
 ### 5. The fields a relayed kind "needs" are its identity, not its description
 
@@ -83,27 +86,27 @@ retrying a 202.
    is a 500 (`TestPutWebhook_StoreFailures_TS_32_6`).
 9. **Repository binding uses `parseRemote`, not `describeRemote`.** `describeRemote` needs the
    caller's request, reads the credential and `FORGE_API_URL` and classifies the forge; the
-   spec's own decision 5 keeps all of that off the ingress path (`bindRepository`,
-   `reduce.go:114`; `TestIngressBindsToOrigin_TS_32_31`, `TestIngressBindsToUpstream_TS_32_32`).
+   spec's own decision 5 keeps all of that off the ingress path (`bindRepository`, `reduce.go:113`; `TestIngressBindsToOrigin_TS_32_31`, `TestIngressBindsToUpstream_TS_32_32`).
    The host is not compared, only the path.
 10. **An empty stored secret is no secret.** It would accept an empty GitLab token and sign
-    with an empty key, so the ingress answers it 404 (`lookupWebhook`, `ingress.go:153`;
-    `TestIngressRefusesAnEmptySecret`).
+    with an empty key, so the ingress answers it 404 (`lookupWebhook`, `ingress.go`;
+    `TestIngressRefusesAnEmptySecret`), and `GET /forge` reports it as not configured
+    (`webhookInfo`; `TestForgeStatusTreatsAnEmptySecretAsNone`).
 11. **A signature or token header given twice is invalid** (401), even with the secret among
     the values (`tokenMatches`, `signatureMatches`; `TestIngressGitHubSignatureGivenTwice`,
     `TestIngressGitLabToken_TS_32_18`). The GitHub signature must be lowercase hex, as
     TS-32-17 requires.
 12. **The 202 answer carries `Content-Length`.** Without it the answer would be chunked and end
     only when the handler returns, after the events, which defeats flushing first
-    (`writeOutcome`, `ingress.go:276`; `TestIngressAnswersBeforeEmitting_TS_32_47`).
+    (`writeOutcome`, `ingress.go:278`; `TestIngressAnswersBeforeEmitting_TS_32_47`).
 13. **The delivery list breaks ties by recording order** (`ORDER BY received_at DESC, rowid
     DESC`, `deliveries_handler.go:74`), since `apikit.NowUTC` has whole seconds, and a `since`
     with a fraction of a second starts at the next second (`parseDeliveryQuery`, line 51;
     `TestListDeliveriesTiesNewestRecordedFirst`, `TestListDeliveriesSinceWithAFraction`).
 14. **The id of a delivery** may contain the space and every printable ASCII character up to
-    `~`, 255 characters at most (`printableASCII`, `ingress.go:241`).
+    `~`, 255 characters at most (`printableASCII`, `ingress.go:243`).
 15. **GitLab details.** The labels of a `labeled` or `unlabeled` event are the top-level
-    `labels` and, when the payload has none, `changes.labels.current` (`reduce_gitlab.go:105`);
+    `labels` and, when the payload has none, `changes.labels.current` (`reduce_gitlab.go:106`);
     a label listed twice is one event; `merged` is true for a `merge` action and for a state
     `merged`; a note is relayed when it has no action or `create` (`TestGitLabIssueUpdateLabelDetails`,
     `TestGitLabMergeRequestMergedFlag`, `TestGitLabNoteHook_TS_32_41`).
@@ -122,6 +125,19 @@ retrying a 202.
     (the spec's `touches` name `smoke_test.go`), and TS-32-63 is two tests because the one that
     runs `afc` changes `HOME`, under which the go tool must not run.
 
+19. **Label bounds.** A GitLab update relays at most 100 label events (the first: `unlabeled`
+    before `labeled`, each sorted) and logs a warning when it cuts, and an event lists at most 100
+    labels (GitHub allows 100 on an issue; GitLab does not limit them). The spec asks for one event
+    for each changed label and all the issue's labels in each, which grows with the square of the
+    labels: the review measured 4,000 events and 72 MB of audit metadata from a 156 KB delivery
+    with 2,000 labels on each side. `maxLabelEvents`, `maxLabelNames`
+    (`internal/forge/reduce.go`); `TestGitLabLabelChangesAreBounded`, `TestGitHubLabelListIsBounded`,
+    `TestGitLabIssueLabelListIsBounded`.
+20. **An answer that cannot be written** (the forge has already gone) is logged and the events
+    are relayed all the same: the row is recorded as `relayed` before the answer, so the forge's
+    redelivery is a duplicate and the events would otherwise be lost (`ingress`, `ingress.go`;
+    `TestIngressRelaysTheEventsWhenTheAnswerCannotBeWritten`).
+
 ## Not handled
 
 - **Rate limiting** of the ingress. An unauthenticated caller can write a warn line per request
@@ -132,5 +148,13 @@ retrying a 202.
 - **Secrets that `afc secrets create` makes with a value outside the rules of `PUT`** (shorter
   than 16 characters, with a space) are accepted by the store and used as they are: the rules
   are those of the `PUT` route only.
-- **A host or a path in a payload's URL** is not checked: only the user information is removed.
+- **A host or a path in a payload's URL** is not checked: only the user information of a URL with a
+  scheme is removed (`scrub.go`'s pattern); a scheme-relative `//user:pass@host` or a URL without a
+  scheme keeps it. The forges send `https://` URLs.
+- **The size of the strings of an event** other than `title`: the action, a label name, a ref, a
+  branch, a login and a URL are stored as the forge sent them, bounded only by the 1 MiB body. A
+  delivery needs the webhook secret, and the hub's audit store keeps whatever it is given.
+- **An empty `oldrev`** counts as absent: a merge request update that carries one is ignored.
+- **A replayed delivery.** GitHub signs no timestamp and rows are pruned after 7 days, so a signed
+  delivery captured earlier than that is accepted again as new.
 - **A carry-patch fork whose upstream is the same repository as its origin** binds to the origin.

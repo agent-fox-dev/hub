@@ -3922,7 +3922,11 @@ matter) and emit no audit event. The nine write endpoints
 ([The write routes](#the-write-routes)) need `forge:write`, work on `active`
 workspaces only, take no lock and need no clone either, and record every write that
 reaches the forge as a `hub.forge.*` audit event. Everything below that is not
-about the write routes holds for both.
+about the write routes holds for both. The webhook routes
+([The webhook routes](#the-webhook-routes)) are of their own kind: the list of
+deliveries is a read (`forge:read`, a workspace of any status), `PUT .../forge/webhook`
+a write (`forge:write`, an `active` workspace) and `DELETE .../forge/webhook` needs
+`forge:write` and works on a workspace of any status.
 
 A forge can also tell the hub what happened on the repository, so that a consumer
 learns of an issue, a label, a comment, a pull request or a push without polling. The
@@ -4451,8 +4455,8 @@ audit store cannot hold the forge's connection open:
 | Outcome | Meaning |
 |---|---|
 | `relayed` | At least one event was handed to the emitter |
-| `ignored` | The event and action are not ones the hub relays, or the payload says nothing to relay |
-| `repository_mismatch` | A delivery of a kind the hub relays about a repository that is neither the workspace's origin nor, on a `carry_patch` workspace with an `upstream_url`, its upstream (or the workspace's remote cannot be read) |
+| `ignored` | The event and action are not ones the hub relays, or the payload says nothing to relay (a note on a commit, an update that changes nothing), whichever repository it names |
+| `repository_mismatch` | A delivery that has events to relay about a repository that is neither the workspace's origin nor, on a `carry_patch` workspace with an `upstream_url`, its upstream (or the workspace's remote cannot be read) |
 | `duplicate` | The delivery id was recorded before |
 
 A body that is not one JSON object, or lacks the field that says what the delivery is about
@@ -4460,7 +4464,9 @@ A body that is not one JSON object, or lacks the field that says what the delive
 the ref of a push), is recorded as `malformed` and answered **400**. The descriptive fields
 (title, URL, branches, labels) default to empty instead. The events are emitted in order through
 the audit emitter on a context the end of the request does not cancel; an emit error is logged
-and changes nothing about the answer. The payload is never stored and never logged.
+and changes nothing about the answer, and so is an answer that cannot be written (the forge has
+gone): the delivery is recorded, so its events are relayed all the same. The payload is never
+stored and never logged.
 
 **Repository binding.** For a kind the hub relays, the payload's repository path (GitHub
 `repository.full_name`, GitLab `project.path_with_namespace`) is compared, ignoring case, with
@@ -4483,7 +4489,7 @@ workspace's is bound the same way and recorded with its target; it is ignored al
 | GitLab (`X-Gitlab-Event`, `object_attributes.action`) | Hub event(s) |
 |---|---|
 | `Issue Hook` open, close, reopen | `hub.forge.issue.opened`, `.closed`, `.reopened` |
-| `Issue Hook` update | `.edited` when `changes` has `title` or `description`; then one `.unlabeled` for each label in `changes.labels.previous` and not in `current`; then one `.labeled` for each label in `current` and not in `previous`; each group sorted by name. An update with none of these changes is ignored |
+| `Issue Hook` update | `.edited` when `changes` has `title` or `description`; then one `.unlabeled` for each label in `changes.labels.previous` and not in `current`; then one `.labeled` for each label in `current` and not in `previous`; each group sorted by name. An update with none of these changes is ignored. At most 100 label events are relayed for one delivery (the first, `unlabeled` before `labeled`, with a warning in the log), and an event lists at most 100 labels |
 | `Note Hook` on an `Issue` or a `MergeRequest`, no action or `create` | `hub.forge.comment.created` (`pull_request: true` for a merge request) |
 | `Merge Request Hook` open, close, reopen, merge | `hub.forge.pull_request.opened`, `.closed`, `.reopened`, `.merged` |
 | `Merge Request Hook` update | `.synchronize` when the payload has `oldrev`; an update without it is ignored |
@@ -4573,11 +4579,11 @@ query endpoint (`GET /api/v1/audit`). Each event has an `event_type`, an actor
 | `hub.forge.label.create` | `label` | `POST /workspaces/:slug/labels`, whether it created the label or found it (`resource_id` is the label name, `action` is `create`) | `label`: the name; `created`: true only when this call created the label, false when it existed and when the call failed |
 | `hub.forge.pull_request.create` | `pull_request` | `POST /workspaces/:slug/pulls` (`resource_id` is the new number, empty on a failure; `action` is `create`) | `head`, `base`, `draft` |
 | `hub.forge.pull_request.comment` | `pull_request` | `POST /workspaces/:slug/pulls/:n/comments` (`resource_id` is `n`, `action` is `comment`) | none of its own; `url` is the comment's |
-| `hub.forge.issue.opened` | `issue` | A forge reported that an issue was opened on a workspace's repository (GitHub `issues` opened, GitLab `Issue Hook` open). Relayed by the webhook ingress after it answered the forge; `resource_id` is the issue number (the `iid` on GitLab), `action` is `opened`. The actor type is `forge` and the actor ID empty; the login is in `actor`. All thirteen delivery events share the metadata under the table | `number`, `title` (cut to 256 bytes), `url`, `labels` (the issue's label names) |
+| `hub.forge.issue.opened` | `issue` | A forge reported that an issue was opened on a workspace's repository (GitHub `issues` opened, GitLab `Issue Hook` open). Relayed by the webhook ingress after it answered the forge; `resource_id` is the issue number (the `iid` on GitLab), `action` is `opened`. The actor type is `forge` and the actor ID empty; the login is in `actor`. All thirteen delivery events share the metadata under the table | `number`, `title` (cut to 256 bytes), `url`, `labels` (the issue's label names, the first 100) |
 | `hub.forge.issue.edited` | `issue` | The title or body of an issue changed (`action` is `edited`) | as `hub.forge.issue.opened` |
 | `hub.forge.issue.closed` | `issue` | An issue was closed (`action` is `closed`) | as `hub.forge.issue.opened` |
 | `hub.forge.issue.reopened` | `issue` | An issue was reopened (`action` is `reopened`) | as `hub.forge.issue.opened` |
-| `hub.forge.issue.labeled` | `issue` | A label was put on an issue; a GitLab update that adds several is one event for each, sorted by name (`action` is `labeled`) | `number`, `label`, `labels` (all the issue's labels now), `url` |
+| `hub.forge.issue.labeled` | `issue` | A label was put on an issue; a GitLab update that adds several is one event for each, sorted by name (`action` is `labeled`) | `number`, `label`, `labels` (the issue's labels now, the first 100), `url` |
 | `hub.forge.issue.unlabeled` | `issue` | A label was taken off an issue; on GitLab these come before the `labeled` events of the same update (`action` is `unlabeled`) | as `hub.forge.issue.labeled` |
 | `hub.forge.comment.created` | `comment` | A new comment on an issue or a pull request or merge request (`resource_id` is its number, `action` is `created`). The text of the comment is not in the event | `number`, `comment_url`, `pull_request` (true for a pull request or merge request) |
 | `hub.forge.pull_request.opened` | `pull_request` | A pull request or merge request was opened (`resource_id` is its number, `action` is `opened`) | `number`, `url`, `head`, `base` (branch names), `merged` (bool) |
@@ -4610,7 +4616,8 @@ webhook relays them, are named in the past tense and are a different thing.
 
 **The delivery events** (`hub.forge.issue.opened` to `hub.forge.push`, thirteen of them) are
 relayed by the [webhook ingress](#the-webhook-ingress), one for each event the delivery comes to
-and in the order of the table above, after the 202 answer has been flushed. `workspace` is the
+and in the order the mapping makes them (a GitLab update: `edited`, then `unlabeled`, then
+`labeled`), after the 202 answer has been flushed. `workspace` is the
 slug; the actor is the forge, not a hub identity (`actor_type` `forge`, `actor_id` empty).
 Common metadata: `forge` (`github` or `gitlab`), `target` (`origin` or `upstream`),
 `delivery_id` (the forge's id) and `actor` (the forge login; `""` when the payload has none),

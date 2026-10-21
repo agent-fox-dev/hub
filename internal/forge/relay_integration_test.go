@@ -49,10 +49,10 @@ func sseEvents(t *testing.T, body io.Reader) (heartbeat <-chan struct{}, events 
 	return hb, ev
 }
 
-// TS-32-48: The events of a delivery are stored in the order they were made, and appear on the SSE
-// stream and in the audit query, though the request that made them is over.
-// Requirement: 32-REQ-8.6
-func TestRelayReachesTheStreamAndTheQuery_TS_32_48(t *testing.T) {
+// relayHub is the routes and the ingress over a real DuckDB audit store, SSE manager and broadcast
+// emitter, served over HTTP.
+func newRelayHub(t *testing.T) *httptest.Server {
+	t.Helper()
 	auditDB, err := audit.OpenDB(filepath.Join(t.TempDir(), "audit.duckdb"))
 	if err != nil {
 		t.Fatal(err)
@@ -74,17 +74,28 @@ func TestRelayReachesTheStreamAndTheQuery_TS_32_48(t *testing.T) {
 	audit.RegisterAuditQueryRoutes(api, store, sse, e.db)
 	server := httptest.NewServer(e.echo)
 	t.Cleanup(server.Close)
+	return server
+}
 
+// ownerHeader is the credential of the owner of the workspace widgets, for the test middleware.
+func ownerHeader() string {
 	auth, _ := json.Marshal(apiKeyAuth())
-	streamCtx, stop := context.WithCancel(context.Background())
+	return string(auth)
+}
+
+// openEventStream opens GET /events?workspace=widgets as the owner and returns the types of the
+// audit events it carries, once it has sent its first heartbeat.
+func openEventStream(t *testing.T, server *httptest.Server) <-chan string {
+	t.Helper()
+	ctx, stop := context.WithCancel(context.Background())
 	t.Cleanup(stop)
-	req, _ := http.NewRequestWithContext(streamCtx, http.MethodGet, server.URL+"/api/v1/events?workspace=widgets", nil)
-	req.Header.Set("X-Test-Auth", string(auth))
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, server.URL+"/api/v1/events?workspace=widgets", nil)
+	req.Header.Set("X-Test-Auth", ownerHeader())
 	stream, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer stream.Body.Close()
+	t.Cleanup(func() { stream.Body.Close() })
 	if stream.StatusCode != http.StatusOK {
 		t.Fatalf("the stream: status = %d; want 200", stream.StatusCode)
 	}
@@ -94,6 +105,46 @@ func TestRelayReachesTheStreamAndTheQuery_TS_32_48(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("the stream did not open")
 	}
+	return events
+}
+
+// auditTypes asks GET /audit?workspace=widgets for the event types, oldest first (the query lists
+// the newest first), and checks that every event is a hub event of the workspace.
+func auditTypes(t *testing.T, server *httptest.Server) []string {
+	t.Helper()
+	query, _ := http.NewRequest(http.MethodGet, server.URL+"/api/v1/audit?workspace=widgets", nil)
+	query.Header.Set("X-Test-Auth", ownerHeader())
+	res, err := http.DefaultClient.Do(query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	var doc struct {
+		Events []struct {
+			EventType string `json:"event_type"`
+			Workspace string `json:"workspace"`
+			Source    string `json:"source"`
+		} `json:"events"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&doc); err != nil {
+		t.Fatal(err)
+	}
+	var types []string
+	for i := len(doc.Events) - 1; i >= 0; i-- {
+		if doc.Events[i].Workspace != "widgets" || doc.Events[i].Source != "hub" {
+			t.Fatalf("an event of another workspace or source: %+v", doc.Events[i])
+		}
+		types = append(types, doc.Events[i].EventType)
+	}
+	return types
+}
+
+// TS-32-48: The events of a delivery are stored in the order they were made, and appear on the SSE
+// stream and in the audit query, though the request that made them is over.
+// Requirement: 32-REQ-8.6
+func TestRelayReachesTheStreamAndTheQuery_TS_32_48(t *testing.T) {
+	server := newRelayHub(t)
+	events := openEventStream(t, server)
 
 	// A GitLab update that takes a label off and puts another on; the client goes away at once,
 	// which cancels the request's context while the events are still being stored.
@@ -125,37 +176,12 @@ func TestRelayReachesTheStreamAndTheQuery_TS_32_48(t *testing.T) {
 		t.Errorf("the stream carried %v; want %v in this order", got, want)
 	}
 
-	// The query lists them newest first; the events are stored after the answer, so wait for them.
+	// The events are stored after the answer, so wait for them.
 	var stored []string
-	deadline := time.Now().Add(5 * time.Second)
-	for len(stored) < len(want) && time.Now().Before(deadline) {
-		query, _ := http.NewRequest(http.MethodGet, server.URL+"/api/v1/audit?workspace=widgets", nil)
-		query.Header.Set("X-Test-Auth", string(auth))
-		res, err := http.DefaultClient.Do(query)
-		if err != nil {
-			t.Fatal(err)
-		}
-		var doc struct {
-			Events []struct {
-				EventType string `json:"event_type"`
-				Workspace string `json:"workspace"`
-				Source    string `json:"source"`
-			} `json:"events"`
-		}
-		err = json.NewDecoder(res.Body).Decode(&doc)
-		res.Body.Close()
-		if err != nil {
-			t.Fatal(err)
-		}
-		stored = nil
-		for i := len(doc.Events) - 1; i >= 0; i-- {
-			if doc.Events[i].Workspace != "widgets" || doc.Events[i].Source != "hub" {
-				t.Fatalf("an event of another workspace or source: %+v", doc.Events[i])
-			}
-			stored = append(stored, doc.Events[i].EventType)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	eventually(t, "both events in the audit query", func() bool {
+		stored = auditTypes(t, server)
+		return len(stored) >= len(want)
+	})
 	if !reflect.DeepEqual(stored, want) {
 		t.Errorf("the audit query returned %v; want %v in the order they were made", stored, want)
 	}

@@ -42,10 +42,12 @@ var errMalformed = errors.New("the payload lacks a field its event needs")
 type mapper func(b *builder) ([]audit.HubEvent, error)
 
 // reduceDelivery works out what a verified delivery comes to. A body that is not a JSON object,
-// or lacks a field its kind needs, is malformed. A kind and action hub does not relay are
-// ignored. For one it relays, the repository the payload names must be the workspace's origin or,
-// on a carry_patch workspace, its upstream, else the delivery is for another repository and
-// nothing is relayed. A delivery of any kind whose repository is the workspace's is bound to it.
+// or lacks a field its kind needs, is malformed. A kind and action hub does not relay, and a
+// delivery of a kind it relays that says nothing to relay (a note on a commit, an update that
+// changes nothing), are ignored whichever repository they name. A delivery that has events to
+// relay must name the workspace's origin or, on a carry_patch workspace, its upstream, else it is
+// for another repository and nothing is relayed. A delivery of any kind whose repository is the
+// workspace's is bound to it.
 func reduceDelivery(d delivery, ws workspaceRemotes) reduction {
 	doc, err := parsePayload(d.body)
 	if err != nil {
@@ -58,15 +60,8 @@ func reduceDelivery(d delivery, ws workspaceRemotes) reduction {
 	}
 
 	m := mapperFor(d.forge, d.event, red.action)
-	switch {
-	case m == nil:
+	if m == nil {
 		red.outcome = outcomeIgnored
-		return red
-	case !havePath:
-		red.outcome, red.target = outcomeMalformed, ""
-		return red
-	case red.target == "":
-		red.outcome = outcomeMismatch
 		return red
 	}
 	events, err := m(&builder{d: d, doc: doc, tgt: red.target})
@@ -75,6 +70,10 @@ func reduceDelivery(d delivery, ws workspaceRemotes) reduction {
 		red.outcome, red.target = outcomeMalformed, ""
 	case len(events) == 0:
 		red.outcome = outcomeIgnored
+	case !havePath:
+		red.outcome, red.target = outcomeMalformed, ""
+	case red.target == "":
+		red.outcome = outcomeMismatch
 	default:
 		red.outcome, red.events = outcomeRelayed, events
 	}
@@ -224,6 +223,23 @@ func (p payload) names(key string, keys ...string) []string {
 
 // maxTitleBytes is the longest title an event holds.
 const maxTitleBytes = 256
+
+// The bounds on labels. An event lists at most maxLabelNames labels (GitHub allows 100 on an
+// issue), and a GitLab update relays at most maxLabelEvents label changes: every event of an update
+// lists the issue's labels, so without a bound the events of one delivery would grow with the
+// square of its labels.
+const (
+	maxLabelNames  = 100
+	maxLabelEvents = 100
+)
+
+// capNames cuts a list of label names to maxLabelNames.
+func capNames(names []string) []string {
+	if len(names) > maxLabelNames {
+		return names[:maxLabelNames]
+	}
+	return names
+}
 
 // title cuts a title from a payload to maxTitleBytes on a UTF-8 boundary.
 func title(s string) string {

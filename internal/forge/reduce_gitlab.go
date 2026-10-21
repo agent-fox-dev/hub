@@ -1,6 +1,7 @@
 package forge
 
 import (
+	"log/slog"
 	"slices"
 	"strconv"
 
@@ -78,7 +79,7 @@ func gitlabIssueEvent(b *builder, eventType string, number int) audit.HubEvent {
 		"number": number,
 		"title":  title(issueTitle),
 		"url":    payloadURL(url),
-		"labels": b.doc.names("title", "labels"),
+		"labels": capNames(b.doc.names("title", "labels")),
 	})
 }
 
@@ -105,6 +106,7 @@ func gitlabIssueUpdate(b *builder) ([]audit.HubEvent, error) {
 	if b.doc.at("labels") == nil {
 		labels = current
 	}
+	labels = capNames(labels)
 	label := func(eventType, name string) audit.HubEvent {
 		return b.event(eventType, "issue", strconv.Itoa(number), map[string]any{
 			"number": number,
@@ -113,20 +115,31 @@ func gitlabIssueUpdate(b *builder) ([]audit.HubEvent, error) {
 			"url":    payloadURL(url),
 		})
 	}
+	var changes []audit.HubEvent
 	for _, name := range difference(previous, current) {
-		events = append(events, label(audit.EventForgeIssueUnlabeled, name))
+		changes = append(changes, label(audit.EventForgeIssueUnlabeled, name))
 	}
 	for _, name := range difference(current, previous) {
-		events = append(events, label(audit.EventForgeIssueLabeled, name))
+		changes = append(changes, label(audit.EventForgeIssueLabeled, name))
 	}
-	return events, nil
+	if len(changes) > maxLabelEvents {
+		slog.Warn("forge: a delivery changed more labels than hub relays, the first are relayed",
+			"slug", b.d.slug, "changes", len(changes), "relayed", maxLabelEvents)
+		changes = changes[:maxLabelEvents]
+	}
+	return append(events, changes...), nil
 }
 
 // difference returns the names in a that are not in b, sorted and without repeats.
 func difference(a, b []string) []string {
+	in := make(map[string]bool, len(b)+len(a))
+	for _, name := range b {
+		in[name] = true
+	}
 	var out []string
 	for _, name := range a {
-		if !slices.Contains(b, name) && !slices.Contains(out, name) {
+		if !in[name] {
+			in[name] = true
 			out = append(out, name)
 		}
 	}

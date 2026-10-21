@@ -68,11 +68,12 @@ func (h *handlers) webhookInfo(slug string) (webhookInfo, error) {
 		return webhookInfo{}, errInternal()
 	}
 	info := webhookInfo{URL: webhookURL(h.cfg.ExternalURL, slug)}
-	_, err := h.cfg.Secrets.GetSecretValue("workspace", slug, webhookSecretKey)
+	value, err := h.cfg.Secrets.GetSecretValue("workspace", slug, webhookSecretKey)
 	var notFound *secrets.NotFoundError
 	switch {
 	case err == nil:
-		info.Configured = true
+		// An empty secret is none, as the ingress sees it.
+		info.Configured = value != ""
 	case !errors.As(err, &notFound):
 		// The error is not logged as text: it may carry what the store held.
 		slog.Error("forge: reading the webhook secret failed", "slug", slug, "error_type", fmt.Sprintf("%T", err))

@@ -66,7 +66,7 @@ func githubIssue(eventType string) mapper {
 			"number": number,
 			"title":  title(issueTitle),
 			"url":    payloadURL(url),
-			"labels": b.doc.names("name", "issue", "labels"),
+			"labels": capNames(b.doc.names("name", "issue", "labels")),
 		})}, nil
 	}
 }
@@ -87,7 +87,7 @@ func githubIssueLabel(eventType string) mapper {
 		return []audit.HubEvent{b.event(eventType, "issue", strconv.Itoa(number), map[string]any{
 			"number": number,
 			"label":  label,
-			"labels": b.doc.names("name", "issue", "labels"),
+			"labels": capNames(b.doc.names("name", "issue", "labels")),
 			"url":    payloadURL(url),
 		})}, nil
 	}
