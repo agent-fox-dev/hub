@@ -243,33 +243,40 @@ func requireMergeReadScope(c echo.Context, auth *apikit.AuthInfo) error {
 // Workspace lookup helpers
 // ---------------------------------------------------------------------------
 
-// authorizeMergeWorkspace enforces workspace ownership (owner or admin token;
-// non-owners get 404) for merge endpoints that do not need the full
-// precondition check. It writes the error response and returns false when
-// access is denied.
-func authorizeMergeWorkspace(c echo.Context, db *sql.DB, auth *apikit.AuthInfo, slug string) bool {
-	if _, code, msg := workspace.AuthorizeWorkspace(db, auth, slug, wsaccess.NeedPrivate); code != 0 {
-		_ = apikit.WriteAPIError(c, code, msg)
+// authorizeMergeWorkspace applies wsaccess.AuthorizeWorkspace with the
+// endpoint's need to a merge endpoint that does not need the full
+// precondition check: members of the workspace's org read, owners and admin
+// tokens also write, a member's write is 403 and anyone else gets 404. It
+// writes the refusal and returns false when access is denied.
+func authorizeMergeWorkspace(c echo.Context, db *sql.DB, auth *apikit.AuthInfo, slug string, need wsaccess.Need) bool {
+	if _, code, msg := workspace.AuthorizeWorkspace(db, auth, slug, need); code != 0 {
+		_ = wsaccess.WriteRefusal(c, code, msg)
 		return false
 	}
 	return true
 }
 
-// validateWorkspaceForMerge checks that the workspace exists, is active, and
-// has a ready clone. Writes an error response and returns non-nil error if
-// validation fails. Returns nil to proceed.
-func validateWorkspaceForMerge(c echo.Context, db *sql.DB, auth *apikit.AuthInfo, slug string) error {
-	ws, code, msg := workspace.AuthorizeWorkspace(db, auth, slug, wsaccess.NeedPrivate)
+// validateWorkspaceForMerge checks that the caller may write to the workspace
+// (NeedWrite), that it is active, and that its clone is ready. It writes the
+// error response and returns false if a check fails, true to proceed.
+//
+// It reports the refusal as its result rather than as an error, because the
+// apikit writers return nil once the response is written.
+func validateWorkspaceForMerge(c echo.Context, db *sql.DB, auth *apikit.AuthInfo, slug string) bool {
+	ws, code, msg := workspace.AuthorizeWorkspace(db, auth, slug, wsaccess.NeedWrite)
 	if code != 0 {
-		return apikit.WriteAPIError(c, code, msg)
+		_ = wsaccess.WriteRefusal(c, code, msg)
+		return false
 	}
 	if ws.Status != "active" {
-		return apikit.WriteAPIError(c, http.StatusBadRequest, "workspace is not active")
+		_ = apikit.WriteAPIError(c, http.StatusBadRequest, "workspace is not active")
+		return false
 	}
 	if ws.CloneStatus != "ready" {
-		return apikit.WriteAPIError(c, http.StatusBadRequest, "workspace clone is not ready")
+		_ = apikit.WriteAPIError(c, http.StatusBadRequest, "workspace clone is not ready")
+		return false
 	}
-	return nil
+	return true
 }
 
 // ---------------------------------------------------------------------------
@@ -318,7 +325,7 @@ func handleSubmitMerge(cfg MergeAPIConfig) echo.HandlerFunc {
 		}
 
 		// Validate workspace exists, is active, and clone is ready.
-		if err := validateWorkspaceForMerge(c, cfg.DB, auth, slug); err != nil {
+		if !validateWorkspaceForMerge(c, cfg.DB, auth, slug) {
 			return nil // Response already written.
 		}
 
@@ -416,7 +423,7 @@ func handleListMerges(cfg MergeAPIConfig) echo.HandlerFunc {
 		}
 
 		slug := c.Param("slug")
-		if !authorizeMergeWorkspace(c, cfg.DB, auth, slug) {
+		if !authorizeMergeWorkspace(c, cfg.DB, auth, slug, wsaccess.NeedRead) {
 			return nil
 		}
 
@@ -460,7 +467,7 @@ func handleGetMerge(cfg MergeAPIConfig) echo.HandlerFunc {
 
 		slug := c.Param("slug")
 		jobID := c.Param("id")
-		if !authorizeMergeWorkspace(c, cfg.DB, auth, slug) {
+		if !authorizeMergeWorkspace(c, cfg.DB, auth, slug, wsaccess.NeedRead) {
 			return nil
 		}
 
@@ -502,7 +509,7 @@ func handleCancelMerge(cfg MergeAPIConfig) echo.HandlerFunc {
 
 		slug := c.Param("slug")
 		jobID := c.Param("id")
-		if !authorizeMergeWorkspace(c, cfg.DB, auth, slug) {
+		if !authorizeMergeWorkspace(c, cfg.DB, auth, slug, wsaccess.NeedWrite) {
 			return nil
 		}
 
@@ -564,7 +571,7 @@ func handleRequeueMerge(cfg MergeAPIConfig) echo.HandlerFunc {
 
 		slug := c.Param("slug")
 		jobID := c.Param("id")
-		if !authorizeMergeWorkspace(c, cfg.DB, auth, slug) {
+		if !authorizeMergeWorkspace(c, cfg.DB, auth, slug, wsaccess.NeedWrite) {
 			return nil
 		}
 
@@ -644,7 +651,7 @@ func handleBatchRebase(cfg MergeAPIConfig) echo.HandlerFunc {
 		}
 
 		// Validate workspace exists and is active.
-		if err := validateWorkspaceForMerge(c, cfg.DB, auth, slug); err != nil {
+		if !validateWorkspaceForMerge(c, cfg.DB, auth, slug) {
 			return nil // Response already written.
 		}
 

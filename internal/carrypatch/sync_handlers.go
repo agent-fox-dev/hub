@@ -18,6 +18,7 @@ import (
 
 	"github.com/agent-fox-dev/hub/internal/audit"
 	"github.com/agent-fox-dev/hub/internal/jobqueue"
+	"github.com/agent-fox-dev/hub/internal/wsaccess"
 	"github.com/agent-fox-dev/hub/internal/wslock"
 )
 
@@ -107,7 +108,7 @@ func runCarryPatchSync(cfg SyncAPIConfig, c echo.Context) (*CarryPatchSyncRespon
 	}
 
 	slug := c.Param("slug")
-	if !authorizeWorkspace(c, cfg.DB, auth, slug) {
+	if !authorizeWorkspace(c, cfg.DB, auth, slug, wsaccess.NeedWrite) {
 		return nil, echo.ErrNotFound
 	}
 
