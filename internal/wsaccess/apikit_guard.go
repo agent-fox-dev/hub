@@ -36,11 +36,21 @@ func APIKitRouteGuard(db *sql.DB, routes []*echo.Route) echo.MiddlewareFunc {
 			if id == "" {
 				return next(c)
 			}
-			_, bound, err := LookupBinding(db, id)
+			slug, bound, err := LookupBinding(db, id)
 			if err != nil {
 				return apikit.WriteAPIError(c, http.StatusInternalServerError, "internal server error")
 			}
 			if bound {
+				// The token is not authenticated here, so the report has
+				// no user.
+				ReportBoundRefusal(BoundRefusal{
+					TokenID:   id,
+					BoundSlug: slug,
+					Method:    c.Request().Method,
+					Route:     c.Path(),
+					Status:    http.StatusForbidden,
+					Surface:   SurfaceAPI,
+				})
 				return apikit.WriteAPIErrorWithType(c, http.StatusForbidden,
 					"this token is bound to a workspace", ErrorTypeTokenBound)
 			}

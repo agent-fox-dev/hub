@@ -244,7 +244,7 @@ func lookupWorkspaceForAuth(c echo.Context, db *sql.DB, slug string, auth *apiki
 	}
 
 	// A PAT bound to another workspace must not see this one (spec 33).
-	denied, err := wsaccess.DeniesWorkspace(db, auth, ws.Slug)
+	denied, err := wsaccess.DeniesWorkspace(db, auth, ws.Slug, wsaccess.SiteOf(c, http.StatusNotFound))
 	if err != nil {
 		return nil, respondError(c, http.StatusInternalServerError, "internal server error")
 	}
@@ -1172,7 +1172,8 @@ func handleDeleteWorkspace(db *sql.DB) echo.HandlerFunc {
 		// in DuckDB; only the SQLite workspace row is deleted. Orphaned
 		// audit data is cleaned up by the retention worker after
 		// orphan_retention_days.
-		if err := deleteWorkspace(db, slug); err != nil {
+		revoked, err := deleteWorkspaceRevoked(db, slug)
+		if err != nil {
 			// 19-REQ-9.E2: SQLite failure after DuckDB close — sessions remain
 			// safely terminated in DuckDB regardless.
 			return respondError(c, http.StatusInternalServerError, "failed to delete workspace")
@@ -1185,7 +1186,9 @@ func handleDeleteWorkspace(db *sql.DB) echo.HandlerFunc {
 			ResourceID:   slug,
 			Action:       "delete",
 			Workspace:    slug,
-			Metadata:     map[string]any{},
+			// The tokens bound to the workspace that this deletion revoked
+			// (34-REQ-5.4).
+			Metadata: map[string]any{"revoked_tokens": revoked},
 		})
 
 		return c.NoContent(http.StatusNoContent)

@@ -16,6 +16,7 @@ import (
 	"github.com/txsvc/apikit"
 
 	"github.com/agent-fox-dev/hub/internal/audit"
+	"github.com/agent-fox-dev/hub/internal/boundtoken"
 	"github.com/agent-fox-dev/hub/internal/carrypatch"
 	"github.com/agent-fox-dev/hub/internal/forge"
 	"github.com/agent-fox-dev/hub/internal/gitserver"
@@ -247,6 +248,22 @@ func main() {
 	if err := workspace.MountWorkspaceHandlers(server, database, extraPerms...); err != nil {
 		log.Fatal(err)
 	}
+
+	// Mount the routes that mint and list workspace-bound tokens (spec 34).
+	// A mint is served by apikit's own POST /user/tokens through server.Echo(),
+	// in-process, and hub adds the binding.
+	boundtoken.RegisterRoutes(server.APIGroup(), boundtoken.Config{
+		DB:     database.SqlDB,
+		APIKit: server.Echo(),
+		Audit:  auditEmitter,
+	})
+	// Record every request refused because of a token binding as
+	// hub.token.bound_refused, at most once per token per minute.
+	boundtoken.Install(auditEmitter)
+	// MountWorkspaceHandlers has created the binding table; the sweep revokes
+	// and removes bindings whose workspace or token is gone, at once and then
+	// every hour, and never holds up the start.
+	go boundtoken.StartBindingSweep(ctx, database.SqlDB)
 
 	// Wire audit dependencies into workspace package for force-close on
 	// archive/delete (19-REQ-8, 19-REQ-9).

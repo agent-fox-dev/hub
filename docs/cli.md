@@ -2717,6 +2717,13 @@ afc tokens [subcommand] [flags]
 | `--name` | yes | string | | Token name |
 | `--permissions` | yes | string | | Comma-separated permissions (e.g., `users:read,orgs:read`) |
 | `--expires` | no | int | 90 | Token expiry in days (0, 30, 60, or 90) |
+| `--workspace` | no | string | | Mint a token bound to this workspace (hub's `POST /workspaces/<slug>/tokens`); see below |
+
+**Flags (list):**
+
+| Flag | Required | Type | Default | Description |
+|------|----------|------|---------|-------------|
+| `--workspace` | no | string | | List the tokens bound to this workspace (hub's `GET /workspaces/<slug>/tokens`) instead of your own |
 
 **Flags (replace / add / remove):**
 
@@ -2737,6 +2744,27 @@ afc tokens [subcommand] [flags]
   the current set.
 - `remove`: Removes one or more permissions from an existing PAT without
   revoking it entirely.
+
+**Workspace-bound tokens (`--workspace`):** hub adds `--workspace <slug>` to
+`create` and `list`. Without it, both behave exactly as above.
+
+- `create --workspace <slug>` sends `POST /workspaces/<slug>/tokens` with
+  `{name, permissions, expires}` (`permissions` split on commas, trimmed, empty
+  entries dropped), prints the response, the only place the token is shown, as
+  one JSON document on stdout, and writes one line on stderr:
+  `warning: the token in this output will not be shown again; save it now`.
+  An empty `--workspace` or `--name`, or a `--permissions` with no entry left,
+  exits 2 before any request is sent.
+- `list --workspace <slug>` sends `GET /workspaces/<slug>/tokens` and prints the
+  array: every token bound to the workspace, revoked and expired ones included,
+  without any secret. An empty `--workspace` exits 2.
+- A refusal by the hub (for example `workspace not found`) exits 1 with the
+  hub's message; a missing API key or an unreachable hub exits 2.
+
+```
+afc tokens create --workspace my-ws --name agent-fox --permissions workspaces:read,patches:read
+afc tokens list --workspace my-ws
+```
 
 **Exit Codes:**
 

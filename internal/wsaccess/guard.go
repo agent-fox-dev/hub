@@ -56,8 +56,18 @@ func BindingGuard(db *sql.DB) echo.MiddlewareFunc {
 				return next(c)
 			}
 
+			refusal := BoundRefusal{
+				TokenID:   auth.TokenID,
+				UserID:    auth.UserID,
+				BoundSlug: slug,
+				Method:    c.Request().Method,
+				Route:     c.Path(),
+				Surface:   SurfaceAPI,
+			}
 			if isWorkspaceScoped(c.Path()) {
 				if c.Param("slug") != slug {
+					refusal.RequestedSlug, refusal.Status = c.Param("slug"), http.StatusNotFound
+					ReportBoundRefusal(refusal)
 					return apikit.WriteAPIError(c, http.StatusNotFound, "workspace not found")
 				}
 				return next(c)
@@ -65,6 +75,8 @@ func BindingGuard(db *sql.DB) echo.MiddlewareFunc {
 			if IsAllowed(c.Request().Method, c.Path()) {
 				return next(c)
 			}
+			refusal.Status = http.StatusForbidden
+			ReportBoundRefusal(refusal)
 			return apikit.WriteAPIErrorWithType(c, http.StatusForbidden,
 				"this token is bound to workspace "+slug, ErrorTypeTokenBound)
 		}

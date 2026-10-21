@@ -68,6 +68,12 @@ info:
     `this token is bound to a workspace` on the routes apikit mounts. The git
     server answers a pkt-line `404 repository not found` for every repository
     but `S`'s. API keys, admin tokens and unbound PATs are not affected.
+    Bound tokens are minted with `POST /api/v1/workspaces/{slug}/tokens` and
+    retired when their workspace is deleted. A mint records
+    `hub.token.bind`; every request refused because of a binding is recorded
+    as `hub.token.bound_refused`, at most once per token per minute, with
+    `suppressed` counting the refusals held back since the token's previous
+    event.
 
     ## Anti-enumeration policy
 
@@ -471,7 +477,11 @@ paths:
       summary: Permanently delete an archived workspace
       description: |
         Only archived workspaces can be deleted. `workspaces:delete` does not
-        imply `workspaces:read`.
+        imply `workspaces:read`. In the same transaction, every live token
+        bound to the workspace is revoked and its binding removed; the
+        `hub.workspace.delete` event lists the revoked ids in
+        `revoked_tokens`. A failure of any step deletes nothing (500
+        `failed to delete workspace`).
       x-required-scopes: ["workspaces:delete"]
       responses:
         "204":
@@ -486,6 +496,116 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /api/v1/workspaces/{slug}/tokens:
+    parameters:
+      - $ref: "#/components/parameters/WorkspaceSlug"
+    post:
+      tags: [Workspaces]
+      operationId: mintBoundToken
+      summary: Mint a personal access token bound to the workspace
+      description: |
+        Hub serves apikit's own `POST /api/v1/user/tokens` in-process with the
+        caller's body and `Authorization` header, then binds the new token to
+        the workspace. apikit checks `tokens:manage`, the scopes a PAT may grant
+        and `expires`; any answer of apikit other than 201 is passed through
+        unchanged. Checks before apikit, in order: 401; a bound PAT 403
+        `token_bound` (500 when the binding lookup fails); an admin token 403;
+        404 for a workspace that is missing or not owned; 400 `workspace is not
+        active`. After apikit's 201 a failure revokes the token before the
+        answer: 404 when the workspace was deleted meanwhile, otherwise 500
+        `failed to bind the token to the workspace`. The 201 is the only
+        response that carries the token, with `Cache-Control: no-store`, and
+        emits `hub.token.bind`.
+      x-required-scopes: ["tokens:manage"]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, permissions]
+              properties:
+                name:
+                  type: string
+                permissions:
+                  type: array
+                  items:
+                    type: string
+                expires:
+                  type: integer
+                  enum: [0, 30, 60, 90]
+                  description: Days until expiry; 0 never expires.
+      responses:
+        "201":
+          description: The bound token. The only response that carries it.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoundTokenCreated"
+        "400":
+          description: The workspace is not active, or apikit refused the body (passed through).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: >-
+            A bound PAT (`error_type: token_bound`), an admin token, or apikit's
+            refusal (a missing `tokens:manage`, or scopes the PAT does not hold).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          $ref: "#/components/responses/WorkspaceNotFoundOrForbidden"
+        "500":
+          description: The binding lookup failed, or the token could not be bound and was revoked.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    get:
+      tags: [Workspaces]
+      operationId: listBoundTokens
+      summary: List the tokens bound to the workspace
+      description: |
+        Every token bound to the workspace, revoked and expired ones
+        included, ordered by the token's `created_at` and then `token_id`, as
+        a bare array (`[]` when none). Works on archived workspaces. Open to
+        the owner and to admin tokens. Never carries a token or its hash.
+        Checks, in order: 401; a bound PAT 403 `token_bound`; a PAT with
+        neither `tokens:read` nor `tokens:manage` 403; 404 for a workspace that
+        is missing or neither owned nor read by an admin token.
+      x-required-scopes: ["tokens:read", "tokens:manage"]
+      responses:
+        "200":
+          description: The workspace's bound tokens.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/BoundToken"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: 'A bound PAT (`error_type: token_bound`), or a PAT without `tokens:read` or `tokens:manage`.'
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          $ref: "#/components/responses/WorkspaceNotFoundOrForbidden"
         "500":
           $ref: "#/components/responses/InternalServerError"
 
@@ -7109,6 +7229,56 @@ components:
   schemas:
 
     # -- Shared primitives -----------------------------------------------------
+
+    BoundTokenCreated:
+      type: object
+      description: A token minted and bound to a workspace. The only place the token is shown.
+      required: [token_id, token, name, permissions, workspace, expires_at, created_at]
+      properties:
+        token_id:
+          type: string
+        token:
+          type: string
+          description: The plaintext token, shown once.
+        name:
+          type: string
+        permissions:
+          type: array
+          items:
+            type: string
+        workspace:
+          type: string
+        expires_at:
+          type: [string, "null"]
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+
+    BoundToken:
+      type: object
+      description: A token bound to a workspace, without any secret.
+      required: [token_id, name, permissions, workspace, expires_at, revoked_at, created_at]
+      properties:
+        token_id:
+          type: string
+        name:
+          type: string
+        permissions:
+          type: array
+          items:
+            type: string
+        workspace:
+          type: string
+        expires_at:
+          type: [string, "null"]
+          format: date-time
+        revoked_at:
+          type: [string, "null"]
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
 
     Error:
       type: object

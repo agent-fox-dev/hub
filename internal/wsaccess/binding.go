@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 
+	"github.com/labstack/echo/v4"
 	"github.com/txsvc/apikit"
 )
 
@@ -55,17 +56,46 @@ func LookupBinding(db *sql.DB, tokenID string) (slug string, bound bool, err err
 	return slug, true, nil
 }
 
+// RefusalSite is where a binding refusal happens: the request's method and
+// route template (empty where the refusal point has no request), the status
+// of the refusal and its surface.
+type RefusalSite struct {
+	Method  string
+	Route   string
+	Status  int
+	Surface string
+}
+
+// SiteOf is the RefusalSite of an API request answered with status.
+func SiteOf(c echo.Context, status int) RefusalSite {
+	return RefusalSite{Method: c.Request().Method, Route: c.Path(), Status: status, Surface: SurfaceAPI}
+}
+
 // DeniesWorkspace reports whether the credential in auth is a PAT bound to a
 // workspace other than slug. It is the rule every enforcing layer applies
-// (spec 33): to such a token, slug does not exist. Credentials that cannot be
-// bound are never denied and cause no query. A failed lookup is returned
-// with denied true, and the caller must deny.
-func DeniesWorkspace(db *sql.DB, auth *apikit.AuthInfo, slug string) (bool, error) {
+// (spec 33): to such a token, slug does not exist. A denial is a refusal, so
+// it is reported once to the refusal observer with the given site (spec 34).
+// Credentials that cannot be bound are never denied and cause no query. A
+// failed lookup is returned with denied true, and the caller must deny.
+func DeniesWorkspace(db *sql.DB, auth *apikit.AuthInfo, slug string, site RefusalSite) (bool, error) {
 	boundSlug, bound, err := BoundSlug(db, auth)
 	if err != nil {
 		return true, err
 	}
-	return bound && boundSlug != slug, nil
+	if !bound || boundSlug == slug {
+		return false, nil
+	}
+	ReportBoundRefusal(BoundRefusal{
+		TokenID:       auth.TokenID,
+		UserID:        auth.UserID,
+		BoundSlug:     boundSlug,
+		RequestedSlug: slug,
+		Method:        site.Method,
+		Route:         site.Route,
+		Status:        site.Status,
+		Surface:       site.Surface,
+	})
+	return true, nil
 }
 
 // BoundSlug resolves the binding of the credential in auth. Only a PAT with a

@@ -427,12 +427,15 @@ func TestBoundToken_DeletedWorkspaceFailsClosed_TS_33_55(t *testing.T) {
 	noPatches, noPatchesID := h.mintPAT(t, "workspaces:read")
 	bindToken(t, h.db.SqlDB, noPatchesID, "s")
 	unboundNoPatches, _ := h.mintPAT(t, "workspaces:read")
-	if err := deleteWorkspace(h.db.SqlDB, "s"); err != nil {
+	// The workspace row vanishes by a path other than deleteWorkspace, which
+	// since spec 34 also revokes and unbinds the tokens: the binding rows
+	// stay until the sweep removes them, and the tokens must reach nothing.
+	if _, err := h.db.SqlDB.Exec(`DELETE FROM workspaces WHERE slug = 's'`); err != nil {
 		t.Fatal(err)
 	}
 	var rows int
 	if err := h.db.SqlDB.QueryRow(`SELECT COUNT(*) FROM token_workspace_bindings WHERE slug = 's'`).Scan(&rows); err != nil || rows != 2 {
-		t.Fatalf("binding rows of s after the delete = %d (%v); want 2, the delete leaves them", rows, err)
+		t.Fatalf("binding rows of s after the workspace vanished = %d (%v); want 2", rows, err)
 	}
 
 	for _, path := range []string{"/api/v1/workspaces/s", "/api/v1/workspaces/x", "/api/v1/workspaces/s/patches"} {

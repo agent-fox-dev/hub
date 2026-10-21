@@ -54,7 +54,7 @@ func BuildRootCommand() *cobra.Command {
 		apikit.LoginCmd(),
 		apikit.UserCmd(),
 		apikit.KeysCmd(),
-		apikit.TokensCmd(),
+		TokensCmd(),
 		apikit.OrgsCmd(),
 		apikit.AdminCmd(),
 		WorkspaceCmd(),

@@ -16,6 +16,7 @@ import (
 	"github.com/txsvc/apikit"
 
 	"github.com/agent-fox-dev/hub/internal/audit"
+	"github.com/agent-fox-dev/hub/internal/gitserver"
 	"github.com/agent-fox-dev/hub/internal/sandboxes"
 	"github.com/agent-fox-dev/hub/internal/secrets"
 )
@@ -323,6 +324,7 @@ func mountRealHub(t *testing.T, server *apikit.Server, database *apikit.DB) *rea
 	t.Helper()
 	perms := append(audit.Permissions(), secrets.Permissions()...)
 	perms = append(perms, sandboxes.Permissions()...)
+	perms = append(perms, gitserver.GitPermissions()...)
 	if err := MountWorkspaceHandlers(server, database, perms...); err != nil {
 		t.Fatalf("MountWorkspaceHandlers: %v", err)
 	}

@@ -52,6 +52,10 @@ func TestMountWorkspaceHandlers_CreatesBindingTable_TS_33_3(t *testing.T) {
 
 // TS-33-6: Archiving or deleting a workspace leaves every binding row that
 // names its slug unchanged. Requirement: 33-REQ-1.6
+//
+// Spec 34 (34-REQ-5.1) replaces the delete half of 33-REQ-1.6: deleting the
+// workspace now revokes its bound tokens and removes their bindings, and
+// leaves every other workspace's bindings unchanged (erratum 34, entry 1).
 func TestArchiveDelete_KeepBindings_TS_33_6(t *testing.T) {
 	env := newTestEnv(t)
 	if err := wsaccess.InitBindingSchema(env.db); err != nil {
@@ -62,6 +66,10 @@ func TestArchiveDelete_KeepBindings_TS_33_6(t *testing.T) {
 	defer func() { defaultWorkspaceRoot = oldRoot }()
 
 	env.seedWorkspace(t, &Workspace{Slug: "s", GitURL: "https://github.com/org/repo", OwnerID: "user-1", Status: "active"})
+	createPatsTable(t, env.db)
+	for _, id := range []string{"t1", "t2", "t3"} {
+		seedPAT(t, env.db, id, "")
+	}
 	bindToken(t, env.db, "t1", "s")
 	bindToken(t, env.db, "t2", "s")
 	bindToken(t, env.db, "t3", "other")
@@ -96,8 +104,11 @@ func TestArchiveDelete_KeepBindings_TS_33_6(t *testing.T) {
 	if rec := env.doRequest(t, http.MethodDelete, "/api/v1/workspaces/s", "", userAuth("user-1")); rec.Code != http.StatusNoContent && rec.Code != http.StatusOK {
 		t.Fatalf("delete: status %d: %s", rec.Code, rec.Body)
 	}
-	if after := snapshot(); !slices.Equal(after, before) {
-		t.Errorf("bindings after delete = %v; want %v", after, before)
+	if after := snapshot(); !slices.Equal(after, before[2:]) {
+		t.Errorf("bindings after delete = %v; want only the other workspace's %v", after, before[2:])
+	}
+	if !revokedAt(t, env.db, "t1").Valid || !revokedAt(t, env.db, "t2").Valid || revokedAt(t, env.db, "t3").Valid {
+		t.Error("after the delete want t1 and t2 revoked and t3 untouched")
 	}
 }
 

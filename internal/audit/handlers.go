@@ -131,7 +131,7 @@ func handleCompleteSession(store Store, metrics *Metrics, sqliteDB *sql.DB) echo
 		}
 		// A PAT bound to another workspace does not own the session (spec 33).
 		if sqliteDB != nil {
-			denied, err := wsaccess.DeniesWorkspace(sqliteDB, auth, sess.WorkspaceSlug)
+			denied, err := wsaccess.DeniesWorkspace(sqliteDB, auth, sess.WorkspaceSlug, wsaccess.SiteOf(c, http.StatusForbidden))
 			if err != nil {
 				return apikit.WriteAPIError(c, http.StatusInternalServerError, "internal server error")
 			}
@@ -214,7 +214,7 @@ func handleReportUsage(store Store, metrics *Metrics, sqliteDB *sql.DB) echo.Han
 		}
 		// A PAT bound to another workspace does not own the session (spec 33).
 		if sqliteDB != nil {
-			denied, err := wsaccess.DeniesWorkspace(sqliteDB, auth, sess.WorkspaceSlug)
+			denied, err := wsaccess.DeniesWorkspace(sqliteDB, auth, sess.WorkspaceSlug, wsaccess.SiteOf(c, http.StatusForbidden))
 			if err != nil {
 				return apikit.WriteAPIError(c, http.StatusInternalServerError, "internal server error")
 			}
@@ -311,7 +311,7 @@ func handleListSessions(store Store, sqliteDB *sql.DB) echo.HandlerFunc {
 			if params.WorkspaceSlug != "" {
 				// Check explicit workspace access.
 				if sqliteDB != nil {
-					if !hasWorkspaceAccess(sqliteDB, auth, params.WorkspaceSlug) {
+					if !hasWorkspaceAccess(c, sqliteDB, auth, params.WorkspaceSlug) {
 						return apikit.WriteAPIError(c, http.StatusForbidden, "workspace access denied")
 					}
 				}
@@ -361,7 +361,7 @@ func handleGetSession(store Store, sqliteDB *sql.DB) echo.HandlerFunc {
 
 		// Workspace access check for non-admin.
 		if !isAdmin(auth) && sqliteDB != nil {
-			if !hasWorkspaceAccess(sqliteDB, auth, sess.WorkspaceSlug) {
+			if !hasWorkspaceAccess(c, sqliteDB, auth, sess.WorkspaceSlug) {
 				return apikit.WriteAPIError(c, http.StatusForbidden, "workspace access denied")
 			}
 		}
@@ -395,7 +395,7 @@ func handleListSessionUsage(store Store, sqliteDB *sql.DB) echo.HandlerFunc {
 
 		// Workspace access check for non-admin.
 		if !isAdmin(auth) && sqliteDB != nil {
-			if !hasWorkspaceAccess(sqliteDB, auth, sess.WorkspaceSlug) {
+			if !hasWorkspaceAccess(c, sqliteDB, auth, sess.WorkspaceSlug) {
 				return apikit.WriteAPIError(c, http.StatusForbidden, "workspace access denied")
 			}
 		}
@@ -451,7 +451,7 @@ func handleWorkspaceCost(store Store, sqliteDB *sql.DB) echo.HandlerFunc {
 		// Workspace access check for non-admin.
 		if !isAdmin(auth) {
 			if sqliteDB != nil {
-				if !hasWorkspaceAccess(sqliteDB, auth, slug) {
+				if !hasWorkspaceAccess(c, sqliteDB, auth, slug) {
 					return apikit.WriteAPIError(c, http.StatusForbidden, "workspace access denied")
 				}
 			} else {
@@ -521,7 +521,7 @@ func handleWorkspaceCost(store Store, sqliteDB *sql.DB) echo.HandlerFunc {
 // Returns true if the workspace exists in SQLite, the caller is the owner and,
 // for a PAT bound to a workspace (spec 33), it is that workspace. A failed
 // binding lookup denies access.
-func hasWorkspaceAccess(sqliteDB *sql.DB, auth *apikit.AuthInfo, slug string) bool {
+func hasWorkspaceAccess(c echo.Context, sqliteDB *sql.DB, auth *apikit.AuthInfo, slug string) bool {
 	var ownerID string
 	err := sqliteDB.QueryRow(
 		"SELECT owner_id FROM workspaces WHERE slug = ? AND status = 'active'",
@@ -536,7 +536,7 @@ func hasWorkspaceAccess(sqliteDB *sql.DB, auth *apikit.AuthInfo, slug string) bo
 	if ownerID != auth.UserID {
 		return false
 	}
-	denied, err := wsaccess.DeniesWorkspace(sqliteDB, auth, slug)
+	denied, err := wsaccess.DeniesWorkspace(sqliteDB, auth, slug, wsaccess.SiteOf(c, http.StatusForbidden))
 	return err == nil && !denied
 }
 

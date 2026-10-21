@@ -650,10 +650,12 @@ A personal access token can be bound to one workspace. The binding is hub's own
 record, the SQLite table `token_workspace_bindings` (`token_id TEXT PRIMARY
 KEY`, `slug TEXT NOT NULL`, `created_at TEXT NOT NULL`, index
 `idx_token_workspace_bindings_slug`). It has no foreign key to `workspaces`:
-archiving or deleting a workspace leaves its bindings in place, so a token bound
-to a deleted workspace reaches nothing. `MountWorkspaceHandlers` creates the
-table right after the workspaces schema, and `MountGitHandlers` creates it too,
-before it registers anything. Either returns the error if it cannot.
+archiving a workspace leaves its bindings alone, and deleting it retires them
+explicitly (`deleteWorkspace` calls `wsaccess.RevokeAndUnbindSlug` in its
+transaction: the live tokens are revoked and the bindings deleted). The
+workspace schema initialisation creates the table, and so do
+`MountWorkspaceHandlers` and `MountGitHandlers`, before they register anything;
+each returns the error if it cannot.
 
 Everything lives in `internal/wsaccess`:
 
@@ -682,6 +684,39 @@ guarded. A route nobody marks is refused. The workspace handlers
 `getAccessibleWorkspaces`, the session writes) and the git server
 (`authorizeGitAccess`) apply the rule themselves too. Each resolves the binding
 before it opens any rows, because the test databases use one connection.
+
+### Issuing and retiring bound tokens: `internal/boundtoken`
+
+`internal/boundtoken` (spec 34) holds the two routes that mint and list bound
+tokens, the binding sweep and the refusal reporter. `cmd/af-hub/main.go` calls
+`RegisterRoutes(server.APIGroup(), Config{DB, APIKit: server.Echo(), Audit})`
+right after `MountWorkspaceHandlers`, registers the reporter with `Install` and
+starts `StartBindingSweep` with `go`.
+
+- **Minting by in-process delegation.** apikit's PAT handler is internal, so the
+  mint handler serves `POST <mount>/user/tokens` through `Config.APIKit` with
+  the caller's body, `Authorization` header and context, and records the answer
+  in memory (`delegateMint`). `<mount>` is the matched route template without
+  `/workspaces/:slug/tokens`. The inner request passes through the root
+  middleware, so Prometheus counts it as a second request to `/user/tokens`.
+- **Binding and rollback.** After apikit's 201, `wsaccess.InsertBinding` writes
+  the row only while the workspace exists. Every failure after the 201 revokes
+  the token first (`wsaccess.RevokeToken`, which sets `pats.revoked_at` as
+  apikit's own revocation does), so no live unbound token is left behind.
+- **Retiring.** `deleteWorkspace` calls `wsaccess.RevokeAndUnbindSlug` in its
+  transaction, before the workspace row goes; `StartBindingSweep` runs
+  `wsaccess.SweepBindings` at once and then hourly, for bindings whose
+  workspace or token is gone.
+- **Refusal reporting.** Every refusal point of spec 33 (both guards, and
+  `DeniesWorkspace` with the `RefusalSite` its caller passes: the request's
+  method and route, or none for `AuthorizeWorkspace`, which has no request)
+  calls `wsaccess.ReportBoundRefusal` once per refused request. The observer is the
+  `Reporter`, which emits `hub.token.bound_refused` at most once per token per
+  minute with a `suppressed` count; `wsaccess` never imports `audit`.
+
+The SQL on `token_workspace_bindings` and the `pats` revocation live in
+`internal/wsaccess` (`binding_store.go`), beside spec 33's table and lookup, so
+that `internal/workspace` can use them.
 
 ### Reading `PATCH_BRANCH_SOURCE` once per request
 

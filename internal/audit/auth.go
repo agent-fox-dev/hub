@@ -117,7 +117,7 @@ func requireWorkspaceRead(c echo.Context, auth *apikit.AuthInfo, slug string, sq
 	}
 	// A PAT bound to another workspace treats this one as not its own
 	// (spec 33).
-	denied, err := wsaccess.DeniesWorkspace(sqliteDB, auth, slug)
+	denied, err := wsaccess.DeniesWorkspace(sqliteDB, auth, slug, wsaccess.SiteOf(c, http.StatusNotFound))
 	if err != nil {
 		_ = apikit.WriteAPIError(c, http.StatusInternalServerError, "internal server error")
 		return false
@@ -159,6 +159,28 @@ func ownedWorkspaces(auth *apikit.AuthInfo, sqliteDB *sql.DB) (map[string]bool, 
 		owned[slug] = true
 	}
 	return owned, rows.Err()
+}
+
+// readableWorkspaces is the workspace restriction of the cross-workspace
+// audit queries (GET /audit and GET /events): the workspaces the caller may
+// read (nil for no restriction, see ownedWorkspaces). A requested workspace
+// outside them answers 404 workspace not found, and is reported as a binding
+// refusal when the caller's binding is the cause (spec 34): ownedWorkspaces
+// has already confined a bound token, so that second lookup only decides
+// whether to report, and its error leaves the refusal as it is. It returns
+// false after writing an answer.
+func readableWorkspaces(c echo.Context, auth *apikit.AuthInfo, sqliteDB *sql.DB, requested string) (map[string]bool, bool) {
+	owned, err := ownedWorkspaces(auth, sqliteDB)
+	if err != nil {
+		_ = apikit.WriteAPIError(c, http.StatusInternalServerError, "internal server error")
+		return nil, false
+	}
+	if owned != nil && requested != "" && !owned[requested] {
+		_, _ = wsaccess.DeniesWorkspace(sqliteDB, auth, requested, wsaccess.SiteOf(c, http.StatusNotFound))
+		_ = apikit.WriteAPIError(c, http.StatusNotFound, "workspace not found")
+		return nil, false
+	}
+	return owned, true
 }
 
 // errWorkspaceAccessDenied is returned by checkWorkspaceAccess once it has
@@ -209,7 +231,7 @@ func checkWorkspaceAccess(c echo.Context, auth *apikit.AuthInfo, slug string, sq
 		}
 
 		// To a bound token every other workspace does not exist.
-		denied, err := wsaccess.DeniesWorkspace(sqliteDB, auth, slug)
+		denied, err := wsaccess.DeniesWorkspace(sqliteDB, auth, slug, wsaccess.SiteOf(c, http.StatusNotFound))
 		if err != nil {
 			return refused(apikit.WriteAPIError(c, http.StatusInternalServerError,
 				"internal server error"))
