@@ -24,7 +24,9 @@ delivered.
    member's answer stays the stranger's. `POST /sessions` left it with task 2: a member now gets
    `403` with `error_type: forbidden` (36-REQ-6.2, `TestCreateSession_MemberForbidden_TS_36_28`).
    The per-run reads and the transcript left it with task 3: a member reads them
-   (36-REQ-1.1, `TestRunReads_MemberReads_TS_36_1`).
+   (36-REQ-1.1, `TestRunReads_MemberReads_TS_36_1`). The session, usage, cost and
+   `GET /sessions?workspace_slug=` reads left it with task 4 (36-REQ-2.1,
+   `TestSessionReads_Member_TS_36_8`).
 
 2. **Admin tokens go through the rule on per-run reads, the transcript and `POST /sessions`.**
    Before this spec `requireWorkspaceRead` returned early for an admin token, so an admin naming a

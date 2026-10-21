@@ -519,27 +519,19 @@ func handleWorkspaceCost(store Store, sqliteDB *sql.DB) echo.HandlerFunc {
 // Workspace access helpers
 // ---------------------------------------------------------------------------
 
-// hasWorkspaceAccess checks if a non-admin caller can access a workspace.
-// Returns true if the workspace exists in SQLite, the caller is the owner and,
-// for a PAT bound to a workspace (spec 33), it is that workspace. A failed
-// binding lookup denies access.
+// hasWorkspaceAccess reports whether the caller may read the sessions and
+// cost of the workspace slug: the binding first (a PAT bound to another
+// workspace is refused, and reported with the request's method, route and
+// status 403, spec 34), then wsaccess.AuthorizeWorkspace with NeedRead (an
+// admin token, the owner or a member of the workspace's org), and the
+// workspace must be active. Any failed lookup denies access.
 func hasWorkspaceAccess(c echo.Context, sqliteDB *sql.DB, auth *apikit.AuthInfo, slug string) bool {
-	var ownerID string
-	err := sqliteDB.QueryRow(
-		"SELECT owner_id FROM workspaces WHERE slug = ? AND status = 'active'",
-		slug,
-	).Scan(&ownerID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return false
-	}
-	if err != nil {
-		return false
-	}
-	if ownerID != auth.UserID {
-		return false
-	}
 	denied, err := wsaccess.DeniesWorkspace(sqliteDB, auth, slug, wsaccess.SiteOf(c, http.StatusForbidden))
-	return err == nil && !denied
+	if err != nil || denied {
+		return false
+	}
+	ws, status, _ := wsaccess.AuthorizeWorkspace(sqliteDB, auth, slug, wsaccess.NeedRead)
+	return status == 0 && ws.Status == "active"
 }
 
 // getAccessibleWorkspaces returns workspace slugs the caller owns; for a PAT
