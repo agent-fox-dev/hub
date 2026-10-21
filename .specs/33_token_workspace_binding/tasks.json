@@ -350,7 +350,7 @@
       "done_when": [
         "the allowlist equals exactly the ten routes in 33-REQ-4.2"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     },
     {

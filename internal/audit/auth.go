@@ -132,10 +132,15 @@ func requireWorkspaceRead(c echo.Context, auth *apikit.AuthInfo, slug string, sq
 // ownedWorkspaces returns the set of workspace slugs the caller may read for
 // cross-workspace audit endpoints. It returns nil (unrestricted) for admin
 // tokens or when sqliteDB is nil, and an empty set when the caller owns no
-// workspaces.
+// workspaces. A PAT bound to a workspace (spec 33) may read at most that one;
+// its binding is resolved before any rows are opened.
 func ownedWorkspaces(auth *apikit.AuthInfo, sqliteDB *sql.DB) (map[string]bool, error) {
 	if isAdmin(auth) || sqliteDB == nil {
 		return nil, nil
+	}
+	boundSlug, bound, err := wsaccess.BoundSlug(sqliteDB, auth)
+	if err != nil {
+		return nil, err
 	}
 	rows, err := sqliteDB.Query("SELECT slug FROM workspaces WHERE owner_id = ?", auth.UserID)
 	if err != nil {
@@ -147,6 +152,9 @@ func ownedWorkspaces(auth *apikit.AuthInfo, sqliteDB *sql.DB) (map[string]bool, 
 		var slug string
 		if err := rows.Scan(&slug); err != nil {
 			return nil, err
+		}
+		if bound && slug != boundSlug {
+			continue
 		}
 		owned[slug] = true
 	}
