@@ -48,7 +48,7 @@
       "done_when": [
         "a NULL-org workspace yields 404 'repository not found' for every caller, never a 500"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 2,
@@ -96,7 +96,7 @@
         "no non-test file in internal/gitserver compares OwnerID with UserID",
         "go test ./internal/gitserver -count=1 passes with no existing assertion changed"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 3,
@@ -135,7 +135,7 @@
       "done_when": [
         "a member's reads are served identically to the owner's"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 4,
@@ -170,7 +170,7 @@
       "done_when": [
         "a member's push is refused before PlainOpen and writes nothing, calls no hook and emits no audit event"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 5,
@@ -204,7 +204,7 @@
       "done_when": [
         "owner, admin token, stranger and blocked-user answers equal the pre-change answers"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 6,
@@ -241,7 +241,7 @@
       "done_when": [
         "TS-33-42..45, 52, 53, 55, 60 and TS-34-58 still pass unchanged"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 7,
@@ -276,7 +276,7 @@
       "done_when": [
         "the affected docs describe members' read access and the 403 push refusal with no TODO text"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 8,
@@ -309,7 +309,7 @@
       "done_when": [
         "make test and make lint pass"
       ],
-      "state": "pending"
+      "state": "done"
     }
   ]
 }

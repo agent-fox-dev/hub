@@ -59,5 +59,14 @@ hub events without a workspace stay with admin tokens. Opening a session is a
 write (a member gets `403 forbidden`); completing a session, reporting usage
 and ingesting audit data stay with the owner and admin tokens. Audit reads
 were already restricted to owners before spec 36; notes saying they were not
-enforced were stale. The git server keeps the owner-only rule. See
-`docs/errata/36_org_member_audit_read_divergences.md`.
+enforced were stale. See `docs/errata/36_org_member_audit_read_divergences.md`.
+
+Spec 37 (`37_org_member_git_read`) moves the git server onto the same rule:
+`authorizeGitAccess` makes one call to `wsaccess.AuthorizeWorkspaceAt`, with
+the read level for clone and fetch and the write level for push, and has no
+ownership check of its own. A member of the workspace's org clones and fetches
+the repository exactly as the owner does; a member's push is refused with a
+pkt-line `403 org members have read-only access to this workspace` before
+anything is written or audited. Everyone else gets the pkt-line `404
+repository not found` they got before, and a workspace with no org is now a
+404 rather than a 500. See `docs/errata/37_org_member_git_read_divergences.md`.

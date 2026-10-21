@@ -104,9 +104,11 @@ are strictly scoped to the resources they may reach:
   gets 404 (anti-enumeration). Sync and reclone are writes like any other.
   The listing returns the caller's own workspaces plus those of the orgs
   the caller belongs to.
-- Git server checks `info.UserID != ws.OwnerID` and returns a pkt-line
-  404 on mismatch; org members get the same 404 (owner-only in this
-  release).
+- The git server decides through `wsaccess.AuthorizeWorkspaceAt` with
+  the read level for clone and fetch and the write level for push: the
+  owner and admin tokens may do both, a member of the workspace's org may
+  clone and fetch and gets a pkt-line 403 on push, and everyone else gets a
+  pkt-line 404.
 
 ### Workspace access levels
 
@@ -158,7 +160,9 @@ own refusal answers:
 | `POST /sessions/:id/complete`, `POST /sessions/:id/usage` | the session's creator (owner or admin token) | `403 not session owner` | `403 not session owner` |
 | the eight audit ingestion routes | owner (`checkWorkspaceAccess`) | `403 workspace_access_denied` (`409 workspace_archived` first on an archived workspace) | the same |
 
-The git server stays owner-only.
+The git server uses the same levels: clone and fetch need read, push needs
+write (a member's push is a pkt-line `403 org members have read-only access to
+this workspace`); see [Git Endpoints](#git-endpoints-all-api-keys-access-enforced).
 
 **3. Role-based escalation.** `IsAdmin()` returns true when
 `CredentialType == "api_key"` AND `Role == "admin"`. This grants access
@@ -168,9 +172,9 @@ subsystems:
 - **Workspaces:** `convertApikitAuth` discards the `Role` field and maps
   `api_key` to `CredentialAPIKey` regardless of role. Admin-role API keys
   see only their own workspaces.
-- **Git server:** `authorizeGitAccess` checks `CredentialType ==
-  "admin_token"` directly, not `IsAdmin()`. Admin-role API keys must own
-  the workspace.
+- **Git server:** `wsaccess.AuthorizeWorkspaceAt` treats only
+  `CredentialType == "admin_token"` as admin, not `IsAdmin()`. An admin-role
+  API key is owner, member or stranger like any other API key.
 
 This creates an intentional asymmetry: an admin-role API key is admin for
 REST user/org management but NOT for cross-tenant workspace or git access.
@@ -290,16 +294,17 @@ is accepted only when its signature (GitHub) or token (GitLab) matches the works
 answer the same `404`, so the endpoint does not tell which slugs exist. The secret is
 managed with `forge:write` (`PUT`, `DELETE`) and its deliveries are read with `forge:read`.
 
-#### Git Endpoints (all API keys, ownership enforced)
+#### Git Endpoints (all API keys, access enforced)
 
 | Endpoint | Access | Ownership |
 |----------|--------|-----------|
-| `GET /git/:org/:slug.git/info/refs` | allowed | must own workspace |
-| `POST /git/:org/:slug.git/git-upload-pack` | allowed | must own workspace |
-| `POST /git/:org/:slug.git/git-receive-pack` | allowed | must own workspace |
+| `GET /git/:org/:slug.git/info/refs` | allowed | `service=git-receive-pack`: must own (org member pkt-line 403); otherwise owner or org member |
+| `POST /git/:org/:slug.git/git-upload-pack` | allowed | owner or org member |
+| `POST /git/:org/:slug.git/git-receive-pack` | allowed | must own (org member pkt-line 403) |
 
-API keys have implicit `git:read` + `git:write`. Admin-role API keys do
-NOT bypass ownership in the git server. Blocked users are rejected.
+Anyone else gets a pkt-line 404. API keys have implicit `git:read` +
+`git:write`. Admin-role API keys do NOT bypass the access rule in the git
+server. Blocked users are rejected.
 
 #### Admin Endpoints (admin-role API keys only)
 
@@ -938,6 +943,7 @@ For a bound PAT:
   `tokens:manage` on a bound PAT cannot be used to mint an unbound PAT through
   `POST /user/tokens`.
 - **Git** serves `S`'s repository under the `git:read`/`git:write` scopes and
+  the token user's access (a member's bound PAT still cannot push), and
   answers a pkt-line `404 repository not found` for every other repository.
 - **`tokens:*` scopes are inert.** A bound PAT can neither mint nor list bound
   tokens: on its own workspace's `/tokens` routes it gets `403 token_bound`, on
@@ -960,8 +966,10 @@ resources. A member of the workspace's org can see it exists, so a member's
 write is HTTP 403 with `error_type: forbidden`. The workspace create endpoint returns HTTP 403
 (`"PAT requires workspaces:create scope to create workspaces"`) because
 there is no existing resource to enumerate. The git server returns HTTP 404
-for non-owner access (`authorizeGitAccess` writes a pkt-line 404
-`"repository not found"`) to prevent workspace slug enumeration.
+to a caller who may not read the workspace (`authorizeGitAccess` writes a
+pkt-line 404 `"repository not found"`) to prevent workspace slug enumeration;
+a member's push, by someone who already knows the workspace exists, is a
+pkt-line 403 `"org members have read-only access to this workspace"`.
 
 All workspace-scoped endpoint groups (sync, reclone, patches, merges,
 rebuilds, rerere, patch-status, leases, forge, secrets, variables, bound

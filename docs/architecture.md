@@ -545,6 +545,33 @@ clone, fetch and push operations against workspace repositories. It is mounted
 at `/git/<org>/<slug>.git/` and uses HTTP Basic authentication backed by the
 hub's credential store.
 
+### Request chain and authorization
+
+Every git route runs `GitAuthMiddleware` (credential → `AuthInfo`, 401 for a
+missing, invalid or blocked credential), `requireDotGitSuffix`, then
+`gitResolverMiddleware`:
+
+1. **Resolve.** `resolveWorkspaceFromDB` reads the workspace by slug (a NULL
+   `org_id` reads as no org, which matches no URL) and requires the URL's org
+   slug to match its org: otherwise pkt-line `404 repository not found`; a
+   database error is a plain 500. A clone that is not ready is pkt-line
+   `404 repository not available`.
+2. **Authorize.** `authorizeGitAccess` derives the need from the request
+   (`gitNeed`: `NeedWrite` for `git-receive-pack` and for `info/refs` with
+   `service=git-receive-pack`, `NeedRead` otherwise) and makes one call to
+   `wsaccess.AuthorizeWorkspaceAt` with the git refusal site (`Surface: git`,
+   the route template, status 404). The owner and admin tokens may read and
+   write, a member of the workspace's org may read, and a PAT bound to another
+   workspace is refused and reported. wsaccess's 404 is written as pkt-line
+   `404 repository not found`, its 403 as a pkt-line 403 with its message
+   (`org members have read-only access to this workspace`), anything else as a
+   pkt-line 500; the resolver then stops without a second response.
+3. **Open.** `git.PlainOpen` of `<root>/<slug>/trunk`; a failure is a plain 500.
+
+The handler then checks the `service` value and the PAT's git scope, so a
+member's push is refused before the scope check and before anything is
+unpacked, hooked, written or audited.
+
 ### Receive-Pack Flow
 
 The receive-pack handler (`handleReceivePack`) processes `git push` requests:
@@ -704,7 +731,9 @@ and no `owner_id` comparison of its own outside ingestion:
 - `checkWorkspaceAccess` (ingestion) and the session-creator check of
   complete and usage report are unchanged and stay owner-only.
 
-The git server keeps its owner-only check.
+The git server decides through `wsaccess.AuthorizeWorkspaceAt` too (see
+[Git Server](#git-server)): members clone and fetch, and their pushes are
+refused with a pkt-line 403.
 
 ### Token workspace bindings
 
@@ -743,9 +772,11 @@ every hub route registered afterwards, including routes added in the future, is
 guarded. A route nobody marks is refused. The workspace handlers
 (`lookupWorkspaceForAuth`, the list), the audit helpers (`requireWorkspaceRead`,
 `requireWorkspaceWrite`, `readableWorkspaces`, `checkWorkspaceAccess`,
-`hasWorkspaceAccess`, `getAccessibleWorkspaces`, the session writes) and the git server
-(`authorizeGitAccess`) apply the rule themselves too. Each resolves the binding
-before it opens any rows, because the test databases use one connection.
+`hasWorkspaceAccess`, `getAccessibleWorkspaces`, the session writes) apply the
+rule themselves too, and every caller of `wsaccess.AuthorizeWorkspace` or
+`AuthorizeWorkspaceAt`, the git server included, gets it from that call. Each
+resolves the binding before it opens any rows, because the test databases use
+one connection.
 
 ### Issuing and retiring bound tokens: `internal/boundtoken`
 

@@ -30,10 +30,10 @@ type workspaceInfo struct {
 // Returns a non-nil error only for unexpected database failures, which
 // should map to HTTP 500.
 func resolveWorkspaceFromDB(db *sql.DB, orgSlug, wsSlug string) (*workspaceInfo, error) {
-	// Look up the workspace by slug.
+	// Look up the workspace by slug. A NULL org_id reads as "no org".
 	var ws workspaceInfo
 	err := db.QueryRow(
-		`SELECT slug, owner_id, org_id, clone_status FROM workspaces WHERE slug = ?`,
+		`SELECT slug, owner_id, COALESCE(org_id, ''), clone_status FROM workspaces WHERE slug = ?`,
 		wsSlug,
 	).Scan(&ws.Slug, &ws.OwnerID, &ws.OrgID, &ws.CloneStatus)
 	if err == sql.ErrNoRows {
@@ -41,6 +41,9 @@ func resolveWorkspaceFromDB(db *sql.DB, orgSlug, wsSlug string) (*workspaceInfo,
 	}
 	if err != nil {
 		return nil, fmt.Errorf("workspace lookup: %w", err)
+	}
+	if ws.OrgID == "" {
+		return nil, nil // a workspace with no org matches no /git/<org>/ URL
 	}
 
 	// Verify org match: look up the org by slug and compare IDs.
@@ -134,11 +137,12 @@ func gitResolverMiddleware(db *sql.DB, wsRoot string) echo.MiddlewareFunc {
 				return writePktLineError(c, http.StatusNotFound, "repository not available")
 			}
 
-			// Check authorization: ownership or admin status (06-REQ-4.E2).
-			// For ownership denials, authorizeGitAccess writes a pkt-line
-			// error response and returns errAccessDenied; return nil to
-			// prevent Echo's error handler from writing a second response.
-			// For other errors (e.g. missing auth info), propagate to Echo.
+			// Check authorization through wsaccess (read for clone and
+			// fetch, write for push). For a refusal, authorizeGitAccess
+			// writes a pkt-line error response and returns errAccessDenied;
+			// return nil to prevent Echo's error handler from writing a
+			// second response. For other errors (e.g. missing auth info),
+			// propagate to Echo.
 			if err := authorizeGitAccess(c, db, ws); err != nil {
 				if errors.Is(err, errAccessDenied) {
 					return nil

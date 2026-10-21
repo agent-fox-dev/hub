@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TS-06-12: Repository resolver extracts org and slug from the URL, verifies
@@ -238,7 +239,6 @@ func TestResolver_NonOwnerNonAdmin_Returns404(t *testing.T) {
 
 	env.seedOrg(t, "org-1", "My Org", "myorg")
 	env.seedOrgMember(t, "org-1", "user-1")
-	env.seedOrgMember(t, "org-1", "user-2")
 	// Workspace owned by user-1, not user-2.
 	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "active")
 
@@ -326,5 +326,44 @@ func TestResolver_NotReady_AllEndpoints_Return404(t *testing.T) {
 			assertPktLineErrorBody(t, rec.Body.String(),
 				ep.method+" "+ep.path+" non-ready response")
 		})
+	}
+}
+
+// seedNoOrgWorkspace inserts workspace slug owned by ownerID with a NULL
+// org_id, and a repository for it.
+func (env *gitTestEnv) seedNoOrgWorkspace(t *testing.T, slug, ownerID string) {
+	t.Helper()
+	now := time.Now().UTC().Format(time.RFC3339)
+	if _, err := env.db.Exec(
+		`INSERT INTO workspaces (slug, git_url, owner_id, org_id, status, created_at, updated_at) VALUES (?, ?, ?, NULL, 'active', ?, ?)`,
+		slug, "https://github.com/org/"+slug, ownerID, now, now,
+	); err != nil {
+		t.Fatalf("seedNoOrgWorkspace(%q): %v", slug, err)
+	}
+	env.initWorkspaceRepo(t, slug)
+}
+
+// TS-37-32: a workspace with a NULL org_id is a 404 "repository not found"
+// for every caller, never a 500. Requirement: 37-REQ-9.1
+func TestResolver_NullOrg_Returns404_TS_37_32(t *testing.T) {
+	env := newGitTestEnv(t)
+	env.seedOrg(t, "org-1", "My Org", "myorg")
+	env.seedOrgMember(t, "org-1", "user-a")
+	env.seedOrgMember(t, "org-1", "user-b")
+	env.seedNoOrgWorkspace(t, "noorg", "user-a")
+
+	want := string(encodePktLine("ERR repository not found\n"))
+	for name, password := range map[string]string{
+		"owner":    "af_key_userA",
+		"admin":    "af_admin_test789",
+		"stranger": "af_key_user2",
+		"member":   "af_key_userB",
+	} {
+		for _, org := range []string{"myorg", "other"} {
+			rec := env.doRequest(t, http.MethodGet, "/git/"+org+"/noorg.git/info/refs?service=git-upload-pack", "", withBasicAuth("user", password))
+			if rec.Code != http.StatusNotFound || rec.Body.String() != want {
+				t.Errorf("%s via /git/%s: (%d, %q); want 404 %q", name, org, rec.Code, rec.Body, want)
+			}
+		}
 	}
 }

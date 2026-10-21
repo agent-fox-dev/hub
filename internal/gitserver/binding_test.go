@@ -47,7 +47,6 @@ func newBindingGitEnv(t *testing.T) *gitTestEnv {
 	env := newGitTestEnv(t)
 	env.seedOrg(t, "org-1", "My Org", "myorg")
 	env.seedOrgMember(t, "org-1", "user-a")
-	env.seedOrgMember(t, "org-1", "user-b")
 	for _, slug := range []string{"s", "x"} {
 		env.seedWorkspace(t, slug, "https://github.com/org/"+slug, "user-a", "org-1", "active")
 		env.initWorkspaceRepo(t, slug)
