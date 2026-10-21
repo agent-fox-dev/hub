@@ -2,20 +2,29 @@ package workspace
 
 import (
 	"bytes"
+	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 
 	git "github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-git/go-git/v5/plumbing/transport"
+	githttp "github.com/go-git/go-git/v5/plumbing/transport/http"
+	"github.com/go-git/go-git/v5/storage/memory"
 	"github.com/labstack/echo/v4"
 	"github.com/txsvc/apikit"
 
@@ -28,6 +37,9 @@ import (
 // maxBranchPushBody bounds the request body of the branch push, which holds at
 // most {"force": true}.
 const maxBranchPushBody = 64 << 10
+
+// branchPushDeadline is how long a push to origin may run (38-REQ-6.3).
+const branchPushDeadline = 2 * time.Minute
 
 // handleBranchPush handles POST /api/v1/workspaces/:slug/branches/:name/push:
 // it pushes one branch of the workspace's trunk to its origin.
@@ -86,10 +98,10 @@ func handleBranchPush(db *sql.DB) echo.HandlerFunc {
 		// so they answer the same whether the workspace is busy or not.
 		refusal, err := ownedBranchRefusal(db, ws, name, force)
 		if err != nil {
-			return branchPushInternalError(c, slug, "deciding the branch's owner", err)
+			return branchPushInternalError(c, slug, "deciding the branch's owner", err, "")
 		}
 		if refusal != nil {
-			return refusal.write(c)
+			return refusal.write(c, "")
 		}
 
 		// 38-REQ-5.1, 38-REQ-5.2: every read of the trunk is serialized with
@@ -101,65 +113,239 @@ func handleBranchPush(db *sql.DB) echo.HandlerFunc {
 				"another operation is running on this workspace; retry later", "workspace_busy")
 		}
 		defer unlock()
-
-		repoPath := filepath.Join(defaultWorkspaceRoot, slug, "trunk")
-		repo, err := git.PlainOpen(repoPath)
-		if err != nil {
-			return branchPushInternalError(c, slug, "opening the trunk", err)
-		}
-
-		// 38-REQ-4.5, 38-REQ-4.6: with no branch column the workspace's own
-		// branch is the one HEAD points to, read under the lock, because a
-		// merge checks out another branch while it holds the lock.
-		if force && (ws.Branch == nil || *ws.Branch == "") {
-			head, err := repo.Head()
-			if err != nil {
-				return branchPushInternalError(c, slug, "reading the trunk's HEAD", err)
-			}
-			if head.Name().IsBranch() && head.Name().Short() == name {
-				return protectedBranchRefusal(name).write(c)
-			}
-		}
-
-		// 38-REQ-5.3, 38-REQ-5.4
-		ref, err := repo.Reference(plumbing.NewBranchReferenceName(name), true)
-		if errors.Is(err, plumbing.ErrReferenceNotFound) {
-			return respondErrorWithType(c, http.StatusNotFound,
-				fmt.Sprintf("branch_not_found: branch %q does not exist in the workspace", name), "branch_not_found")
-		}
-		if err != nil {
-			return branchPushInternalError(c, slug, "resolving the branch", err)
-		}
-		sha := ref.Hash().String()
-
-		// 38-REQ-6.1, 38-REQ-6.2: the credential the archive's push uses; a
-		// failure of the secrets store is hub's own and sends nothing.
-		gitAuth, err := resolveCloneAuth(secrets.NewStore(db), slug)
-		if err != nil {
-			return branchPushInternalError(c, slug, "resolving the git credential", err)
-		}
-
-		refSpec := config.RefSpec("refs/heads/" + name + ":refs/heads/" + name)
-		if force {
-			refSpec = "+" + refSpec
-		}
-		err = pushToOriginFn(c.Request().Context(), repoPath, ws.GitURL, gitAuth, []config.RefSpec{refSpec}, force, nil)
-		var te *trunkError
-		result := "pushed"
-		switch {
-		case errors.As(err, &te):
-			return branchPushInternalError(c, slug, "opening the trunk", err)
-		case errors.Is(err, git.NoErrAlreadyUpToDate):
-			result = "up_to_date"
-		case err != nil:
-			return respondErrorWithType(c, http.StatusBadGateway, "forge_error: the push to origin failed", "forge_error")
-		case force:
-			result = "forced"
-		}
-		return c.JSON(http.StatusOK, branchPushAnswer{
-			Branch: name, SHA: sha, Remote: "origin", RemoteURL: stripUserinfoURL(ws.GitURL), Result: result,
-		})
+		return pushBranchLocked(c, db, ws, name, force)
 	}
+}
+
+// pushBranchLocked is the part of the branch push that reads the trunk and
+// pushes; the caller holds the workspace lock.
+func pushBranchLocked(c echo.Context, db *sql.DB, ws *Workspace, name string, force bool) error {
+	slug := ws.Slug
+	repoPath := filepath.Join(defaultWorkspaceRoot, slug, "trunk")
+	repo, err := git.PlainOpen(repoPath)
+	if err != nil {
+		return branchPushInternalError(c, slug, "opening the trunk", err, "")
+	}
+
+	// 38-REQ-4.5, 38-REQ-4.6: with no branch column the workspace's own
+	// branch is the one HEAD points to, read under the lock, because a merge
+	// checks out another branch while it holds the lock.
+	own, err := ownBranch(repo, ws)
+	if err != nil && force {
+		return branchPushInternalError(c, slug, "reading the trunk's HEAD", err, "")
+	}
+	if force && own == name {
+		return protectedBranchRefusal(name).write(c, "")
+	}
+
+	// 38-REQ-5.3, 38-REQ-5.4
+	ref, err := repo.Reference(plumbing.NewBranchReferenceName(name), true)
+	if errors.Is(err, plumbing.ErrReferenceNotFound) {
+		return respondErrorWithType(c, http.StatusNotFound,
+			fmt.Sprintf("branch_not_found: branch %q does not exist in the workspace", name), "branch_not_found")
+	}
+	if err != nil {
+		return branchPushInternalError(c, slug, "resolving the branch", err, "")
+	}
+	sha := ref.Hash().String()
+
+	// 38-REQ-6.1, 38-REQ-6.2: the credential the archive's push uses; a
+	// failure of the secrets store is hub's own and sends nothing.
+	gitAuth, err := resolveCloneAuth(secrets.NewStore(db), slug)
+	if err != nil {
+		return branchPushInternalError(c, slug, "resolving the git credential", err, "")
+	}
+	secret := credentialSecret(gitAuth)
+
+	refSpec := config.RefSpec("refs/heads/" + name + ":refs/heads/" + name)
+	if force {
+		refSpec = "+" + refSpec
+	}
+	ctx := c.Request().Context()
+	progress := &remoteMessages{}
+	err = pushToOriginFn(ctx, repoPath, ws.GitURL, gitAuth, []config.RefSpec{refSpec}, force, progress)
+	var te *trunkError
+	result := "pushed"
+	switch {
+	case errors.As(err, &te):
+		// 38-REQ-6.8: hub's own failure, not a push attempt.
+		return branchPushInternalError(c, slug, "opening the trunk", err, secret)
+	case errors.Is(err, git.NoErrAlreadyUpToDate):
+		result = "up_to_date"
+	case err != nil:
+		failure := classifyPushError(ctx, err, gitAuth, progress.String())
+		if failure.errorType == "non_fast_forward" {
+			failure.message = nonFastForwardMessage(ctx, ws.GitURL, gitAuth, name, own, force)
+		}
+		return failure.write(c, secret)
+	case force:
+		result = "forced"
+	}
+	return c.JSON(http.StatusOK, branchPushAnswer{
+		Branch: name, SHA: sha, Remote: "origin", RemoteURL: stripUserinfoURL(ws.GitURL), Result: result,
+	})
+}
+
+// ownBranch is the workspace's own branch: its branch column, or, when that is
+// empty, the branch the trunk's HEAD points to ("" when HEAD is detached).
+func ownBranch(repo *git.Repository, ws *Workspace) (string, error) {
+	if ws.Branch != nil && *ws.Branch != "" {
+		return *ws.Branch, nil
+	}
+	head, err := repo.Head()
+	if err != nil {
+		return "", err
+	}
+	if !head.Name().IsBranch() {
+		return "", nil
+	}
+	return head.Name().Short(), nil
+}
+
+// credentialSecret is the password or token of a git credential, "" when there
+// is none.
+func credentialSecret(auth transport.AuthMethod) string {
+	if basic, ok := auth.(*githttp.BasicAuth); ok {
+		return basic.Password
+	}
+	return ""
+}
+
+// maxRemoteMessages bounds what is kept of the messages the remote sends during
+// a push.
+const maxRemoteMessages = 4 << 10
+
+// remoteMessages keeps the start of what the remote reports during a push (the
+// sideband progress), such as the reason a hook gives for refusing a ref.
+type remoteMessages struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (m *remoteMessages) Write(p []byte) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if room := maxRemoteMessages - m.buf.Len(); room > 0 {
+		m.buf.Write(p[:min(len(p), room)])
+	}
+	return len(p), nil
+}
+
+func (m *remoteMessages) String() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return strings.Join(strings.Fields(m.buf.String()), " ")
+}
+
+// classifyPushError maps a failed push attempt to its answer (38-REQ-6). go-git
+// marks authentication, authorization and a missing repository with transport
+// errors; its own fast-forward check and the forge's per-ref statuses are only
+// text, so those are matched on the text. messages are what the remote reported
+// while the push ran. The messages built here hold no part of go-git's error
+// chain except the forge's reason for a refused ref, which is scrubbed when the
+// answer is written.
+func classifyPushError(ctx context.Context, err error, auth transport.AuthMethod, messages string) *pushRefusal {
+	text := strings.ToLower(err.Error())
+	switch {
+	case errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded):
+		return &pushRefusal{http.StatusGatewayTimeout, "forge_timeout",
+			fmt.Sprintf("forge_timeout: origin did not finish the push within %s", branchPushDeadline)}
+	case strings.Contains(text, "non-fast-forward") || strings.Contains(text, "fetch first"):
+		return &pushRefusal{http.StatusConflict, "non_fast_forward", "non_fast_forward"}
+	case errors.Is(err, transport.ErrAuthenticationRequired):
+		return &pushRefusal{http.StatusBadGateway, "forge_unauthenticated", unauthenticatedMessage(auth)}
+	case errors.Is(err, transport.ErrAuthorizationFailed):
+		return &pushRefusal{http.StatusBadGateway, "forge_forbidden",
+			"forge_forbidden: origin does not let the workspace's git credential push to this repository"}
+	case errors.Is(err, transport.ErrRepositoryNotFound):
+		return &pushRefusal{http.StatusNotFound, "forge_not_found",
+			"forge_not_found: origin has no repository at the workspace's git_url, or the credential cannot see it"}
+	case strings.HasPrefix(text, "command error on "):
+		reason := err.Error()[strings.LastIndex(err.Error(), ": ")+2:]
+		if messages != "" {
+			reason += " (" + messages + ")"
+		}
+		return &pushRefusal{http.StatusUnprocessableEntity, "forge_rejected", "forge_rejected: origin refused the update: " + reason}
+	case isUnreachable(err):
+		return &pushRefusal{http.StatusBadGateway, "forge_unreachable",
+			"forge_unreachable: origin could not be reached (a DNS, connection or TLS failure)"}
+	}
+	return &pushRefusal{http.StatusBadGateway, "forge_error", "forge_error: the push to origin failed"}
+}
+
+// isUnreachable reports whether err is a DNS, TCP or TLS failure.
+func isUnreachable(err error) bool {
+	var dnsErr *net.DNSError
+	var opErr *net.OpError
+	var certErr *tls.CertificateVerificationError
+	var unknownAuthority x509.UnknownAuthorityError
+	var hostname x509.HostnameError
+	var recordHeader tls.RecordHeaderError
+	if errors.As(err, &dnsErr) || errors.As(err, &opErr) || errors.As(err, &certErr) ||
+		errors.As(err, &unknownAuthority) || errors.As(err, &hostname) || errors.As(err, &recordHeader) {
+		return true
+	}
+	text := strings.ToLower(err.Error())
+	for _, marker := range []string{"no such host", "connection refused", "connection reset", "network is unreachable", "dial tcp", "tls:", "x509:"} {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// unauthenticatedMessage says whether the workspace has no stored credential or
+// the forge rejected the one it has, and names the credential's kind, never its
+// value.
+func unauthenticatedMessage(auth transport.AuthMethod) string {
+	basic, ok := auth.(*githttp.BasicAuth)
+	switch {
+	case !ok:
+		return "forge_unauthenticated: origin requires authentication and the workspace has no stored git credential; store GIT_PAT, or GIT_USERNAME and GIT_PASSWORD"
+	case basic.Username == "x-token-auth":
+		return "forge_unauthenticated: origin rejected the workspace's GIT_PAT"
+	default:
+		return "forge_unauthenticated: origin rejected the workspace's GIT_USERNAME/GIT_PASSWORD"
+	}
+}
+
+// nonFastForwardMessage is the message of a push that was not a fast-forward.
+// It lists origin's refs once, with the push's URL, credential and deadline, to
+// name origin's commit, and leaves the commit out when the listing fails. The
+// hint is to force for any branch but the workspace's own, where force is
+// refused and syncing is the way; when force was already given the forge
+// refuses non-fast-forward updates of the branch and neither hint applies.
+func nonFastForwardMessage(ctx context.Context, gitURL string, auth transport.AuthMethod, name, own string, force bool) string {
+	msg := "non_fast_forward: origin's " + name
+	if tip, ok := originBranchTip(ctx, gitURL, auth, name); ok {
+		msg += " is at " + tip + ", which"
+	}
+	msg += " is not in the workspace's branch; "
+	switch {
+	case force:
+		return msg + "origin refuses non-fast-forward updates of it, also with force"
+	case name == own:
+		return msg + "sync the workspace to bring it up to date"
+	default:
+		return msg + "push with force to overwrite it"
+	}
+}
+
+// originBranchTip lists origin's refs once and returns the commit its branch
+// name points at.
+func originBranchTip(ctx context.Context, gitURL string, auth transport.AuthMethod, name string) (string, bool) {
+	remote := git.NewRemote(memory.NewStorage(), &config.RemoteConfig{Name: "origin", URLs: []string{gitURL}})
+	refs, err := remote.ListContext(ctx, &git.ListOptions{Auth: auth})
+	if err != nil {
+		return "", false
+	}
+	want := plumbing.NewBranchReferenceName(name)
+	for _, ref := range refs {
+		if ref.Name() == want {
+			return ref.Hash().String(), true
+		}
+	}
+	return "", false
 }
 
 // branchPushAnswer is the 200 answer of the branch push.
@@ -179,8 +365,10 @@ type pushRefusal struct {
 	message   string
 }
 
-func (r *pushRefusal) write(c echo.Context) error {
-	return respondErrorWithType(c, r.status, r.message, r.errorType)
+// write answers the refusal, its message scrubbed of secret and of URL user
+// information.
+func (r *pushRefusal) write(c echo.Context, secret string) error {
+	return respondErrorWithType(c, r.status, scrubText(r.message, secret), r.errorType)
 }
 
 // ownedBranchRefusal is the refusal of a branch the route does not push that can
@@ -219,9 +407,10 @@ func protectedBranchRefusal(name string) *pushRefusal {
 		"protected_branch: %q is the workspace's own branch; hub does not force-push it to origin", name)}
 }
 
-// branchPushInternalError logs a failure of hub's own and answers 500.
-func branchPushInternalError(c echo.Context, slug, what string, err error) error {
-	slog.Error("branch push: "+what+" failed", "workspace", slug, "error", scrubText(err.Error(), ""))
+// branchPushInternalError logs a failure of hub's own, scrubbed of secret, and
+// answers 500.
+func branchPushInternalError(c echo.Context, slug, what string, err error, secret string) error {
+	slog.Error("branch push: "+what+" failed", "workspace", slug, "error", scrubText(err.Error(), secret))
 	return respondError(c, http.StatusInternalServerError, "internal server error")
 }
 

@@ -228,7 +228,7 @@
       "done_when": [
         "origin's refs are listed exactly once per non-fast-forward refusal"
       ],
-      "state": "pending"
+      "state": "done"
     },
     {
       "id": 6,
