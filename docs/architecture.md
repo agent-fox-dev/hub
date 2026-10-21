@@ -626,6 +626,54 @@ accepted pushed branch is a registered patch and, if
 with mirroring enabled, it also force-pushes each accepted registered patch
 branch to the fork.
 
+## Pushing to origin
+
+Hub pushes a workspace's trunk to its `origin` in two places, through one
+function. `pushToOrigin` (`internal/workspace/push_core.go`, behind the
+`pushToOriginFn` seam) opens the trunk, checks that it has an `origin`
+remote, and pushes the given refspecs to `git_url` with go-git; a trunk that
+cannot be opened or has no `origin` comes back as a `*trunkError`, hub's own
+failure, apart from the push's own errors. It takes a progress writer because
+a forge's reason for refusing a ref (a hook's message, a protected-branch rule)
+reaches go-git only over the sideband.
+
+- **Archive and reclone** call `archiveOpenAndPushFn`, whose production value
+  `defaultArchiveOpenAndPushFn` pushes `refs/heads/*:refs/heads/*` through
+  `pushToOrigin` with no deadline and maps go-git's already-up-to-date to
+  `ErrAlreadyUpToDate`.
+- **The branch push** (`POST /api/v1/workspaces/:slug/branches/:name/push`,
+  `handleBranchPush` in `internal/workspace/branch_push.go`) pushes exactly
+  `refs/heads/<name>:refs/heads/<name>` (with `+` when forced), with the
+  credential `resolveCloneAuth` gives the archive.
+
+The branch push decides everything that reads only the database and the
+workspace row before it takes the workspace lock (access, body, name,
+workspace state, the carry-patch integration and patch branches, a forced
+push of the `branch` column), so those answers do not depend on whether the
+workspace is busy. It then takes the lock with `wslock.TryLock` (`409
+workspace_busy` when held; the rebuild-active flag is not consulted, because
+the push deletes nothing) and does every read of the trunk under it in
+`pushBranchLocked`: the `HEAD` branch for a forced push without a `branch`
+column, the branch's commit, and the push.
+
+The push and the listing of origin's refs after a non-fast-forward run on the
+request context with its cancellation removed and a fixed two-minute
+deadline, synchronously in the handler, so a caller that goes away cancels
+nothing and the deferred unlock runs only after the push has ended. Each push
+attempt emits one `hub.branch.push` event through `emitHubAuditContext` on a
+context without cancellation, and each failed attempt logs one warning. All
+text that leaves the route goes through the package's own `scrubText`, which
+repeats internal/forge's userinfo pattern rather than importing it.
+
+A push to hub's git server can move the trunk's checked-out branch while the
+branch push holds the lock: receive-pack writes refs without the lock, and
+`updateHeadSHA` (`internal/gitserver/handlers.go`) skips its worktree reset
+when the lock is held, leaving that to the lock holder. The branch push
+therefore notes the commit `HEAD` resolves to when it has opened the trunk
+under the lock and, before it releases the lock, hard-resets the worktree to
+`HEAD` when that commit has changed. A failed reset is logged and changes
+nothing else.
+
 ## Patch Branch Resolver Hook
 
 Registering a patch (`POST /api/v1/workspaces/:slug/patches`, single or

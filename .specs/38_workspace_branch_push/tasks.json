@@ -382,7 +382,7 @@
         "`make test` and `make lint` pass",
         "every execution path 38-PATH-1..3 is live in production code"
       ],
-      "state": "pending"
+      "state": "done"
     }
   ]
 }

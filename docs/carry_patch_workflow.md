@@ -105,6 +105,16 @@ The integration branch is always built by the hub and only pushed to the
 fork (when `REBUILD_PUSH_INTEGRATION_BRANCH=true`). It is never fetched from
 `origin` by sync.
 
+**Pushing branches on demand.** `POST /api/v1/workspaces/:slug/branches/:name/push`
+(`afc workspace push`) pushes one trunk branch to the fork, but not the
+branches carry-patch rules own: on a `carry_patch` workspace the integration
+branch (`integration_branch`, or `deploy` when empty) is refused with `400
+integration_branch`, because the hub builds it and it reaches the fork through
+`REBUILD_PUSH_INTEGRATION_BRANCH`, and a registered patch (a patch whose status
+is not `deleted`) is refused with `400 patch_branch`, because patches reach the
+fork through `PUSH_PATCHES_TO_ORIGIN`. Nothing is sent to the fork for either.
+Any other branch pushes as it would on a standard workspace.
+
 **Switching modes.** The mode is read at the start of each operation (sync,
 registration, push), so changing `PATCH_BRANCH_SOURCE` takes effect on the
 next operation without a restart.

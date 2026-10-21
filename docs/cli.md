@@ -447,6 +447,58 @@ afc workspace reclone <slug> --confirm
 
 ---
 
+### afc workspace push
+
+Push one branch of a workspace's trunk on hub to the workspace's `origin`,
+with the workspace's stored git credential, for example to open a pull request
+against it.
+
+**Usage:**
+
+```
+afc workspace push <slug> <branch> [--force]
+```
+
+**Arguments:**
+
+| Argument | Description |
+|----------|-------------|
+| `<slug>` | The workspace slug |
+| `<branch>` | The branch to push; it may contain `/` (`fix/42-nil-map`) |
+
+**Flags:**
+
+| Flag | Required | Type | Description |
+|------|----------|------|-------------|
+| `--force` | no | boolean | Overwrite origin's branch even when it has commits the workspace lacks. Hub refuses it on the workspace's own branch |
+
+**Behavior:**
+
+- Sends `POST /api/v1/workspaces/<slug>/branches/<branch>/push` with the body
+  `{"force": <bool>}`. Each path segment is escaped, so a `/` in the branch is
+  sent as `%2F`.
+- With `--force`, first writes one line to stderr:
+  `warning: --force: origin's <branch> may be overwritten with the workspace's branch`.
+- On success prints the response as one JSON document: `branch`, `sha`,
+  `remote` (`origin`), `remote_url` (without userinfo) and `result`
+  (`pushed`, `up_to_date` or `forced`). Running it again for an unchanged
+  branch prints `up_to_date`.
+- When hub refuses, prints apikit's error envelope. The message of the
+  route's own refusals begins with the error type, for example
+  `non_fast_forward: origin's feature is at <sha>, which is not in the
+  workspace's branch; push with force to overwrite it`.
+- Requires `workspaces:write` permission scope for PATs.
+
+**Exit Codes:**
+
+| Code | Condition |
+|------|-----------|
+| 0 | The push ended (`pushed`, `up_to_date` or `forced`) |
+| 1 | Hub answered with an error: workspace not found, branch not found, not a fast-forward, a refused or failed push, busy workspace |
+| 2 | Wrong number of arguments (nothing is sent); client error such as an unreachable hub or missing configuration |
+
+---
+
 ### afc workspace patch-status
 
 View the carry-patch status dashboard for a workspace, showing workspace
