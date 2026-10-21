@@ -19,6 +19,7 @@ import (
 	"github.com/labstack/echo/v4"
 	"github.com/txsvc/apikit"
 
+	"github.com/agent-fox-dev/hub/internal/wsaccess"
 	"github.com/agent-fox-dev/hub/internal/wslock"
 )
 
@@ -54,6 +55,12 @@ func RegisterPostPushHook(fn PostPushHookFunc) {
 //
 // Must be called after NewServer and before Start.
 func MountGitHandlers(e *echo.Echo, db *sql.DB, workspaceRoot string) error {
+	// The git server applies token workspace bindings (spec 33), so it never
+	// runs without their table; nothing is registered if it cannot be made.
+	if err := wsaccess.InitBindingSchema(db); err != nil {
+		return fmt.Errorf("token binding schema init: %w", err)
+	}
+
 	// Exempt git smart HTTP requests from the request body size limit that
 	// apikit installs on the whole Echo instance. See gitBodyPassthrough.
 	e.Pre(gitBodyPassthrough())

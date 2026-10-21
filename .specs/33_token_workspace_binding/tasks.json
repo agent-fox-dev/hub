@@ -258,7 +258,7 @@
       "done_when": [
         "gitserver and carrypatch ownership suites pass unchanged"
       ],
-      "state": "pending",
+      "state": "done",
       "optional": false
     },
     {

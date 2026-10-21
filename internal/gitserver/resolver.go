@@ -139,7 +139,7 @@ func gitResolverMiddleware(db *sql.DB, wsRoot string) echo.MiddlewareFunc {
 			// error response and returns errAccessDenied; return nil to
 			// prevent Echo's error handler from writing a second response.
 			// For other errors (e.g. missing auth info), propagate to Echo.
-			if err := authorizeGitAccess(c, ws); err != nil {
+			if err := authorizeGitAccess(c, db, ws); err != nil {
 				if errors.Is(err, errAccessDenied) {
 					return nil
 				}
