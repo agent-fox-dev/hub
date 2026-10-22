@@ -126,7 +126,7 @@ build-agents-container: build-sandbox-container ## Build the agents container lo
 hub-reset: ## Clear all data and config under bin/
 	rm -rf bin/data bin/config
 	mkdir -p bin/data bin/config
-	cp bin/config.toml bin/config/config.toml
+	cp secrets/config.toml bin/config/config.toml
 	XDG_CONFIG_HOME=$(CURDIR)/bin/config \
 	XDG_DATA_HOME=$(CURDIR)/bin/data \
 	./bin/hub --admin-email=hello@micku.me
