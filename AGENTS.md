@@ -29,8 +29,8 @@ Do not implement anything before completing these steps.
 cmd/af-hub/             # The hub server
 cmd/afc/                # The afc command-line client
 internal/               # Packages: audit, carrypatch, cli, forge, gitcmd, gitserver,
-                        #   health, jobqueue, merge, sandboxes, secrets, upstream,
-                        #   vars, workspace, wsaccess, wslock (tests alongside)
+                        #   health, merge, sandboxes, secrets, upstream, vars,
+                        #   workspace, wsaccess, wslock (tests alongside)
 containers/             # Containerfiles: hub, sandbox, agents
 deploy/                 # Kubernetes manifests
 docs/                   # Documentation (openapi.yaml, permissions.md, ...)
@@ -44,7 +44,8 @@ Tests live next to the code as `*_test.go`. The hub builds on
 `../apikit`, on [agentkit-go](https://github.com/agent-fox-dev/agentkit-go)
 for sandboxes, expected at `../agentkit-go`, and on
 [aflib](https://github.com/agent-fox-dev/aflib) for the forge client
-(`issuex`), expected at `../aflib` (`replace` in `go.mod` for all three).
+(`issuex`) and the durable job queue (`jobqueue`), expected at `../aflib`
+(`replace` in `go.mod` for all three).
 
 ## Spec-Driven Workflow
 

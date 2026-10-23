@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/agent-fox-dev/hub/internal/jobqueue"
+	"github.com/agent-fox-dev/aflib/jobqueue"
 )
 
 // pushHookTestEnv holds the dependencies for push hook tests.

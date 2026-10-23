@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/agent-fox-dev/hub/internal/jobqueue"
+	"github.com/agent-fox-dev/aflib/jobqueue"
 	"github.com/txsvc/apikit"
 )
 

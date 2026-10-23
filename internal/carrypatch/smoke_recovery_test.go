@@ -18,8 +18,8 @@ import (
 	"github.com/labstack/echo/v4"
 	"github.com/txsvc/apikit"
 
+	"github.com/agent-fox-dev/aflib/jobqueue"
 	"github.com/agent-fox-dev/hub/internal/audit"
-	"github.com/agent-fox-dev/hub/internal/jobqueue"
 	"github.com/agent-fox-dev/hub/internal/workspace"
 	"github.com/agent-fox-dev/hub/internal/wslock"
 )

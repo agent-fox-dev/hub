@@ -396,8 +396,10 @@ relays them, and never acts on one or calls the forge for it.
 The forge client is the `issuex` package of the sibling module
 [aflib](https://github.com/agent-fox-dev/aflib), expected at `../aflib` and replaced
 in `go.mod` like `../apikit` and `../agentkit-go`; the hub image build and the CI
-workflows supply the checkout in the same way. Only the packages under
-`internal/forge` import `issuex`. `afc` stays a static `CGO_ENABLED=0` binary:
+workflows supply the checkout in the same way. The durable job queue that
+`cmd/af-hub`, `internal/carrypatch` and `internal/merge` run their jobs on is the
+`jobqueue` package of the same module; hub keeps no copy of its own. Only the
+packages under `internal/forge` import `issuex`. `afc` stays a static `CGO_ENABLED=0` binary:
 neither `cmd/afc` nor `internal/cli` imports `internal/forge` in a build (the tests
 `TestIssuexImportedOnlyUnderInternalForge_TS_30_2` and `TestAfcFreeOfInternalForge_TS_30_3`
 hold this; a test file of `internal/cli` imports it to run `afc` against the routes).

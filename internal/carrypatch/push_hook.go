@@ -8,7 +8,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/agent-fox-dev/hub/internal/jobqueue"
+	"github.com/agent-fox-dev/aflib/jobqueue"
 )
 
 // NewPostPushRebuildHook returns a function suitable for use with
