@@ -20,9 +20,9 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	"github.com/labstack/echo/v4"
 
+	"github.com/agent-fox-dev/aflib/jobqueue"
 	"github.com/agent-fox-dev/hub/internal/audit"
 	"github.com/agent-fox-dev/hub/internal/gitserver"
-	"github.com/agent-fox-dev/hub/internal/jobqueue"
 )
 
 // ===========================================================================

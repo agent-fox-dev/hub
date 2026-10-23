@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/agent-fox-dev/hub/internal/jobqueue"
+	"github.com/agent-fox-dev/aflib/jobqueue"
 )
 
 // ---------------------------------------------------------------------------

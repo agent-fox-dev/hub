@@ -17,8 +17,8 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	"github.com/google/uuid"
 
+	"github.com/agent-fox-dev/aflib/jobqueue"
 	"github.com/agent-fox-dev/hub/internal/audit"
-	"github.com/agent-fox-dev/hub/internal/jobqueue"
 	"github.com/agent-fox-dev/hub/internal/wslock"
 )
 

@@ -18,8 +18,8 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	"github.com/txsvc/apikit"
 
+	"github.com/agent-fox-dev/aflib/jobqueue"
 	"github.com/agent-fox-dev/hub/internal/gitcmd"
-	"github.com/agent-fox-dev/hub/internal/jobqueue"
 	"github.com/agent-fox-dev/hub/internal/wslock"
 )
 
