@@ -119,11 +119,10 @@ func (w wiring) firstPos(name string) token.Pos {
 	return token.NoPos
 }
 
-// TS-32-56: main initialises the delivery log with a fatal error path, prunes it in the
+// main initialises the delivery log with a fatal error path, prunes it in the
 // maintenance loop after that, mounts the ingress on the Echo root, and gives forge.Config the
 // audit emitter, the secrets store and the external URL.
-// Requirement: 32-REQ-9.7
-func TestMainWiresTheWebhookIngress_TS_32_56(t *testing.T) {
+func TestMainWiresTheWebhookIngress(t *testing.T) {
 	w := parseMainWiring(t)
 
 	initPos, prunePos, mountPos := w.firstPos("InitSchema"), w.firstPos("PruneDeliveries"), w.firstPos("MountWebhookIngress")
@@ -191,11 +190,10 @@ func packageCalls(t *testing.T, pkgs ...string) (calls []wiringStep, goStarts ma
 	return calls, goStarts
 }
 
-// TS-34-40: main runs the binding sweep in the maintenance loop after the
+// main runs the binding sweep in the maintenance loop after the
 // binding table exists, registers the bound-token routes right after
 // MountWorkspaceHandlers, and registers the refusal reporter.
-// Requirement: 34-REQ-6.6
-func TestMainWiresBoundTokens_TS_34_40(t *testing.T) {
+func TestMainWiresBoundTokens(t *testing.T) {
 	calls, _ := packageCalls(t, "boundtoken", "workspace", "wsaccess")
 	pos := map[string]token.Pos{}
 	order := []string{}

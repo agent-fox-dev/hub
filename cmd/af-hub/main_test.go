@@ -5,10 +5,9 @@ import (
 	"testing"
 )
 
-// TS-28-33: The sandbox shutdown runs after the server's Start returns, whether it
+// The sandbox shutdown runs after the server's Start returns, whether it
 // returns nil or an error, and what Start returned is returned.
-// Requirement: 28-REQ-7.1
-func TestRunServer_ShutdownFollowsStart_TS_28_33(t *testing.T) {
+func TestRunServer_ShutdownFollowsStart(t *testing.T) {
 	for name, startErr := range map[string]error{"Start returned nil": nil, "Start failed": errors.New("bind: address already in use")} {
 		t.Run(name, func(t *testing.T) {
 			var calls []string
