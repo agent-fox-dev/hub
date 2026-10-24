@@ -68,34 +68,6 @@ const EventSandboxDestroy = "hub.sandbox.destroy"
 // an ending emits no EventSandboxDestroy.
 const EventSandboxExpire = "hub.sandbox.expire"
 
-// EventRebuildFollowup is the hub audit event emitted when a carry-patch
-// rebuild enqueues a follow-up rebuild because a patch tip or the upstream
-// base moved during the run. Metadata: stale_patches ([]string),
-// upstream_stale (bool) and follow_up_job_id. Hub events are stored and
-// queried by their event_type string, so no further registration exists.
-const EventRebuildFollowup = "hub.rebuild.followup"
-
-// EventPatchMirrorFailed is the hub audit event emitted when a hub-mode
-// mirror of a registered patch branch to the fork fails. Metadata:
-// branch_name (string) and error (string, with URL userinfo removed).
-const EventPatchMirrorFailed = "hub.patch.mirror_failed"
-
-// EventPatchSync is the hub audit event emitted when a carry-patch sync
-// completes in origin mode. Metadata: origin_fetched (bool), created,
-// fast_forwarded, replaced, diverged, missing_on_origin (each []string of
-// branch names). One event per sync.
-const EventPatchSync = "hub.patch.sync"
-
-// EventPatchReplace is the hub audit event emitted for each patch branch
-// replaced during an origin-mode sync. Metadata: branch_name, replaced_sha,
-// origin_sha. One event per replaced branch.
-const EventPatchReplace = "hub.patch.replace"
-
-// EventPatchReset is the hub audit event emitted when a reset-to-origin
-// completes successfully. Metadata: branch_name, action, local_sha (omitted
-// when no local branch), origin_sha, replaced_sha (only for action replaced).
-const EventPatchReset = "hub.patch.reset"
-
 // EventForgeIssueCreate is the hub audit event emitted when a caller creates an
 // issue on a workspace's forge (POST /workspaces/:slug/issues). Hub emits one
 // event of the forge write family (the nine constants from EventForgeIssueCreate to

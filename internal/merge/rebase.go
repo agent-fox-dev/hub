@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/agent-fox-dev/hub/internal/gitcmd"
+	"github.com/agent-fox-dev/carrypatch/gitcmd"
 )
 
 // RebaseRunner abstracts the git operations needed for branch rebase

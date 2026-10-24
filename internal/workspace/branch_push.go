@@ -28,8 +28,8 @@ import (
 	"github.com/labstack/echo/v4"
 	"github.com/txsvc/apikit"
 
+	"github.com/agent-fox-dev/carrypatch/gitcmd"
 	"github.com/agent-fox-dev/hub/internal/audit"
-	"github.com/agent-fox-dev/hub/internal/gitcmd"
 	"github.com/agent-fox-dev/hub/internal/scrub"
 	"github.com/agent-fox-dev/hub/internal/secrets"
 	"github.com/agent-fox-dev/hub/internal/wsaccess"
@@ -470,11 +470,11 @@ func ownedBranchRefusal(db *sql.DB, ws *Workspace, name string, force bool) (*pu
 			return &pushRefusal{http.StatusBadRequest, "integration_branch", fmt.Sprintf(
 				"integration_branch: hub builds %q, this workspace's integration branch, on every rebuild; it reaches the fork through REBUILD_PUSH_INTEGRATION_BRANCH", name)}, nil
 		}
-		patch, err := getPatchByBranch(db, ws.Slug, name)
+		registered, err := isRegisteredPatchBranch(db, ws.Slug, name)
 		if err != nil {
 			return nil, err
 		}
-		if patch != nil && patch.Status != "deleted" {
+		if registered {
 			return &pushRefusal{http.StatusBadRequest, "patch_branch", fmt.Sprintf(
 				"patch_branch: %q is a registered patch of this workspace; patches reach the fork through PUSH_PATCHES_TO_ORIGIN", name)}, nil
 		}
@@ -533,4 +533,19 @@ func parseBranchPushBody(r io.Reader) (bool, error) {
 func branchPushName(r *http.Request) (string, error) {
 	path := strings.TrimSuffix(r.URL.EscapedPath(), "/push")
 	return url.PathUnescape(path[strings.LastIndexByte(path, '/')+1:])
+}
+
+// isRegisteredPatchBranch reports whether name is a registered patch of the
+// workspace: a row of the patches table, which the carry-patch module writes
+// and the hub's schema holds, whose status is not deleted.
+func isRegisteredPatchBranch(db *sql.DB, slug, name string) (bool, error) {
+	var n int
+	err := db.QueryRow(
+		`SELECT COUNT(*) FROM patches WHERE workspace_slug = ? AND branch_name = ? AND status != 'deleted'`,
+		slug, name,
+	).Scan(&n)
+	if err != nil {
+		return false, fmt.Errorf("look up patch %q/%q: %w", slug, name, err)
+	}
+	return n > 0, nil
 }

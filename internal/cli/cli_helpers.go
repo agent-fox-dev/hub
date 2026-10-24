@@ -22,16 +22,6 @@ func apiPath(segments ...string) string {
 	return b.String()
 }
 
-// escapePathKeepSlashes percent-encodes each slash-separated element of p
-// while preserving the slashes, for wildcard routes that accept a path.
-func escapePathKeepSlashes(p string) string {
-	parts := strings.Split(p, "/")
-	for i, part := range parts {
-		parts[i] = url.PathEscape(part)
-	}
-	return strings.Join(parts, "/")
-}
-
 // readValueFromStdin reads a single value from the command's stdin. One
 // trailing line break is removed so `echo value | afc ...` and here-strings
 // behave as expected; other whitespace is preserved verbatim.

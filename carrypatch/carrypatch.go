@@ -1,0 +1,276 @@
+package carrypatch
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"log/slog"
+
+	"github.com/go-git/go-git/v5/plumbing/transport"
+
+	"github.com/agent-fox-dev/aflib/jobqueue"
+)
+
+// ===========================================================================
+// Constants
+// ===========================================================================
+
+const (
+	// StrategyRebase uses cherry-pick to apply patches (default).
+	StrategyRebase = "rebase"
+	// StrategyMerge uses --no-ff merge to apply patches.
+	StrategyMerge = "merge"
+)
+
+// Fail mode constants for rebuild conflict handling.
+const (
+	// FailModeFailFast aborts the rebuild on the first conflict (default).
+	FailModeFailFast = "fail_fast"
+	// FailModeContinue skips conflicting patches and continues processing.
+	FailModeContinue = "continue"
+)
+
+// Patch status constants.
+const (
+	PatchStatusActive         = "active"
+	PatchStatusConflict       = "conflict"
+	PatchStatusDisabled       = "disabled"
+	PatchStatusMergedUpstream = "merged_upstream"
+	PatchStatusDeleted        = "deleted"
+)
+
+// ===========================================================================
+// Error types
+// ===========================================================================
+
+// CherryPickConflictError indicates a cherry-pick produced a merge conflict.
+type CherryPickConflictError struct {
+	Files []string
+}
+
+func (e *CherryPickConflictError) Error() string {
+	return "cherry-pick conflict"
+}
+
+// MergeNoFFConflictError indicates a --no-ff merge produced a conflict.
+type MergeNoFFConflictError struct {
+	Files []string
+}
+
+func (e *MergeNoFFConflictError) Error() string {
+	return "merge --no-ff conflict"
+}
+
+// TransientError wraps a transient (retryable) error.
+type TransientError struct {
+	Err error
+}
+
+func (e *TransientError) Error() string {
+	if e.Err != nil {
+		return "transient error: " + e.Err.Error()
+	}
+	return "transient error"
+}
+
+func (e *TransientError) Unwrap() error {
+	return e.Err
+}
+
+// ===========================================================================
+// Domain types
+// ===========================================================================
+
+// Patch represents a carry-patch record from the patches table.
+type Patch struct {
+	ID              string   `json:"id"`
+	WorkspaceID     string   `json:"workspace_id"`
+	BranchName      string   `json:"branch_name"`
+	Position        int      `json:"position"`
+	Status          string   `json:"status"`
+	ConflictFiles   []string `json:"conflict_files,omitempty"`
+	UpstreamPRURL   *string  `json:"upstream_pr_url,omitempty"`
+	DeletedAt       *string  `json:"deleted_at,omitempty"`
+	OriginSyncState *string  `json:"origin_sync_state,omitempty"`
+	OriginSHA       *string  `json:"origin_sha,omitempty"`
+	OriginSyncedAt  *string  `json:"origin_synced_at,omitempty"`
+}
+
+// RebuildPayload is the JSON payload stored in the job queue for rebuild jobs.
+type RebuildPayload struct {
+	WorkspaceSlug     string `json:"workspace_slug"`
+	Strategy          string `json:"strategy"`
+	SubmittedBy       string `json:"submitted_by"`
+	IntegrationBranch string `json:"integration_branch,omitempty"`
+	FailMode          string `json:"fail_mode,omitempty"`
+}
+
+// PatchResult is the per-patch outcome recorded in the rebuild result.
+type PatchResult struct {
+	PatchID       string   `json:"patch_id"`
+	BranchName    string   `json:"branch_name"`
+	Position      int      `json:"position"`
+	Status        string   `json:"status"`
+	SkippedReason string   `json:"skipped_reason,omitempty"`
+	NewHeadSHA    *string  `json:"new_head_sha"`
+	ConflictFiles []string `json:"conflict_files,omitempty"`
+	// SourceSHA is the commit the patch branch resolved to at
+	// refs/heads/<branch> when patch application began (01-REQ-6.6). It is
+	// the only reference to the branch used during the run.
+	SourceSHA string `json:"source_sha,omitempty"`
+}
+
+// RebuildResult is the structured result returned by a successful rebuild job.
+type RebuildResult struct {
+	UpstreamHeadSHA            string        `json:"upstream_head_sha"`
+	IntegrationHeadSHA         string        `json:"integration_head_sha"`
+	PreviousIntegrationHeadSHA string        `json:"previous_integration_head_sha,omitempty"`
+	Strategy                   string        `json:"strategy"`
+	FailMode                   string        `json:"fail_mode,omitempty"`
+	PatchesApplied             int           `json:"patches_applied"`
+	PatchesSkipped             int           `json:"patches_skipped"`
+	PatchesConflicted          int           `json:"patches_conflicted"`
+	PatchesRemoved             int           `json:"patches_removed"`
+	PatchResults               []PatchResult `json:"patch_results"`
+	IntegrationBranchPushed    bool          `json:"integration_branch_pushed,omitempty"`
+}
+
+// ===========================================================================
+// Interfaces
+// ===========================================================================
+
+// GitRunner abstracts git CLI operations for testing.
+type GitRunner interface {
+	Run(ctx context.Context, args ...string) (string, error)
+	CherryPick(ctx context.Context, commitSHA string) error
+	// MergeNoFF merges ref with --no-ff. An empty message keeps git's default
+	// merge message; otherwise message is used as the merge commit message.
+	MergeNoFF(ctx context.Context, ref, message string) error
+	MergeTree(ctx context.Context, base, head string) (string, error)
+	IsAncestor(ctx context.Context, ancestor, descendant string) (bool, error)
+	Cherry(ctx context.Context, upstream, head string) (applied []string, pending []string, err error)
+	HardReset(ctx context.Context, ref string) error
+	// WorktreeAdd creates a detached linked worktree at path checked out at commit.
+	WorktreeAdd(ctx context.Context, path, commit string) error
+	// WorktreeRemove force-removes the linked worktree at path.
+	WorktreeRemove(ctx context.Context, path string) error
+	// WorktreePrune prunes stale linked-worktree registrations.
+	WorktreePrune(ctx context.Context) error
+	// UpdateRef force-updates ref to point at sha (git update-ref).
+	UpdateRef(ctx context.Context, ref, sha string) error
+}
+
+// ExpiredDeletedPatch holds the minimal data needed to purge a soft-deleted
+// patch and clean up its backup ref.
+type ExpiredDeletedPatch struct {
+	ID     string
+	Slug   string
+	Branch string
+}
+
+// PatchStore abstracts patch table operations for testing.
+type PatchStore interface {
+	ListPatches(ctx context.Context, workspaceSlug string) ([]Patch, error)
+	UpdatePatchStatus(ctx context.Context, patchID, status string, conflictFiles []string) error
+	DeletePatch(ctx context.Context, patchID string) error
+	SoftDeletePatch(ctx context.Context, patchID string) error
+	RestorePatch(ctx context.Context, patchID string) error
+	PurgeDeletedPatches(ctx context.Context, olderThan string) (int64, error)
+	CompactPositions(ctx context.Context, workspaceSlug string) error
+	// SetOriginSyncState writes the origin sync state for a single patch.
+	// originSHA is nil for missing_on_origin.
+	SetOriginSyncState(ctx context.Context, patchID, state string, originSHA *string, syncedAt string) error
+	// ClearOriginSyncState clears the origin sync state for all patches of a workspace.
+	ClearOriginSyncState(ctx context.Context, workspaceSlug string) error
+	// ClearOriginSyncStateForPatch clears the origin sync state for a single patch.
+	ClearOriginSyncStateForPatch(ctx context.Context, patchID string) error
+	// ClearOriginSyncStateForMergedDeleted clears the origin sync state for
+	// all patches of a workspace whose status is merged_upstream or deleted.
+	ClearOriginSyncStateForMergedDeleted(ctx context.Context, workspaceSlug string) error
+	// ListExpiredDeletedPatches returns soft-deleted rows whose deleted_at is
+	// older than the cutoff, with id, workspace slug and branch name.
+	ListExpiredDeletedPatches(ctx context.Context, olderThan string) ([]ExpiredDeletedPatch, error)
+	// DeletePatchByIDIfDeleted permanently removes a patch row only if its
+	// current status is 'deleted'. deleted reports whether a row was removed:
+	// it is false, with a nil error, when the row does not exist or is no
+	// longer in deleted status (for example because it was restored since it
+	// was listed).
+	DeletePatchByIDIfDeleted(ctx context.Context, patchID string) (deleted bool, err error)
+}
+
+// FetchFunc fetches from the upstream remote of the repository at repoPath
+// using the given credentials (nil for a public upstream). The production
+// implementation is DefaultFetchFunc.
+type FetchFunc func(ctx context.Context, repoPath string, auth transport.AuthMethod) error
+
+// ResolveAuthFunc resolves the credentials to use for the upstream remote of
+// a workspace. It returns (nil, nil) when no credentials are configured.
+type ResolveAuthFunc func(workspaceSlug string) (transport.AuthMethod, error)
+
+// PushIntegrationFunc pushes the integration branch of the repository at
+// repoPath to the origin remote (force-updating the remote branch). Optional:
+// when nil, the opt-in REBUILD_PUSH_INTEGRATION_BRANCH behaviour is disabled.
+type PushIntegrationFunc func(ctx context.Context, workspaceSlug, repoPath, branch string) error
+
+// GetVariableFunc retrieves a workspace variable.
+type GetVariableFunc func(scope, slug, key string) (string, error)
+
+// ===========================================================================
+// RebuildHandler
+// ===========================================================================
+
+// RebuildHandler holds dependencies for the rebuild job executor.
+type RebuildHandler struct {
+	DB            *sql.DB
+	Queue         *jobqueue.Queue
+	Logger        *slog.Logger
+	WorkspaceRoot string
+	NewGitRunner  func(repoPath string) (GitRunner, error)
+	Fetch         FetchFunc
+	ResolveAuth   ResolveAuthFunc
+	GetVariable   GetVariableFunc
+	PatchStore    PatchStore
+
+	// PushIntegration, when non-nil, is invoked after a successful rebuild
+	// if the workspace variable REBUILD_PUSH_INTEGRATION_BRANCH is "true".
+	PushIntegration PushIntegrationFunc
+
+	// Audit is the optional audit event emitter. When non-nil, rebuild
+	// complete and fail events are emitted. When nil, audit emission
+	// is silently skipped.
+	Audit Emitter
+}
+
+// emitRebuildAudit emits a hub-internal audit event for rebuild operations.
+// If the Audit emitter is nil, emission is silently skipped (18-REQ-3.7,
+// 18-PROP-7). If Emit returns an error, the error is logged and the caller
+// is unaffected (18-REQ-3.E1, 18-PROP-1).
+func (h *RebuildHandler) emitRebuildAudit(ctx context.Context, workspace, eventType string, metadata map[string]any) {
+	if h.Audit == nil {
+		return
+	}
+	event := Event{
+		EventType:    eventType,
+		ResourceType: "patch",
+		ActorType:    "system",
+		Workspace:    workspace,
+		Metadata:     metadata,
+	}
+	if err := h.Audit.Emit(ctx, event); err != nil {
+		slog.Error("audit: failed to emit rebuild event",
+			"event_type", eventType,
+			"workspace", workspace,
+			"error", err,
+		)
+	}
+}
+
+// RegisterRebuildJob registers the 'rebuild' job type in the job queue.
+func RegisterRebuildJob(q *jobqueue.Queue, h *RebuildHandler) error {
+	handler := func(ctx context.Context, payload json.RawMessage) (any, bool, error) {
+		return h.HandleRebuildJob(ctx, payload)
+	}
+	return q.Register("rebuild", jobqueue.HandlerFunc(handler), nil)
+}
+
+// HandleRebuildJob is implemented in rebuild_executor.go.

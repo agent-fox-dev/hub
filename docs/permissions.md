@@ -546,8 +546,8 @@ at startup.
 
 ## Hub Rebuild Permissions
 
-These 2 permissions are registered by `CarryPatchPermissions()` in
-`hub/internal/carrypatch/wire.go` and passed to `apikit.Server.MountHandlers()`
+These 2 permissions are registered by `CarryPatchPermissions()` of the
+carry-patch module (`carrypatch/wire.go`) and passed to `apikit.Server.MountHandlers()`
 at startup via the `extraPerms` parameter.
 
 ### rebuilds:read

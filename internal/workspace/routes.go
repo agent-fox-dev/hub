@@ -109,15 +109,5 @@ func RegisterRoutes(api *echo.Group, db *sql.DB) error {
 	// a bound token reaches it on its own slug only.
 	api.POST("/workspaces/:slug/branches/:name/push", handleBranchPush(db))
 
-	// Patch routes (15-REQ-8, 15-REQ-9, 15-REQ-10, 15-REQ-11, 15-REQ-12, 23-REQ-1).
-	api.POST("/workspaces/:slug/patches", handleAddPatch(db))
-	api.GET("/workspaces/:slug/patches", handleListPatches(db))
-	api.GET("/workspaces/:slug/patches/:id", handleGetPatch(db))
-	api.PATCH("/workspaces/:slug/patches/:id", handleUpdatePatch(db))
-	api.DELETE("/workspaces/:slug/patches/:id", handleRemovePatch(db))
-	api.POST("/workspaces/:slug/patches/reorder", handleReorderPatches(db))
-	api.POST("/workspaces/:slug/patches/:id/restore", handleRestorePatch(db))
-	api.POST("/workspaces/:slug/patches/:id/reset-to-origin", handleResetPatchToOrigin(db))
-
 	return nil
 }

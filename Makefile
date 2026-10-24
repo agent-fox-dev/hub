@@ -2,6 +2,11 @@
 
 DOC_DIR ?= docs/generated
 
+# The repository holds two Go modules: the hub at the root and the carry-patch
+# module at ./carrypatch (a replace target in go.mod). The Go targets run over
+# both.
+MODULES := . carrypatch
+
 VERSION    := $(shell git describe --tags 2>/dev/null || echo "0.1.0")
 COMMIT     := $(shell git rev-parse --short HEAD 2>/dev/null || echo "dev")
 BUILD_TIME := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -39,26 +44,28 @@ build: ## Install afc and build bin/hub
 	CGO_ENABLED=1 go build $(LDFLAGS) -o bin/hub ./cmd/af-hub
 
 .PHONY: test
-test: ## Run all Go tests
-	go test ./... -count=1
+test: ## Run all Go tests of both modules
+	@for m in $(MODULES); do (cd $$m && go test ./... -count=1) || exit 1; done
 
 .PHONY: coverage
 coverage: ## Run all tests with a coverage report
 	go test ./... -coverprofile=coverage.txt -covermode=atomic
 	go tool cover -func=coverage.txt
+	cd carrypatch && go test ./... -coverprofile=../coverage-carrypatch.txt -covermode=atomic
+	go tool cover -func=coverage-carrypatch.txt
 
 .PHONY: fmt
 fmt: ## gofmt all source files in place
 	gofmt -l -w .
 
 .PHONY: vet
-vet: ## go vet ./...
-	go vet ./...
+vet: ## go vet ./... in both modules
+	@for m in $(MODULES); do (cd $$m && go vet ./...) || exit 1; done
 
 .PHONY: lint
-lint: ## Run golangci-lint if installed, otherwise skip
+lint: ## Run golangci-lint in both modules if installed, otherwise skip
 	@if command -v golangci-lint >/dev/null 2>&1; then \
-		golangci-lint run ./...; \
+		for m in $(MODULES); do (cd $$m && golangci-lint run ./...) || exit 1; done; \
 	else \
 		echo "golangci-lint not installed; skipping (see https://golangci-lint.run)"; \
 	fi
@@ -70,20 +77,23 @@ check: fmt vet lint test ## Run fmt, vet, lint and test - use before committing
 doc: ## Generate Go package reference (go doc -all) as text files under docs/generated
 	@rm -rf $(DOC_DIR)
 	@mkdir -p $(DOC_DIR)
-	@mod=$$(go list -m); \
-	for p in $$(go list -f '{{if .GoFiles}}{{.ImportPath}}{{end}}' ./... | grep -v -e /internal/ -e /examples/); do \
-		rel=$${p#$$mod}; rel=$${rel#/}; out="$(CURDIR)/$(DOC_DIR)/$${rel:-$$(basename $$mod)}.txt"; \
-		mkdir -p "$$(dirname "$$out")" && go doc -all "$$p" > "$$out" || exit 1; \
+	@for m in $(MODULES); do \
+		dir=$$m; [ "$$dir" = "." ] && dir=""; \
+		mod=$$(cd $$m && go list -m); \
+		for p in $$(cd $$m && go list -f '{{if .GoFiles}}{{.ImportPath}}{{end}}' ./... | grep -v -e /internal/ -e /examples/); do \
+			rel=$${p#$$mod}; rel=$${rel#/}; out="$(CURDIR)/$(DOC_DIR)/$${dir:+$$dir/}$${rel:-$$(basename $$mod)}.txt"; \
+			mkdir -p "$$(dirname "$$out")" && (cd $$m && go doc -all "$$p") > "$$out" || exit 1; \
+		done; \
 	done
 	@echo "package docs written to $(DOC_DIR)"
 
 .PHONY: tidy
-tidy: ## go mod tidy
-	go mod tidy
+tidy: ## go mod tidy in both modules
+	@for m in $(MODULES); do (cd $$m && go mod tidy) || exit 1; done
 
 .PHONY: clean
 clean: ## Remove build output and the coverage profile
-	rm -rf build coverage.txt bin/hub bin/af-hub bin/afc
+	rm -rf build coverage.txt coverage-carrypatch.txt bin/hub bin/af-hub bin/afc
 	-rm -f af-hub afc
 
 # ---------------------------------------------------------------------------

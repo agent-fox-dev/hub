@@ -1,0 +1,37 @@
+package cli // import "github.com/agent-fox-dev/carrypatch/cli"
+
+Package cli holds the afc commands of the carry-patch module: patch, rebuild,
+rerere and workspace patch-status. The hub's afc adds them to its command tree,
+and they speak to the hub's REST API through apikit's CLI client like every
+other afc command.
+
+FUNCTIONS
+
+func PatchCmd() *cobra.Command
+    PatchCmd returns the 'patch' parent cobra.Command with subcommands for add,
+    list, remove, reorder, and update.
+
+    Requirements: 15-REQ-14
+
+func PatchStatusCmd() *cobra.Command
+    PatchStatusCmd returns the 'workspace patch-status' subcommand,
+    which the hub adds under its workspace command. It sends GET
+    /api/v1/workspaces/:slug/patch-status and prints the full status dashboard.
+    Requirements: 16-REQ-9.1
+
+func RebuildCmd() *cobra.Command
+    RebuildCmd returns the 'rebuild' parent cobra.Command with subcommands for
+    submit, list, and status of rebuild jobs.
+
+    The authenticated CLI client is retrieved from the Cobra context
+    via apikit.CLIClientFromCmd — credentials are resolved by apikit's
+    PersistentPreRunE from flags, environment variables, and the config file.
+
+func RerereCmd() *cobra.Command
+    RerereCmd returns the 'rerere' parent cobra.Command with subcommands for
+    list and forget rerere resolutions.
+
+    The authenticated CLI client is retrieved from the Cobra context
+    via apikit.CLIClientFromCmd — credentials are resolved by apikit's
+    PersistentPreRunE from flags, environment variables, and the config file.
+

@@ -21,11 +21,11 @@ import (
 // registerSyncHook installs a carry-patch sync hook for the duration of the
 // test and restores the previous value afterwards. The hook is package-level
 // state, so tests that touch it must not run in parallel.
-func registerSyncHook(t *testing.T, fn CarryPatchSyncFunc) {
+func registerSyncHook(t *testing.T, fn SyncExtension) {
 	t.Helper()
-	previous := carryPatchSyncHook
-	RegisterCarryPatchSyncHook(fn)
-	t.Cleanup(func() { RegisterCarryPatchSyncHook(previous) })
+	previous := syncExtension
+	RegisterSyncExtension(fn)
+	t.Cleanup(func() { RegisterSyncExtension(previous) })
 }
 
 // A carry-patch sync merges the hook's fields into the workspace response

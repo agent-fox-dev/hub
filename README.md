@@ -29,6 +29,13 @@ The hub binary includes a built-in git smart HTTP server that exposes
 workspace repositories at `/git/<org>/<slug>.git` for clone, fetch, and push
 operations.
 
+Carry-patch workspaces (a fork that carries patches on top of an upstream, see
+[Carry-Patch Workflow](docs/carry_patch_workflow.md)) are served by a Go module
+of its own, [`carrypatch`](carrypatch/), nested in this repository. It imports
+nothing of the hub; the hub binds it to its locks, access rule, audit log and
+git server in `internal/cphost` (see
+[ADR 05](docs/adr/05-move-carry-patch-to-its-own-module.md)).
+
 With a `[sandbox]` section in `config.toml` the hub also hands out sandboxes. A
 caller gets a lease over the REST API (`afc sandbox create`) and creates the one
 sandbox it allows by connecting an AgentKit client to the **sandbox gateway**,

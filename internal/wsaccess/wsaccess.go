@@ -1,8 +1,6 @@
 // Package wsaccess is the leaf package that holds hub's workspace access rule
 // (AuthorizeWorkspace), the token workspace bindings, the credential helpers
-// IsAdmin, IsPAT and HasScope, and a per-request scope (WithRequestScope and
-// RequestScoped) through which a request handler hands request-scoped state
-// to a hook. Every package that addresses a workspace by slug imports it.
+// IsAdmin, IsPAT and HasScope. Every package that addresses a workspace by slug
 package wsaccess
 
 import (

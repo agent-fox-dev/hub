@@ -67,6 +67,7 @@ func newAuditTestEnv(t *testing.T) *auditTestEnv {
 	if err := RegisterRoutes(api, db); err != nil {
 		t.Fatalf("RegisterRoutes: %v", err)
 	}
+	mountPatchRoutesWithAudit(api, db, mock)
 
 	env := &testEnv{echo: e, db: db}
 	seedDefaultPersonalOrgs(t, db)

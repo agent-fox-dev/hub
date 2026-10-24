@@ -13,7 +13,7 @@ import (
 	git "github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing/transport"
 
-	"github.com/agent-fox-dev/hub/internal/carrypatch"
+	"github.com/agent-fox-dev/carrypatch"
 	"github.com/agent-fox-dev/hub/internal/workspace"
 )
 
