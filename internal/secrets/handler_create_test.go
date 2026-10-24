@@ -13,7 +13,7 @@ import (
 func TestSecretCreate_Success(t *testing.T) {
 	env := newHandlerTestEnv(t)
 
-	auth := patAuth("user-create", "secrets:manage")
+	auth := patAuth("user-create", "secrets:write")
 	body := `{"entries":[{"key":"DB_HOST","value":"localhost:5432"},{"key":"DB_NAME","value":"mydb"}]}`
 	rec := env.doRequest(t, http.MethodPost, "/api/v1/user/secrets", body, auth)
 
@@ -52,7 +52,7 @@ func TestSecretCreate_Success(t *testing.T) {
 func TestSecretCreate_ResponseNeverIncludesValue(t *testing.T) {
 	env := newHandlerTestEnv(t)
 
-	auth := patAuth("user-prop1", "secrets:manage")
+	auth := patAuth("user-prop1", "secrets:write")
 	body := `{"entries":[{"key":"API_TOKEN","value":"super-secret-value-12345"}]}`
 	rec := env.doRequest(t, http.MethodPost, "/api/v1/user/secrets", body, auth)
 
@@ -75,7 +75,7 @@ func TestSecretCreate_ResponseNeverIncludesValue(t *testing.T) {
 func TestSecretCreate_EmptyEntries(t *testing.T) {
 	env := newHandlerTestEnv(t)
 
-	auth := patAuth("user-empty", "secrets:manage")
+	auth := patAuth("user-empty", "secrets:write")
 	body := `{"entries":[]}`
 	rec := env.doRequest(t, http.MethodPost, "/api/v1/user/secrets", body, auth)
 
@@ -94,7 +94,7 @@ func TestSecretCreate_DuplicateKey_Conflict(t *testing.T) {
 	// Seed an existing secret for the user.
 	seedSecret(t, env.db, "user", "user-dup", "DB_HOST", "oldvalue")
 
-	auth := patAuth("user-dup", "secrets:manage")
+	auth := patAuth("user-dup", "secrets:write")
 	body := `{"entries":[{"key":"DB_HOST","value":"newvalue"},{"key":"NEW_KEY","value":"v"}]}`
 	rec := env.doRequest(t, http.MethodPost, "/api/v1/user/secrets", body, auth)
 
@@ -123,7 +123,7 @@ func TestSecretCreate_DuplicateKey_Conflict(t *testing.T) {
 func TestSecretCreate_InvalidKeyName(t *testing.T) {
 	env := newHandlerTestEnv(t)
 
-	auth := patAuth("user-badkey", "secrets:manage")
+	auth := patAuth("user-badkey", "secrets:write")
 
 	tests := []struct {
 		name string
@@ -151,7 +151,7 @@ func TestSecretCreate_InvalidKeyName(t *testing.T) {
 func TestSecretCreate_ValueTooLarge(t *testing.T) {
 	env := newHandlerTestEnv(t)
 
-	auth := patAuth("user-bigval", "secrets:manage")
+	auth := patAuth("user-bigval", "secrets:write")
 	// Create a value slightly over MaxValueSize (262144 bytes).
 	bigValue := strings.Repeat("x", MaxValueSize+1)
 	body := `{"entries":[{"key":"BIG_SECRET","value":"` + bigValue + `"}]}`
@@ -171,7 +171,7 @@ func TestSecretCreate_OrgScoped(t *testing.T) {
 	env.seedOrg(t, "org-create", "Create Org", "create-org")
 	env.seedOrgMember(t, "org-create", "user-org-create")
 
-	auth := patAuth("user-org-create", "secrets:manage")
+	auth := patAuth("user-org-create", "secrets:write")
 	body := `{"entries":[{"key":"ORG_SECRET","value":"orgval"}]}`
 	rec := env.doRequest(t, http.MethodPost, "/api/v1/orgs/create-org/secrets", body, auth)
 
@@ -188,7 +188,7 @@ func TestSecretCreate_WorkspaceScoped(t *testing.T) {
 
 	env.seedWorkspaceForTest(t, "ws-create", "user-ws-create")
 
-	auth := patAuth("user-ws-create", "secrets:manage")
+	auth := patAuth("user-ws-create", "secrets:write")
 	body := `{"entries":[{"key":"WS_SECRET","value":"wsval"}]}`
 	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/ws-create/secrets", body, auth)
 
@@ -203,7 +203,7 @@ func TestSecretCreate_WorkspaceScoped(t *testing.T) {
 func TestSecretCreate_OrgNotFound(t *testing.T) {
 	env := newHandlerTestEnv(t)
 
-	auth := patAuth("user-notfound", "secrets:manage")
+	auth := patAuth("user-notfound", "secrets:write")
 	body := `{"entries":[{"key":"SECRET","value":"v"}]}`
 	rec := env.doRequest(t, http.MethodPost, "/api/v1/orgs/nonexistent-org/secrets", body, auth)
 
@@ -214,17 +214,17 @@ func TestSecretCreate_OrgNotFound(t *testing.T) {
 }
 
 // TestSecretCreate_PATSecretsListCannotCreate verifies that a PAT with
-// secrets:list but not secrets:manage cannot create secrets.
+// secrets:read but not secrets:write cannot create secrets.
 // Requirement: 07-REQ-8.E3
 func TestSecretCreate_PATSecretsListCannotCreate(t *testing.T) {
 	env := newHandlerTestEnv(t)
 
-	pat := patAuth("user-listonly", "secrets:list")
+	pat := patAuth("user-listonly", "secrets:read")
 	body := `{"entries":[{"key":"SECRET","value":"val"}]}`
 	rec := env.doRequest(t, http.MethodPost, "/api/v1/user/secrets", body, pat)
 
 	if rec.Code != http.StatusForbidden {
-		t.Errorf("POST (secrets:list only) status = %d; want %d",
+		t.Errorf("POST (secrets:read only) status = %d; want %d",
 			rec.Code, http.StatusForbidden)
 	}
 }

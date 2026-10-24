@@ -27,7 +27,7 @@ func handleListRerere(cfg APIConfig) echo.HandlerFunc {
 		if auth == nil {
 			return apikit.WriteAPIError(c, http.StatusUnauthorized, "authentication required")
 		}
-		if isPAT(auth) && !hasScope(auth, "workspaces:read") {
+		if isPAT(auth) && !hasScope(auth, "workspaces:read", "workspaces:write") {
 			return apikit.WriteAPIError(c, http.StatusForbidden, "missing required scope: workspaces:read")
 		}
 

@@ -18,7 +18,7 @@ func TestSecretList_SortedCaseInsensitive(t *testing.T) {
 	seedSecret(t, env.db, "user", "user-list", "apple", "a-val")
 	seedSecret(t, env.db, "user", "user-list", "MANGO", "m-val")
 
-	auth := patAuth("user-list", "secrets:list")
+	auth := patAuth("user-list", "secrets:read")
 	rec := env.doRequest(t, http.MethodGet, "/api/v1/user/secrets", "", auth)
 
 	if rec.Code != http.StatusOK {
@@ -62,7 +62,7 @@ func TestSecretList_ValuesNeverInResponse(t *testing.T) {
 
 	seedSecret(t, env.db, "user", "user-noval", "KEY_A", "my-secret-value-xyz")
 
-	auth := patAuth("user-noval", "secrets:list")
+	auth := patAuth("user-noval", "secrets:read")
 	rec := env.doRequest(t, http.MethodGet, "/api/v1/user/secrets", "", auth)
 
 	if rec.Code != http.StatusOK {
@@ -81,7 +81,7 @@ func TestSecretList_ValuesNeverInResponse(t *testing.T) {
 func TestSecretList_EmptyScope(t *testing.T) {
 	env := newHandlerTestEnv(t)
 
-	auth := patAuth("user-empty-scope", "secrets:list")
+	auth := patAuth("user-empty-scope", "secrets:read")
 	rec := env.doRequest(t, http.MethodGet, "/api/v1/user/secrets", "", auth)
 
 	if rec.Code != http.StatusOK {
@@ -104,7 +104,7 @@ func TestSecretList_OrgScoped(t *testing.T) {
 	env.seedOrgMember(t, "org-list", "user-org-list")
 	seedSecret(t, env.db, "org", "org-list", "ORG_KEY", "orgval")
 
-	auth := patAuth("user-org-list", "secrets:list")
+	auth := patAuth("user-org-list", "secrets:read")
 	rec := env.doRequest(t, http.MethodGet, "/api/v1/orgs/list-org/secrets", "", auth)
 
 	if rec.Code != http.StatusOK {
@@ -121,7 +121,7 @@ func TestSecretList_WorkspaceScoped(t *testing.T) {
 	env.seedWorkspaceForTest(t, "ws-list", "user-ws-list")
 	seedSecret(t, env.db, "workspace", "ws-list", "WS_KEY", "wsval")
 
-	auth := patAuth("user-ws-list", "secrets:list")
+	auth := patAuth("user-ws-list", "secrets:read")
 	rec := env.doRequest(t, http.MethodGet, "/api/v1/workspaces/ws-list/secrets", "", auth)
 
 	if rec.Code != http.StatusOK {
@@ -138,7 +138,7 @@ func TestSecretList_OrgNonMemberReturns404(t *testing.T) {
 
 	env.seedOrg(t, "org-noaccess", "No Access Org", "noaccess-org")
 
-	auth := patAuth("user-outsider-list", "secrets:list")
+	auth := patAuth("user-outsider-list", "secrets:read")
 	rec := env.doRequest(t, http.MethodGet, "/api/v1/orgs/noaccess-org/secrets", "", auth)
 
 	if rec.Code != http.StatusNotFound {
@@ -147,32 +147,32 @@ func TestSecretList_OrgNonMemberReturns404(t *testing.T) {
 	}
 }
 
-// TestSecretList_PATSecretsWriteCannotList verifies that a PAT with
-// secrets:write but not secrets:list or secrets:manage cannot list secrets.
+// TestSecretList_PATOtherScopeCannotList verifies that a PAT holding only
+// the variables scopes cannot list secrets.
 // Requirement: 07-REQ-9.E2
-func TestSecretList_PATSecretsWriteCannotList(t *testing.T) {
+func TestSecretList_PATOtherScopeCannotList(t *testing.T) {
 	env := newHandlerTestEnv(t)
 
-	auth := patAuth("user-writelist", "secrets:write")
+	auth := patAuth("user-writelist", "vars:write")
 	rec := env.doRequest(t, http.MethodGet, "/api/v1/user/secrets", "", auth)
 
 	if rec.Code != http.StatusForbidden {
-		t.Errorf("GET (secrets:write only) status = %d; want %d",
+		t.Errorf("GET (vars:write only) status = %d; want %d",
 			rec.Code, http.StatusForbidden)
 	}
 }
 
-// TestSecretList_SecretsManageCanList verifies that secrets:manage implies
+// TestSecretList_SecretsManageCanList verifies that secrets:write implies
 // listing ability.
 // Requirement: 07-REQ-9.1
 func TestSecretList_SecretsManageCanList(t *testing.T) {
 	env := newHandlerTestEnv(t)
 
-	auth := patAuth("user-manage-list", "secrets:manage")
+	auth := patAuth("user-manage-list", "secrets:write")
 	rec := env.doRequest(t, http.MethodGet, "/api/v1/user/secrets", "", auth)
 
 	if rec.Code != http.StatusOK {
-		t.Errorf("GET (secrets:manage) status = %d; want %d",
+		t.Errorf("GET (secrets:write) status = %d; want %d",
 			rec.Code, http.StatusOK)
 	}
 }

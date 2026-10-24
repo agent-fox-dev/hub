@@ -376,7 +376,7 @@ func TestReclone_ArchivePushFailureContinues(t *testing.T) {
 	}
 }
 
-// 13-REQ-7.E5: Verifies that a caller without workspaces:sync scope cannot
+// 13-REQ-7.E5: Verifies that a caller without workspaces:write scope cannot
 // trigger reclone.
 func TestReclone_MissingSyncScopeRejected(t *testing.T) {
 	env := newTestEnv(t)
@@ -394,7 +394,7 @@ func TestReclone_MissingSyncScopeRejected(t *testing.T) {
 		"/api/v1/workspaces/reclone-noscope-ws/reclone", "", auth)
 
 	if rec.Code != http.StatusForbidden {
-		t.Errorf("POST /reclone without workspaces:sync scope returned %d; want %d",
+		t.Errorf("POST /reclone without workspaces:write scope returned %d; want %d",
 			rec.Code, http.StatusForbidden)
 	}
 

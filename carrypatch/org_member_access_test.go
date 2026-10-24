@@ -25,7 +25,7 @@ const (
 )
 
 // carryPatchScopes are the PAT scopes every carry-patch route needs.
-var carryPatchScopes = []string{"rebuilds:read", "rebuilds:write", "workspaces:read", "workspaces:write", "workspaces:sync"}
+var carryPatchScopes = []string{"rebuilds:read", "rebuilds:write", "workspaces:read", "workspaces:write", "workspaces:write"}
 
 // newMemberCarryPatchEnv is newFullTestEnv with workspace cp, a queued
 // rebuild job "job-1" and two rr-cache entries.

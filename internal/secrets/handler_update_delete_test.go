@@ -207,7 +207,7 @@ func TestSecretDelete_Success(t *testing.T) {
 
 	seedSecret(t, env.db, "user", "user-delete", "DB_HOST", "val")
 
-	auth := patAuth("user-delete", "secrets:delete")
+	auth := patAuth("user-delete", "secrets:write")
 	rec := env.doRequest(t, http.MethodDelete, "/api/v1/user/secrets/DB_HOST", "", auth)
 
 	if rec.Code != http.StatusNoContent {
@@ -239,7 +239,7 @@ func TestSecretDelete_Success(t *testing.T) {
 func TestSecretDelete_NotFound(t *testing.T) {
 	env := newHandlerTestEnv(t)
 
-	auth := patAuth("user-delnf", "secrets:delete")
+	auth := patAuth("user-delnf", "secrets:write")
 	rec := env.doRequest(t, http.MethodDelete, "/api/v1/user/secrets/NONEXISTENT", "", auth)
 
 	if rec.Code != http.StatusNotFound {
@@ -256,7 +256,7 @@ func TestSecretDelete_CaseInsensitiveLookup(t *testing.T) {
 
 	seedSecret(t, env.db, "user", "user-del-case", "DB_HOST", "val")
 
-	auth := patAuth("user-del-case", "secrets:delete")
+	auth := patAuth("user-del-case", "secrets:write")
 	// DELETE with lowercase 'db_host' should match stored 'DB_HOST'.
 	rec := env.doRequest(t, http.MethodDelete, "/api/v1/user/secrets/db_host", "", auth)
 
@@ -289,7 +289,7 @@ func TestSecretDelete_WorkspaceNonOwner(t *testing.T) {
 	seedSecret(t, env.db, "workspace", "ws-del-enum", "WS_KEY", "val")
 
 	// user-b is NOT the workspace owner.
-	pat := patAuth("user-b", "secrets:delete")
+	pat := patAuth("user-b", "secrets:write")
 	rec := env.doRequest(t, http.MethodDelete, "/api/v1/workspaces/ws-del-enum/secrets/WS_KEY", "", pat)
 
 	if rec.Code != http.StatusNotFound {
@@ -298,7 +298,7 @@ func TestSecretDelete_WorkspaceNonOwner(t *testing.T) {
 	}
 }
 
-// TestSecretUpdate_SecretsManageCanUpdate verifies that secrets:manage
+// TestSecretUpdate_SecretsManageCanUpdate verifies that secrets:write
 // implies ability to update secrets.
 // Requirement: 07-REQ-10.1
 func TestSecretUpdate_SecretsManageCanUpdate(t *testing.T) {
@@ -306,17 +306,17 @@ func TestSecretUpdate_SecretsManageCanUpdate(t *testing.T) {
 
 	seedSecret(t, env.db, "user", "user-manage-up", "KEY_A", "oldval")
 
-	auth := patAuth("user-manage-up", "secrets:manage")
+	auth := patAuth("user-manage-up", "secrets:write")
 	body := `{"value":"newval"}`
 	rec := env.doRequest(t, http.MethodPatch, "/api/v1/user/secrets/KEY_A", body, auth)
 
 	if rec.Code != http.StatusOK {
-		t.Errorf("PATCH (secrets:manage) status = %d; want %d",
+		t.Errorf("PATCH (secrets:write) status = %d; want %d",
 			rec.Code, http.StatusOK)
 	}
 }
 
-// TestSecretDelete_SecretsManageCanDelete verifies that secrets:manage
+// TestSecretDelete_SecretsManageCanDelete verifies that secrets:write
 // implies ability to delete secrets.
 // Requirement: 07-REQ-11.1
 func TestSecretDelete_SecretsManageCanDelete(t *testing.T) {
@@ -324,11 +324,11 @@ func TestSecretDelete_SecretsManageCanDelete(t *testing.T) {
 
 	seedSecret(t, env.db, "user", "user-manage-del", "KEY_B", "val")
 
-	auth := patAuth("user-manage-del", "secrets:manage")
+	auth := patAuth("user-manage-del", "secrets:write")
 	rec := env.doRequest(t, http.MethodDelete, "/api/v1/user/secrets/KEY_B", "", auth)
 
 	if rec.Code != http.StatusNoContent {
-		t.Errorf("DELETE (secrets:manage) status = %d; want %d",
+		t.Errorf("DELETE (secrets:write) status = %d; want %d",
 			rec.Code, http.StatusNoContent)
 	}
 }

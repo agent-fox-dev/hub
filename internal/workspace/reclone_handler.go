@@ -35,9 +35,9 @@ func handleRecloneWorkspace(db *sql.DB) echo.HandlerFunc {
 		if auth == nil {
 			return respondError(c, http.StatusUnauthorized, "authentication required")
 		}
-		if wsaccess.IsPAT(auth) && !wsaccess.HasScope(auth, "workspaces:sync") {
+		if !hasWriteAccess(auth) {
 			return respondError(c, http.StatusForbidden,
-				"PAT requires workspaces:sync scope to reclone workspaces")
+				"PAT requires workspaces:write scope to reclone workspaces")
 		}
 
 		slug := c.Param("slug")

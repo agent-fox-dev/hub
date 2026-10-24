@@ -26,13 +26,13 @@ func TestWorkspacePermissions_ReadScope(t *testing.T) {
 	}
 }
 
-// TS-01-14: Verify that MountHandlers registers the workspaces:create
-// permission scope (Permission{Resource: "workspaces", Action: "create"})
+// TS-01-14: Verify that MountHandlers registers the workspaces:write
+// permission scope (Permission{Resource: "workspaces", Action: "write"})
 // with apikit's permission registry.
 // Requirement: 01-REQ-3.2
-func TestWorkspacePermissions_CreateScope(t *testing.T) {
+func TestWorkspacePermissions_WriteScope(t *testing.T) {
 	perms := WorkspacePermissions()
-	expected := apikit.Permission{Resource: "workspaces", Action: "create"}
+	expected := apikit.Permission{Resource: "workspaces", Action: "write"}
 	found := false
 	for _, p := range perms {
 		if p == expected {
@@ -41,7 +41,7 @@ func TestWorkspacePermissions_CreateScope(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Errorf("workspaces:create permission not found in WorkspacePermissions(); got %v", perms)
+		t.Errorf("workspaces:write permission not found in WorkspacePermissions(); got %v", perms)
 	}
 }
 
@@ -88,13 +88,13 @@ func TestWorkspacePermissions_PATReadAccess(t *testing.T) {
 	}
 }
 
-// TS-01-16: Verify that a PAT with workspaces:create scope can create
+// TS-01-16: Verify that a PAT with workspaces:write scope can create
 // workspaces and read the owner's own workspaces.
 // Requirement: 01-REQ-3.4
-func TestWorkspacePermissions_PATCreateAccess(t *testing.T) {
+func TestWorkspacePermissions_PATWriteAccess(t *testing.T) {
 	env := newTestEnv(t)
 
-	auth := patAuth("alice-id", "workspaces:create")
+	auth := patAuth("alice-id", "workspaces:write")
 
 	// POST /api/v1/workspaces should return 201.
 	body := `{"slug":"new-ws","git_url":"https://github.com/org/repo"}`

@@ -1552,8 +1552,7 @@ upstream, it can be recovered without needing to re-create it from scratch.
 | `patches:read` | List patches, get single patch |
 | `patches:write` | Add, update, remove, restore, reorder, reset patches |
 | `workspaces:read` | Patch-status dashboard, rerere list |
-| `workspaces:write` | Rerere forget |
-| `workspaces:sync` | Sync from upstream |
+| `workspaces:write` | Rerere forget, sync from upstream |
 
 ---
 

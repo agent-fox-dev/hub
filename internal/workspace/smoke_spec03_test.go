@@ -99,7 +99,7 @@ func TestSmoke03_PATWriteUpdatesDisplayName(t *testing.T) {
 	}
 }
 
-// TS-03-SMOKE-2: End-to-end smoke test: PAT with workspaces:delete deletes an
+// TS-03-SMOKE-2: End-to-end smoke test: PAT with workspaces:write deletes an
 // archived workspace by knowing the slug directly (no workspaces:read needed).
 //
 // Real components: echo HTTP server, test auth middleware, workspace delete
@@ -119,8 +119,8 @@ func TestSmoke03_PATDeleteArchived(t *testing.T) {
 		Description: "",
 	})
 
-	// PAT with ONLY workspaces:delete scope (no read scope).
-	auth := patAuth("alice-user-id", "workspaces:delete")
+	// PAT with workspaces:write, which implies read.
+	auth := patAuth("alice-user-id", "workspaces:write")
 
 	// Delete the archived workspace.
 	rec := env.doRequest(t, http.MethodDelete, "/api/v1/workspaces/old-project", "", auth)
@@ -139,12 +139,10 @@ func TestSmoke03_PATDeleteArchived(t *testing.T) {
 		t.Error("workspace row still exists in DB after delete; want no row")
 	}
 
-	// Verify that the PAT with only workspaces:delete CANNOT list workspaces
-	// (anti-enumeration: delete scope does not imply read).
+	// The write scope implies read: the PAT lists the remaining workspaces.
 	rec = env.doRequest(t, http.MethodGet, "/api/v1/workspaces", "", auth)
-	if rec.Code != http.StatusNotFound {
-		t.Errorf("list with delete-only PAT returned %d; want %d (anti-enumeration)",
-			rec.Code, http.StatusNotFound)
+	if rec.Code != http.StatusOK {
+		t.Errorf("list with the write PAT returned %d; want %d", rec.Code, http.StatusOK)
 	}
 }
 
@@ -158,8 +156,8 @@ func TestSmoke03_PATDeleteArchived(t *testing.T) {
 func TestSmoke03_CreateWithDisplayNameAndDescription(t *testing.T) {
 	env := newTestEnv(t)
 
-	// PAT with workspaces:create scope.
-	auth := patAuth("alice-user-id", "workspaces:create")
+	// PAT with workspaces:write scope.
+	auth := patAuth("alice-user-id", "workspaces:write")
 
 	// Create workspace with display_name and description.
 	body := `{"slug":"new-project","git_url":"https://github.com/org/new-repo","display_name":"My Project","description":"A test workspace"}`

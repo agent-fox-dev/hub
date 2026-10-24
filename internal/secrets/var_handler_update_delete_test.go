@@ -199,7 +199,7 @@ func TestVarUpdate_ValueTooLarge(t *testing.T) {
 	}
 }
 
-// TestVarUpdate_VarsManageCanUpdate verifies that vars:manage implies
+// TestVarUpdate_VarsManageCanUpdate verifies that vars:write implies
 // ability to update variables.
 // Requirement: 07-REQ-14.1
 func TestVarUpdate_VarsManageCanUpdate(t *testing.T) {
@@ -207,12 +207,12 @@ func TestVarUpdate_VarsManageCanUpdate(t *testing.T) {
 
 	seedVariable(t, env.db, "user", "user-var-manage-up", "KEY_A", "oldval")
 
-	auth := patAuth("user-var-manage-up", "vars:manage")
+	auth := patAuth("user-var-manage-up", "vars:write")
 	body := `{"value":"newval"}`
 	rec := env.doRequest(t, http.MethodPatch, "/api/v1/user/vars/KEY_A", body, auth)
 
 	if rec.Code != http.StatusOK {
-		t.Errorf("PATCH (vars:manage) status = %d; want %d",
+		t.Errorf("PATCH (vars:write) status = %d; want %d",
 			rec.Code, http.StatusOK)
 	}
 }
@@ -225,7 +225,7 @@ func TestVarDelete_Success(t *testing.T) {
 
 	seedVariable(t, env.db, "user", "user-var-delete", "DB_HOST", "val")
 
-	auth := patAuth("user-var-delete", "vars:delete")
+	auth := patAuth("user-var-delete", "vars:write")
 	rec := env.doRequest(t, http.MethodDelete, "/api/v1/user/vars/DB_HOST", "", auth)
 
 	if rec.Code != http.StatusNoContent {
@@ -257,7 +257,7 @@ func TestVarDelete_Success(t *testing.T) {
 func TestVarDelete_NotFound(t *testing.T) {
 	env := newHandlerTestEnv(t)
 
-	auth := patAuth("user-var-delnf", "vars:delete")
+	auth := patAuth("user-var-delnf", "vars:write")
 	rec := env.doRequest(t, http.MethodDelete, "/api/v1/user/vars/NONEXISTENT", "", auth)
 
 	if rec.Code != http.StatusNotFound {
@@ -274,7 +274,7 @@ func TestVarDelete_CaseInsensitiveLookup(t *testing.T) {
 
 	seedVariable(t, env.db, "user", "user-var-del-case", "DB_HOST", "val")
 
-	auth := patAuth("user-var-del-case", "vars:delete")
+	auth := patAuth("user-var-del-case", "vars:write")
 	// DELETE with lowercase 'db_host' should match stored 'DB_HOST'.
 	rec := env.doRequest(t, http.MethodDelete, "/api/v1/user/vars/db_host", "", auth)
 
@@ -307,7 +307,7 @@ func TestVarDelete_WorkspaceNonOwner(t *testing.T) {
 	seedVariable(t, env.db, "workspace", "ws-var-del-enum", "WS_VAR", "val")
 
 	// user-b is NOT the workspace owner.
-	pat := patAuth("user-b", "vars:delete")
+	pat := patAuth("user-b", "vars:write")
 	rec := env.doRequest(t, http.MethodDelete, "/api/v1/workspaces/ws-var-del-enum/vars/WS_VAR", "", pat)
 
 	if rec.Code != http.StatusNotFound {
@@ -316,7 +316,7 @@ func TestVarDelete_WorkspaceNonOwner(t *testing.T) {
 	}
 }
 
-// TestVarDelete_VarsManageCanDelete verifies that vars:manage implies
+// TestVarDelete_VarsManageCanDelete verifies that vars:write implies
 // ability to delete variables.
 // Requirement: 07-REQ-15.1
 func TestVarDelete_VarsManageCanDelete(t *testing.T) {
@@ -324,11 +324,11 @@ func TestVarDelete_VarsManageCanDelete(t *testing.T) {
 
 	seedVariable(t, env.db, "user", "user-var-manage-del", "KEY_B", "val")
 
-	auth := patAuth("user-var-manage-del", "vars:manage")
+	auth := patAuth("user-var-manage-del", "vars:write")
 	rec := env.doRequest(t, http.MethodDelete, "/api/v1/user/vars/KEY_B", "", auth)
 
 	if rec.Code != http.StatusNoContent {
-		t.Errorf("DELETE (vars:manage) status = %d; want %d",
+		t.Errorf("DELETE (vars:write) status = %d; want %d",
 			rec.Code, http.StatusNoContent)
 	}
 }

@@ -211,7 +211,7 @@ func TestBranchPushMissingScope_TS_38_11(t *testing.T) {
 	}
 	// No lookup comes first: with the database gone the answer is the same.
 	env.db.Close()
-	rec := env.push(t, "ws-scope", "feat", "", patAuth("user-a", "workspaces:read", "workspaces:sync"))
+	rec := env.push(t, "ws-scope", "feat", "", patAuth("user-a", "workspaces:read", "patches:write"))
 	assertRefusal(t, rec, http.StatusForbidden, "PAT requires workspaces:write scope to push branches", "")
 	env.assertNothingHappened(t)
 }

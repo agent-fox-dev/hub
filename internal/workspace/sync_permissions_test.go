@@ -15,9 +15,9 @@ import (
 // ========================================================================
 
 // TS-13-25: Verifies that admin tokens, API keys, and PATs with
-// workspaces:sync scope can all successfully call the sync endpoint.
+// workspaces:write scope can all successfully call the sync endpoint.
 // Admin tokens and API keys have implicit access; PATs require explicit
-// workspaces:sync scope grant.
+// workspaces:write scope grant.
 // Requirement: 13-REQ-8.1
 func TestSyncPermissions_AllCredentialTypesSync(t *testing.T) {
 	credentials := []struct {
@@ -38,7 +38,7 @@ func TestSyncPermissions_AllCredentialTypesSync(t *testing.T) {
 		{
 			name: "pat_with_sync_scope",
 			slug: "perm-pat-ws",
-			auth: func() *apikit.AuthInfo { return patAuth("alice-id", "workspaces:sync") },
+			auth: func() *apikit.AuthInfo { return patAuth("alice-id", "workspaces:write") },
 		},
 	}
 
@@ -76,7 +76,7 @@ func TestSyncPermissions_AllCredentialTypesSync(t *testing.T) {
 }
 
 // TS-13-25 supplementary: Verifies that admin tokens, API keys, and PATs
-// with workspaces:sync scope can call the reclone endpoint.
+// with workspaces:write scope can call the reclone endpoint.
 func TestSyncPermissions_AllCredentialTypesReclone(t *testing.T) {
 	credentials := []struct {
 		name string
@@ -96,7 +96,7 @@ func TestSyncPermissions_AllCredentialTypesReclone(t *testing.T) {
 		{
 			name: "pat_with_sync_scope",
 			slug: "reclone-perm-pat-ws",
-			auth: func() *apikit.AuthInfo { return patAuth("alice-id", "workspaces:sync") },
+			auth: func() *apikit.AuthInfo { return patAuth("alice-id", "workspaces:write") },
 		},
 	}
 

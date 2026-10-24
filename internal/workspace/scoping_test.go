@@ -52,13 +52,13 @@ func TestWorkspaceScoping_PATReadOnlyOwn(t *testing.T) {
 	})
 }
 
-// TS-01-21: Verify that a PAT with workspaces:create can create workspaces
+// TS-01-21: Verify that a PAT with workspaces:write can create workspaces
 // on behalf of the owner and read the owner's own workspaces.
 // Requirement: 01-REQ-4.5
 func TestWorkspaceScoping_PATCreateOwnership(t *testing.T) {
 	env := newTestEnv(t)
 
-	auth := patAuth("alice-id", "workspaces:create")
+	auth := patAuth("alice-id", "workspaces:write")
 
 	// Create workspace via PAT.
 	body := `{"slug":"created-via-pat","git_url":"https://github.com/org/repo"}`

@@ -8,8 +8,8 @@ import (
 )
 
 // =============================================================================
-// Task 2.1: Unit tests — MountHandlers registers workspaces:write and
-// workspaces:delete scopes via apikit.Permission
+// Task 2.1: Unit tests — MountHandlers registers the workspaces:read and
+// workspaces:write scopes via apikit.Permission
 // TS-03-7, TS-03-8, TS-03-9
 // Requirements: 03-REQ-2.1, 03-REQ-2.2, 03-REQ-2.3
 // =============================================================================
@@ -32,32 +32,14 @@ func TestSpec03_Group2_PermWriteScopeRegistered(t *testing.T) {
 	}
 }
 
-// TS-03-8: Verify that MountHandlers registers the 'workspaces:delete' scope
-// via apikit.Permission.
-// Requirement: 03-REQ-2.2
-func TestSpec03_Group2_PermDeleteScopeRegistered(t *testing.T) {
-	perms := WorkspacePermissions()
-	expected := apikit.Permission{Resource: "workspaces", Action: "delete"}
-	found := false
-	for _, p := range perms {
-		if p == expected {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Errorf("workspaces:delete permission not found in WorkspacePermissions(); got %v", perms)
-	}
-}
-
 // TS-03-9: Verify that adding the new scopes does not change the behaviour
-// of workspaces:read and workspaces:create PATs.
+// of workspaces:read and workspaces:write PATs.
 // Requirement: 03-REQ-2.3
 func TestSpec03_Group2_ExistingScopesUnchanged(t *testing.T) {
-	// Unit check: workspaces:read and workspaces:create are still registered.
+	// Unit check: workspaces:read and workspaces:write are registered.
 	perms := WorkspacePermissions()
 	readPerm := apikit.Permission{Resource: "workspaces", Action: "read"}
-	createPerm := apikit.Permission{Resource: "workspaces", Action: "create"}
+	createPerm := apikit.Permission{Resource: "workspaces", Action: "write"}
 
 	foundRead := false
 	foundCreate := false
@@ -73,7 +55,7 @@ func TestSpec03_Group2_ExistingScopesUnchanged(t *testing.T) {
 		t.Errorf("workspaces:read permission missing from WorkspacePermissions(); got %v", perms)
 	}
 	if !foundCreate {
-		t.Errorf("workspaces:create permission missing from WorkspacePermissions(); got %v", perms)
+		t.Errorf("workspaces:write permission missing from WorkspacePermissions(); got %v", perms)
 	}
 
 	// Integration: PAT-read can still GET; PAT-create can still POST.
@@ -96,7 +78,7 @@ func TestSpec03_Group2_ExistingScopesUnchanged(t *testing.T) {
 	})
 
 	t.Run("PAT-create POST returns 201", func(t *testing.T) {
-		auth := patAuth("u1-id", "workspaces:create")
+		auth := patAuth("u1-id", "workspaces:write")
 		body := `{"slug":"new-compat-ws","git_url":"https://git.example.com/repo"}`
 		rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces", body, auth)
 		if rec.Code != http.StatusCreated {
@@ -107,8 +89,8 @@ func TestSpec03_Group2_ExistingScopesUnchanged(t *testing.T) {
 }
 
 // =============================================================================
-// Task 2.2: Integration tests — workspaces:write implies read access;
-// workspaces:delete does not
+// Task 2.2: Integration tests — workspaces:write implies read access; the
+// write scope of another resource does not
 // TS-03-10, TS-03-11, TS-03-E5
 // Requirements: 03-REQ-2.4, 03-REQ-2.5, 03-REQ-2.E1
 // =============================================================================
@@ -145,10 +127,10 @@ func TestSpec03_Group2_WriteImpliesRead(t *testing.T) {
 	})
 }
 
-// TS-03-11: Verify that a PAT with only workspaces:delete does not grant list
-// or get access to workspaces.
+// TS-03-11: Verify that a PAT holding only another resource's write scope
+// does not grant list or get access to workspaces.
 // Requirement: 03-REQ-2.5
-func TestSpec03_Group2_DeleteDoesNotImplyRead(t *testing.T) {
+func TestSpec03_Group2_OtherScopeDoesNotImplyRead(t *testing.T) {
 	env := newTestEnv(t)
 
 	env.seedWorkspace(t, &Workspace{
@@ -158,7 +140,7 @@ func TestSpec03_Group2_DeleteDoesNotImplyRead(t *testing.T) {
 		Status:  "active",
 	})
 
-	auth := patAuth("u1-id", "workspaces:delete")
+	auth := patAuth("u1-id", "patches:write")
 
 	t.Run("list returns 404", func(t *testing.T) {
 		rec := env.doRequest(t, http.MethodGet, "/api/v1/workspaces", "", auth)
@@ -181,47 +163,6 @@ func TestSpec03_Group2_DeleteDoesNotImplyRead(t *testing.T) {
 		resp := parseErrorEnvelope(t, rec)
 		if resp.Error.Message == "" {
 			t.Error("error.message is empty; want non-empty descriptive message")
-		}
-	})
-}
-
-// TS-03-E5: Verify that a PAT with only workspaces:delete is denied list and
-// get access with HTTP 404 (anti-enumeration).
-// Requirement: 03-REQ-2.E1
-func TestSpec03_Group2_DeleteOnlyPATAntiEnumeration(t *testing.T) {
-	env := newTestEnv(t)
-
-	env.seedWorkspace(t, &Workspace{
-		Slug:    "delete-scope-ws",
-		GitURL:  "https://git.example.com/repo",
-		OwnerID: "u1-id",
-		Status:  "active",
-	})
-
-	// PAT scoped to workspaces:delete only (no read, no write).
-	auth := patAuth("u1-id", "workspaces:delete")
-
-	t.Run("list returns 404", func(t *testing.T) {
-		rec := env.doRequest(t, http.MethodGet, "/api/v1/workspaces", "", auth)
-		if rec.Code != http.StatusNotFound {
-			t.Errorf("GET /api/v1/workspaces status = %d; want %d",
-				rec.Code, http.StatusNotFound)
-		}
-		resp := parseErrorEnvelope(t, rec)
-		if resp.Error.Code != http.StatusNotFound {
-			t.Errorf("error.code = %d; want %d", resp.Error.Code, http.StatusNotFound)
-		}
-	})
-
-	t.Run("get returns 404", func(t *testing.T) {
-		rec := env.doRequest(t, http.MethodGet, "/api/v1/workspaces/delete-scope-ws", "", auth)
-		if rec.Code != http.StatusNotFound {
-			t.Errorf("GET /api/v1/workspaces/delete-scope-ws status = %d; want %d",
-				rec.Code, http.StatusNotFound)
-		}
-		resp := parseErrorEnvelope(t, rec)
-		if resp.Error.Code != http.StatusNotFound {
-			t.Errorf("error.code = %d; want %d", resp.Error.Code, http.StatusNotFound)
 		}
 	})
 }
@@ -384,7 +325,7 @@ func TestSpec03_Group2_OwnerAPIKeyFullAccess(t *testing.T) {
 }
 
 // =============================================================================
-// Task 2.5: Integration tests — workspaces:write PAT and workspaces:delete PAT
+// Task 2.5: Integration tests — workspaces:write PAT and workspaces:write PAT
 // TS-03-14, TS-03-15, TS-03-16
 // Requirements: 03-REQ-3.3, 03-REQ-3.4, 03-REQ-3.5
 // =============================================================================
@@ -427,44 +368,12 @@ func TestSpec03_Group2_WritePATMutationAccess(t *testing.T) {
 	})
 }
 
-// TS-03-15: Verify that a PAT with workspaces:write is denied when attempting
-// to delete a workspace, returning HTTP 404 (anti-enumeration).
-// Requirement: 03-REQ-3.4
-func TestSpec03_Group2_WritePATCannotDelete(t *testing.T) {
-	env := newTestEnv(t)
-
-	// Seed an archived workspace so the delete precondition (status=archived)
-	// is met — the test should still get 404 because workspaces:write lacks
-	// delete permission.
-	env.seedWorkspace(t, &Workspace{
-		Slug:    "write-del-ws",
-		GitURL:  "https://git.example.com/repo",
-		OwnerID: "u1-id",
-		Status:  "archived",
-	})
-
-	auth := patAuth("u1-id", "workspaces:write")
-	rec := env.doRequest(t, http.MethodDelete, "/api/v1/workspaces/write-del-ws", "", auth)
-
-	if rec.Code != http.StatusNotFound {
-		t.Errorf("DELETE status = %d; want %d (anti-enumeration)",
-			rec.Code, http.StatusNotFound)
-	}
-	resp := parseErrorEnvelope(t, rec)
-	if resp.Error.Code != http.StatusNotFound {
-		t.Errorf("error.code = %d; want %d", resp.Error.Code, http.StatusNotFound)
-	}
-	if resp.Error.Message == "" {
-		t.Error("error.message is empty; want non-empty descriptive message")
-	}
-}
-
-// TS-03-16: Verify that a PAT with workspaces:delete can delete an archived
+// TS-03-16: Verify that a PAT with workspaces:write can delete an archived
 // workspace owned by the PAT's user.
 // Requirement: 03-REQ-3.5
 //
 // DELETE uses 204 to match actual handler behavior (see errata).
-func TestSpec03_Group2_DeletePATCanDeleteArchived(t *testing.T) {
+func TestSpec03_Group2_WritePATCanDeleteArchived(t *testing.T) {
 	env := newTestEnv(t)
 
 	env.seedWorkspace(t, &Workspace{
@@ -474,7 +383,7 @@ func TestSpec03_Group2_DeletePATCanDeleteArchived(t *testing.T) {
 		Status:  "archived",
 	})
 
-	auth := patAuth("u1-id", "workspaces:delete")
+	auth := patAuth("u1-id", "workspaces:write")
 	rec := env.doRequest(t, http.MethodDelete, "/api/v1/workspaces/archived-del-ws", "", auth)
 
 	if rec.Code != http.StatusNoContent {
@@ -483,17 +392,17 @@ func TestSpec03_Group2_DeletePATCanDeleteArchived(t *testing.T) {
 }
 
 // =============================================================================
-// Task 2.6: Integration tests — read/create PAT denied on mutation endpoints;
+// Task 2.6: Integration tests — read PAT denied on mutation endpoints;
 // anti-enumeration on unowned workspaces
 // TS-03-17, TS-03-E6
 // Requirements: 03-REQ-3.6, 03-REQ-3.E1
 // =============================================================================
 
-// TS-03-17: Verify that PATs with workspaces:read or workspaces:create are
-// denied when attempting update, archive, reactivate, or delete, returning
-// HTTP 404 (anti-enumeration).
+// TS-03-17: Verify that a PAT with workspaces:read, or with another
+// resource's write scope, is denied when attempting update, archive,
+// reactivate, or delete, returning HTTP 404 (anti-enumeration).
 // Requirement: 03-REQ-3.6
-func TestSpec03_Group2_ReadCreatePATsDeniedOnMutation(t *testing.T) {
+func TestSpec03_Group2_ReadPATsDeniedOnMutation(t *testing.T) {
 	env := newTestEnv(t)
 
 	env.seedWorkspace(t, &Workspace{
@@ -508,7 +417,7 @@ func TestSpec03_Group2_ReadCreatePATsDeniedOnMutation(t *testing.T) {
 		auth *apikit.AuthInfo
 	}{
 		{"workspaces:read", patAuth("u1-id", "workspaces:read")},
-		{"workspaces:create", patAuth("u1-id", "workspaces:create")},
+		{"patches:write", patAuth("u1-id", "patches:write")},
 	}
 
 	operations := []struct {

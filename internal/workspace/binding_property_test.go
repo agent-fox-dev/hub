@@ -103,7 +103,7 @@ func sweep(t *testing.T, env *testEnv, r sweepRoute, slug string, auth *apikit.A
 	return env.doRequest(t, r.method, r.path(slug), body, auth)
 }
 
-var sweepScopes = []string{"workspaces:read", "workspaces:write", "workspaces:delete", "patches:read", "patches:write"}
+var sweepScopes = []string{"workspaces:read", "workspaces:write", "workspaces:write", "patches:read", "patches:write"}
 
 func scopeSubset(mask int) []string {
 	var out []string
@@ -200,7 +200,7 @@ func TestBoundToken_RefusedOnHubRoutes_TS_33_23(t *testing.T) {
 		t.Fatal(err)
 	}
 	sandboxes.RegisterLeaseRoutes(h.server.APIGroup(), nil)
-	token, id := h.mintPAT(t, "workspaces:create", "workspaces:read", "secrets:manage", "vars:manage", "sandboxes:read")
+	token, id := h.mintPAT(t, "workspaces:write", "workspaces:read", "secrets:write", "vars:write", "sandboxes:read")
 	bindToken(t, h.db.SqlDB, id, "s")
 
 	counts := func() [3]int {
@@ -393,7 +393,7 @@ func TestBinding_PropertyNeverWidens_TS_33_53(t *testing.T) {
 func TestBoundToken_ArchivedWorkspace_TS_33_54(t *testing.T) {
 	h := newRealHub(t)
 	h.seed(t, "a", "u1", "archived")
-	scopes := []string{"workspaces:read", "workspaces:write", "workspaces:sync"}
+	scopes := []string{"workspaces:read", "workspaces:write", "workspaces:write"}
 	bound, id := h.mintPAT(t, scopes...)
 	bindToken(t, h.db.SqlDB, id, "a")
 	unbound, _ := h.mintPAT(t, scopes...)
@@ -429,7 +429,7 @@ func TestBoundToken_DeletedWorkspaceFailsClosed_TS_33_55(t *testing.T) {
 	}
 	h.seed(t, "s", "u1", "active")
 	h.seed(t, "x", "u1", "active")
-	token, id := h.mintPAT(t, "workspaces:read", "workspaces:write", "patches:read", "secrets:manage")
+	token, id := h.mintPAT(t, "workspaces:read", "workspaces:write", "patches:read", "secrets:write")
 	bindToken(t, h.db.SqlDB, id, "s")
 	noPatches, noPatchesID := h.mintPAT(t, "workspaces:read")
 	bindToken(t, h.db.SqlDB, noPatchesID, "s")

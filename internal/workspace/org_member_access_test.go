@@ -29,7 +29,7 @@ const (
 )
 
 // allWorkspaceScopes are the PAT scopes every workspace and patch route needs.
-var allWorkspaceScopes = []string{"workspaces:read", "workspaces:write", "workspaces:delete", "workspaces:sync", "patches:read", "patches:write"}
+var allWorkspaceScopes = []string{"workspaces:read", "workspaces:write", "workspaces:write", "workspaces:write", "patches:read", "patches:write"}
 
 func strp(s string) *string { return &s }
 

@@ -100,8 +100,8 @@ func TestSecretAuthz_APIKeyFullAccess(t *testing.T) {
 func TestSecretAuthz_PATMissingScope(t *testing.T) {
 	env := newHandlerTestEnv(t)
 
-	t.Run("list user secrets with only vars:delete scope", func(t *testing.T) {
-		pat := patAuth("user-scope", "vars:delete")
+	t.Run("list user secrets with only vars:write scope", func(t *testing.T) {
+		pat := patAuth("user-scope", "vars:write")
 		rec := env.doRequest(t, http.MethodGet, "/api/v1/user/secrets", "", pat)
 		if rec.Code != http.StatusForbidden {
 			t.Errorf("GET /api/v1/user/secrets status = %d; want %d",
@@ -113,8 +113,8 @@ func TestSecretAuthz_PATMissingScope(t *testing.T) {
 		}
 	})
 
-	t.Run("create user secrets with only secrets:list scope", func(t *testing.T) {
-		pat := patAuth("user-scope", "secrets:list")
+	t.Run("create user secrets with only secrets:read scope", func(t *testing.T) {
+		pat := patAuth("user-scope", "secrets:read")
 		body := `{"entries":[{"key":"MY_SECRET","value":"val"}]}`
 		rec := env.doRequest(t, http.MethodPost, "/api/v1/user/secrets", body, pat)
 		if rec.Code != http.StatusForbidden {
@@ -123,8 +123,8 @@ func TestSecretAuthz_PATMissingScope(t *testing.T) {
 		}
 	})
 
-	t.Run("update user secret with only secrets:list scope", func(t *testing.T) {
-		pat := patAuth("user-scope", "secrets:list")
+	t.Run("update user secret with only secrets:read scope", func(t *testing.T) {
+		pat := patAuth("user-scope", "secrets:read")
 		body := `{"value":"newval"}`
 		rec := env.doRequest(t, http.MethodPatch, "/api/v1/user/secrets/MY_KEY", body, pat)
 		if rec.Code != http.StatusForbidden {
@@ -133,8 +133,8 @@ func TestSecretAuthz_PATMissingScope(t *testing.T) {
 		}
 	})
 
-	t.Run("delete user secret with only secrets:list scope", func(t *testing.T) {
-		pat := patAuth("user-scope", "secrets:list")
+	t.Run("delete user secret with only secrets:read scope", func(t *testing.T) {
+		pat := patAuth("user-scope", "secrets:read")
 		rec := env.doRequest(t, http.MethodDelete, "/api/v1/user/secrets/MY_KEY", "", pat)
 		if rec.Code != http.StatusForbidden {
 			t.Errorf("DELETE /api/v1/user/secrets/MY_KEY status = %d; want %d",
@@ -153,7 +153,7 @@ func TestSecretAuthz_OrgNonMember_AntiEnumeration(t *testing.T) {
 	env.seedOrg(t, "org-private", "Private Org", "private-org")
 
 	t.Run("list org secrets as non-member PAT", func(t *testing.T) {
-		pat := patAuth("user-nonmember", "secrets:manage")
+		pat := patAuth("user-nonmember", "secrets:write")
 		rec := env.doRequest(t, http.MethodGet, "/api/v1/orgs/private-org/secrets", "", pat)
 		if rec.Code != http.StatusNotFound {
 			t.Errorf("GET /api/v1/orgs/private-org/secrets status = %d; want %d",
@@ -162,7 +162,7 @@ func TestSecretAuthz_OrgNonMember_AntiEnumeration(t *testing.T) {
 	})
 
 	t.Run("create org secrets as non-member PAT", func(t *testing.T) {
-		pat := patAuth("user-nonmember", "secrets:manage")
+		pat := patAuth("user-nonmember", "secrets:write")
 		body := `{"entries":[{"key":"SECRET","value":"val"}]}`
 		rec := env.doRequest(t, http.MethodPost, "/api/v1/orgs/private-org/secrets", body, pat)
 		if rec.Code != http.StatusNotFound {
@@ -191,7 +191,7 @@ func TestSecretAuthz_WorkspaceNonOwner_AntiEnumeration(t *testing.T) {
 	env.seedWorkspaceForTest(t, "user-a-workspace", "user-a")
 
 	t.Run("list workspace secrets as non-owner PAT", func(t *testing.T) {
-		pat := patAuth("user-b", "secrets:manage")
+		pat := patAuth("user-b", "secrets:write")
 		rec := env.doRequest(t, http.MethodGet, "/api/v1/workspaces/user-a-workspace/secrets", "", pat)
 		if rec.Code != http.StatusNotFound {
 			t.Errorf("GET /api/v1/workspaces/user-a-workspace/secrets status = %d; want %d",
@@ -200,7 +200,7 @@ func TestSecretAuthz_WorkspaceNonOwner_AntiEnumeration(t *testing.T) {
 	})
 
 	t.Run("create workspace secrets as non-owner PAT", func(t *testing.T) {
-		pat := patAuth("user-b", "secrets:manage")
+		pat := patAuth("user-b", "secrets:write")
 		body := `{"entries":[{"key":"SECRET","value":"val"}]}`
 		rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/user-a-workspace/secrets", body, pat)
 		if rec.Code != http.StatusNotFound {
@@ -219,7 +219,7 @@ func TestSecretAuthz_WorkspaceNonOwner_AntiEnumeration(t *testing.T) {
 	})
 
 	t.Run("delete workspace secret as non-owner PAT", func(t *testing.T) {
-		pat := patAuth("user-b", "secrets:delete")
+		pat := patAuth("user-b", "secrets:write")
 		rec := env.doRequest(t, http.MethodDelete, "/api/v1/workspaces/user-a-workspace/secrets/KEY", "", pat)
 		if rec.Code != http.StatusNotFound {
 			t.Errorf("DELETE /api/v1/workspaces/user-a-workspace/secrets/KEY status = %d; want %d",
@@ -260,7 +260,7 @@ func TestSecretAuthz_Unauthenticated(t *testing.T) {
 }
 
 // TestSecretAuthz_PATManageScopeAntiEnumOrgNonMember verifies that a PAT with
-// secrets:manage targeting an org the holder is not a member of still gets 404.
+// secrets:write targeting an org the holder is not a member of still gets 404.
 // Requirement: 07-REQ-7.E2
 func TestSecretAuthz_PATManageScopeAntiEnumOrgNonMember(t *testing.T) {
 	env := newHandlerTestEnv(t)
@@ -268,7 +268,7 @@ func TestSecretAuthz_PATManageScopeAntiEnumOrgNonMember(t *testing.T) {
 	env.seedOrg(t, "org-enum-test", "Enum Org", "enum-org")
 	// user-outsider is NOT a member.
 
-	pat := patAuth("user-outsider", "secrets:manage")
+	pat := patAuth("user-outsider", "secrets:write")
 	rec := env.doRequest(t, http.MethodGet, "/api/v1/orgs/enum-org/secrets", "", pat)
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("GET /api/v1/orgs/enum-org/secrets status = %d; want %d (anti-enumeration)",

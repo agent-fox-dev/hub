@@ -100,8 +100,8 @@ func runCarryPatchSync(cfg SyncAPIConfig, c echo.Context) (*CarryPatchSyncRespon
 	if auth == nil {
 		return nil, apikit.WriteAPIError(c, http.StatusUnauthorized, "authentication required")
 	}
-	if isPAT(auth) && !hasScope(auth, "workspaces:sync", "workspaces:write") {
-		return nil, apikit.WriteAPIError(c, http.StatusForbidden, "missing required scope: workspaces:sync")
+	if isPAT(auth) && !hasScope(auth, "workspaces:write") {
+		return nil, apikit.WriteAPIError(c, http.StatusForbidden, "missing required scope: workspaces:write")
 	}
 
 	slug := c.Param("slug")

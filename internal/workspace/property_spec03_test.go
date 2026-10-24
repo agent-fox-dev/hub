@@ -478,7 +478,7 @@ func TestSpec03_Group5_UpdatedAtAdvances(t *testing.T) {
 }
 
 // =============================================================================
-// Task 5.3: Property tests — immutable fields unchanged; workspaces:delete no
+// Task 5.3: Property tests — immutable fields unchanged; workspaces:write no
 // read; existing scopes stable
 // TS-03-P5, TS-03-P6, TS-03-P7
 // Requirements: 03-REQ-4.7, 03-REQ-2.3, 03-REQ-2.5
@@ -585,16 +585,16 @@ func TestSpec03_Group5_ImmutableFieldsUnchanged(t *testing.T) {
 	}
 }
 
-// TS-03-P6: For any PAT holding only workspaces:delete (without workspaces:read
-// or workspaces:write), list and get workspace requests are always denied with
+// TS-03-P6: For any PAT holding no workspaces scope (another resource's
+// write scope only), list and get workspace requests are always denied with
 // HTTP 404.
 //
 // Property: 03-PROP-6
 // Validates: 03-REQ-2.5, 03-REQ-2.E1
 //
 // Strategy: Create multiple workspaces owned by the PAT user, issue list and
-// get requests with a delete-only PAT, assert all return 404.
-func TestSpec03_Group5_DeletePATNoReadAccess(t *testing.T) {
+// get requests with a PAT holding only patches:write, assert all return 404.
+func TestSpec03_Group5_OtherScopePATNoReadAccess(t *testing.T) {
 	env := newTestEnv(t)
 
 	// Create multiple workspaces for the PAT user.
@@ -608,8 +608,8 @@ func TestSpec03_Group5_DeletePATNoReadAccess(t *testing.T) {
 		})
 	}
 
-	// PAT with ONLY workspaces:delete — no read, no write.
-	deleteOnlyAuth := patAuth("del-pat-user", "workspaces:delete")
+	// PAT with ONLY patches:write — no workspaces scope at all.
+	deleteOnlyAuth := patAuth("del-pat-user", "patches:write")
 
 	// List must return 404.
 	t.Run("list_denied", func(t *testing.T) {
@@ -640,9 +640,9 @@ func TestSpec03_Group5_DeletePATNoReadAccess(t *testing.T) {
 	}
 }
 
-// TS-03-P7: For any PAT holding workspaces:read or workspaces:create, the set
+// TS-03-P7: For any PAT holding workspaces:read or workspaces:write, the set
 // of accessible endpoints and returned responses are identical to those
-// accessible before the introduction of workspaces:write and workspaces:delete.
+// accessible before the introduction of workspaces:write and workspaces:write.
 //
 // Property: 03-PROP-7
 // Validates: 03-REQ-2.3
@@ -664,7 +664,6 @@ func TestSpec03_Group5_ExistingScopesStable(t *testing.T) {
 		auth *apikit.AuthInfo
 	}{
 		{"workspaces:read", patAuth("scope-user", "workspaces:read")},
-		{"workspaces:create", patAuth("scope-user", "workspaces:create")},
 	}
 
 	for _, pat := range pats {

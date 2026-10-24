@@ -13,27 +13,14 @@ import (
 
 // --- Auth helpers using apikit.AuthInfo directly ---
 
-func canSecretsManage(auth *apikit.AuthInfo) bool { return wsaccess.HasScope(auth, "secrets:manage") }
-func canSecretsList(auth *apikit.AuthInfo) bool {
-	return wsaccess.HasScope(auth, "secrets:list", "secrets:manage")
+func canSecretsRead(auth *apikit.AuthInfo) bool {
+	return wsaccess.HasScope(auth, "secrets:read", "secrets:write")
 }
-func canSecretsWrite(auth *apikit.AuthInfo) bool {
-	return wsaccess.HasScope(auth, "secrets:write", "secrets:manage")
-}
-func canSecretsDelete(auth *apikit.AuthInfo) bool {
-	return wsaccess.HasScope(auth, "secrets:delete", "secrets:manage")
-}
-
-func canVarsManage(auth *apikit.AuthInfo) bool { return wsaccess.HasScope(auth, "vars:manage") }
+func canSecretsWrite(auth *apikit.AuthInfo) bool { return wsaccess.HasScope(auth, "secrets:write") }
 func canVarsRead(auth *apikit.AuthInfo) bool {
-	return wsaccess.HasScope(auth, "vars:read", "vars:write", "vars:manage")
+	return wsaccess.HasScope(auth, "vars:read", "vars:write")
 }
-func canVarsWrite(auth *apikit.AuthInfo) bool {
-	return wsaccess.HasScope(auth, "vars:write", "vars:manage")
-}
-func canVarsDelete(auth *apikit.AuthInfo) bool {
-	return wsaccess.HasScope(auth, "vars:delete", "vars:manage")
-}
+func canVarsWrite(auth *apikit.AuthInfo) bool { return wsaccess.HasScope(auth, "vars:write") }
 
 // requireUserIdentity rejects credentials that carry no user identity (admin
 // tokens) on user-scoped endpoints. Admin tokens have UserID == "", so letting
@@ -226,7 +213,7 @@ func handleCreateUserSecrets(store *Store) echo.HandlerFunc {
 		if auth == nil {
 			return respondError(c, http.StatusUnauthorized, "authentication required")
 		}
-		if wsaccess.IsPAT(auth) && !canSecretsManage(auth) {
+		if wsaccess.IsPAT(auth) && !canSecretsWrite(auth) {
 			return respondError(c, http.StatusForbidden, "insufficient permission scope")
 		}
 		if !requireUserIdentity(c, auth) {
@@ -242,7 +229,7 @@ func handleListUserSecrets(store *Store) echo.HandlerFunc {
 		if auth == nil {
 			return respondError(c, http.StatusUnauthorized, "authentication required")
 		}
-		if wsaccess.IsPAT(auth) && !canSecretsList(auth) {
+		if wsaccess.IsPAT(auth) && !canSecretsRead(auth) {
 			return respondError(c, http.StatusForbidden, "insufficient permission scope")
 		}
 		if !requireUserIdentity(c, auth) {
@@ -274,7 +261,7 @@ func handleDeleteUserSecret(store *Store) echo.HandlerFunc {
 		if auth == nil {
 			return respondError(c, http.StatusUnauthorized, "authentication required")
 		}
-		if wsaccess.IsPAT(auth) && !canSecretsDelete(auth) {
+		if wsaccess.IsPAT(auth) && !canSecretsWrite(auth) {
 			return respondError(c, http.StatusForbidden, "insufficient permission scope")
 		}
 		if !requireUserIdentity(c, auth) {
@@ -292,7 +279,7 @@ func handleCreateOrgSecrets(store *Store, db *sql.DB) echo.HandlerFunc {
 		if auth == nil {
 			return respondError(c, http.StatusUnauthorized, "authentication required")
 		}
-		if wsaccess.IsPAT(auth) && !canSecretsManage(auth) {
+		if wsaccess.IsPAT(auth) && !canSecretsWrite(auth) {
 			return respondError(c, http.StatusForbidden, "insufficient permission scope")
 		}
 		orgID, code, msg := resolveOrgScope(db, auth, c.Param("slug"))
@@ -309,7 +296,7 @@ func handleListOrgSecrets(store *Store, db *sql.DB) echo.HandlerFunc {
 		if auth == nil {
 			return respondError(c, http.StatusUnauthorized, "authentication required")
 		}
-		if wsaccess.IsPAT(auth) && !canSecretsList(auth) {
+		if wsaccess.IsPAT(auth) && !canSecretsRead(auth) {
 			return respondError(c, http.StatusForbidden, "insufficient permission scope")
 		}
 		orgID, code, msg := resolveOrgScope(db, auth, c.Param("slug"))
@@ -343,7 +330,7 @@ func handleDeleteOrgSecret(store *Store, db *sql.DB) echo.HandlerFunc {
 		if auth == nil {
 			return respondError(c, http.StatusUnauthorized, "authentication required")
 		}
-		if wsaccess.IsPAT(auth) && !canSecretsDelete(auth) {
+		if wsaccess.IsPAT(auth) && !canSecretsWrite(auth) {
 			return respondError(c, http.StatusForbidden, "insufficient permission scope")
 		}
 		orgID, code, msg := resolveOrgScope(db, auth, c.Param("slug"))
@@ -362,7 +349,7 @@ func handleCreateWorkspaceSecrets(store *Store, db *sql.DB) echo.HandlerFunc {
 		if auth == nil {
 			return respondError(c, http.StatusUnauthorized, "authentication required")
 		}
-		if wsaccess.IsPAT(auth) && !canSecretsManage(auth) {
+		if wsaccess.IsPAT(auth) && !canSecretsWrite(auth) {
 			return respondError(c, http.StatusForbidden, "insufficient permission scope")
 		}
 		slug := c.Param("slug")
@@ -379,7 +366,7 @@ func handleListWorkspaceSecrets(store *Store, db *sql.DB) echo.HandlerFunc {
 		if auth == nil {
 			return respondError(c, http.StatusUnauthorized, "authentication required")
 		}
-		if wsaccess.IsPAT(auth) && !canSecretsList(auth) {
+		if wsaccess.IsPAT(auth) && !canSecretsRead(auth) {
 			return respondError(c, http.StatusForbidden, "insufficient permission scope")
 		}
 		slug := c.Param("slug")
@@ -413,7 +400,7 @@ func handleDeleteWorkspaceSecret(store *Store, db *sql.DB) echo.HandlerFunc {
 		if auth == nil {
 			return respondError(c, http.StatusUnauthorized, "authentication required")
 		}
-		if wsaccess.IsPAT(auth) && !canSecretsDelete(auth) {
+		if wsaccess.IsPAT(auth) && !canSecretsWrite(auth) {
 			return respondError(c, http.StatusForbidden, "insufficient permission scope")
 		}
 		slug := c.Param("slug")
@@ -490,7 +477,7 @@ func handleCreateUserVars(store *Store) echo.HandlerFunc {
 		if auth == nil {
 			return respondError(c, http.StatusUnauthorized, "authentication required")
 		}
-		if wsaccess.IsPAT(auth) && !canVarsManage(auth) {
+		if wsaccess.IsPAT(auth) && !canVarsWrite(auth) {
 			return respondError(c, http.StatusForbidden, "insufficient permission scope")
 		}
 		if !requireUserIdentity(c, auth) {
@@ -538,7 +525,7 @@ func handleDeleteUserVar(store *Store) echo.HandlerFunc {
 		if auth == nil {
 			return respondError(c, http.StatusUnauthorized, "authentication required")
 		}
-		if wsaccess.IsPAT(auth) && !canVarsDelete(auth) {
+		if wsaccess.IsPAT(auth) && !canVarsWrite(auth) {
 			return respondError(c, http.StatusForbidden, "insufficient permission scope")
 		}
 		if !requireUserIdentity(c, auth) {
@@ -556,7 +543,7 @@ func handleCreateOrgVars(store *Store, db *sql.DB) echo.HandlerFunc {
 		if auth == nil {
 			return respondError(c, http.StatusUnauthorized, "authentication required")
 		}
-		if wsaccess.IsPAT(auth) && !canVarsManage(auth) {
+		if wsaccess.IsPAT(auth) && !canVarsWrite(auth) {
 			return respondError(c, http.StatusForbidden, "insufficient permission scope")
 		}
 		orgID, code, msg := resolveOrgScope(db, auth, c.Param("slug"))
@@ -607,7 +594,7 @@ func handleDeleteOrgVar(store *Store, db *sql.DB) echo.HandlerFunc {
 		if auth == nil {
 			return respondError(c, http.StatusUnauthorized, "authentication required")
 		}
-		if wsaccess.IsPAT(auth) && !canVarsDelete(auth) {
+		if wsaccess.IsPAT(auth) && !canVarsWrite(auth) {
 			return respondError(c, http.StatusForbidden, "insufficient permission scope")
 		}
 		orgID, code, msg := resolveOrgScope(db, auth, c.Param("slug"))
@@ -626,7 +613,7 @@ func handleCreateWorkspaceVars(store *Store, db *sql.DB) echo.HandlerFunc {
 		if auth == nil {
 			return respondError(c, http.StatusUnauthorized, "authentication required")
 		}
-		if wsaccess.IsPAT(auth) && !canVarsManage(auth) {
+		if wsaccess.IsPAT(auth) && !canVarsWrite(auth) {
 			return respondError(c, http.StatusForbidden, "insufficient permission scope")
 		}
 		slug := c.Param("slug")
@@ -677,7 +664,7 @@ func handleDeleteWorkspaceVar(store *Store, db *sql.DB) echo.HandlerFunc {
 		if auth == nil {
 			return respondError(c, http.StatusUnauthorized, "authentication required")
 		}
-		if wsaccess.IsPAT(auth) && !canVarsDelete(auth) {
+		if wsaccess.IsPAT(auth) && !canVarsWrite(auth) {
 			return respondError(c, http.StatusForbidden, "insufficient permission scope")
 		}
 		slug := c.Param("slug")

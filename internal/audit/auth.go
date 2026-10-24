@@ -27,9 +27,10 @@ func hasSessionsWrite(auth *apikit.AuthInfo) bool {
 	return hasScope(auth, "sessions:write")
 }
 
-// hasSessionsRead reports whether the credential has sessions:read scope.
+// hasSessionsRead reports whether the credential has sessions:read scope,
+// which sessions:write implies.
 func hasSessionsRead(auth *apikit.AuthInfo) bool {
-	return hasScope(auth, "sessions:read")
+	return hasScope(auth, "sessions:read", "sessions:write")
 }
 
 // hasAuditWrite reports whether the credential has audit:write scope.
@@ -37,9 +38,10 @@ func hasAuditWrite(auth *apikit.AuthInfo) bool {
 	return hasScope(auth, "audit:write")
 }
 
-// hasAuditRead reports whether the credential has audit:read scope.
+// hasAuditRead reports whether the credential has audit:read scope, which
+// audit:write implies.
 func hasAuditRead(auth *apikit.AuthInfo) bool {
-	return hasScope(auth, "audit:read")
+	return hasScope(auth, "audit:read", "audit:write")
 }
 
 // requireAuth extracts and validates authentication from the request context.

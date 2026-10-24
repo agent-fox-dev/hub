@@ -12,7 +12,7 @@ import (
 func TestVarCreate_Success(t *testing.T) {
 	env := newHandlerTestEnv(t)
 
-	auth := patAuth("user-var-create", "vars:manage")
+	auth := patAuth("user-var-create", "vars:write")
 	body := `{"entries":[{"key":"DB_HOST","value":"localhost:5432"},{"key":"DB_NAME","value":"mydb"}]}`
 	rec := env.doRequest(t, http.MethodPost, "/api/v1/user/vars", body, auth)
 
@@ -62,7 +62,7 @@ func TestVarCreate_Success(t *testing.T) {
 func TestVarCreate_ResponseIncludesDecodedValue(t *testing.T) {
 	env := newHandlerTestEnv(t)
 
-	auth := patAuth("user-var-decoded", "vars:manage")
+	auth := patAuth("user-var-decoded", "vars:write")
 	body := `{"entries":[{"key":"MY_VAR","value":"plain-text-value"}]}`
 	rec := env.doRequest(t, http.MethodPost, "/api/v1/user/vars", body, auth)
 
@@ -84,7 +84,7 @@ func TestVarCreate_ResponseIncludesDecodedValue(t *testing.T) {
 func TestVarCreate_EmptyEntries(t *testing.T) {
 	env := newHandlerTestEnv(t)
 
-	auth := patAuth("user-var-empty", "vars:manage")
+	auth := patAuth("user-var-empty", "vars:write")
 	body := `{"entries":[]}`
 	rec := env.doRequest(t, http.MethodPost, "/api/v1/user/vars", body, auth)
 
@@ -103,7 +103,7 @@ func TestVarCreate_DuplicateKey_Conflict(t *testing.T) {
 	// Seed an existing variable for the user.
 	seedVariable(t, env.db, "user", "user-var-dup", "DB_HOST", "oldvalue")
 
-	auth := patAuth("user-var-dup", "vars:manage")
+	auth := patAuth("user-var-dup", "vars:write")
 	body := `{"entries":[{"key":"DB_HOST","value":"newvalue"},{"key":"NEW_VAR","value":"v"}]}`
 	rec := env.doRequest(t, http.MethodPost, "/api/v1/user/vars", body, auth)
 
@@ -132,7 +132,7 @@ func TestVarCreate_DuplicateKey_Conflict(t *testing.T) {
 func TestVarCreate_InvalidKeyName(t *testing.T) {
 	env := newHandlerTestEnv(t)
 
-	auth := patAuth("user-var-badkey", "vars:manage")
+	auth := patAuth("user-var-badkey", "vars:write")
 
 	tests := []struct {
 		name string
@@ -160,7 +160,7 @@ func TestVarCreate_InvalidKeyName(t *testing.T) {
 func TestVarCreate_ValueTooLarge(t *testing.T) {
 	env := newHandlerTestEnv(t)
 
-	auth := patAuth("user-var-bigval", "vars:manage")
+	auth := patAuth("user-var-bigval", "vars:write")
 	bigValue := strings.Repeat("x", MaxValueSize+1)
 	body := `{"entries":[{"key":"BIG_VAR","value":"` + bigValue + `"}]}`
 	rec := env.doRequest(t, http.MethodPost, "/api/v1/user/vars", body, auth)
@@ -179,7 +179,7 @@ func TestVarCreate_OrgScoped(t *testing.T) {
 	env.seedOrg(t, "org-var-create", "VarOrg", "var-org")
 	env.seedOrgMember(t, "org-var-create", "user-org-var")
 
-	auth := patAuth("user-org-var", "vars:manage")
+	auth := patAuth("user-org-var", "vars:write")
 	body := `{"entries":[{"key":"ORG_VAR","value":"orgval"}]}`
 	rec := env.doRequest(t, http.MethodPost, "/api/v1/orgs/var-org/vars", body, auth)
 
@@ -196,7 +196,7 @@ func TestVarCreate_WorkspaceScoped(t *testing.T) {
 
 	env.seedWorkspaceForTest(t, "ws-var-create", "user-ws-var")
 
-	auth := patAuth("user-ws-var", "vars:manage")
+	auth := patAuth("user-ws-var", "vars:write")
 	body := `{"entries":[{"key":"WS_VAR","value":"wsval"}]}`
 	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/ws-var-create/vars", body, auth)
 
@@ -211,7 +211,7 @@ func TestVarCreate_WorkspaceScoped(t *testing.T) {
 func TestVarCreate_OrgNotFound(t *testing.T) {
 	env := newHandlerTestEnv(t)
 
-	auth := patAuth("user-var-nforg", "vars:manage")
+	auth := patAuth("user-var-nforg", "vars:write")
 	body := `{"entries":[{"key":"VAR","value":"v"}]}`
 	rec := env.doRequest(t, http.MethodPost, "/api/v1/orgs/nonexistent-org/vars", body, auth)
 
@@ -222,7 +222,7 @@ func TestVarCreate_OrgNotFound(t *testing.T) {
 }
 
 // TestVarCreate_PATVarsReadCannotCreate verifies that a PAT with vars:read
-// but not vars:manage cannot create variables.
+// but not vars:write cannot create variables.
 // Requirement: 07-REQ-12.E3
 func TestVarCreate_PATVarsReadCannotCreate(t *testing.T) {
 	env := newHandlerTestEnv(t)
