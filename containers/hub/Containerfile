@@ -32,7 +32,11 @@ COPY --from=agentkit . /build/agentkit-go
 COPY --from=aflib . /build/aflib
 
 WORKDIR /build/hub
+# The carry-patch module at ./carrypatch is a replace target of go.mod; its
+# own go.mod replaces apikit and aflib at ../../apikit and ../../aflib, which
+# resolve to /build/apikit and /build/aflib from here.
 COPY go.mod go.sum ./
+COPY carrypatch/go.mod carrypatch/go.sum ./carrypatch/
 RUN go mod download
 
 COPY . .
@@ -67,8 +71,8 @@ FROM ${RUNTIME}
 # ubi-micro has no package manager and thus no way to provide libstdc++,
 # which the cgo-enabled go-duckdb dependency needs at runtime. ubi-minimal
 # gives us microdnf to install that shared library plus the git CLI, which
-# internal/gitcmd shells out to for merge, rebase, and carry-patch rebuild
-# operations (gitcmd.New requires git >= 2.38 on PATH).
+# the carry-patch module's gitcmd package shells out to for merge, rebase, and
+# carry-patch rebuild operations (gitcmd.New requires git >= 2.38 on PATH).
 RUN microdnf install -y --setopt=install_weak_deps=0 libstdc++ git-core && \
     microdnf clean all
 
