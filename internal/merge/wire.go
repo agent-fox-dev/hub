@@ -11,7 +11,7 @@ import (
 	git "github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing/transport"
 
-	"github.com/agent-fox-dev/hub/internal/gitcmd"
+	"github.com/agent-fox-dev/carrypatch/gitcmd"
 )
 
 // DefaultFetchFunc returns a FetchFunc that uses go-git to fetch from the

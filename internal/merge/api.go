@@ -15,8 +15,8 @@ import (
 	"github.com/txsvc/apikit"
 
 	"github.com/agent-fox-dev/aflib/jobqueue"
+	"github.com/agent-fox-dev/carrypatch/gitcmd"
 	"github.com/agent-fox-dev/hub/internal/audit"
-	"github.com/agent-fox-dev/hub/internal/gitcmd"
 	"github.com/agent-fox-dev/hub/internal/workspace"
 	"github.com/agent-fox-dev/hub/internal/wsaccess"
 	"github.com/agent-fox-dev/hub/internal/wslock"

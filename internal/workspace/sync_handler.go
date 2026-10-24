@@ -122,18 +122,18 @@ func handleSyncWorkspace(db *sql.DB) echo.HandlerFunc {
 
 		// ---- carry_patch mode delegation (16-REQ-5) ----
 		// If the workspace is in carry_patch mode and a carry-patch sync hook
-		// is registered, delegate to it. The hook handles upstream fetch,
+		// is registered, delegate to it. The extension handles upstream fetch,
 		// merge detection, and auto-rebuild enqueue independently of the
 		// standard sync flow.
 		//
-		// 16-REQ-5.1 requires the carry-patch fields to be returned "in
-		// addition to standard sync fields", so the hook returns them as a
-		// map and this handler merges them into the workspace response. The
-		// workspace row is re-read first so that upstream_head_sha and
-		// last_sync_at reflect the writes the hook just made.
-		if ws.WorkspaceMode == "carry_patch" && carryPatchSyncHook != nil {
+		// The carry-patch fields are returned in addition to the standard
+		// sync fields, so the extension returns them as a map and this
+		// handler merges them into the workspace response. The workspace row
+		// is re-read first so that upstream_head_sha and last_sync_at reflect
+		// the writes the extension just made.
+		if ws.WorkspaceMode == "carry_patch" && syncExtension != nil {
 			repoPath := filepath.Join(defaultWorkspaceRoot, slug, "trunk")
-			extras, handled, hookErr := carryPatchSyncHook(c, slug, repoPath)
+			extras, handled, hookErr := syncExtension(c, slug, repoPath)
 			if hookErr != nil {
 				return hookErr
 			}

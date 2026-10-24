@@ -15,6 +15,7 @@ import (
 	"github.com/labstack/echo/v4"
 	"github.com/txsvc/apikit"
 
+	"github.com/agent-fox-dev/carrypatch"
 	"github.com/agent-fox-dev/hub/internal/audit"
 	"github.com/agent-fox-dev/hub/internal/gitserver"
 	"github.com/agent-fox-dev/hub/internal/sandboxes"
@@ -43,10 +44,11 @@ func newTestEnv(t *testing.T) *testEnv {
 	// Apply test auth middleware that injects apikit.AuthInfo from X-Test-Auth header.
 	api.Use(testAuthMiddleware())
 
-	// Register workspace routes.
+	// Register workspace routes and the module's patch routes.
 	if err := RegisterRoutes(api, db); err != nil {
 		t.Fatalf("RegisterRoutes() returned error: %v", err)
 	}
+	mountPatchRoutes(api, db)
 
 	env := &testEnv{echo: e, db: db}
 
@@ -325,9 +327,11 @@ func mountRealHub(t *testing.T, server *apikit.Server, database *apikit.DB) *rea
 	perms := append(audit.Permissions(), secrets.Permissions()...)
 	perms = append(perms, sandboxes.Permissions()...)
 	perms = append(perms, gitserver.GitPermissions()...)
+	perms = append(perms, carrypatch.CarryPatchPermissions()...)
 	if err := MountWorkspaceHandlers(server, database, perms...); err != nil {
 		t.Fatalf("MountWorkspaceHandlers: %v", err)
 	}
+	mountPatchRoutes(server.APIGroup(), database.SqlDB)
 	now := apikit.NowUTC()
 	if _, err := database.SqlDB.Exec(`INSERT INTO users (id, username, email, full_name, role, status, provider, provider_id, created_at, updated_at)
 		VALUES ('u1', 'u1', 'u1@example.com', '', 'user', 'active', 'github', 'p1', ?, ?)`, now, now); err != nil {

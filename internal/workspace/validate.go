@@ -5,7 +5,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/agent-fox-dev/hub/internal/gitcmd"
+	"github.com/agent-fox-dev/carrypatch/gitcmd"
 )
 
 // slugPattern matches lowercase alphanumeric characters and hyphens, 3–64 chars.

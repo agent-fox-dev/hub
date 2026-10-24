@@ -44,6 +44,7 @@ func newSweepEnv(t *testing.T, guarded, bound bool) *testEnv {
 	if err := RegisterRoutes(api, db); err != nil {
 		t.Fatal(err)
 	}
+	mountPatchRoutes(api, db)
 	env := &testEnv{echo: e, db: db}
 	seedDefaultPersonalOrgs(t, db)
 	for _, w := range []struct{ slug, owner, status string }{

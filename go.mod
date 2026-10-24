@@ -7,6 +7,7 @@ require (
 	github.com/agent-fox-dev/aflib v0.0.0
 	github.com/agent-fox-dev/agentkit-go/sandbox v0.0.0
 	github.com/agent-fox-dev/agentkit-go/sandbox/gatewayd v0.0.0
+	github.com/agent-fox-dev/carrypatch v0.0.0
 	github.com/go-git/go-git/v5 v5.19.3
 	github.com/google/uuid v1.6.0
 	github.com/labstack/echo/v4 v4.16.0
@@ -14,11 +15,9 @@ require (
 	github.com/prometheus/client_golang v1.25.0
 	github.com/prometheus/client_model v0.6.3
 	github.com/spf13/cobra v1.10.2
-	github.com/spf13/pflag v1.0.10
 	github.com/txsvc/apikit v0.0.0
 	google.golang.org/grpc v1.83.2
 	google.golang.org/protobuf v1.36.12
-	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.60.1
 )
 
@@ -66,6 +65,7 @@ require (
 	github.com/sergi/go-diff v1.4.0 // indirect
 	github.com/sirupsen/logrus v1.10.2 // indirect
 	github.com/skeema/knownhosts v1.3.3 // indirect
+	github.com/spf13/pflag v1.0.10 // indirect
 	github.com/tree-sitter-grammars/tree-sitter-kotlin v1.1.0 // indirect
 	github.com/tree-sitter-grammars/tree-sitter-lua v0.5.0 // indirect
 	github.com/tree-sitter/go-tree-sitter v0.25.0 // indirect
@@ -102,6 +102,8 @@ require (
 replace github.com/txsvc/apikit => ../apikit
 
 replace github.com/agent-fox-dev/aflib => ../aflib
+
+replace github.com/agent-fox-dev/carrypatch => ./carrypatch
 
 replace github.com/agent-fox-dev/agentkit-go => ../agentkit-go
 

@@ -16,7 +16,7 @@ import (
 	"github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing/transport"
 
-	"github.com/agent-fox-dev/hub/internal/gitcmd"
+	"github.com/agent-fox-dev/carrypatch/gitcmd"
 )
 
 var fortyHex = regexp.MustCompile(`^[0-9a-f]{40}$`)

@@ -15,9 +15,10 @@ import (
 	"github.com/txsvc/apikit"
 
 	"github.com/agent-fox-dev/aflib/jobqueue"
+	"github.com/agent-fox-dev/carrypatch"
 	"github.com/agent-fox-dev/hub/internal/audit"
 	"github.com/agent-fox-dev/hub/internal/boundtoken"
-	"github.com/agent-fox-dev/hub/internal/carrypatch"
+	"github.com/agent-fox-dev/hub/internal/cphost"
 	"github.com/agent-fox-dev/hub/internal/forge"
 	"github.com/agent-fox-dev/hub/internal/gitserver"
 	"github.com/agent-fox-dev/hub/internal/merge"
@@ -271,7 +272,7 @@ func main() {
 	// Wire audit emitter into merge and rebuild job handlers so that
 	// complete/fail events are emitted (18-REQ-2, 18-REQ-3).
 	mergeHandler.Audit = auditEmitter
-	rebuildHandler.Audit = auditEmitter
+	rebuildHandler.Audit = cphost.Emitter(auditEmitter)
 
 	// ---------------------------------------------------------------------------
 	// Audit routes (specs 17-19)
@@ -396,29 +397,23 @@ func main() {
 	forge.RegisterRoutes(server.APIGroup(), forgeConfig)
 
 	// ---------------------------------------------------------------------------
-	// Carry-patch HTTP routes (spec 16)
+	// Carry-patch module
 	// ---------------------------------------------------------------------------
 
-	// Mount carry-patch REST API routes.
-	cpAPI := server.APIGroup()
-
-	// Rebuild submission and history, rollback, rebuild preview, rerere and the
-	// patch-status dashboard.
-	carrypatch.RegisterRoutes(cpAPI, carrypatch.APIConfig{
-		DB:            database.SqlDB,
-		Queue:         mergeQueue,
-		WorkspaceRoot: cfg.Workspace.Path,
-		NewGitRunner:  cpGitRunnerFactory,
-		PatchStore:    cpPatchStore,
-		GetVariable:   store.GetVariableValue,
-		Audit:         auditEmitter,
-	})
-
-	// Register the recovery hook so that GET /patches/:id can read
-	// replaced_sha, DELETE /patches/:id can clean up backup refs, and
-	// POST /patches/:id/reset-to-origin can move a patch branch to the
-	// fork's current tip (23-REQ-9.3).
-	workspace.RegisterRecoveryHook(&carrypatch.RecoveryService{
+	// The carry-patch module (github.com/agent-fox-dev/carrypatch) knows the
+	// hub only through internal/cphost: the per-workspace locks and the
+	// workspace access rule it is bound to here, the audit emitter each
+	// configuration carries, and the git hooks the git server is handed below.
+	cphost.Bind()
+	cpAudit := cphost.Emitter(auditEmitter)
+	cpResolveBranch := carrypatch.NewBranchResolverHook(
+		cpGitRunnerFactory,
+		cfg.Workspace.Path,
+		store.GetVariableValue,
+		resolveOriginAuth,
+		carrypatch.DefaultSingleBranchFetch(),
+	)
+	cpRecovery := &carrypatch.RecoveryService{
 		NewGitRunner:  cpGitRunnerFactory,
 		WorkspaceRoot: cfg.Workspace.Path,
 		GetVariable:   store.GetVariableValue,
@@ -427,24 +422,25 @@ func main() {
 		LockFunc:      wslock.TryLock,
 		PatchStore:    cpPatchStore,
 		Queue:         mergeQueue,
+	}
+
+	// The patch list, rebuild submission and history, rollback, rebuild
+	// preview, rerere and the patch-status dashboard.
+	carrypatch.RegisterRoutes(server.APIGroup(), carrypatch.APIConfig{
+		DB:            database.SqlDB,
+		Queue:         mergeQueue,
+		WorkspaceRoot: cfg.Workspace.Path,
+		NewGitRunner:  cpGitRunnerFactory,
+		PatchStore:    cpPatchStore,
+		GetVariable:   store.GetVariableValue,
+		ResolveBranch: cpResolveBranch,
+		Recovery:      cpRecovery,
+		Audit:         cpAudit,
 	})
 
-	// Register the branch-check hook so that POST /patches validates and
-	// resolves the branch in the workspace git repository before inserting.
-	// The carrypatch resolver checks refs/heads/<name>, then
-	// refs/remotes/origin/<name>, and in origin mode fetches the branch
-	// from the fork (21-REQ-1, 21-REQ-9.3).
-	workspace.RegisterBranchCheckHook(carrypatch.NewBranchResolverHook(
-		cpGitRunnerFactory,
-		cfg.Workspace.Path,
-		store.GetVariableValue,
-		resolveOriginAuth,
-		carrypatch.DefaultSingleBranchFetch(),
-	))
-
-	// Register the carry-patch sync hook so that POST /sync for carry_patch
-	// workspaces delegates to the carry-patch sync extension (16-REQ-5).
-	workspace.RegisterCarryPatchSyncHook(carrypatch.NewCarryPatchSyncHook(
+	// POST /sync on a carry_patch workspace runs the module's sync: upstream
+	// fetch, merge detection and the auto-rebuild.
+	workspace.RegisterSyncExtension(carrypatch.NewCarryPatchSyncHook(
 		carrypatch.SyncAPIConfig{
 			DB:                database.SqlDB,
 			Queue:             mergeQueue,
@@ -456,33 +452,29 @@ func main() {
 			PatchStore:        cpPatchStore,
 			FetchOrigin:       carrypatch.DefaultFetchOriginFunc(),
 			ResolveOriginAuth: resolveOriginAuth,
-			Audit:             auditEmitter,
+			Audit:             cpAudit,
 		},
 	))
 
-	// Register the carry-patch pre-receive hook for push control (22-REQ-9.1).
-	// In origin mode it rejects or forwards hub pushes to registered patch
-	// branches; in hub mode it lets them through (mirroring is post-push).
-	gitserver.RegisterPreReceiveHook(carrypatch.NewPreReceiveHook(carrypatch.PreReceiveHookDeps{
+	// Push control: in origin mode the pre-receive hook rejects or forwards
+	// hub pushes to registered patch branches; in hub mode it lets them
+	// through. After a push the post-push hook enqueues a rebuild for a
+	// registered patch branch (unless AUTO_REBUILD_AFTER_PUSH is "false")
+	// and, in hub mode with PUSH_PATCHES_TO_ORIGIN, mirrors it to the fork.
+	gitserver.RegisterPreReceiveHook(cphost.PreReceive(carrypatch.NewPreReceiveHook(carrypatch.PreReceiveHookDeps{
 		GetVariable:   store.GetVariableValue,
 		ResolveAuth:   resolveOriginAuth,
 		WorkspaceRoot: cfg.Workspace.Path,
-	}))
-
-	// Register the post-push hook for auto-rebuild on patch branch push (issue #14).
-	// When a push targets a branch registered as a patch in a carry_patch workspace,
-	// and AUTO_REBUILD_AFTER_PUSH is not "false", enqueue a rebuild job.
-	// In hub mode with PUSH_PATCHES_TO_ORIGIN=true, the hook also mirrors
-	// registered patch branches to the fork after the rebuild enqueue (22-REQ-6).
-	gitserver.RegisterPostPushHook(carrypatch.NewPostPushRebuildHook(
+	})))
+	gitserver.RegisterPostPushHook(cphost.PostPush(carrypatch.NewPostPushRebuildHook(
 		mergeQueue,
 		store.GetVariableValue,
 		carrypatch.PostPushMirrorDeps{
 			ResolveAuth:   resolveOriginAuth,
 			WorkspaceRoot: cfg.Workspace.Path,
-			Audit:         auditEmitter,
+			Audit:         cpAudit,
 		},
-	))
+	)))
 
 	// Set the audit emitter for git server push events (18-REQ-5.2).
 	gitserver.SetAuditEmitter(auditEmitter)
