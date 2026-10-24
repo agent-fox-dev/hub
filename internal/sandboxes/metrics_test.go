@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/agent-fox-dev/agentkit-go/sandbox"
 	"github.com/agent-fox-dev/hub/internal/audit"
+	"github.com/agent-fox-dev/hub/internal/testutil"
 )
 
 // afhub_sandboxes_active goes up when a lease becomes active and down when it
@@ -78,19 +78,12 @@ func TestMetrics_Recalibrate(t *testing.T) {
 	}
 	// A failed read leaves the gauge alone.
 	env.metrics.SandboxesActive.WithLabelValues("kept").Set(3)
-	testutil_exec(t, env, `ALTER TABLE sandbox_leases RENAME TO away`)
+	testutil.Exec(t, env.db, `ALTER TABLE sandbox_leases RENAME TO away`)
 	if err := env.sweeper.recalibrate(context.Background()); err == nil {
 		t.Error("recalibrate without the table returned nil")
 	}
 	if v, ok := series("kept"); !ok || v != 3 {
 		t.Error("a failed read changed the gauge")
-	}
-}
-
-func testutil_exec(t *testing.T, env *sweepEnv, query string) {
-	t.Helper()
-	if _, err := env.db.Exec(query); err != nil {
-		t.Fatal(err)
 	}
 }
 
@@ -142,5 +135,4 @@ func TestMetrics_NilRecordsNothingAndChangesNothing(t *testing.T) {
 	if !slices.Equal(with, without) || len(with) < 8 {
 		t.Errorf("with metrics:\n%s\nwithout:\n%s", strings.Join(with, "\n"), strings.Join(without, "\n"))
 	}
-	var _ sandbox.Spec
 }

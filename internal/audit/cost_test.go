@@ -30,16 +30,16 @@ func TestWorkspaceCost_GroupsAndDefaultsTheWindow(t *testing.T) {
 		{"?group_by=session&" + window, CostBreakdownEntry{SessionID: "s1", InputTokens: 10, Sessions: 1}},
 		{"?group_by=model&" + window, CostBreakdownEntry{Model: "m1", InputTokens: 10, Sessions: 1}},
 	} {
-		resp := decode[CostResponse](t, env.must(t, http.StatusOK, http.MethodGet, costPath+c.query, member))
+		resp := decode[CostResponse](t, env.must(t, http.StatusOK, http.MethodGet, costPath+c.query, "", member))
 		if resp.Workspace != "w" || resp.Totals != (CostTotals{InputTokens: 10, OutputTokens: 5, Sessions: 2}) || len(resp.Breakdown) != 2 || resp.Breakdown[0] != c.want {
 			t.Errorf("%s: %+v", c.query, resp)
 		}
 	}
-	recent := decode[CostResponse](t, env.must(t, http.StatusOK, http.MethodGet, costPath, owner))
+	recent := decode[CostResponse](t, env.must(t, http.StatusOK, http.MethodGet, costPath, "", owner))
 	if recent.Totals != (CostTotals{CacheReadTokens: 7, Sessions: 1}) || recent.Period.Since == "" || recent.Period.Until == "" {
 		t.Errorf("default window: %+v", recent)
 	}
-	if empty := decode[CostResponse](t, env.must(t, http.StatusOK, http.MethodGet, costPath+"?since=2020-01-01T00:00:00Z&until=2020-01-02T00:00:00Z", admin)); len(empty.Breakdown) != 0 || empty.Totals.Sessions != 0 {
+	if empty := decode[CostResponse](t, env.must(t, http.StatusOK, http.MethodGet, costPath+"?since=2020-01-01T00:00:00Z&until=2020-01-02T00:00:00Z", "", admin)); len(empty.Breakdown) != 0 || empty.Totals.Sessions != 0 {
 		t.Errorf("empty window: %+v", empty)
 	}
 }

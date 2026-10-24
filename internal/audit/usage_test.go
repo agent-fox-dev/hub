@@ -31,7 +31,7 @@ func TestReportUsage_RecordsIncrementsAndCounts(t *testing.T) {
 	if u.ID != uuidN(1) || u.SessionID != "s1" || u.WorkspaceSlug != "w" || u.InputTokens != 10 || u.ReportedAt == "" {
 		t.Errorf("recorded usage %+v", u)
 	}
-	again := decode[TokenUsage](t, env.must(t, http.StatusCreated, http.MethodPost, path, `{"id":"`+uuidN(1)+`","model":"m","input_tokens":99}`, owner))
+	again := decode[TokenUsage](t, env.must(t, http.StatusCreated, http.MethodPost, path, `{"id":"`+uuidN(1)+`","model":"m"}`, owner))
 	if again.InputTokens != 10 || env.count(t, "token_usage", "") != 1 {
 		t.Errorf("duplicate id recorded again: %+v", again)
 	}
@@ -85,15 +85,15 @@ func TestListSessionUsage_PagesWithTotals(t *testing.T) {
 		env.seedUsage(t, TokenUsage{ID: uuidN(i), SessionID: "s1", WorkspaceSlug: "w", Model: "m", InputTokens: 10, ReportedAt: daysAgo(3 - i)})
 	}
 	path := sessions + "/s1/usage"
-	first := decode[UsageListResponse](t, env.must(t, http.StatusOK, http.MethodGet, path+"?limit=2", member))
+	first := decode[UsageListResponse](t, env.must(t, http.StatusOK, http.MethodGet, path+"?limit=2", "", member))
 	if first.SessionID != "s1" || len(first.Records) != 2 || !first.HasMore || first.NextCursor == nil || first.Records[0].ID != uuidN(2) || first.Totals.TotalInputTokens != 30 {
 		t.Fatalf("first page: %+v", first)
 	}
-	second := decode[UsageListResponse](t, env.must(t, http.StatusOK, http.MethodGet, path+"?limit=2&cursor="+*first.NextCursor, member))
+	second := decode[UsageListResponse](t, env.must(t, http.StatusOK, http.MethodGet, path+"?limit=2&cursor="+*first.NextCursor, "", member))
 	if len(second.Records) != 1 || second.HasMore || second.Records[0].ID != uuidN(0) || second.Totals.TotalInputTokens != 30 {
 		t.Errorf("second page: %+v", second)
 	}
-	if asc := decode[UsageListResponse](t, env.must(t, http.StatusOK, http.MethodGet, path+"?order=asc&limit=x", member)); asc.Records[0].ID != uuidN(0) || len(asc.Records) != 3 {
+	if asc := decode[UsageListResponse](t, env.must(t, http.StatusOK, http.MethodGet, path+"?order=asc&limit=x", "", member)); asc.Records[0].ID != uuidN(0) || len(asc.Records) != 3 {
 		t.Errorf("ascending: %+v", asc)
 	}
 	for _, c := range []struct {

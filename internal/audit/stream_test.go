@@ -108,19 +108,19 @@ func TestSSEManager_MatchesFilters(t *testing.T) {
 		f    sseFilters
 		want bool
 	}{
-		"no filter":              {HubEvent{EventType: "hub.x", Workspace: "w"}, sseFilters{}, true},
-		"workspace match":        {HubEvent{EventType: "hub.x", Workspace: "w"}, sseFilters{workspace: "w"}, true},
-		"workspace mismatch":     {HubEvent{EventType: "hub.x", Workspace: "x"}, sseFilters{workspace: "w"}, false},
-		"readable":               {HubEvent{EventType: "hub.x", Workspace: "w"}, sseFilters{allowedWorkspaces: readable}, true},
-		"not readable":           {HubEvent{EventType: "hub.x", Workspace: "x"}, sseFilters{allowedWorkspaces: readable}, false},
-		"workspaceless":          {HubEvent{EventType: "hub.user.x"}, sseFilters{allowedWorkspaces: readable}, false},
-		"workspaceless to admin": {HubEvent{EventType: "hub.user.x"}, sseFilters{}, true},
-		"hub category":           {HubEvent{EventType: "hub.x"}, sseFilters{category: "hub"}, true},
+		"no filter":                {HubEvent{EventType: "hub.x", Workspace: "w"}, sseFilters{}, true},
+		"workspace match":          {HubEvent{EventType: "hub.x", Workspace: "w"}, sseFilters{workspace: "w"}, true},
+		"workspace mismatch":       {HubEvent{EventType: "hub.x", Workspace: "x"}, sseFilters{workspace: "w"}, false},
+		"readable":                 {HubEvent{EventType: "hub.x", Workspace: "w"}, sseFilters{allowedWorkspaces: readable}, true},
+		"not readable":             {HubEvent{EventType: "hub.x", Workspace: "x"}, sseFilters{allowedWorkspaces: readable}, false},
+		"workspaceless":            {HubEvent{EventType: "hub.user.x"}, sseFilters{allowedWorkspaces: readable}, false},
+		"workspaceless to admin":   {HubEvent{EventType: "hub.user.x"}, sseFilters{}, true},
+		"hub category":             {HubEvent{EventType: "hub.x"}, sseFilters{category: "hub"}, true},
 		"hub category drops agent": {HubEvent{EventType: "session.start"}, sseFilters{category: "hub"}, false},
-		"hub category heartbeat": {heartbeatEvent(), sseFilters{category: "hub"}, true},
-		"agent category":         {HubEvent{EventType: "session.start"}, sseFilters{category: "agent"}, true},
+		"hub category heartbeat":   {heartbeatEvent(), sseFilters{category: "hub"}, true},
+		"agent category":           {HubEvent{EventType: "session.start"}, sseFilters{category: "agent"}, true},
 		"agent category drops hub": {HubEvent{EventType: "hub.x"}, sseFilters{category: "agent"}, false},
-		"run_id ignored":         {HubEvent{EventType: "hub.x"}, sseFilters{runID: "r"}, true},
+		"run_id ignored":           {HubEvent{EventType: "hub.x"}, sseFilters{runID: "r"}, true},
 	} {
 		if got := matchesFilters(c.ev, c.f); got != c.want {
 			t.Errorf("%s: %v; want %v", name, got, c.want)

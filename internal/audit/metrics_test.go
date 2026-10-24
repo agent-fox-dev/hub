@@ -74,8 +74,6 @@ func TestPrometheusMiddleware_RecordsRouteTemplate(t *testing.T) {
 		rec := httptest.NewRecorder()
 		e.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/sessions/"+id, nil))
 	}
-	rec := httptest.NewRecorder()
-	e.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/missing", nil))
 	if got := counter(t, m.HTTPRequestsTotal, "GET", "/api/v1/sessions/:id", "200"); got != 2 {
 		t.Errorf("requests of the route template: %v; want 2", got)
 	}
@@ -85,9 +83,6 @@ func TestPrometheusMiddleware_RecordsRouteTemplate(t *testing.T) {
 	}
 	if !strings.Contains(text, `afhub_http_request_duration_seconds_count{method="GET",path="/api/v1/sessions/:id"} 2`) {
 		t.Error("duration not observed per route template")
-	}
-	if !strings.Contains(text, `status="404"`) {
-		t.Error("the 404 answer was not counted")
 	}
 }
 

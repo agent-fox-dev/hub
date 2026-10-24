@@ -2,6 +2,7 @@ package sandboxes
 
 import (
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -122,9 +123,6 @@ func TestAccess_OrgMemberAndStranger(t *testing.T) {
 		}
 	}
 	for _, auth := range []*apikit.AuthInfo{member, memberPAT} {
-		for _, rec := range []*http.Response{} {
-			_ = rec
-		}
 		for name, rec := range map[string]*httptest.ResponseRecorder{
 			"POST":   env.post("team", "{}", auth),
 			"DELETE": env.do(http.MethodDelete, "/api/v1/workspaces/team/sandboxes/"+id, "", auth),

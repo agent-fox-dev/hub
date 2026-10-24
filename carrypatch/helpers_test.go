@@ -603,6 +603,16 @@ type spyGit struct {
 	onCherryPick func(sha string) error
 	onHardReset  func(ref string) error
 	onUpdateRef  func(ref, sha string) error
+	onIsAncestor func(a, d string) error
+}
+
+func (s *spyGit) IsAncestor(ctx context.Context, a, d string) (bool, error) {
+	if s.onIsAncestor != nil {
+		if err := s.onIsAncestor(a, d); err != nil {
+			return false, err
+		}
+	}
+	return s.GitRunner.IsAncestor(ctx, a, d)
 }
 
 func (s *spyGit) Run(ctx context.Context, args ...string) (string, error) {
@@ -807,6 +817,7 @@ type env struct {
 	reads map[string]int
 
 	useRealGit bool
+	wrap       func(GitRunner) GitRunner // wraps the real runner when set
 	gitErr     error
 	audited    bool // false mounts the routes with a nil emitter
 	recovery   Recoverer
@@ -832,7 +843,11 @@ func (e *env) newGit(path string) (GitRunner, error) {
 		return nil, e.gitErr
 	}
 	if e.useRealGit {
-		return NewGitRunnerFactory()(path)
+		g, err := NewGitRunnerFactory()(path)
+		if err == nil && e.wrap != nil {
+			g = e.wrap(g)
+		}
+		return g, err
 	}
 	return e.fake, nil
 }

@@ -142,27 +142,27 @@ func TestCompleteSession_Refusals(t *testing.T) {
 func TestListSessions_FiltersAndPages(t *testing.T) {
 	env := newEnv(t)
 	for i := 0; i < 3; i++ {
-		env.seedSession(t, Session{ID: uuidN(i), WorkspaceSlug: "w", StartedAt: daysAgo(3 - i)})
+		env.seedSession(t, Session{ID: uuidN(i), WorkspaceSlug: "w", StartedAt: at(i)})
 	}
-	env.seedSession(t, Session{ID: "done", WorkspaceSlug: "w", Status: "completed", StartedAt: daysAgo(10)})
+	env.seedSession(t, Session{ID: "done", WorkspaceSlug: "w", Status: "completed", StartedAt: "2026-08-01T00:00:00Z"})
 	env.seedUsage(t, TokenUsage{ID: "u", SessionID: uuidN(2), WorkspaceSlug: "w", Model: "m", InputTokens: 5})
-	first := decode[SessionListResponse](t, env.must(t, http.StatusOK, http.MethodGet, sessions+"?limit=2&status=active", owner))
+	first := decode[SessionListResponse](t, env.must(t, http.StatusOK, http.MethodGet, sessions+"?limit=2&status=active", "", owner))
 	if len(first.Sessions) != 2 || !first.HasMore || first.NextCursor == nil || first.Sessions[0].ID != uuidN(2) || first.Sessions[0].TokenSummary.TotalInputTokens != 5 {
 		t.Fatalf("first page: %+v", first)
 	}
-	second := decode[SessionListResponse](t, env.must(t, http.StatusOK, http.MethodGet, sessions+"?limit=2&status=active&cursor="+*first.NextCursor, owner))
+	second := decode[SessionListResponse](t, env.must(t, http.StatusOK, http.MethodGet, sessions+"?limit=2&status=active&cursor="+*first.NextCursor, "", owner))
 	if len(second.Sessions) != 1 || second.HasMore || second.Sessions[0].ID != uuidN(0) {
 		t.Errorf("second page: %+v", second)
 	}
-	if got := decode[SessionListResponse](t, env.must(t, http.StatusOK, http.MethodGet, sessions+"?since="+daysAgo(2), owner)); len(got.Sessions) != 2 {
+	if got := decode[SessionListResponse](t, env.must(t, http.StatusOK, http.MethodGet, sessions+"?since="+at(1), "", owner)); len(got.Sessions) != 2 {
 		t.Errorf("since filter: %d sessions; want 2", len(got.Sessions))
 	}
-	if got := decode[SessionListResponse](t, env.must(t, http.StatusOK, http.MethodGet, sessions+"?order=asc&limit=abc", owner)); got.Sessions[0].ID != "done" {
+	if got := decode[SessionListResponse](t, env.must(t, http.StatusOK, http.MethodGet, sessions+"?order=asc&limit=abc", "", owner)); got.Sessions[0].ID != "done" {
 		t.Errorf("ascending order lists %s first; want done", got.Sessions[0].ID)
 	}
-	expect(t, env.do(t, http.MethodGet, sessions+"?cursor=***", owner), http.StatusBadRequest, "invalid cursor")
-	expect(t, env.do(t, http.MethodGet, sessions, nil), http.StatusUnauthorized, "authentication required")
-	expect(t, env.do(t, http.MethodGet, sessions, testutil.PAT("u1", "audit:read")), http.StatusForbidden, "sessions:read scope required")
+	expect(t, env.do(t, http.MethodGet, sessions+"?cursor=***", "", owner), http.StatusBadRequest, "invalid cursor")
+	expect(t, env.do(t, http.MethodGet, sessions, "", nil), http.StatusUnauthorized, "authentication required")
+	expect(t, env.do(t, http.MethodGet, sessions, "", testutil.PAT("u1", "audit:read")), http.StatusForbidden, "sessions:read scope required")
 }
 
 // Without a workspace filter a caller sees the sessions of the active
@@ -177,7 +177,7 @@ func TestListSessions_ReadableWorkspaces(t *testing.T) {
 	seen := func(auth *apikit.AuthInfo, query string) map[string]bool {
 		t.Helper()
 		got := map[string]bool{}
-		for _, s := range decode[SessionListResponse](t, env.must(t, http.StatusOK, http.MethodGet, sessions+query, auth)).Sessions {
+		for _, s := range decode[SessionListResponse](t, env.must(t, http.StatusOK, http.MethodGet, sessions+query, "", auth)).Sessions {
 			got[s.WorkspaceSlug] = true
 		}
 		return got
@@ -216,7 +216,7 @@ func TestListSessions_ReadableWorkspaces(t *testing.T) {
 		"unknown":       {owner, "?workspace_slug=nope"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			expect(t, env.do(t, http.MethodGet, sessions+c.query, c.auth), http.StatusForbidden, "workspace access denied")
+			expect(t, env.do(t, http.MethodGet, sessions+c.query, "", c.auth), http.StatusForbidden, "workspace access denied")
 		})
 	}
 }
@@ -229,7 +229,7 @@ func TestGetSession_WithSummaryAndAccess(t *testing.T) {
 	env.seedSession(t, Session{ID: "sa", WorkspaceSlug: "w-arch"})
 	env.seedUsage(t, TokenUsage{ID: "u1", SessionID: "s1", WorkspaceSlug: "w", Model: "m2", InputTokens: 3})
 	env.seedUsage(t, TokenUsage{ID: "u2", SessionID: "s1", WorkspaceSlug: "w", Model: "m1", OutputTokens: 4})
-	s := decode[Session](t, env.must(t, http.StatusOK, http.MethodGet, sessions+"/s1", member))
+	s := decode[Session](t, env.must(t, http.StatusOK, http.MethodGet, sessions+"/s1", "", member))
 	if s.TokenSummary == nil || s.TokenSummary.TotalInputTokens != 3 || s.TokenSummary.TotalOutputTokens != 4 || len(s.TokenSummary.ModelsUsed) != 2 || s.TokenSummary.ModelsUsed[0] != "m1" {
 		t.Errorf("summary %+v", s.TokenSummary)
 	}
@@ -257,9 +257,9 @@ func TestGetSession_WithSummaryAndAccess(t *testing.T) {
 func TestSessionRoutes_WithoutSQLiteSkipWorkspaceChecks(t *testing.T) {
 	env := newBareEnv(t)
 	s := decode[Session](t, env.must(t, http.StatusCreated, http.MethodPost, sessions, `{"workspace_slug":"anything"}`, stranger))
-	env.must(t, http.StatusOK, http.MethodGet, sessions+"/"+s.ID, member)
-	env.must(t, http.StatusOK, http.MethodGet, sessions+"/"+s.ID+"/usage", member)
-	if got := decode[SessionListResponse](t, env.must(t, http.StatusOK, http.MethodGet, sessions+"?workspace_slug=anything", member)); len(got.Sessions) != 1 {
+	env.must(t, http.StatusOK, http.MethodGet, sessions+"/"+s.ID, "", member)
+	env.must(t, http.StatusOK, http.MethodGet, sessions+"/"+s.ID+"/usage", "", member)
+	if got := decode[SessionListResponse](t, env.must(t, http.StatusOK, http.MethodGet, sessions+"?workspace_slug=anything", "", member)); len(got.Sessions) != 1 {
 		t.Errorf("list without SQLite: %+v", got)
 	}
 	env.must(t, http.StatusOK, http.MethodPost, sessions+"/"+s.ID+"/complete", `{"status":"completed"}`, stranger)

@@ -468,9 +468,9 @@ func TestWrites_ForgeFailures(t *testing.T) {
 	}
 }
 
-// A write the caller walks away from still reaches the forge and is answered: the request
-// to the forge runs on a context the caller's cancellation does not reach, for a request
-// issuex sends, one hub sends itself and the second step of a close.
+// A write the caller walks away from still reaches the forge, is answered and is recorded:
+// the request to the forge and the event run on a context the caller's cancellation does
+// not reach, for a request issuex sends, one hub sends itself and the second step of a close.
 func TestWrites_ContinueAfterTheCallerLeaves(t *testing.T) {
 	for _, tc := range []struct {
 		name, method, path, body string
@@ -480,7 +480,8 @@ func TestWrites_ContinueAfterTheCallerLeaves(t *testing.T) {
 		{"update issue", http.MethodPatch, "/workspaces/widgets/issues/42", `{"title":"t"}`, 200, 1},
 		{"close with a comment", http.MethodPost, "/workspaces/widgets/issues/42/close", `{"comment":"done"}`, 200, 2},
 	} {
-		e := widgetsEnv(t)
+		em := &recordingEmitter{}
+		e := widgetsEnv(t, withEmitter(em))
 		started, release := make(chan struct{}), make(chan struct{})
 		var once sync.Once
 		var stayed sync.Map
@@ -506,6 +507,9 @@ func TestWrites_ContinueAfterTheCallerLeaves(t *testing.T) {
 		<-done
 		if v, _ := stayed.Load("stayed"); v != true || rec.Code != tc.wantStatus || e.stub.count() != tc.wantSteps {
 			t.Errorf("%s: hub stayed %v, answered %d after %d requests; want it to stay, %d and %d", tc.name, v, rec.Code, e.stub.count(), tc.wantStatus, tc.wantSteps)
+		}
+		if ctxs := em.contexts(); len(ctxs) != 1 || ctxs[0] != nil {
+			t.Errorf("%s: the event was emitted on the context %v; want one live event", tc.name, ctxs)
 		}
 	}
 }

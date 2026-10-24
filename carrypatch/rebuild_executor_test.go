@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-git/go-git/v5/plumbing/transport"
 
@@ -497,12 +498,11 @@ func TestRebuild_StaleInputsEnqueueFollowup(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			r := newRebuild(t)
-			r.patches("feature/patch-a")
+			branches := []string{"feature/patch-a"}
 			if c.conflict {
-				r.patches("feature/conflict")
-				mustExec(t, r.db, `UPDATE patches SET position = 0 WHERE id = 'p1'`)
-				mustExec(t, r.db, `UPDATE patches SET position = 2 WHERE id = 'p2'`)
+				branches = append(branches, "feature/conflict")
 			}
+			r.patches(branches...)
 			r.h.GetVariable = varsOf(c.vars, nil)
 			q, ctx, id := r.runningJob("group-1")
 			moved := false
@@ -586,11 +586,10 @@ func TestRebuild_FollowupWithoutQueueOrWithDuplicate(t *testing.T) {
 	runGit(t, r.trunk, "checkout", "-q", "feature/patch-a")
 	commitFile(t, r.trunk, "again.txt", "again\n", "another tip")
 	runGit(t, r.trunk, "checkout", "-q", "main")
-	q, ctx, _ := r.runningJob("g")
-	raw, _ := json.Marshal(RebuildPayload{WorkspaceSlug: r.slug})
-	if _, _, err := q.Enqueue(jobqueue.EnqueueParams{Type: "rebuild", Key: r.slug, Nonce: "queued-already", Payload: raw, SubmittedBy: "x"}); err != nil {
-		t.Fatal(err)
-	}
+	_, ctx, _ := r.runningJob("g")
+	now := time.Now().UTC().Format(time.RFC3339)
+	mustExec(t, r.db, `INSERT INTO jobs (id, type, key, group_key, nonce, status, payload, retry_count, available_at, submitted_by, created_at, updated_at)
+		VALUES ('queued-already', 'rebuild', 'ws', 'g', 'queued-already', 'queued', '{}', 0, ?, 'x', ?, ?)`, now, now, now)
 	if _, _, err := r.run(ctx, StrategyRebase, ""); err != nil {
 		t.Fatal(err)
 	}

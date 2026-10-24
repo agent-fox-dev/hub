@@ -47,24 +47,24 @@ func TestAuditQuery_MergesSourcesFiltersAndPages(t *testing.T) {
 		t.Errorf("agent event %+v", a)
 	}
 	for query, want := range map[string][]string{
-		"?source=hub":                             {"h4", "h2", "h0"},
-		"?source=agent":                           {"a5", "a3", "a1"},
-		"?workspace=w-own":                        {"a5", "h4"},
-		"?event_type=session.fail":                {"a3"},
-		"?event_type_prefix=hub.token":            {"h2"},
-		"?severity=error":                         {"a3"},
-		"?actor_id=u2":                            {"h2"},
-		"?actor_type=api_key":                     {"h2"},
-		"?resource_type=token":                    {"h2"},
-		"?action=bind":                            {"h2"},
-		"?run_id=" + runID:                        {"a3", "a1"},
-		"?since=" + at(3):                         {"a5", "h4", "a3"},
-		"?until=" + at(2):                         {"a1", "h0"},
-		"?since=" + at(1) + "&until=" + at(3):     {"h2", "a1"},
-		"?source=hub&run_id=" + runID:             {},
-		"?source=agent&actor_id=u1":               {},
-		"?limit=0":                                {"a5", "h4", "a3", "h2", "a1", "h0"},
-		"?limit=99999":                            {"a5", "h4", "a3", "h2", "a1", "h0"},
+		"?source=hub":                         {"h4", "h2", "h0"},
+		"?source=agent":                       {"a5", "a3", "a1"},
+		"?workspace=w-own":                    {"a5", "h4"},
+		"?event_type=session.fail":            {"a3"},
+		"?event_type_prefix=hub.token":        {"h2"},
+		"?severity=error":                     {"a3"},
+		"?actor_id=u2":                        {"h2"},
+		"?actor_type=api_key":                 {"h2"},
+		"?resource_type=token":                {"h2"},
+		"?action=bind":                        {"h2"},
+		"?run_id=" + runID:                    {"a3", "a1"},
+		"?since=" + at(3):                     {"a5", "h4", "a3"},
+		"?until=" + at(2):                     {"a1", "h0"},
+		"?since=" + at(1) + "&until=" + at(3): {"h2", "a1"},
+		"?source=hub&run_id=" + runID:         {},
+		"?source=agent&actor_id=u1":           {},
+		"?limit=0":                            {"a5", "h4", "a3", "h2", "a1", "h0"},
+		"?limit=99999":                        {"a5", "h4", "a3", "h2", "a1", "h0"},
 	} {
 		if got := eventIDs(get(query, admin)); jsonOf(got) != jsonOf(want) {
 			t.Errorf("%s: %v; want %v", query, got, want)
@@ -166,9 +166,9 @@ func TestAuditQuery_ReadableWorkspaces(t *testing.T) {
 		auth  *apikit.AuthInfo
 		query string
 	}{
-		"stranger on w":  {stranger, "?workspace=w"},
+		"stranger on w":   {stranger, "?workspace=w"},
 		"bound on w-arch": {bound, "?workspace=w-arch"},
-		"unknown":        {owner, "?workspace=nope"},
+		"unknown":         {owner, "?workspace=nope"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			expect(t, env.do(t, http.MethodGet, auditPath+c.query, "", c.auth), http.StatusNotFound, "workspace not found")

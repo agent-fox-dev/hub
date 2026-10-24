@@ -273,8 +273,13 @@ func (env *env) seedHubEvent(t *testing.T, row HubEventRow) string {
 func (env *env) seedRow(t *testing.T, table, id, ts string, cols map[string]any) {
 	t.Helper()
 	ts = or(ts, now())
+	ws := "w"
+	if v, ok := cols["workspace"]; ok {
+		ws = v.(string)
+		delete(cols, "workspace")
+	}
 	names := []string{"id", "run_id", "workspace", "timestamp", "ingested_at"}
-	args := []any{id, runID, "w", ts, ts}
+	args := []any{id, runID, ws, ts, ts}
 	for k, v := range cols {
 		names = append(names, k)
 		args = append(args, v)
@@ -446,9 +451,11 @@ func (env *env) refusedStream(t *testing.T, query string, auth *apikit.AuthInfo)
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	raw, _ := json.Marshal(auth)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/events"+query, nil).WithContext(ctx)
-	req.Header.Set(testutil.AuthHeader, string(raw))
+	if auth != nil {
+		raw, _ := json.Marshal(auth)
+		req.Header.Set(testutil.AuthHeader, string(raw))
+	}
 	rec := httptest.NewRecorder()
 	env.e.ServeHTTP(rec, req)
 	return rec

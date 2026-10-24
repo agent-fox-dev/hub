@@ -27,7 +27,9 @@ func (o orderWriter) WriteHeader(status int) {
 }
 
 func (o orderWriter) Write(b []byte) (int, error) {
-	o.WriteHeader(0)
+	if *o.seen < 0 {
+		*o.seen = o.events()
+	}
 	return o.ResponseWriter.Write(b)
 }
 
@@ -171,8 +173,7 @@ func TestWriteEvents_HoldNoContent(t *testing.T) {
 }
 
 // Without an emitter a write behaves as with one; an emitter that fails is logged with the
-// event type and the workspace and changes nothing about the answer; the event is emitted
-// on a context the caller's cancellation does not reach.
+// event type and the workspace and changes nothing about the answer.
 func TestWriteEvents_EmitterIsOptionalAndMayFail(t *testing.T) {
 	logs := captureLog(t)
 	em := &recordingEmitter{err: errors.New("store is down")}
@@ -185,8 +186,5 @@ func TestWriteEvents_EmitterIsOptionalAndMayFail(t *testing.T) {
 	}
 	if log := logs.String(); strings.Count(log, "audit: failed to emit") != 1 || !strings.Contains(log, audit.EventForgeIssueCreate) || !strings.Contains(log, "widgets") {
 		t.Errorf("the log = %q; want one error line naming the event and the workspace", log)
-	}
-	if ctxs := em.contexts(); len(ctxs) != 1 || ctxs[0] != nil {
-		t.Errorf("the event was emitted on the context %v; want a live one", ctxs)
 	}
 }

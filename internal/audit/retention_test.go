@@ -88,7 +88,7 @@ func TestRetentionSteps_DeleteAgedRows(t *testing.T) {
 	}
 }
 
-func boolInt(b bool) int64 {
+func boolInt(b bool) int {
 	if b {
 		return 1
 	}
@@ -260,9 +260,15 @@ func TestRunRetention_RunsEveryStepAndRecordsOutcome(t *testing.T) {
 		func() error { _, err := RetentionStep5_DeleteOrphanedTokenUsage(cancelled, env.duck); return err },
 		func() error { _, err := RetentionStep6_DeleteAgedTraces(cancelled, env.duck, 1); return err },
 		func() error { _, err := RetentionStep7_DeleteAgedPostmortems(cancelled, env.duck, 1); return err },
-		func() error { _, err := RetentionStep8_DeleteOrphanedWorkspaceData(cancelled, env.duck, env.sqlite, 1); return err },
+		func() error {
+			_, err := RetentionStep8_DeleteOrphanedWorkspaceData(cancelled, env.duck, env.sqlite, 1)
+			return err
+		},
 		func() error { return RetentionStep9_RecalibrateGauges(cancelled, env.duck, env.metrics) },
-		func() error { _, err := RetentionPreStep_ForceCloseOrphanedSessions(cancelled, env.duck, 1); return err },
+		func() error {
+			_, err := RetentionPreStep_ForceCloseOrphanedSessions(cancelled, env.duck, 1)
+			return err
+		},
 	} {
 		if err := step(); err != context.Canceled {
 			t.Errorf("step with a cancelled context: %v; want context.Canceled", err)

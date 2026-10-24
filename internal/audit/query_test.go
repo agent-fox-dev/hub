@@ -29,7 +29,7 @@ func TestGetRunEvents_FiltersAndPages(t *testing.T) {
 	env.seedAgentEvent(t, agentEvent{id: uuidN(7), ws: "w-own"})
 	get := func(query string) page {
 		t.Helper()
-		return listPage(t, env.must(t, http.StatusOK, http.MethodGet, runPath+"/events"+query, owner), "events")
+		return listPage(t, env.must(t, http.StatusOK, http.MethodGet, runPath+"/events"+query, "", owner), "events")
 	}
 	all := get("")
 	if len(all.Items) != 6 || all.HasMore || all.Items[0]["id"] != uuidN(0) || all.Items[5]["id"] != uuidN(5) {
@@ -39,15 +39,15 @@ func TestGetRunEvents_FiltersAndPages(t *testing.T) {
 		t.Errorf("event fields %v", ev)
 	}
 	for query, want := range map[string][]string{
-		"?event_type=session.fail":    {uuidN(5)},
-		"?severity=error":             {uuidN(5)},
-		"?node_id=n1":                 {uuidN(5)},
-		"?session_id=s1":              {uuidN(5)},
-		"?since=" + at(3):             {uuidN(3), uuidN(4), uuidN(5)},
-		"?until=" + at(1):             {uuidN(0), uuidN(1)},
+		"?event_type=session.fail":            {uuidN(5)},
+		"?severity=error":                     {uuidN(5)},
+		"?node_id=n1":                         {uuidN(5)},
+		"?session_id=s1":                      {uuidN(5)},
+		"?since=" + at(3):                     {uuidN(3), uuidN(4), uuidN(5)},
+		"?until=" + at(1):                     {uuidN(0), uuidN(1)},
 		"?since=" + at(1) + "&until=" + at(2): {uuidN(1), uuidN(2)},
-		"?order=desc&limit=2":         {uuidN(5), uuidN(4)},
-		"?limit=0":                    {uuidN(0), uuidN(1), uuidN(2), uuidN(3), uuidN(4), uuidN(5)},
+		"?order=desc&limit=2":                 {uuidN(5), uuidN(4)},
+		"?limit=0":                            {uuidN(0), uuidN(1), uuidN(2), uuidN(3), uuidN(4), uuidN(5)},
 	} {
 		got := ids(get(query).Items)
 		if len(got) != len(want) {
@@ -77,10 +77,10 @@ func TestGetRunEvents_FiltersAndPages(t *testing.T) {
 		t.Errorf("cursor names %s; want the last event of the page", id)
 	}
 	for name, query := range map[string]string{
-		"malformed cursor": "?cursor=***",
+		"malformed cursor":    "?cursor=***",
 		"cursor without time": "?cursor=" + encodeCursor("x", "y"),
-		"bad since":        "?since=yesterday",
-		"bad until":        "?until=tomorrow",
+		"bad since":           "?since=yesterday",
+		"bad until":           "?until=tomorrow",
 	} {
 		t.Run(name, func(t *testing.T) {
 			expect(t, env.do(t, http.MethodGet, runPath+"/events"+query, "", owner), http.StatusBadRequest, "")

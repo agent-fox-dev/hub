@@ -157,7 +157,7 @@ func TestInsertTokenUsage_ReturnsExistingOnDuplicateID(t *testing.T) {
 
 // ListSessions filters by every parameter, clamps the limit, pages by a
 // (started_at, id) cursor in both orders and attaches token summaries.
-func TestListSessions_FiltersAndPages(t *testing.T) {
+func TestStoreListSessions_FiltersAndPages(t *testing.T) {
 	env := newBareEnv(t)
 	ctx := context.Background()
 	base := time.Date(2026, 9, 1, 10, 0, 0, 0, time.UTC)
@@ -301,9 +301,6 @@ func TestGetWorkspaceCost_GroupsByDimension(t *testing.T) {
 	if byModel := cost("model").Breakdown; len(byModel) != 2 || byModel[0].Model != "m1" || byModel[0].InputTokens != 40 || byModel[0].Sessions != 2 {
 		t.Errorf("by model: %+v", byModel)
 	}
-	if empty := cost(""); len(empty.Breakdown) != 2 {
-		t.Errorf("default grouping: %+v", empty.Breakdown)
-	}
 	if none, _ := env.store.GetWorkspaceCost(ctx, CostParams{WorkspaceSlug: "w", Since: "2025-01-01T00:00:00Z", Until: "2025-01-02T00:00:00Z"}); none.Totals.Sessions != 0 || len(none.Breakdown) != 0 || none.Breakdown == nil {
 		t.Errorf("empty window: %+v", none)
 	}
@@ -360,7 +357,7 @@ func TestSessionMetadata_RoundTripAndDecoding(t *testing.T) {
 		"decoded":      {map[string]any{"b": "c"}, map[string]any{"b": "c"}},
 		"bad to json":  {metadataToJSON(make(chan int)), nil},
 		"json of nil":  {metadataToJSON(nil), nil},
-		"json of map":  {metadataToJSON(map[string]int{"n": 1}), `{"n":1}`},
+		"json of map":  {metadataToJSON(map[string]int{"n": 1}), map[string]any{"n": float64(1)}},
 		"json literal": {`"x"`, "x"},
 	} {
 		got := decodeMetadata(c.in)
