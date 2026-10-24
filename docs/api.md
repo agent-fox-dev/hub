@@ -34,11 +34,8 @@ they can access. The following scopes are available for workspace operations:
 
 | Scope | Description | Authorized Endpoints |
 |-------|-------------|---------------------|
-| `workspaces:read` | List and view access to the PAT owner's workspaces | GET /api/v1/workspaces, GET /api/v1/workspaces/:slug, GET /api/v1/workspaces/:slug/rerere, GET /api/v1/workspaces/:slug/patch-status |
-| `workspaces:create` | Create workspaces; implies read access | POST /api/v1/workspaces, GET /api/v1/workspaces, GET /api/v1/workspaces/:slug |
-| `workspaces:write` | Update, archive, and reactivate workspaces, and push a branch to the forge; implies read access | PATCH /api/v1/workspaces/:slug, POST /api/v1/workspaces/:slug/archive, POST /api/v1/workspaces/:slug/reactivate, POST /api/v1/workspaces/:slug/branches/:name/push, DELETE /api/v1/workspaces/:slug/rerere/\*pathspec, GET /api/v1/workspaces, GET /api/v1/workspaces/:slug |
-| `workspaces:delete` | Delete archived workspaces owned by the PAT's user; does **not** imply read access | DELETE /api/v1/workspaces/:slug |
-| `workspaces:sync` | Trigger upstream sync and reclone operations on workspaces | POST /api/v1/workspaces/:slug/sync, POST /api/v1/workspaces/:slug/reclone |
+| `workspaces:read` | List and view the workspaces the PAT's user may see; the rerere list and the patch-status dashboard | GET /api/v1/workspaces, GET /api/v1/workspaces/:slug, GET /api/v1/workspaces/:slug/rerere, GET /api/v1/workspaces/:slug/patch-status |
+| `workspaces:write` | Create, update, archive, reactivate, sync, reclone and delete workspaces, push a branch to the forge and forget rerere resolutions; implies `workspaces:read` | POST /api/v1/workspaces, PATCH /api/v1/workspaces/:slug, DELETE /api/v1/workspaces/:slug, POST /api/v1/workspaces/:slug/archive, POST /api/v1/workspaces/:slug/reactivate, POST /api/v1/workspaces/:slug/sync, POST /api/v1/workspaces/:slug/reclone, POST /api/v1/workspaces/:slug/branches/:name/push, DELETE /api/v1/workspaces/:slug/rerere/\*pathspec (plus all `workspaces:read` endpoints) |
 | `patches:read` | List and view patches for a workspace | GET /api/v1/workspaces/:slug/patches, GET /api/v1/workspaces/:slug/patches/:id |
 | `patches:write` | Add, remove, update, restore, reorder, and reset patches for a workspace; implies `patches:read` | POST /api/v1/workspaces/:slug/patches, PATCH /api/v1/workspaces/:slug/patches/:id, DELETE /api/v1/workspaces/:slug/patches/:id, POST /api/v1/workspaces/:slug/patches/:id/restore, POST /api/v1/workspaces/:slug/patches/:id/reset-to-origin, POST /api/v1/workspaces/:slug/patches/reorder |
 | `rebuilds:read` | View rebuild job status, history, and preview | GET /api/v1/workspaces/:slug/rebuilds, GET /api/v1/workspaces/:slug/rebuilds/:id, GET /api/v1/workspaces/:slug/rebuild-preview |
@@ -47,14 +44,10 @@ they can access. The following scopes are available for workspace operations:
 | `merges:write` | Submit, cancel, and requeue merge jobs; trigger batch rebase | POST /api/v1/workspaces/:slug/merges, DELETE /api/v1/workspaces/:slug/merges/:id, POST /api/v1/workspaces/:slug/merges/:id/requeue, POST /api/v1/workspaces/:slug/rebase |
 | `git:read` | Clone and fetch access to workspace repositories via the git server | GET /git/:org/:slug.git/info/refs, POST /git/:org/:slug.git/git-upload-pack |
 | `git:write` | Push access to workspace repositories via the git server; implies `git:read` | POST /git/:org/:slug.git/git-receive-pack (plus all `git:read` endpoints) |
-| `secrets:manage` | Full CRUD access to secrets; implies `secrets:list`, `secrets:write`, and `secrets:delete` | POST, GET, PATCH, DELETE on /api/v1/user/secrets, /api/v1/orgs/:slug/secrets, /api/v1/workspaces/:slug/secrets |
-| `secrets:list` | List access to secret names (values never returned) | GET /api/v1/user/secrets, GET /api/v1/orgs/:slug/secrets, GET /api/v1/workspaces/:slug/secrets |
-| `secrets:write` | Update existing secret values | PATCH /api/v1/user/secrets/:key, PATCH /api/v1/orgs/:slug/secrets/:key, PATCH /api/v1/workspaces/:slug/secrets/:key |
-| `secrets:delete` | Delete secrets | DELETE /api/v1/user/secrets/:key, DELETE /api/v1/orgs/:slug/secrets/:key, DELETE /api/v1/workspaces/:slug/secrets/:key |
-| `vars:manage` | Full CRUD access to variables; implies `vars:read`, `vars:write`, and `vars:delete` | POST, GET, PATCH, DELETE on /api/v1/user/vars, /api/v1/orgs/:slug/vars, /api/v1/workspaces/:slug/vars |
-| `vars:read` | Read and list variable values | GET /api/v1/user/vars, GET /api/v1/orgs/:slug/vars, GET /api/v1/workspaces/:slug/vars, GET /api/v1/workspaces/:slug/vars/resolved |
-| `vars:write` | Update existing variable values; implies `vars:read` | PATCH + all `vars:read` endpoints |
-| `vars:delete` | Delete variables | DELETE /api/v1/user/vars/:key, DELETE /api/v1/orgs/:slug/vars/:key, DELETE /api/v1/workspaces/:slug/vars/:key |
+| `secrets:read` | List secret names (values never returned) | GET /api/v1/user/secrets, GET /api/v1/orgs/:slug/secrets, GET /api/v1/workspaces/:slug/secrets |
+| `secrets:write` | Create, update and delete secrets; implies `secrets:read` | POST, PATCH, DELETE on /api/v1/user/secrets, /api/v1/orgs/:slug/secrets, /api/v1/workspaces/:slug/secrets (plus all `secrets:read` endpoints) |
+| `vars:read` | List and read variable values | GET /api/v1/user/vars, GET /api/v1/orgs/:slug/vars, GET /api/v1/workspaces/:slug/vars, GET /api/v1/workspaces/:slug/vars/resolved |
+| `vars:write` | Create, update and delete variables; implies `vars:read` | POST, PATCH, DELETE on /api/v1/user/vars, /api/v1/orgs/:slug/vars, /api/v1/workspaces/:slug/vars (plus all `vars:read` endpoints) |
 | `sessions:read` | Read agent session records, token usage, and workspace cost summaries | GET /api/v1/sessions, GET /api/v1/sessions/:id, GET /api/v1/sessions/:id/usage, GET /api/v1/workspaces/:slug/cost |
 | `sessions:write` | Open, close, and report token usage on agent sessions | POST /api/v1/sessions, POST /api/v1/sessions/:id/complete, POST /api/v1/sessions/:id/usage |
 | `audit:read` | Query audit events, view transcripts, and connect to SSE stream | GET /api/v1/audit, GET /api/v1/workspaces/:slug/runs/:run_id/transcript, GET /api/v1/events |
@@ -66,45 +59,18 @@ they can access. The following scopes are available for workspace operations:
 
 ### Implied Permissions
 
-- `workspaces:create` implies `workspaces:read` — a PAT with create scope can
-  also list and view workspaces.
-- `workspaces:write` implies `workspaces:read` — a PAT with write scope can
-  also list and view workspaces.
-- `workspaces:delete` does **not** imply read access — a PAT with only
-  `workspaces:delete` cannot list or view workspaces.
-- `patches:write` implies `patches:read` — a PAT with patches write scope can
-  also list patches.
-- `git:write` implies `git:read` — a PAT with git write scope can also clone
-  and fetch.
-- `secrets:manage` implies `secrets:list`, `secrets:write`, and
-  `secrets:delete` — a PAT with manage scope has full CRUD access to secrets.
-- `vars:manage` implies `vars:read`, `vars:write`, and `vars:delete` — a PAT
-  with manage scope has full CRUD access to variables.
-- `vars:write` implies `vars:read` — a PAT with write scope can also list and
-  read variable values.
-- `sandboxes:write` implies `sandboxes:read` — a PAT with write scope can also
-  list sandbox profiles and read leases. `sandboxes:read` does not allow
-  issuing or ending a lease.
-- `forge:write` implies `forge:read` — a PAT with write scope can also read a
-  workspace's forge. `forge:read` does not allow a write: the write routes check
-  `forge:write` itself.
+Every hub resource has one `read` and one `write` scope, and `write` implies
+`read`: a PAT with `workspaces:write` also lists and views workspaces, a PAT
+with `secrets:write` also lists secret names, and so on for `vars`, `patches`,
+`rebuilds`, `merges`, `git`, `sessions`, `audit`, `sandboxes` and `forge`.
+`read` never implies `write`.
 
-### Scopes Checked Literally
-
-Three handlers test for a scope string directly rather than through the
-implications above. A PAT holding only `workspaces:create` or
-`workspaces:write` can list and get workspaces but is rejected by:
-
-| Endpoint | Requires the literal scope |
-|----------|---------------------------|
-| `GET /api/v1/workspaces/:slug/rerere` | `workspaces:read` |
-| `GET /api/v1/workspaces/:slug/patch-status` | `workspaces:read` |
-| `DELETE /api/v1/workspaces/:slug/rerere/*pathspec` | `workspaces:write` |
-
-Conversely, `POST /api/v1/workspaces/:slug/sync` accepts **either**
-`workspaces:sync` or `workspaces:write` when the workspace is in `carry_patch`
-mode. The standard sync path and `POST /api/v1/workspaces/:slug/reclone`
-require `workspaces:sync` exclusively.
+The scopes the hub registered before the collapse (`workspaces:create`,
+`workspaces:delete`, `workspaces:sync`, `secrets:list`, `secrets:manage`,
+`secrets:delete`, `vars:manage`, `vars:delete`) are rewritten on stored PATs
+when the hub starts (`workspaces:*` to `workspaces:write`, `secrets:list` to
+`secrets:read`, the rest to `*:write`) and are rejected when a new PAT asks
+for them. See [ADR 06](adr/06-collapse-scopes-to-read-and-write.md).
 
 ### Workspace Access
 
@@ -390,7 +356,7 @@ schema:
 
 Create a new workspace.
 
-**Authentication:** API Key, or PAT with `workspaces:create` scope.
+**Authentication:** API Key, or PAT with `workspaces:write` scope.
 Admin tokens are forbidden from creating workspaces (returns 403) because a
 workspace requires a real user as owner.
 
@@ -448,7 +414,7 @@ the user has no personal organization, the server returns HTTP 400.
 | 400 | Credential validation failed (ls-remote check fails) |
 | 400 | User has no personal organization (when `org_id` is omitted) |
 | 401 | Unauthenticated request |
-| 403 | Admin token attempted to create a workspace; PAT lacks `workspaces:create` scope |
+| 403 | Admin token attempted to create a workspace; PAT lacks `workspaces:write` scope |
 | 409 | A workspace with the given `slug` already exists |
 | 500 | Internal server error (e.g., database error, org membership check failure, credential storage failure) |
 
@@ -459,7 +425,7 @@ the user has no personal organization, the server returns HTTP 400.
 List workspaces accessible to the authenticated user.
 
 **Authentication:** API Key, or PAT with read access (`workspaces:read`,
-`workspaces:create`, or `workspaces:write`). Admin tokens list all workspaces.
+`workspaces:write`). Admin tokens list all workspaces.
 
 **Query Parameters:**
 
@@ -490,7 +456,7 @@ List workspaces accessible to the authenticated user.
 Get a single workspace by slug.
 
 **Authentication:** API Key, or PAT with read access (`workspaces:read`,
-`workspaces:create`, or `workspaces:write`). Admin tokens can access any
+`workspaces:write`). Admin tokens can access any
 workspace.
 
 **Path Parameters:**
@@ -670,7 +636,7 @@ instructions to use the `reset_to_upstream` query parameter for recovery. In
 standard mode "upstream" in field and parameter names (`upstream_head_sha`,
 `reset_to_upstream`) refers to `origin`.
 
-**Authentication:** API Key, or PAT with `workspaces:sync` scope. The
+**Authentication:** API Key, or PAT with `workspaces:write` scope. The
 workspace must be owned by the caller (admin tokens bypass); other
 workspaces answer 404.
 
@@ -728,7 +694,7 @@ or unexpected failures.
 |--------|-----------|
 | 400 | Workspace is not active; clone is not ready; sync is disabled |
 | 401 | Unauthenticated request |
-| 403 | PAT lacks `workspaces:sync` scope; the caller is a member of the workspace's org: `org members have read-only access to this workspace` (`error_type: forbidden`) |
+| 403 | PAT lacks `workspaces:write` scope; the caller is a member of the workspace's org: `org members have read-only access to this workspace` (`error_type: forbidden`) |
 | 404 | Workspace not found or the caller may not see it |
 | 409 | Sync already in progress (concurrent sync rejected); another operation holds the workspace lock (`error_type: workspace_busy`; a rebuild holds it only during its fetch phase and final phase, not while it applies patches); upstream history has diverged (force-push detected) |
 | 500 | Carry-patch `origin` mode: the patch refresh failed for a branch. The message is `failed to update patch branch <branch>` (ref write failed), `failed to compare patch branch <branch> with origin` (ancestry check failed) or `failed to reset working tree for patch branch <branch>` (ref moved, work-tree reset failed). See the Carry-Patch Sync Flow below |
@@ -904,7 +870,7 @@ to upstream first), deletes the local clone directory, and re-clones from
 upstream. The workspace status remains `"active"` throughout the entire reclone
 lifecycle.
 
-**Authentication:** API Key, or PAT with `workspaces:sync` scope. The
+**Authentication:** API Key, or PAT with `workspaces:write` scope. The
 workspace must be owned by the caller (admin tokens bypass); other
 workspaces answer 404. The archive-and-push step uses the workspace's stored
 credentials, and the whole operation holds the workspace lock (`409`
@@ -953,7 +919,7 @@ the rebuild worktree lives in.
 | Status | Condition |
 |--------|-----------|
 | 401 | Unauthenticated request |
-| 403 | PAT lacks `workspaces:sync` scope; the caller is a member of the workspace's org: `org members have read-only access to this workspace` (`error_type: forbidden`) |
+| 403 | PAT lacks `workspaces:write` scope; the caller is a member of the workspace's org: `org members have read-only access to this workspace` (`error_type: forbidden`) |
 | 404 | Workspace not found |
 | 409 | Clone operation already in progress (`clone_status` is `"pending"` or `"cloning"`) |
 | 500 | Failed to delete workspace directory; database update failed |
@@ -1060,7 +1026,7 @@ nothing.
 
 Permanently delete a workspace. Only archived workspaces can be deleted.
 
-**Authentication:** API Key, or PAT with `workspaces:delete` scope. Admin
+**Authentication:** API Key, or PAT with `workspaces:write` scope. Admin
 tokens can delete any workspace.
 
 **Path Parameters:**
@@ -1077,7 +1043,7 @@ tokens can delete any workspace.
 |--------|-----------|
 | 401 | Unauthenticated request |
 | 403 | the caller is a member of the workspace's org: `org members have read-only access to this workspace` (`error_type: forbidden`) |
-| 404 | Workspace not found; PAT lacks `workspaces:delete` scope; the caller may not see the workspace (anti-enumeration) |
+| 404 | Workspace not found; PAT lacks `workspaces:write` scope; the caller may not see the workspace (anti-enumeration) |
 | 409 | Workspace is not archived (must archive before deleting) |
 | 500 | `failed to delete workspace`; nothing was deleted (the deletion, including the revocation of its bound tokens, is one transaction) |
 
@@ -3133,7 +3099,7 @@ No `value` field is ever returned for secrets.
 
 Create one or more user-scoped secrets.
 
-**Authentication:** API Key, or PAT with `secrets:manage` scope. Admin
+**Authentication:** API Key, or PAT with `secrets:write` scope. Admin
 tokens have no user identity and receive `403` on every `/api/v1/user/secrets`
 and `/api/v1/user/vars` endpoint.
 
@@ -3156,7 +3122,7 @@ and `/api/v1/user/vars` endpoint.
 |--------|-----------|
 | 400 | Validation error (empty entries, invalid key format, value too large, per-scope limit exceeded) |
 | 401 | Unauthenticated request |
-| 403 | PAT lacks `secrets:manage` scope |
+| 403 | PAT lacks `secrets:write` scope |
 | 409 | Duplicate key (case-insensitive) |
 
 ---
@@ -3165,7 +3131,7 @@ and `/api/v1/user/vars` endpoint.
 
 List all user-scoped secrets.
 
-**Authentication:** API Key, or PAT with `secrets:list` or `secrets:manage`
+**Authentication:** API Key, or PAT with `secrets:read` or `secrets:write`
 scope.
 
 **Response:** HTTP 200 OK with a JSON array of secret entries, sorted by key
@@ -3184,7 +3150,7 @@ scope.
 
 Update the value of a user-scoped secret.
 
-**Authentication:** API Key, or PAT with `secrets:write` or `secrets:manage`
+**Authentication:** API Key, or PAT with `secrets:write`
 scope.
 
 **Path Parameters:**
@@ -3218,7 +3184,7 @@ scope.
 
 Delete a user-scoped secret.
 
-**Authentication:** API Key, or PAT with `secrets:delete` or `secrets:manage`
+**Authentication:** API Key, or PAT with `secrets:write`
 scope.
 
 **Path Parameters:**
@@ -3243,7 +3209,7 @@ scope.
 
 Create one or more organization-scoped secrets.
 
-**Authentication:** API Key, or PAT with `secrets:manage` scope. Requires
+**Authentication:** API Key, or PAT with `secrets:write` scope. Requires
 organization membership (admin bypasses membership check).
 
 **Path Parameters:**
@@ -3262,7 +3228,7 @@ organization membership (admin bypasses membership check).
 |--------|-----------|
 | 400 | Validation error |
 | 401 | Unauthenticated request |
-| 403 | PAT lacks `secrets:manage` scope |
+| 403 | PAT lacks `secrets:write` scope |
 | 404 | Organization not found or user is not a member |
 | 409 | Duplicate key (case-insensitive) |
 
@@ -3272,7 +3238,7 @@ organization membership (admin bypasses membership check).
 
 List all organization-scoped secrets.
 
-**Authentication:** API Key, or PAT with `secrets:list` or `secrets:manage`
+**Authentication:** API Key, or PAT with `secrets:read` or `secrets:write`
 scope. Requires organization membership (admin bypasses).
 
 **Path Parameters:**
@@ -3298,7 +3264,7 @@ scope. Requires organization membership (admin bypasses).
 
 Update the value of an organization-scoped secret.
 
-**Authentication:** API Key, or PAT with `secrets:write` or `secrets:manage`
+**Authentication:** API Key, or PAT with `secrets:write`
 scope. Requires organization membership (admin bypasses).
 
 **Path Parameters:**
@@ -3327,7 +3293,7 @@ scope. Requires organization membership (admin bypasses).
 
 Delete an organization-scoped secret.
 
-**Authentication:** API Key, or PAT with `secrets:delete` or `secrets:manage`
+**Authentication:** API Key, or PAT with `secrets:write`
 scope. Requires organization membership (admin bypasses).
 
 **Path Parameters:**
@@ -3353,7 +3319,7 @@ scope. Requires organization membership (admin bypasses).
 
 Create one or more workspace-scoped secrets.
 
-**Authentication:** API Key, or PAT with `secrets:manage` scope. Requires private access: the workspace's owner or an admin token; a member of its org gets the stranger's 404.
+**Authentication:** API Key, or PAT with `secrets:write` scope. Requires private access: the workspace's owner or an admin token; a member of its org gets the stranger's 404.
 
 **Path Parameters:**
 
@@ -3371,7 +3337,7 @@ Create one or more workspace-scoped secrets.
 |--------|-----------|
 | 400 | Validation error |
 | 401 | Unauthenticated request |
-| 403 | PAT lacks `secrets:manage` scope |
+| 403 | PAT lacks `secrets:write` scope |
 | 404 | Workspace not found or the caller may not see it |
 | 409 | Duplicate key (case-insensitive) |
 
@@ -3381,7 +3347,7 @@ Create one or more workspace-scoped secrets.
 
 List all workspace-scoped secrets.
 
-**Authentication:** API Key, or PAT with `secrets:list` or `secrets:manage`
+**Authentication:** API Key, or PAT with `secrets:read` or `secrets:write`
 scope. Requires private access: the workspace's owner or an admin token; a member of its org gets the stranger's 404.
 
 **Path Parameters:**
@@ -3407,7 +3373,7 @@ scope. Requires private access: the workspace's owner or an admin token; a membe
 
 Update the value of a workspace-scoped secret.
 
-**Authentication:** API Key, or PAT with `secrets:write` or `secrets:manage`
+**Authentication:** API Key, or PAT with `secrets:write`
 scope. Requires private access: the workspace's owner or an admin token; a member of its org gets the stranger's 404.
 
 **Path Parameters:**
@@ -3436,7 +3402,7 @@ scope. Requires private access: the workspace's owner or an admin token; a membe
 
 Delete a workspace-scoped secret.
 
-**Authentication:** API Key, or PAT with `secrets:delete` or `secrets:manage`
+**Authentication:** API Key, or PAT with `secrets:write`
 scope. Requires private access: the workspace's owner or an admin token; a member of its org gets the stranger's 404.
 
 **Path Parameters:**
@@ -3485,7 +3451,7 @@ Same validation rules as secrets apply (see Secret Validation Rules above).
 
 Create one or more user-scoped variables.
 
-**Authentication:** API Key, or PAT with `vars:manage` scope.
+**Authentication:** API Key, or PAT with `vars:write` scope.
 
 **Request Body:**
 
@@ -3506,7 +3472,7 @@ Create one or more user-scoped variables.
 |--------|-----------|
 | 400 | Validation error (empty entries, invalid key format, value too large, per-scope limit exceeded) |
 | 401 | Unauthenticated request |
-| 403 | PAT lacks `vars:manage` scope |
+| 403 | PAT lacks `vars:write` scope |
 | 409 | Duplicate key (case-insensitive) |
 
 ---
@@ -3516,7 +3482,7 @@ Create one or more user-scoped variables.
 List all user-scoped variables.
 
 **Authentication:** API Key, or PAT with `vars:read`, `vars:write`, or
-`vars:manage` scope.
+`vars:write` scope.
 
 **Response:** HTTP 200 OK with a JSON array of variable entries, sorted by key
 (case-insensitive).
@@ -3534,7 +3500,7 @@ List all user-scoped variables.
 
 Update the value of a user-scoped variable.
 
-**Authentication:** API Key, or PAT with `vars:write` or `vars:manage` scope.
+**Authentication:** API Key, or PAT with `vars:write` scope.
 
 **Path Parameters:**
 
@@ -3567,7 +3533,7 @@ Update the value of a user-scoped variable.
 
 Delete a user-scoped variable.
 
-**Authentication:** API Key, or PAT with `vars:delete` or `vars:manage` scope.
+**Authentication:** API Key, or PAT with `vars:write` scope.
 
 **Path Parameters:**
 
@@ -3591,7 +3557,7 @@ Delete a user-scoped variable.
 
 Create one or more organization-scoped variables.
 
-**Authentication:** API Key, or PAT with `vars:manage` scope. Requires
+**Authentication:** API Key, or PAT with `vars:write` scope. Requires
 organization membership (admin bypasses membership check).
 
 **Path Parameters:**
@@ -3610,7 +3576,7 @@ organization membership (admin bypasses membership check).
 |--------|-----------|
 | 400 | Validation error |
 | 401 | Unauthenticated request |
-| 403 | PAT lacks `vars:manage` scope |
+| 403 | PAT lacks `vars:write` scope |
 | 404 | Organization not found or user is not a member |
 | 409 | Duplicate key (case-insensitive) |
 
@@ -3621,7 +3587,7 @@ organization membership (admin bypasses membership check).
 List all organization-scoped variables.
 
 **Authentication:** API Key, or PAT with `vars:read`, `vars:write`, or
-`vars:manage` scope. Requires organization membership (admin bypasses).
+`vars:write` scope. Requires organization membership (admin bypasses).
 
 **Path Parameters:**
 
@@ -3646,7 +3612,7 @@ List all organization-scoped variables.
 
 Update the value of an organization-scoped variable.
 
-**Authentication:** API Key, or PAT with `vars:write` or `vars:manage` scope.
+**Authentication:** API Key, or PAT with `vars:write` scope.
 Requires organization membership (admin bypasses).
 
 **Path Parameters:**
@@ -3675,7 +3641,7 @@ Requires organization membership (admin bypasses).
 
 Delete an organization-scoped variable.
 
-**Authentication:** API Key, or PAT with `vars:delete` or `vars:manage` scope.
+**Authentication:** API Key, or PAT with `vars:write` scope.
 Requires organization membership (admin bypasses).
 
 **Path Parameters:**
@@ -3701,7 +3667,7 @@ Requires organization membership (admin bypasses).
 
 Create one or more workspace-scoped variables.
 
-**Authentication:** API Key, or PAT with `vars:manage` scope. Requires write access: the workspace's owner or an admin token; a member of its org gets 403 `forbidden`.
+**Authentication:** API Key, or PAT with `vars:write` scope. Requires write access: the workspace's owner or an admin token; a member of its org gets 403 `forbidden`.
 
 **Path Parameters:**
 
@@ -3719,7 +3685,7 @@ Create one or more workspace-scoped variables.
 |--------|-----------|
 | 400 | Validation error |
 | 401 | Unauthenticated request |
-| 403 | PAT lacks `vars:manage` scope; the caller is a member of the workspace's org: `org members have read-only access to this workspace` (`error_type: forbidden`) |
+| 403 | PAT lacks `vars:write` scope; the caller is a member of the workspace's org: `org members have read-only access to this workspace` (`error_type: forbidden`) |
 | 404 | Workspace not found or the caller may not see it |
 | 409 | Duplicate key (case-insensitive) |
 
@@ -3730,7 +3696,7 @@ Create one or more workspace-scoped variables.
 List all workspace-scoped variables.
 
 **Authentication:** API Key, or PAT with `vars:read`, `vars:write`, or
-`vars:manage` scope. Requires read access: the workspace's owner, a member of its org or an admin token.
+`vars:write` scope. Requires read access: the workspace's owner, a member of its org or an admin token.
 
 **Path Parameters:**
 
@@ -3755,7 +3721,7 @@ List all workspace-scoped variables.
 
 Update the value of a workspace-scoped variable.
 
-**Authentication:** API Key, or PAT with `vars:write` or `vars:manage` scope.
+**Authentication:** API Key, or PAT with `vars:write` scope.
 Requires write access: the workspace's owner or an admin token; a member of its org gets 403 `forbidden`.
 
 **Path Parameters:**
@@ -3784,7 +3750,7 @@ Requires write access: the workspace's owner or an admin token; a member of its 
 
 Delete a workspace-scoped variable.
 
-**Authentication:** API Key, or PAT with `vars:delete` or `vars:manage` scope.
+**Authentication:** API Key, or PAT with `vars:write` scope.
 Requires write access: the workspace's owner or an admin token; a member of its org gets 403 `forbidden`.
 
 **Path Parameters:**
@@ -3813,7 +3779,7 @@ and workspace tiers. Resolution order: workspace > org > user (workspace
 values override org, org overrides user).
 
 **Authentication:** API Key, or PAT with `vars:read`, `vars:write`, or
-`vars:manage` scope. Requires read access: the workspace's owner, a member of its org or an admin token.
+`vars:write` scope. Requires read access: the workspace's owner, a member of its org or an admin token.
 
 **Path Parameters:**
 
@@ -5271,7 +5237,7 @@ permissions granted to each.
   {
     "token_id": "<token_id>",
     "name": "CI token",
-    "permissions": ["workspaces:read", "workspaces:create"],
+    "permissions": ["workspaces:read", "workspaces:write"],
     "expires_at": "2024-04-01T00:00:00Z",
     "created_at": "2024-01-01T00:00:00Z",
     "revoked_at": null
@@ -5290,7 +5256,7 @@ Create a personal access token with specific permissions.
 ```json
 {
   "name": "CI token",
-  "permissions": ["workspaces:read", "workspaces:create"],
+  "permissions": ["workspaces:read", "workspaces:write"],
   "expires": 90
 }
 ```
@@ -5312,7 +5278,7 @@ restriction and may mint a PAT with any registered permission.
   "token_id": "<token_id>",
   "name": "CI token",
   "token": "af_pat_<token_id>_<secret>",
-  "permissions": ["workspaces:read", "workspaces:create"],
+  "permissions": ["workspaces:read", "workspaces:write"],
   "expires_at": "2024-04-01T00:00:00Z",
   "created_at": "2024-01-01T00:00:00Z"
 }

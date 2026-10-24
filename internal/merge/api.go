@@ -225,10 +225,10 @@ func requireMergeWriteScope(c echo.Context, auth *apikit.AuthInfo) bool {
 }
 
 // requireMergeReadScope checks that the caller has merges:read permission
-// when using a PAT. It writes the 403 and returns false if forbidden, true to
-// proceed.
+// (which merges:write implies) when using a PAT. It writes the 403 and returns
+// false if forbidden, true to proceed.
 func requireMergeReadScope(c echo.Context, auth *apikit.AuthInfo) bool {
-	if mergeIsPAT(auth) && !mergeHasScope(auth, "merges:read") {
+	if mergeIsPAT(auth) && !mergeHasScope(auth, "merges:read", "merges:write") {
 		_ = apikit.WriteAPIError(c, http.StatusForbidden, "PAT requires merges:read scope")
 		return false
 	}

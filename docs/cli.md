@@ -390,7 +390,7 @@ afc workspace sync <slug> [--reset-to-upstream] [--wait] [--timeout <duration>] 
   follows it, so a script can parse stdout as a single document and read the
   branch names from `patches_diverged`. A wait failure (exit 1) takes
   precedence over exit 3.
-- Requires `workspaces:sync` permission scope for PATs.
+- Requires `workspaces:write` permission scope for PATs.
 
 **Exit Codes:**
 
@@ -435,7 +435,7 @@ afc workspace reclone <slug> --confirm
   clone state to `pending`, and enqueues a new clone job.
 - The workspace status remains `active` throughout the reclone lifecycle.
 - Prints the workspace JSON to stdout with `clone_status='pending'`.
-- Requires `workspaces:sync` permission scope for PATs.
+- Requires `workspaces:write` permission scope for PATs.
 
 **Exit Codes:**
 

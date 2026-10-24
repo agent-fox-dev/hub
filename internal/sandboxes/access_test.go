@@ -81,7 +81,7 @@ func serve(e *echo.Echo, method, path, body string, auth *apikit.AuthInfo) *http
 func TestAccess_FeatureOff_TS_26_9(t *testing.T) {
 	off := newDisabledEcho()
 	for name, auth := range map[string]*apikit.AuthInfo{
-		"PAT without scopes": patAuth("secrets:list"),
+		"PAT without scopes": patAuth("secrets:read"),
 		"PAT with both":      patAuth("sandboxes:read", "sandboxes:write"),
 		"API key":            apiKeyAuth(),
 		"admin token":        adminAuth(),
@@ -105,7 +105,7 @@ func TestAccess_PATScopes_TS_26_10(t *testing.T) {
 	env := newLeaseEnv(t, leaseEnvOptions{})
 	id := env.mustIssue()["id"].(string)
 	before := env.readState(id)
-	readOnly, writeOnly, none := patAuth("sandboxes:read"), patAuth("sandboxes:write"), patAuth("secrets:list")
+	readOnly, writeOnly, none := patAuth("sandboxes:read"), patAuth("sandboxes:write"), patAuth("secrets:read")
 
 	// POST and DELETE need sandboxes:write, even for a workspace that does not exist.
 	for _, slug := range []string{"widgets", "nosuch"} {

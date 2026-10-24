@@ -25,7 +25,7 @@ func TestPermissions_TS_25_36(t *testing.T) {
 var scopePool = []string{
 	"sandboxes:read",
 	"sandboxes:write",
-	"secrets:list",
+	"secrets:read",
 	"workspaces:read",
 	"sandbox:read",
 	"sandboxes:readonly",

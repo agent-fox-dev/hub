@@ -150,17 +150,17 @@ func TestVarList_OrgNonMemberReturns404(t *testing.T) {
 	}
 }
 
-// TestVarList_PATVarsDeleteCannotList verifies that a PAT with vars:delete
-// but not vars:read, vars:write, or vars:manage cannot list variables.
+// TestVarList_PATOtherScopeCannotList verifies that a PAT holding only the
+// secrets scopes cannot list variables.
 // Requirement: 07-REQ-13.E2
-func TestVarList_PATVarsDeleteCannotList(t *testing.T) {
+func TestVarList_PATOtherScopeCannotList(t *testing.T) {
 	env := newHandlerTestEnv(t)
 
-	auth := patAuth("user-var-delonly", "vars:delete")
+	auth := patAuth("user-var-delonly", "secrets:write")
 	rec := env.doRequest(t, http.MethodGet, "/api/v1/user/vars", "", auth)
 
 	if rec.Code != http.StatusForbidden {
-		t.Errorf("GET (vars:delete only) status = %d; want %d",
+		t.Errorf("GET (secrets:write only) status = %d; want %d",
 			rec.Code, http.StatusForbidden)
 	}
 }
@@ -180,16 +180,16 @@ func TestVarList_VarsWriteCanList(t *testing.T) {
 	}
 }
 
-// TestVarList_VarsManageCanList verifies that vars:manage implies listing.
+// TestVarList_VarsManageCanList verifies that vars:write implies listing.
 // Requirement: 07-REQ-13.1
 func TestVarList_VarsManageCanList(t *testing.T) {
 	env := newHandlerTestEnv(t)
 
-	auth := patAuth("user-var-manage-list", "vars:manage")
+	auth := patAuth("user-var-manage-list", "vars:write")
 	rec := env.doRequest(t, http.MethodGet, "/api/v1/user/vars", "", auth)
 
 	if rec.Code != http.StatusOK {
-		t.Errorf("GET (vars:manage) status = %d; want %d",
+		t.Errorf("GET (vars:write) status = %d; want %d",
 			rec.Code, http.StatusOK)
 	}
 }

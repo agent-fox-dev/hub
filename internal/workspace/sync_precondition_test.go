@@ -199,7 +199,7 @@ func TestSyncPrecondition_NonexistentWorkspace(t *testing.T) {
 	}
 }
 
-// 13-REQ-3.E1: Verifies that a caller without workspaces:sync scope receives
+// 13-REQ-3.E1: Verifies that a caller without workspaces:write scope receives
 // HTTP 403 before any workspace state is checked.
 func TestSyncPrecondition_MissingSyncScope(t *testing.T) {
 	env := newTestEnv(t)
@@ -213,12 +213,12 @@ func TestSyncPrecondition_MissingSyncScope(t *testing.T) {
 		CloneStatus: "ready",
 	})
 
-	// Use a PAT that has workspaces:read but NOT workspaces:sync.
+	// Use a PAT that has workspaces:read but NOT workspaces:write.
 	auth := patAuth("alice-id", "workspaces:read")
 	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/scope-test-ws/sync", "", auth)
 
 	if rec.Code != http.StatusForbidden {
-		t.Errorf("POST /sync without workspaces:sync scope returned %d; want %d",
+		t.Errorf("POST /sync without workspaces:write scope returned %d; want %d",
 			rec.Code, http.StatusForbidden)
 	}
 

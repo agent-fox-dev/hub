@@ -243,7 +243,7 @@ func TestWorkspaceCreate_AdminToken(t *testing.T) {
 }
 
 // TS-01-E9: Verify that a PAT with workspaces:read (but not
-// workspaces:create) attempting to create a workspace is rejected with
+// workspaces:write) attempting to create a workspace is rejected with
 // HTTP 403.
 // Requirement: 01-REQ-5.E2
 func TestWorkspaceCreate_PATReadOnly(t *testing.T) {

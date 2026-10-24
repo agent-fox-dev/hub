@@ -20,7 +20,7 @@ const (
 	sStranger = "stranger-3"
 )
 
-var secretScopes = []string{"secrets:manage", "secrets:read", "secrets:write", "secrets:delete", "vars:manage", "vars:read", "vars:write", "vars:delete"}
+var secretScopes = []string{"secrets:write", "secrets:read", "secrets:write", "secrets:write", "vars:write", "vars:read", "vars:write", "vars:write"}
 
 func newMemberSecretsEnv(t *testing.T) *handlerTestEnv {
 	t.Helper()

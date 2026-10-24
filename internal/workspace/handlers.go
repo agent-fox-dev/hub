@@ -261,8 +261,8 @@ func handleCreateWorkspace(db *sql.DB) echo.HandlerFunc {
 			return respondError(c, http.StatusForbidden, "admin tokens cannot create workspaces; a real user is required as owner")
 		}
 
-		if wsaccess.IsPAT(auth) && !wsaccess.HasScope(auth, "workspaces:create") {
-			return respondError(c, http.StatusForbidden, "PAT requires workspaces:create scope to create workspaces")
+		if !hasWriteAccess(auth) {
+			return respondError(c, http.StatusForbidden, "PAT requires workspaces:write scope to create workspaces")
 		}
 
 		// Parse request body.
@@ -1130,7 +1130,7 @@ func handleDeleteWorkspace(db *sql.DB) echo.HandlerFunc {
 			return respondError(c, http.StatusUnauthorized, "authentication required")
 		}
 
-		if wsaccess.IsPAT(auth) && !hasDeleteAccess(auth) {
+		if wsaccess.IsPAT(auth) && !hasWriteAccess(auth) {
 			return respondError(c, http.StatusNotFound, "workspace not found")
 		}
 

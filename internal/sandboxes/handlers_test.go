@@ -143,7 +143,7 @@ func TestHandler_FeatureOff_TS_25_40(t *testing.T) {
 	for name, auth := range map[string]*apikit.AuthInfo{
 		"admin token":       adminAuth(),
 		"api key":           apiKeyAuth(),
-		"PAT without scope": patAuth("secrets:list"),
+		"PAT without scope": patAuth("secrets:read"),
 		"PAT with scope":    patAuth("sandboxes:read"),
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -165,9 +165,9 @@ func TestHandler_PATScopes_TS_25_41(t *testing.T) {
 	svc, _ := newTestService(t, validConfig())
 	e := newHandlerEcho(svc)
 
-	rec := getProfiles(t, e, patAuth("secrets:list"))
+	rec := getProfiles(t, e, patAuth("secrets:read"))
 	if rec.Code != http.StatusForbidden {
-		t.Fatalf("PAT with secrets:list: status = %d; want 403", rec.Code)
+		t.Fatalf("PAT with secrets:read: status = %d; want 403", rec.Code)
 	}
 	if env := errorEnvelope(t, rec); env["code"] != float64(403) || env["message"] == "" {
 		t.Errorf("403 body = %v; want an apikit error envelope with a message", env)

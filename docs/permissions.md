@@ -10,7 +10,7 @@ Permissions follow the pattern `resource_type:action` where both parts are
 non-empty strings containing only lowercase ASCII letters, digits, and
 underscores (regex `^[a-z0-9_]+$`).
 
-The permission registry in apikit is pre-populated with 6 built-in scopes.
+The permission registry in apikit is pre-populated with 8 built-in scopes.
 Consuming projects (like hub) register additional scopes by passing
 `apikit.Permission` structs to `Server.MountHandlers()`. PAT creation
 validates every requested scope against this registry and rejects unknown
@@ -87,9 +87,8 @@ API key authorization rests on three principles:
 
 **1. Permission bypass.** `RequirePermission` returns nil immediately for
 API keys without inspecting any scope list. The `AuthInfo` struct for API
-keys has `Permissions` set to nil. In the workspace subsystem,
-`hasWriteAccess` and `hasDeleteAccess` also return true unconditionally
-for API keys. In the git server, `requireGitScope` returns nil for API
+keys has `Permissions` set to nil. `wsaccess.CanRead` and `CanWrite`
+return true for API keys without reading a scope. In the git server, `requireGitScope` returns nil for API
 keys — they have implicit `git:read` + `git:write`.
 
 **2. Workspace access.** Despite bypassing scope checks, API keys
@@ -431,7 +430,7 @@ These 8 permissions are registered automatically by `apikit`'s
 
 ## Hub Workspace Permissions
 
-These 5 permissions are registered by `WorkspacePermissions()` in
+These 2 permissions are registered by `WorkspacePermissions()` in
 `hub/internal/workspace/routes.go` and passed to `apikit.Server.MountHandlers()`
 at startup.
 
@@ -440,47 +439,20 @@ at startup.
 | | |
 |---|---|
 | **Source** | hub |
-| **Grants** | List and view the workspaces the authenticated user owns or whose org they belong to; list rerere resolutions; view patch-status dashboard |
+| **Grants** | List and view the workspaces the authenticated user owns or whose org they belong to; list rerere resolutions; view the patch-status dashboard |
 | **Endpoints** | `GET /api/v1/workspaces`, `GET /api/v1/workspaces/:slug`, `GET /api/v1/workspaces/:slug/rerere`, `GET /api/v1/workspaces/:slug/patch-status` |
-| **Implied by** | `workspaces:create`, `workspaces:write` -- but only for workspace CRUD endpoints (list, get). The rerere list and patch-status handlers check for the literal `workspaces:read` scope via `wsaccess.HasScope(auth, "workspaces:read")` and do NOT honor these implications. A PAT with `workspaces:create` or `workspaces:write` but without `workspaces:read` can list and get workspaces but cannot access rerere list or patch-status endpoints. |
+| **Implied by** | `workspaces:write` |
 | **Ownership** | Enforced through `wsaccess` with the read level: the workspace's owner, a member of its org and an admin token may read; anyone else gets `404` (anti-enumeration, see [Workspace access levels](#workspace-access-levels)). The listing returns the caller's own workspaces and those of the caller's orgs. |
-
-### workspaces:create
-
-| | |
-|---|---|
-| **Source** | hub |
-| **Grants** | Create new workspaces. Admin tokens cannot create workspaces (HTTP 403) because a real user identity is required as owner. |
-| **Endpoints** | `POST /api/v1/workspaces`, `GET /api/v1/workspaces`, `GET /api/v1/workspaces/:slug` |
-| **Implies** | `workspaces:read` (workspace CRUD endpoints only -- list and get workspaces; does NOT grant access to rerere or patch-status which require the literal `workspaces:read` scope) |
 
 ### workspaces:write
 
 | | |
 |---|---|
 | **Source** | hub |
-| **Grants** | Update, archive, and reactivate workspaces owned by the authenticated user, and push one of their branches to the workspace's `origin`. Also grants access to the carry-patch sync endpoint (`POST /api/v1/workspaces/:slug/sync` when the workspace is in `carry_patch` mode), as an alternative to `workspaces:sync`. Grants access to forget (delete) rerere resolutions. |
-| **Endpoints** | `PATCH /api/v1/workspaces/:slug`, `POST /api/v1/workspaces/:slug/archive`, `POST /api/v1/workspaces/:slug/reactivate`, `POST /api/v1/workspaces/:slug/branches/:name/push`, `POST /api/v1/workspaces/:slug/sync` (carry-patch sync only), `DELETE /api/v1/workspaces/:slug/rerere/*pathspec`, `GET /api/v1/workspaces`, `GET /api/v1/workspaces/:slug` |
-| **Implies** | `workspaces:read` (workspace CRUD endpoints only -- list and get workspaces; does NOT grant access to rerere list or patch-status which require the literal `workspaces:read` scope) |
-
-### workspaces:delete
-
-| | |
-|---|---|
-| **Source** | hub |
-| **Grants** | Permanently delete archived workspaces owned by the authenticated user |
-| **Endpoints** | `DELETE /api/v1/workspaces/:slug` |
-| **Does NOT imply** | `workspaces:read` — a PAT with only `workspaces:delete` cannot list or view workspaces |
-
-### workspaces:sync
-
-| | |
-|---|---|
-| **Source** | hub |
-| **Grants** | Trigger upstream sync and reclone operations on workspaces. Includes fetching from upstream, fast-forwarding the integration branch, triggering reset-to-upstream recovery, and nuclear reclone (archive + re-clone). |
-| **Endpoints** | `POST /api/v1/workspaces/:slug/sync`, `POST /api/v1/workspaces/:slug/reclone` |
-| **Does NOT imply** | `workspaces:read` — a PAT with only `workspaces:sync` cannot list or view workspaces |
-| **Note** | For carry-patch workspaces, the carry-patch sync handler also accepts `workspaces:write` as an alternative scope. The standard sync handler and reclone handler require `workspaces:sync` exclusively. |
+| **Grants** | Create workspaces (admin tokens cannot: a real user is required as owner); update, archive, reactivate, sync, reclone and delete the workspaces the authenticated user owns; push one of their branches to the workspace's `origin`; forget rerere resolutions |
+| **Endpoints** | `POST /api/v1/workspaces`, `PATCH /api/v1/workspaces/:slug`, `DELETE /api/v1/workspaces/:slug`, `POST /api/v1/workspaces/:slug/archive`, `POST /api/v1/workspaces/:slug/reactivate`, `POST /api/v1/workspaces/:slug/sync`, `POST /api/v1/workspaces/:slug/reclone`, `POST /api/v1/workspaces/:slug/branches/:name/push`, `DELETE /api/v1/workspaces/:slug/rerere/*pathspec` (plus all `workspaces:read` endpoints) |
+| **Implies** | `workspaces:read` |
+| **Ownership** | Enforced through `wsaccess` with the write level: the workspace's owner or an admin token; a member of its org gets `403` with `error_type: forbidden`; anyone else gets `404`. Delete needs an archived workspace. |
 
 ---
 
@@ -636,62 +608,35 @@ These 2 permissions are registered by `GitPermissions()` in
 
 ## Hub Secrets Permissions
 
-These 4 permissions are registered by `Permissions()` in
+These 2 permissions are registered by `Permissions()` in
 `hub/internal/secrets/permissions.go` and passed to `apikit.Server.MountHandlers()`
 at startup via the `extraPerms` parameter.
 
-### secrets:manage
+### secrets:read
 
 | | |
 |---|---|
 | **Source** | hub |
-| **Grants** | Full CRUD access to secrets: create, list, update, and delete |
-| **Endpoints** | `POST /api/v1/user/secrets`, `POST /api/v1/orgs/:slug/secrets`, `POST /api/v1/workspaces/:slug/secrets`, `GET /api/v1/user/secrets`, `GET /api/v1/orgs/:slug/secrets`, `GET /api/v1/workspaces/:slug/secrets`, `PATCH /api/v1/user/secrets/:key`, `PATCH /api/v1/orgs/:slug/secrets/:key`, `PATCH /api/v1/workspaces/:slug/secrets/:key`, `DELETE /api/v1/user/secrets/:key`, `DELETE /api/v1/orgs/:slug/secrets/:key`, `DELETE /api/v1/workspaces/:slug/secrets/:key` |
-| **Implies** | `secrets:list`, `secrets:write`, `secrets:delete` |
-
-### secrets:list
-
-| | |
-|---|---|
-| **Source** | hub |
-| **Grants** | List access to secret names (values are never returned) |
+| **Grants** | List secret names (values are never returned) |
 | **Endpoints** | `GET /api/v1/user/secrets`, `GET /api/v1/orgs/:slug/secrets`, `GET /api/v1/workspaces/:slug/secrets` |
-| **Implied by** | `secrets:manage` |
+| **Implied by** | `secrets:write` |
 
 ### secrets:write
 
 | | |
 |---|---|
 | **Source** | hub |
-| **Grants** | Update existing secret values |
-| **Endpoints** | `PATCH /api/v1/user/secrets/:key`, `PATCH /api/v1/orgs/:slug/secrets/:key`, `PATCH /api/v1/workspaces/:slug/secrets/:key` |
-| **Implied by** | `secrets:manage` |
-
-### secrets:delete
-
-| | |
-|---|---|
-| **Source** | hub |
-| **Grants** | Delete secrets |
-| **Endpoints** | `DELETE /api/v1/user/secrets/:key`, `DELETE /api/v1/orgs/:slug/secrets/:key`, `DELETE /api/v1/workspaces/:slug/secrets/:key` |
-| **Implied by** | `secrets:manage` |
+| **Grants** | Create, update and delete secrets |
+| **Endpoints** | `POST /api/v1/user/secrets`, `POST /api/v1/orgs/:slug/secrets`, `POST /api/v1/workspaces/:slug/secrets`, `PATCH /api/v1/user/secrets/:key`, `PATCH /api/v1/orgs/:slug/secrets/:key`, `PATCH /api/v1/workspaces/:slug/secrets/:key`, `DELETE /api/v1/user/secrets/:key`, `DELETE /api/v1/orgs/:slug/secrets/:key`, `DELETE /api/v1/workspaces/:slug/secrets/:key` (plus all `secrets:read` endpoints) |
+| **Implies** | `secrets:read` |
 
 ---
 
 ## Hub Variables Permissions
 
-These 4 permissions are defined in
+These 2 permissions are defined in
 `hub/internal/secrets/permissions.go` and included in `secrets.Permissions()`
 for startup registration.
-
-### vars:manage
-
-| | |
-|---|---|
-| **Source** | hub |
-| **Grants** | Full CRUD access to variables: create, list, read, update, and delete |
-| **Endpoints** | `POST /api/v1/user/vars`, `POST /api/v1/orgs/:slug/vars`, `POST /api/v1/workspaces/:slug/vars`, `GET /api/v1/user/vars`, `GET /api/v1/orgs/:slug/vars`, `GET /api/v1/workspaces/:slug/vars`, `GET /api/v1/workspaces/:slug/vars/resolved`, `PATCH /api/v1/user/vars/:key`, `PATCH /api/v1/orgs/:slug/vars/:key`, `PATCH /api/v1/workspaces/:slug/vars/:key`, `DELETE /api/v1/user/vars/:key`, `DELETE /api/v1/orgs/:slug/vars/:key`, `DELETE /api/v1/workspaces/:slug/vars/:key` |
-| **Implies** | `vars:read`, `vars:write`, `vars:delete` |
 
 ### vars:read
 
@@ -700,26 +645,16 @@ for startup registration.
 | **Source** | hub |
 | **Grants** | List and read variable values |
 | **Endpoints** | `GET /api/v1/user/vars`, `GET /api/v1/orgs/:slug/vars`, `GET /api/v1/workspaces/:slug/vars`, `GET /api/v1/workspaces/:slug/vars/resolved` |
-| **Implied by** | `vars:write`, `vars:manage` |
+| **Implied by** | `vars:write` |
 
 ### vars:write
 
 | | |
 |---|---|
 | **Source** | hub |
-| **Grants** | Update existing variable values |
-| **Endpoints** | `PATCH /api/v1/user/vars/:key`, `PATCH /api/v1/orgs/:slug/vars/:key`, `PATCH /api/v1/workspaces/:slug/vars/:key` (plus all `vars:read` endpoints) |
+| **Grants** | Create, update and delete variables |
+| **Endpoints** | `POST /api/v1/user/vars`, `POST /api/v1/orgs/:slug/vars`, `POST /api/v1/workspaces/:slug/vars`, `PATCH /api/v1/user/vars/:key`, `PATCH /api/v1/orgs/:slug/vars/:key`, `PATCH /api/v1/workspaces/:slug/vars/:key`, `DELETE /api/v1/user/vars/:key`, `DELETE /api/v1/orgs/:slug/vars/:key`, `DELETE /api/v1/workspaces/:slug/vars/:key` (plus all `vars:read` endpoints) |
 | **Implies** | `vars:read` |
-| **Implied by** | `vars:manage` |
-
-### vars:delete
-
-| | |
-|---|---|
-| **Source** | hub |
-| **Grants** | Delete variables |
-| **Endpoints** | `DELETE /api/v1/user/vars/:key`, `DELETE /api/v1/orgs/:slug/vars/:key`, `DELETE /api/v1/workspaces/:slug/vars/:key` |
-| **Implied by** | `vars:manage` |
 
 ---
 
@@ -786,35 +721,44 @@ at startup via the `extraPerms` parameter, on every start.
 
 ## Implied Permissions Summary
 
-| Scope | Implies |
-|-------|---------|
-| `workspaces:create` | `workspaces:read` * |
-| `workspaces:write` | `workspaces:read` * |
-| `workspaces:sync` | *(nothing)* |
-| `workspaces:delete` | *(nothing)* |
-| `patches:write` | `patches:read` |
-| `git:write` | `git:read` |
-| `secrets:manage` | `secrets:list`, `secrets:write`, `secrets:delete` |
-| `vars:manage` | `vars:read`, `vars:write`, `vars:delete` |
-| `vars:write` | `vars:read` |
-| `sandboxes:write` | `sandboxes:read` |
-| `forge:write` | `forge:read` |
+Every hub resource has one `read` and one `write` scope. `resource:write`
+implies `resource:read` for every hub resource (`workspaces`, `patches`,
+`rebuilds`, `merges`, `git`, `secrets`, `vars`, `sessions`, `audit`,
+`sandboxes`, `forge`); `resource:read` never implies `resource:write`.
+`wsaccess.CanRead` and `wsaccess.CanWrite` are the rule; a handler that
+keeps a helper of its own checks both scopes of the resource.
 
-\* The `workspaces:create` and `workspaces:write` implication of
-`workspaces:read` is implemented via `hasReadAccess()` in workspace CRUD
-handlers only. It applies to `GET /api/v1/workspaces` and
-`GET /api/v1/workspaces/:slug`. It does NOT apply to rerere
-(`GET /api/v1/workspaces/:slug/rerere`) or patch-status
-(`GET /api/v1/workspaces/:slug/patch-status`), which check for the literal
-`workspaces:read` scope string.
-The `DELETE /api/v1/workspaces/:slug/rerere/*`
-endpoint checks for the literal `workspaces:write` scope string.
+apikit's own scopes keep their shape: `tokens:manage` satisfies a check for
+`tokens:write` by convention; `keys:manage`, `orgs:write` and `users:read`
+stand alone.
+
+### Renamed scopes
+
+The hub registered 29 scopes before the collapse; it registers 22 now
+([ADR 06](adr/06-collapse-scopes-to-read-and-write.md)). At start the hub
+rewrites the permissions of every stored PAT that names an old scope
+(`wsaccess.MigrateScopes`), and `POST /api/v1/user/tokens` rejects the old
+names with `400` like any unknown scope.
+
+| Old scope | Rewritten to |
+|-----------|--------------|
+| `workspaces:create` | `workspaces:write` |
+| `workspaces:delete` | `workspaces:write` |
+| `workspaces:sync` | `workspaces:write` |
+| `secrets:list` | `secrets:read` |
+| `secrets:manage` | `secrets:write` |
+| `secrets:delete` | `secrets:write` |
+| `vars:manage` | `vars:write` |
+| `vars:delete` | `vars:write` |
+
+A token that held `workspaces:write` alone could not
+list workspaces before; after the rewrite it holds `workspaces:write` and can.
 
 ---
 
 ## Complete Permission List
 
-All 37 registered permission scopes, sorted alphabetically:
+All 30 registered permission scopes, sorted alphabetically:
 
 | # | Scope | Source | Resource | Action |
 |---|-------|--------|----------|--------|
@@ -836,25 +780,18 @@ All 37 registered permission scopes, sorted alphabetically:
 | 16 | `rebuilds:write` | hub | rebuilds | write |
 | 17 | `sandboxes:read` | hub | sandboxes | read |
 | 18 | `sandboxes:write` | hub | sandboxes | write |
-| 19 | `secrets:delete` | hub | secrets | delete |
-| 20 | `secrets:list` | hub | secrets | list |
-| 21 | `secrets:manage` | hub | secrets | manage |
-| 22 | `secrets:write` | hub | secrets | write |
-| 23 | `sessions:read` | hub | sessions | read |
-| 24 | `sessions:write` | hub | sessions | write |
-| 25 | `tokens:manage` | apikit | tokens | manage |
-| 26 | `tokens:read` | apikit | tokens | read |
-| 27 | `tokens:write` | apikit | tokens | write |
-| 28 | `users:read` | apikit | users | read |
-| 29 | `vars:delete` | hub | vars | delete |
-| 30 | `vars:manage` | hub | vars | manage |
-| 31 | `vars:read` | hub | vars | read |
-| 32 | `vars:write` | hub | vars | write |
-| 33 | `workspaces:create` | hub | workspaces | create |
-| 34 | `workspaces:delete` | hub | workspaces | delete |
-| 35 | `workspaces:read` | hub | workspaces | read |
-| 36 | `workspaces:sync` | hub | workspaces | sync |
-| 37 | `workspaces:write` | hub | workspaces | write |
+| 19 | `secrets:read` | hub | secrets | read |
+| 20 | `secrets:write` | hub | secrets | write |
+| 21 | `sessions:read` | hub | sessions | read |
+| 22 | `sessions:write` | hub | sessions | write |
+| 23 | `tokens:manage` | apikit | tokens | manage |
+| 24 | `tokens:read` | apikit | tokens | read |
+| 25 | `tokens:write` | apikit | tokens | write |
+| 26 | `users:read` | apikit | users | read |
+| 27 | `vars:read` | hub | vars | read |
+| 28 | `vars:write` | hub | vars | write |
+| 29 | `workspaces:read` | hub | workspaces | read |
+| 30 | `workspaces:write` | hub | workspaces | write |
 
 ---
 
@@ -877,11 +814,11 @@ the handler level in `hub/internal/secrets/handlers.go`.
 
 | Operation | Secrets Scope Required | Variables Scope Required |
 |-----------|----------------------|------------------------|
-| Create (POST) | `secrets:manage` | `vars:manage` |
-| List (GET) | `secrets:list` or `secrets:manage` | `vars:read`, `vars:write`, or `vars:manage` |
-| Update (PATCH) | `secrets:write` or `secrets:manage` | `vars:write` or `vars:manage` |
-| Delete (DELETE) | `secrets:delete` or `secrets:manage` | `vars:delete` or `vars:manage` |
-| Resolved (GET .../resolved) | — | `vars:read`, `vars:write`, or `vars:manage` |
+| Create (POST) | `secrets:write` | `vars:write` |
+| List (GET) | `secrets:read` or `secrets:write` | `vars:read` or `vars:write` |
+| Update (PATCH) | `secrets:write` | `vars:write` |
+| Delete (DELETE) | `secrets:write` | `vars:write` |
+| Resolved (GET .../resolved) | — | `vars:read` or `vars:write` |
 
 ### Ownership and Membership Rules
 
@@ -959,7 +896,7 @@ token), the workspace CRUD endpoints (list, get, update, archive, reactivate,
 delete) return HTTP 404 (not 403) to avoid disclosing the existence of
 resources. A member of the workspace's org can see it exists, so a member's
 write is HTTP 403 with `error_type: forbidden`. The workspace create endpoint returns HTTP 403
-(`"PAT requires workspaces:create scope to create workspaces"`) because
+(`"PAT requires workspaces:write scope to create workspaces"`) because
 there is no existing resource to enumerate. The git server returns HTTP 404
 to a caller who may not read the workspace (`authorizeGitAccess` writes a
 pkt-line 404 `"repository not found"`) to prevent workspace slug enumeration;
@@ -976,10 +913,10 @@ than its own.
 
 Other endpoint groups return HTTP 403 for missing PAT scopes:
 git scope check returns 403 with `"insufficient git permissions"`;
-sync handler returns 403 with `"PAT requires workspaces:sync scope to sync workspaces"`;
-reclone handler returns 403 with `"PAT requires workspaces:sync scope to reclone workspaces"`;
+sync handler returns 403 with `"PAT requires workspaces:write scope to sync workspaces"`;
+reclone handler returns 403 with `"PAT requires workspaces:write scope to reclone workspaces"`;
 branch push handler returns 403 with `"PAT requires workspaces:write scope to push branches"`, before the workspace is looked up;
-carry-patch sync handler returns 403 with `"missing required scope: workspaces:sync"`;
+carry-patch sync handler returns 403 with `"missing required scope: workspaces:write"`;
 secrets and variables handlers return 403 with `"insufficient permission scope"`;
 merge handlers return 403 with `"PAT requires merges:write scope"` (or
 `merges:read`); rebuild handlers return 403 with `"missing required scope:

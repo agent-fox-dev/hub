@@ -20,7 +20,7 @@ func TestRefusalPoints_ReportOnce_TS_34_58(t *testing.T) {
 	h := newRealHub(t)
 	h.seed(t, "S", "active")
 	h.seed(t, "X", "active")
-	token, id := h.mintBound(t, "S", "workspaces:read", "sessions:read", "sessions:write", "audit:read", "tokens:read", "tokens:manage", "secrets:list")
+	token, id := h.mintBound(t, "S", "workspaces:read", "sessions:read", "sessions:write", "audit:read", "tokens:read", "tokens:manage", "secrets:read")
 	rec := h.do(http.MethodPost, "/api/v1/sessions", h.apiKey, `{"workspace_slug":"X"}`)
 	var xs struct {
 		ID string `json:"id"`

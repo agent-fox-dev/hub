@@ -322,7 +322,7 @@ paths:
 
         Admin tokens are rejected with `403`: a workspace requires a real
         user as owner.
-      x-required-scopes: ["workspaces:create"]
+      x-required-scopes: ["workspaces:write"]
       requestBody:
         required: true
         content:
@@ -372,7 +372,7 @@ paths:
         "403":
           description: >-
             An admin token attempted to create a workspace, or the PAT lacks
-            the `workspaces:create` scope.
+            the `workspaces:write` scope.
           content:
             application/json:
               schema:
@@ -392,7 +392,7 @@ paths:
       description: |
         Non-admin callers see only workspaces they own. Admin tokens see every
         workspace on the server.
-      x-required-scopes: ["workspaces:read", "workspaces:create", "workspaces:write"]
+      x-required-scopes: ["workspaces:read", "workspaces:write"]
       parameters:
         - name: include_archived
           in: query
@@ -430,7 +430,7 @@ paths:
       tags: [Workspaces]
       operationId: getWorkspace
       summary: Get a workspace
-      x-required-scopes: ["workspaces:read", "workspaces:create", "workspaces:write"]
+      x-required-scopes: ["workspaces:read", "workspaces:write"]
       responses:
         "200":
           description: The workspace.
@@ -498,13 +498,12 @@ paths:
       operationId: deleteWorkspace
       summary: Permanently delete an archived workspace
       description: |
-        Only archived workspaces can be deleted. `workspaces:delete` does not
-        imply `workspaces:read`. In the same transaction, every live token
+        Only archived workspaces can be deleted. In the same transaction, every live token
         bound to the workspace is revoked and its binding removed; the
         `hub.workspace.delete` event lists the revoked ids in
         `revoked_tokens`. A failure of any step deletes nothing (500
         `failed to delete workspace`).
-      x-required-scopes: ["workspaces:delete"]
+      x-required-scopes: ["workspaces:write"]
       responses:
         "204":
           description: Workspace deleted.
@@ -749,10 +748,7 @@ paths:
         the upstream ref advanced unless `AUTO_REBUILD_AFTER_SYNC` is
         `"false"`; a duplicate enqueue is ignored silently and leaves
         `rebuild_triggered` false.
-      x-required-scopes: ["workspaces:sync", "workspaces:write"]
-      x-scope-note: >-
-        The standard sync path requires `workspaces:sync` exclusively. The
-        carry-patch path also accepts `workspaces:write`.
+      x-required-scopes: ["workspaces:write"]
       parameters:
         - name: reset_to_upstream
           in: query
@@ -815,7 +811,7 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "403":
           description: >-
-            The PAT lacks the `workspaces:sync` scope. A member of the workspace's organization also gets 403, `org members have read-only access to this workspace` with `error_type: forbidden`.
+            The PAT lacks the `workspaces:write` scope. A member of the workspace's organization also gets 403, `org members have read-only access to this workspace` with `error_type: forbidden`.
           content:
             application/json:
               schema:
@@ -868,7 +864,7 @@ paths:
         workspace `status` stays `active` throughout.
 
         Ownership is not enforced.
-      x-required-scopes: ["workspaces:sync"]
+      x-required-scopes: ["workspaces:write"]
       responses:
         "200":
           description: Reclone accepted; the clone job is queued.
@@ -880,7 +876,7 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "403":
           description: >-
-            The PAT lacks the `workspaces:sync` scope. A member of the workspace's organization also gets 403, `org members have read-only access to this workspace` with `error_type: forbidden`.
+            The PAT lacks the `workspaces:write` scope. A member of the workspace's organization also gets 403, `org members have read-only access to this workspace` with `error_type: forbidden`.
           content:
             application/json:
               schema:
@@ -1487,8 +1483,6 @@ paths:
         cache yields `{"resolutions": []}`; malformed cache subdirectories
         (missing preimage or postimage) are skipped silently.
 
-        This handler requires the literal `workspaces:read` scope --
-        `workspaces:create` and `workspaces:write` do **not** satisfy it.
         Ownership is not enforced.
       x-required-scopes: ["workspaces:read"]
       responses:
@@ -1526,7 +1520,7 @@ paths:
       summary: Forget a recorded rerere resolution
       description: |
         Runs `git rerere forget <pathspec>` in the workspace clone. Requires
-        the literal `workspaces:write` scope. Ownership is not enforced.
+        the `workspaces:write` scope. Ownership is not enforced.
       x-required-scopes: ["workspaces:write"]
       responses:
         "204":
@@ -1869,7 +1863,7 @@ paths:
         reported as `0` rather than failing the request. Soft-deleted patches
         are excluded.
 
-        Requires the literal `workspaces:read` scope. Ownership is not enforced.
+        Requires the `workspaces:read` scope. Ownership is not enforced.
       x-required-scopes: ["workspaces:read"]
       responses:
         "200":
@@ -2126,7 +2120,7 @@ paths:
         a digit, and are at most 255 characters; values are at most 256 KB
         (262144 bytes); a scope holds at most 100 entries; key lookup is
         case-insensitive.
-      x-required-scopes: ["secrets:manage"]
+      x-required-scopes: ["secrets:write"]
       requestBody:
         required: true
         content:
@@ -2151,7 +2145,7 @@ paths:
       operationId: listUserSecrets
       summary: List user-scoped secrets
       description: Sorted by key, case-insensitively. Values are never returned.
-      x-required-scopes: ["secrets:list", "secrets:manage"]
+      x-required-scopes: ["secrets:read", "secrets:write"]
       responses:
         "200":
           $ref: "#/components/responses/SecretEntryList"
@@ -2169,7 +2163,7 @@ paths:
       tags: [Secrets]
       operationId: updateUserSecret
       summary: Update a user-scoped secret value
-      x-required-scopes: ["secrets:write", "secrets:manage"]
+      x-required-scopes: ["secrets:write"]
       requestBody:
         required: true
         content:
@@ -2193,7 +2187,7 @@ paths:
       tags: [Secrets]
       operationId: deleteUserSecret
       summary: Delete a user-scoped secret
-      x-required-scopes: ["secrets:delete", "secrets:manage"]
+      x-required-scopes: ["secrets:write"]
       responses:
         "204":
           description: The secret was deleted.
@@ -2214,7 +2208,7 @@ paths:
       operationId: createOrgSecrets
       summary: Create organization-scoped secrets
       description: Requires organization membership; admin tokens bypass the check.
-      x-required-scopes: ["secrets:manage"]
+      x-required-scopes: ["secrets:write"]
       requestBody:
         required: true
         content:
@@ -2240,7 +2234,7 @@ paths:
       tags: [Secrets]
       operationId: listOrgSecrets
       summary: List organization-scoped secrets
-      x-required-scopes: ["secrets:list", "secrets:manage"]
+      x-required-scopes: ["secrets:read", "secrets:write"]
       responses:
         "200":
           $ref: "#/components/responses/SecretEntryList"
@@ -2261,7 +2255,7 @@ paths:
       tags: [Secrets]
       operationId: updateOrgSecret
       summary: Update an organization-scoped secret value
-      x-required-scopes: ["secrets:write", "secrets:manage"]
+      x-required-scopes: ["secrets:write"]
       requestBody:
         required: true
         content:
@@ -2289,7 +2283,7 @@ paths:
       tags: [Secrets]
       operationId: deleteOrgSecret
       summary: Delete an organization-scoped secret
-      x-required-scopes: ["secrets:delete", "secrets:manage"]
+      x-required-scopes: ["secrets:write"]
       responses:
         "204":
           description: The secret was deleted.
@@ -2314,7 +2308,7 @@ paths:
       operationId: createWorkspaceSecrets
       summary: Create workspace-scoped secrets
       description: Requires workspace ownership; admin tokens bypass the check.
-      x-required-scopes: ["secrets:manage"]
+      x-required-scopes: ["secrets:write"]
       requestBody:
         required: true
         content:
@@ -2340,7 +2334,7 @@ paths:
       tags: [Secrets]
       operationId: listWorkspaceSecrets
       summary: List workspace-scoped secrets
-      x-required-scopes: ["secrets:list", "secrets:manage"]
+      x-required-scopes: ["secrets:read", "secrets:write"]
       responses:
         "200":
           $ref: "#/components/responses/SecretEntryList"
@@ -2361,7 +2355,7 @@ paths:
       tags: [Secrets]
       operationId: updateWorkspaceSecret
       summary: Update a workspace-scoped secret value
-      x-required-scopes: ["secrets:write", "secrets:manage"]
+      x-required-scopes: ["secrets:write"]
       requestBody:
         required: true
         content:
@@ -2389,7 +2383,7 @@ paths:
       tags: [Secrets]
       operationId: deleteWorkspaceSecret
       summary: Delete a workspace-scoped secret
-      x-required-scopes: ["secrets:delete", "secrets:manage"]
+      x-required-scopes: ["secrets:write"]
       responses:
         "204":
           description: The secret was deleted.
@@ -2419,7 +2413,7 @@ paths:
         Variables use the same validation rules as secrets, but unlike secrets
         their values **are** returned by the API. Values are stored
         base64-encoded internally and returned decoded.
-      x-required-scopes: ["vars:manage"]
+      x-required-scopes: ["vars:write"]
       requestBody:
         required: true
         content:
@@ -2443,7 +2437,7 @@ paths:
       tags: [Variables]
       operationId: listUserVars
       summary: List user-scoped variables
-      x-required-scopes: ["vars:read", "vars:write", "vars:manage"]
+      x-required-scopes: ["vars:read", "vars:write"]
       responses:
         "200":
           $ref: "#/components/responses/VariableEntryList"
@@ -2461,7 +2455,7 @@ paths:
       tags: [Variables]
       operationId: updateUserVar
       summary: Update a user-scoped variable value
-      x-required-scopes: ["vars:write", "vars:manage"]
+      x-required-scopes: ["vars:write"]
       requestBody:
         required: true
         content:
@@ -2485,7 +2479,7 @@ paths:
       tags: [Variables]
       operationId: deleteUserVar
       summary: Delete a user-scoped variable
-      x-required-scopes: ["vars:delete", "vars:manage"]
+      x-required-scopes: ["vars:write"]
       responses:
         "204":
           description: The variable was deleted.
@@ -2506,7 +2500,7 @@ paths:
       operationId: createOrgVars
       summary: Create organization-scoped variables
       description: Requires organization membership; admin tokens bypass the check.
-      x-required-scopes: ["vars:manage"]
+      x-required-scopes: ["vars:write"]
       requestBody:
         required: true
         content:
@@ -2532,7 +2526,7 @@ paths:
       tags: [Variables]
       operationId: listOrgVars
       summary: List organization-scoped variables
-      x-required-scopes: ["vars:read", "vars:write", "vars:manage"]
+      x-required-scopes: ["vars:read", "vars:write"]
       responses:
         "200":
           $ref: "#/components/responses/VariableEntryList"
@@ -2553,7 +2547,7 @@ paths:
       tags: [Variables]
       operationId: updateOrgVar
       summary: Update an organization-scoped variable value
-      x-required-scopes: ["vars:write", "vars:manage"]
+      x-required-scopes: ["vars:write"]
       requestBody:
         required: true
         content:
@@ -2581,7 +2575,7 @@ paths:
       tags: [Variables]
       operationId: deleteOrgVar
       summary: Delete an organization-scoped variable
-      x-required-scopes: ["vars:delete", "vars:manage"]
+      x-required-scopes: ["vars:write"]
       responses:
         "204":
           description: The variable was deleted.
@@ -2610,7 +2604,7 @@ paths:
 
         Several variable keys change hub behaviour -- see the
         `WorkspaceVariables` schema for the recognised names.
-      x-required-scopes: ["vars:manage"]
+      x-required-scopes: ["vars:write"]
       requestBody:
         required: true
         content:
@@ -2636,7 +2630,7 @@ paths:
       tags: [Variables]
       operationId: listWorkspaceVars
       summary: List workspace-scoped variables
-      x-required-scopes: ["vars:read", "vars:write", "vars:manage"]
+      x-required-scopes: ["vars:read", "vars:write"]
       responses:
         "200":
           $ref: "#/components/responses/VariableEntryList"
@@ -2660,7 +2654,7 @@ paths:
         Merges the three tiers with workspace overriding org, and org
         overriding user. Each entry reports the tier its value came from in
         `origin`. Sorted by key, case-insensitively.
-      x-required-scopes: ["vars:read", "vars:write", "vars:manage"]
+      x-required-scopes: ["vars:read", "vars:write"]
       responses:
         "200":
           description: The resolved variables.
@@ -2687,7 +2681,7 @@ paths:
       tags: [Variables]
       operationId: updateWorkspaceVar
       summary: Update a workspace-scoped variable value
-      x-required-scopes: ["vars:write", "vars:manage"]
+      x-required-scopes: ["vars:write"]
       requestBody:
         required: true
         content:
@@ -2715,7 +2709,7 @@ paths:
       tags: [Variables]
       operationId: deleteWorkspaceVar
       summary: Delete a workspace-scoped variable
-      x-required-scopes: ["vars:delete", "vars:manage"]
+      x-required-scopes: ["vars:write"]
       responses:
         "204":
           description: The variable was deleted.
@@ -10609,18 +10603,16 @@ components:
       type: string
       description: |
         A `resource:action` permission scope. Both halves match `^[a-z0-9_]+$`.
-        The registry holds 37 scopes: 8 built into apikit and 29 registered by
-        hub modules at startup. PAT creation rejects unknown scopes with `400`.
+        The registry holds 30 scopes: 8 built into apikit and 22 registered by
+        hub modules at startup, one `read` and one `write` scope per resource.
+        PAT creation rejects unknown scopes with `400`.
 
-        Implications: `workspaces:create` and `workspaces:write` imply
-        `workspaces:read` for workspace list and get only -- the rerere and
-        patch-status handlers test for the literal `workspaces:read` string.
-        `patches:write` implies `patches:read`; `git:write` implies `git:read`;
-        `secrets:manage` implies `secrets:list`, `secrets:write`, and
-        `secrets:delete`; `vars:manage` implies `vars:read`, `vars:write`, and
-        `vars:delete`; `vars:write` implies `vars:read`; `sandboxes:write` implies
-        `sandboxes:read`; and `forge:write` implies `forge:read`.
-        `workspaces:delete` and `workspaces:sync` imply nothing.
+        `resource:write` implies `resource:read` for every hub resource;
+        `resource:read` never implies `resource:write`. The scopes the hub
+        registered before (`workspaces:create`, `workspaces:delete`,
+        `workspaces:sync`, `secrets:list`, `secrets:manage`, `secrets:delete`,
+        `vars:manage`, `vars:delete`) are rewritten on stored tokens at hub
+        start and are no longer accepted.
       pattern: "^[a-z0-9_]+:[a-z0-9_]+$"
       enum:
         - audit:read
@@ -10641,9 +10633,7 @@ components:
         - rebuilds:write
         - sandboxes:read
         - sandboxes:write
-        - secrets:delete
-        - secrets:list
-        - secrets:manage
+        - secrets:read
         - secrets:write
         - sessions:read
         - sessions:write
@@ -10651,12 +10641,7 @@ components:
         - tokens:read
         - tokens:write
         - users:read
-        - vars:delete
-        - vars:manage
         - vars:read
         - vars:write
-        - workspaces:create
-        - workspaces:delete
         - workspaces:read
-        - workspaces:sync
         - workspaces:write

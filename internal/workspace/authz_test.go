@@ -139,7 +139,7 @@ func TestWorkspaceAuthz_MissingCredentials(t *testing.T) {
 // Requirement: 01-REQ-4.E1
 //
 // Updated for spec 03: PATs without workspaces:write (for archive/reactivate)
-// or workspaces:delete (for delete) now receive HTTP 404 (anti-enumeration)
+// or workspaces:write (for delete) now receive HTTP 404 (anti-enumeration)
 // instead of the original 403. This reflects the migration from blanket
 // PAT-forbidden to scope-based access control.
 func TestEdgeWorkspaceAuthz_PATReadCannotMutate(t *testing.T) {
@@ -153,60 +153,6 @@ func TestEdgeWorkspaceAuthz_PATReadCannotMutate(t *testing.T) {
 	})
 
 	auth := patAuth("alice-id", "workspaces:read")
-
-	t.Run("archive", func(t *testing.T) {
-		rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/alice-ws/archive", "", auth)
-		if rec.Code != http.StatusNotFound {
-			t.Errorf("archive: status = %d; want %d", rec.Code, http.StatusNotFound)
-		}
-		resp := parseErrorEnvelope(t, rec)
-		if resp.Error.Code != http.StatusNotFound {
-			t.Errorf("archive: error.code = %d; want %d", resp.Error.Code, http.StatusNotFound)
-		}
-	})
-
-	t.Run("reactivate", func(t *testing.T) {
-		rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/alice-ws/reactivate", "", auth)
-		if rec.Code != http.StatusNotFound {
-			t.Errorf("reactivate: status = %d; want %d", rec.Code, http.StatusNotFound)
-		}
-		resp := parseErrorEnvelope(t, rec)
-		if resp.Error.Code != http.StatusNotFound {
-			t.Errorf("reactivate: error.code = %d; want %d", resp.Error.Code, http.StatusNotFound)
-		}
-	})
-
-	t.Run("delete", func(t *testing.T) {
-		rec := env.doRequest(t, http.MethodDelete, "/api/v1/workspaces/alice-ws", "", auth)
-		if rec.Code != http.StatusNotFound {
-			t.Errorf("delete: status = %d; want %d", rec.Code, http.StatusNotFound)
-		}
-		resp := parseErrorEnvelope(t, rec)
-		if resp.Error.Code != http.StatusNotFound {
-			t.Errorf("delete: error.code = %d; want %d", resp.Error.Code, http.StatusNotFound)
-		}
-	})
-}
-
-// TS-01-E7: Verify that a PAT with workspaces:create attempting to archive,
-// reactivate, or delete a workspace is rejected.
-// Requirement: 01-REQ-4.E2
-//
-// Updated for spec 03: PATs without workspaces:write (for archive/reactivate)
-// or workspaces:delete (for delete) now receive HTTP 404 (anti-enumeration)
-// instead of the original 403. This reflects the migration from blanket
-// PAT-forbidden to scope-based access control.
-func TestEdgeWorkspaceAuthz_PATCreateCannotMutate(t *testing.T) {
-	env := newTestEnv(t)
-
-	env.seedWorkspace(t, &Workspace{
-		Slug:    "alice-ws",
-		GitURL:  "https://github.com/org/repo",
-		OwnerID: "alice-id",
-		Status:  "active",
-	})
-
-	auth := patAuth("alice-id", "workspaces:create")
 
 	t.Run("archive", func(t *testing.T) {
 		rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/alice-ws/archive", "", auth)

@@ -25,7 +25,7 @@ var carryPatchRoutes = []cpRoute{
 	{http.MethodPost, "/api/v1/workspaces/%s/rebuilds/job-1/requeue", "", "rebuilds:write"},
 	{http.MethodPost, "/api/v1/workspaces/%s/rebuilds/job-1/rollback", "", "rebuilds:write"},
 	{http.MethodDelete, "/api/v1/workspaces/%s/rerere/h1", "", "workspaces:write"},
-	{http.MethodPost, "/api/v1/workspaces/%s/sync", "", "workspaces:sync"},
+	{http.MethodPost, "/api/v1/workspaces/%s/sync", "", "workspaces:write"},
 }
 
 // TS-35-52 (carry-patch): A member's rebuild on an archived workspace is 403;

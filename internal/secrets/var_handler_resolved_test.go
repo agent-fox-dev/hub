@@ -325,20 +325,19 @@ func TestVarResolved_EmptyReturnsEmptyArray(t *testing.T) {
 	}
 }
 
-// TestVarResolved_PATVarsDeleteCannotResolve verifies that a PAT with
-// vars:delete but not vars:read, vars:write, or vars:manage cannot use
-// the resolved endpoint.
+// TestVarResolved_PATOtherScopeCannotResolve verifies that a PAT holding
+// only the secrets scopes cannot use the resolved endpoint.
 // Requirement: 07-REQ-16.E4
-func TestVarResolved_PATVarsDeleteCannotResolve(t *testing.T) {
+func TestVarResolved_PATOtherScopeCannotResolve(t *testing.T) {
 	env := newHandlerTestEnv(t)
 
 	env.seedWorkspaceForTest(t, "ws-resolved-perm", "user-resolved-perm")
 
-	auth := patAuth("user-resolved-perm", "vars:delete")
+	auth := patAuth("user-resolved-perm", "secrets:write")
 	rec := env.doRequest(t, http.MethodGet, "/api/v1/workspaces/ws-resolved-perm/vars/resolved", "", auth)
 
 	if rec.Code != http.StatusForbidden {
-		t.Errorf("GET resolved (vars:delete only) status = %d; want %d",
+		t.Errorf("GET resolved (secrets:write only) status = %d; want %d",
 			rec.Code, http.StatusForbidden)
 	}
 }

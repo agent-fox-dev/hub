@@ -78,7 +78,7 @@ func TestWorkspaceArchive_AlreadyArchived(t *testing.T) {
 	}
 }
 
-// TS-01-41: Verify that a PAT (workspaces:read or workspaces:create)
+// TS-01-41: Verify that a PAT (workspaces:read or workspaces:write)
 // attempting to archive a workspace is rejected.
 // Requirement: 01-REQ-8.3
 //
@@ -110,9 +110,9 @@ func TestWorkspaceArchive_PATForbidden(t *testing.T) {
 		}
 	})
 
-	t.Run("PAT with workspaces:create", func(t *testing.T) {
+	t.Run("PAT with another resource's write scope", func(t *testing.T) {
 		rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/alice-ws/archive", "",
-			patAuth("alice-id", "workspaces:create"))
+			patAuth("alice-id", "patches:write"))
 
 		if rec.Code != http.StatusNotFound {
 			t.Errorf("status = %d; want %d", rec.Code, http.StatusNotFound)
@@ -243,9 +243,9 @@ func TestWorkspaceReactivate_PATForbidden(t *testing.T) {
 		Status:  "archived",
 	})
 
-	t.Run("PAT with workspaces:create", func(t *testing.T) {
+	t.Run("PAT with another resource's write scope", func(t *testing.T) {
 		rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/alice-ws/reactivate", "",
-			patAuth("alice-id", "workspaces:create"))
+			patAuth("alice-id", "patches:write"))
 
 		if rec.Code != http.StatusNotFound {
 			t.Errorf("status = %d; want %d", rec.Code, http.StatusNotFound)
@@ -366,7 +366,7 @@ func TestWorkspaceDelete_ActiveRejected(t *testing.T) {
 // TS-01-49: Verify that a PAT attempting to delete a workspace is rejected.
 // Requirement: 01-REQ-10.3
 //
-// Updated for spec 03: PATs without workspaces:delete now receive HTTP 404
+// Updated for spec 03: PATs without workspaces:write now receive HTTP 404
 // (anti-enumeration) instead of 403, reflecting scope-based access control.
 func TestWorkspaceDelete_PATForbidden(t *testing.T) {
 	env := newTestEnv(t)

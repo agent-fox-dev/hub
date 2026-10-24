@@ -260,7 +260,7 @@ func TestSyncReset_RejectedWhileSyncing(t *testing.T) {
 	}
 }
 
-// 13-REQ-6.E4: Verifies that a caller without workspaces:sync scope cannot
+// 13-REQ-6.E4: Verifies that a caller without workspaces:write scope cannot
 // trigger reset-to-upstream.
 func TestSyncReset_MissingSyncScopeRejected(t *testing.T) {
 	env := newTestEnv(t)
@@ -276,7 +276,7 @@ func TestSyncReset_MissingSyncScopeRejected(t *testing.T) {
 		CloneStatus: "ready",
 	})
 
-	// PAT with only workspaces:read, not workspaces:sync.
+	// PAT with only workspaces:read, not workspaces:write.
 	auth := patAuth("alice-id", "workspaces:read")
 	rec := env.doRequest(t, http.MethodPost,
 		"/api/v1/workspaces/reset-noscope-ws/sync?reset_to_upstream=true", "", auth)

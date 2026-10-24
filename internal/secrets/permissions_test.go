@@ -6,219 +6,56 @@ import (
 	"github.com/txsvc/apikit"
 )
 
-// TS-07-12: Verifies that secrets:manage, secrets:list, secrets:write, and
-// secrets:delete scopes are registered with apikit, and that secrets:manage
-// implies the other three.
-// Requirement: 07-REQ-6.1
-func TestPermissions_SecretsScopes(t *testing.T) {
+// The secrets and variables scopes are read and write per resource; write
+// implies read, read does not imply write.
+func TestPermissions_Scopes(t *testing.T) {
 	perms := Permissions()
-
-	expected := []apikit.Permission{
-		{Resource: "secrets", Action: "manage"},
-		{Resource: "secrets", Action: "list"},
+	want := []apikit.Permission{
+		{Resource: "secrets", Action: "read"},
 		{Resource: "secrets", Action: "write"},
-		{Resource: "secrets", Action: "delete"},
-	}
-
-	for _, exp := range expected {
-		found := false
-		for _, p := range perms {
-			if p.Resource == exp.Resource && p.Action == exp.Action {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Errorf("expected permission %s:%s not found in Permissions(); got %v",
-				exp.Resource, exp.Action, perms)
-		}
-	}
-}
-
-// TestPermissions_SecretsManageImpliesList verifies that secrets:manage implies
-// secrets:list at the handler level (via canSecretsList OR-check).
-// Requirement: 07-REQ-6.1
-func TestPermissions_SecretsManageImpliesList(t *testing.T) {
-	auth := &apikit.AuthInfo{
-		CredentialType: "pat",
-		UserID:         "user-1",
-		Permissions:    []string{"secrets:manage"},
-	}
-	if !canSecretsList(auth) {
-		t.Error("PAT with secrets:manage should satisfy canSecretsList()")
-	}
-}
-
-// TestPermissions_SecretsManageImpliesWrite verifies that secrets:manage implies
-// secrets:write at the handler level (via canSecretsWrite OR-check).
-// Requirement: 07-REQ-6.1
-func TestPermissions_SecretsManageImpliesWrite(t *testing.T) {
-	auth := &apikit.AuthInfo{
-		CredentialType: "pat",
-		UserID:         "user-1",
-		Permissions:    []string{"secrets:manage"},
-	}
-	if !canSecretsWrite(auth) {
-		t.Error("PAT with secrets:manage should satisfy canSecretsWrite()")
-	}
-}
-
-// TestPermissions_SecretsManageImpliesDelete verifies that secrets:manage implies
-// secrets:delete at the handler level (via canSecretsDelete OR-check).
-// Requirement: 07-REQ-6.1
-func TestPermissions_SecretsManageImpliesDelete(t *testing.T) {
-	auth := &apikit.AuthInfo{
-		CredentialType: "pat",
-		UserID:         "user-1",
-		Permissions:    []string{"secrets:manage"},
-	}
-	if !canSecretsDelete(auth) {
-		t.Error("PAT with secrets:manage should satisfy canSecretsDelete()")
-	}
-}
-
-// TS-07-13: Verifies that vars:manage, vars:read, vars:write, and vars:delete
-// scopes are registered with apikit, with correct implication chains.
-// Requirement: 07-REQ-6.2
-func TestPermissions_VarsScopes(t *testing.T) {
-	perms := Permissions()
-
-	expected := []apikit.Permission{
-		{Resource: "vars", Action: "manage"},
 		{Resource: "vars", Action: "read"},
 		{Resource: "vars", Action: "write"},
-		{Resource: "vars", Action: "delete"},
 	}
-
-	for _, exp := range expected {
-		found := false
-		for _, p := range perms {
-			if p.Resource == exp.Resource && p.Action == exp.Action {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Errorf("expected permission %s:%s not found in Permissions(); got %v",
-				exp.Resource, exp.Action, perms)
+	if len(perms) != len(want) {
+		t.Fatalf("Permissions() = %v; want %v", perms, want)
+	}
+	for i, p := range want {
+		if perms[i] != p {
+			t.Errorf("Permissions()[%d] = %v; want %v", i, perms[i], p)
 		}
 	}
 }
 
-// TestPermissions_VarsManageImpliesRead verifies that vars:manage implies
-// vars:read at the handler level.
-// Requirement: 07-REQ-6.2
-func TestPermissions_VarsManageImpliesRead(t *testing.T) {
-	auth := &apikit.AuthInfo{
-		CredentialType: "pat",
-		UserID:         "user-1",
-		Permissions:    []string{"vars:manage"},
+func pat(scopes ...string) *apikit.AuthInfo {
+	return &apikit.AuthInfo{CredentialType: "pat", UserID: "user-1", Permissions: scopes}
+}
+
+func TestPermissions_WriteImpliesRead(t *testing.T) {
+	if !canSecretsRead(pat("secrets:write")) {
+		t.Error("secrets:write should satisfy canSecretsRead")
 	}
-	if !canVarsRead(auth) {
-		t.Error("PAT with vars:manage should satisfy canVarsRead()")
+	if !canVarsRead(pat("vars:write")) {
+		t.Error("vars:write should satisfy canVarsRead")
 	}
 }
 
-// TestPermissions_VarsManageImpliesWrite verifies that vars:manage implies
-// vars:write at the handler level.
-// Requirement: 07-REQ-6.2
-func TestPermissions_VarsManageImpliesWrite(t *testing.T) {
-	auth := &apikit.AuthInfo{
-		CredentialType: "pat",
-		UserID:         "user-1",
-		Permissions:    []string{"vars:manage"},
+func TestPermissions_ReadDoesNotImplyWrite(t *testing.T) {
+	if canSecretsWrite(pat("secrets:read")) {
+		t.Error("secrets:read should not satisfy canSecretsWrite")
 	}
-	if !canVarsWrite(auth) {
-		t.Error("PAT with vars:manage should satisfy canVarsWrite()")
+	if canVarsWrite(pat("vars:read")) {
+		t.Error("vars:read should not satisfy canVarsWrite")
 	}
 }
 
-// TestPermissions_VarsManageImpliesDelete verifies that vars:manage implies
-// vars:delete at the handler level.
-// Requirement: 07-REQ-6.2
-func TestPermissions_VarsManageImpliesDelete(t *testing.T) {
-	auth := &apikit.AuthInfo{
-		CredentialType: "pat",
-		UserID:         "user-1",
-		Permissions:    []string{"vars:manage"},
+// The secrets and variables scopes are independent of each other and of the
+// workspace scopes.
+func TestPermissions_IndependentScopes(t *testing.T) {
+	ws := pat("workspaces:read", "workspaces:write")
+	if canSecretsRead(ws) || canSecretsWrite(ws) || canVarsRead(ws) || canVarsWrite(ws) {
+		t.Error("workspace scopes should grant no secrets or variables access")
 	}
-	if !canVarsDelete(auth) {
-		t.Error("PAT with vars:manage should satisfy canVarsDelete()")
-	}
-}
-
-// TestPermissions_VarsWriteImpliesRead verifies that vars:write implies
-// vars:read at the handler level.
-// Requirement: 07-REQ-6.2
-func TestPermissions_VarsWriteImpliesRead(t *testing.T) {
-	auth := &apikit.AuthInfo{
-		CredentialType: "pat",
-		UserID:         "user-1",
-		Permissions:    []string{"vars:write"},
-	}
-	if !canVarsRead(auth) {
-		t.Error("PAT with vars:write should satisfy canVarsRead()")
-	}
-}
-
-// TS-07-14: Verifies that the 8 secrets/vars scopes are registered independently
-// of workspace scopes and do not overlap with workspaces:read, workspaces:write,
-// workspaces:delete.
-// Requirement: 07-REQ-6.3
-func TestPermissions_IndependentFromWorkspaceScopes(t *testing.T) {
-	perms := Permissions()
-
-	if len(perms) != 8 {
-		t.Errorf("expected 8 permissions; got %d: %v", len(perms), perms)
-	}
-
-	workspaceResources := map[string]bool{
-		"workspaces": true,
-	}
-
-	for _, p := range perms {
-		if workspaceResources[p.Resource] {
-			t.Errorf("permission %s:%s overlaps with workspace scopes", p.Resource, p.Action)
-		}
-	}
-
-	// Verify all scopes use only the 'secrets' and 'vars' resources.
-	allowedResources := map[string]bool{
-		"secrets": true,
-		"vars":    true,
-	}
-	for _, p := range perms {
-		if !allowedResources[p.Resource] {
-			t.Errorf("unexpected resource %q in permission %s:%s; expected 'secrets' or 'vars'",
-				p.Resource, p.Resource, p.Action)
-		}
-	}
-}
-
-// TestPermissions_SecretsListDoesNotImplyManage verifies that secrets:list alone
-// does NOT satisfy canSecretsManage. This validates the one-directional implication.
-// Requirement: 07-REQ-6.E2
-func TestPermissions_SecretsListDoesNotImplyManage(t *testing.T) {
-	auth := &apikit.AuthInfo{
-		CredentialType: "pat",
-		UserID:         "user-1",
-		Permissions:    []string{"secrets:list"},
-	}
-	if canSecretsManage(auth) {
-		t.Error("PAT with only secrets:list should NOT satisfy canSecretsManage()")
-	}
-}
-
-// TestPermissions_VarsDeleteDoesNotImplyRead verifies that vars:delete alone
-// does NOT satisfy canVarsRead. This ensures vars:delete is independent.
-// Requirement: 07-REQ-6.2
-func TestPermissions_VarsDeleteDoesNotImplyRead(t *testing.T) {
-	auth := &apikit.AuthInfo{
-		CredentialType: "pat",
-		UserID:         "user-1",
-		Permissions:    []string{"vars:delete"},
-	}
-	if canVarsRead(auth) {
-		t.Error("PAT with only vars:delete should NOT satisfy canVarsRead()")
+	if canVarsRead(pat("secrets:write")) || canSecretsRead(pat("vars:write")) {
+		t.Error("secrets and variables scopes should not grant each other")
 	}
 }

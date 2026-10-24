@@ -112,7 +112,7 @@ func TestSmoke_BoundTokenNonAllowlistedRoute_TS_33_58(t *testing.T) {
 	}
 	srv := httptest.NewServer(h.server.Echo())
 	defer srv.Close()
-	bound, id := h.mintPAT(t, "secrets:manage", "secrets:list")
+	bound, id := h.mintPAT(t, "secrets:write", "secrets:read")
 	bindToken(t, h.db.SqlDB, id, "s")
 
 	code, body := smokeCall(t, srv.URL, http.MethodGet, "/api/v1/user/secrets", bound, "")

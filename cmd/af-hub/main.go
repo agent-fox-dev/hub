@@ -53,6 +53,14 @@ func main() {
 	}
 
 	// Load, validate and probe the [sandbox] section of config.toml (spec 25).
+	// Stored PATs may name scopes from before the read/write collapse
+	// (ADR 06); they are rewritten once, before any request is served.
+	if n, err := wsaccess.MigrateScopes(database.SqlDB); err != nil {
+		log.Fatalf("migrate PAT scopes: %v", err)
+	} else if n > 0 {
+		slog.Info("rewrote PAT scopes to read/write", "tokens", n)
+	}
+
 	// This runs after apikit.Bootstrap, so that first-boot admin-token
 	// generation never depends on the sandbox configuration, and before the
 	// workspace root, the queues, the workers and the routes exist, so that an

@@ -1,24 +1,20 @@
 package workspace
 
 import (
-	"github.com/agent-fox-dev/hub/internal/wsaccess"
 	"github.com/txsvc/apikit"
+
+	"github.com/agent-fox-dev/hub/internal/wsaccess"
 )
 
-// hasReadAccess reports whether the PAT has any scope that implies workspace
-// read access. The read-implying scopes are: workspaces:read, workspaces:create,
-// and workspaces:write. workspaces:delete does NOT grant read access.
+// hasReadAccess reports whether a PAT may read workspaces: workspaces:read,
+// or workspaces:write, which implies it.
 func hasReadAccess(auth *apikit.AuthInfo) bool {
-	return wsaccess.HasScope(auth, "workspaces:read", "workspaces:create", "workspaces:write")
+	return wsaccess.CanRead(auth, "workspaces")
 }
 
-// hasWriteAccess reports whether the credential can perform mutation operations
-// (update, archive, reactivate) on owned workspaces.
+// hasWriteAccess reports whether the credential may change workspaces:
+// create, update, archive, reactivate, sync, reclone, delete and the branch
+// push.
 func hasWriteAccess(auth *apikit.AuthInfo) bool {
-	return wsaccess.HasScope(auth, "workspaces:write")
-}
-
-// hasDeleteAccess reports whether the credential can delete workspaces.
-func hasDeleteAccess(auth *apikit.AuthInfo) bool {
-	return wsaccess.HasScope(auth, "workspaces:delete")
+	return wsaccess.CanWrite(auth, "workspaces")
 }
