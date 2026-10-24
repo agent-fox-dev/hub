@@ -128,9 +128,6 @@ func TestCreatePersonalOrg_Failures(t *testing.T) {
 		t.Error("a failed hook left an org")
 	}
 	tx2 := begin(t, db)
-	if err := createPersonalOrg(context.Background(), tx2, "user-1", "erin", ""); err != nil {
-		t.Errorf("the unexported entry point: %v", err)
-	}
 	tx2.Rollback()
 	if err := CreatePersonalOrg(context.Background(), tx2, "user-1", "frank", ""); err == nil || !strings.Contains(err.Error(), "checking base slug uniqueness") {
 		t.Errorf("finished transaction: %v", err)

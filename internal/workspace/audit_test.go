@@ -53,9 +53,9 @@ func TestAudit_ForceClose(t *testing.T) {
 		t.Errorf("without a store: %v", err)
 	}
 	store := &fakeAuditStore{results: []audit.ForceCloseResult{{SessionID: "a"}, {SessionID: "b"}}}
-	metrics := audit.NewMetrics()
-	swap(t, &defaultAuditStore, audit.Store(store))
-	swap(t, &defaultAuditMetrics, metrics)
+	swap(t, &defaultAuditStore, nil)
+	swap(t, &defaultAuditMetrics, nil)
+	SetAuditDependencies(store, v.events, audit.NewMetrics())
 	v.events.fail = errors.New("sink down")
 	if err := forceCloseWorkspaceSessions(context.Background(), "ws", "workspace archived", "now"); err != nil {
 		t.Fatal(err)
