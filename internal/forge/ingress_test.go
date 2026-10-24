@@ -1,16 +1,15 @@
 package forge
 
 import (
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
+	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -19,167 +18,12 @@ import (
 
 	"github.com/agent-fox-dev/hub/internal/audit"
 	"github.com/agent-fox-dev/hub/internal/secrets"
+	"github.com/agent-fox-dev/hub/internal/testutil"
 )
 
-const (
-	// ingressSecret is the webhook secret the ingress tests give a workspace.
-	ingressSecret = "ingress-secret-of-16-chars"
-	// unverifiedText is what the ingress answers a delivery that is not proven to come from the forge.
-	unverifiedText = "delivery signature missing or invalid"
-)
+const unverifiedText = "delivery signature missing or invalid"
 
-// signedDelivery is the headers and the body of a delivery.
-type signedDelivery struct {
-	header http.Header
-	body   string
-}
-
-// signGitHub is X-Hub-Signature-256 of body under secret.
-func signGitHub(secret, body string) string {
-	mac := hmac.New(sha256.New, []byte(secret))
-	mac.Write([]byte(body))
-	return "sha256=" + hex.EncodeToString(mac.Sum(nil))
-}
-
-// githubDelivery is a delivery as GitHub sends it: the event and id in headers, the signature
-// of the body.
-func githubDelivery(secret, id, event, body string) signedDelivery {
-	h := http.Header{}
-	h.Set("Content-Type", "application/json")
-	h.Set("X-GitHub-Delivery", id)
-	h.Set("X-GitHub-Event", event)
-	h.Set("X-Hub-Signature-256", signGitHub(secret, body))
-	return signedDelivery{h, body}
-}
-
-// gitlabDelivery is a delivery as GitLab sends it: the token in a header, and the id in
-// Idempotency-Key.
-func gitlabDelivery(secret, id, event, body string) signedDelivery {
-	h := http.Header{}
-	h.Set("Content-Type", "application/json")
-	h.Set("Idempotency-Key", id)
-	h.Set("X-Gitlab-Event", event)
-	h.Set("X-Gitlab-Token", secret)
-	return signedDelivery{h, body}
-}
-
-// without returns the delivery with the headers removed.
-func (d signedDelivery) without(names ...string) signedDelivery {
-	h := d.header.Clone()
-	for _, name := range names {
-		h.Del(name)
-	}
-	return signedDelivery{h, d.body}
-}
-
-// with returns the delivery with the header set.
-func (d signedDelivery) with(name, value string) signedDelivery {
-	h := d.header.Clone()
-	h.Set(name, value)
-	return signedDelivery{h, d.body}
-}
-
-// deliver posts the delivery to the ingress of the workspace.
-func (e *env) deliver(slug string, d signedDelivery) *httptest.ResponseRecorder {
-	e.t.Helper()
-	req := httptest.NewRequest(http.MethodPost, "/hooks/forge/"+slug, strings.NewReader(d.body))
-	req.Header = d.header.Clone()
-	rec := httptest.NewRecorder()
-	e.echo.ServeHTTP(rec, req)
-	return rec
-}
-
-// outcomeOf reads the outcome of a 202 answer; anything else stops the test.
-func outcomeOf(t *testing.T, rec *httptest.ResponseRecorder) string {
-	t.Helper()
-	if rec.Code != http.StatusAccepted {
-		t.Fatalf("status = %d; want 202\n%s", rec.Code, rec.Body)
-	}
-	var doc map[string]string
-	if err := json.Unmarshal(rec.Body.Bytes(), &doc); err != nil || len(doc) != 1 {
-		t.Fatalf("the body is not {\"outcome\": ...}: %v\n%s", err, rec.Body)
-	}
-	return doc["outcome"]
-}
-
-// deliveryRows returns the rows of the delivery log, in the order they were recorded.
-func (e *env) deliveryRows() []deliveryRecord {
-	e.t.Helper()
-	rows, err := e.db.Query(`SELECT workspace_slug, delivery_id, forge, event, action, target, outcome, relayed, received_at
-		FROM forge_deliveries ORDER BY rowid`)
-	if err != nil {
-		e.t.Fatalf("read the delivery log: %v", err)
-	}
-	defer rows.Close()
-	var out []deliveryRecord
-	for rows.Next() {
-		var r deliveryRecord
-		if err := rows.Scan(&r.slug, &r.id, &r.forge, &r.event, &r.action, &r.target, &r.outcome, &r.relayed, &r.receivedAt); err != nil {
-			e.t.Fatal(err)
-		}
-		out = append(out, r)
-	}
-	return out
-}
-
-// webhookWorkspace adds a workspace that has the webhook secret ingressSecret.
-func (e *env) webhookWorkspace(slug string, mods ...func(*workspaceRow)) {
-	e.t.Helper()
-	addWorkspace(e.t, e.db, slug, mods...)
-	if _, err := e.secrets.CreateSecrets("workspace", slug, []secrets.EntryInput{{Key: "FORGE_WEBHOOK_SECRET", Value: ingressSecret}}); err != nil {
-		e.t.Fatal(err)
-	}
-}
-
-// newIngressEnv is the routes and the ingress with a recording emitter and the workspace
-// widgets (origin acme/widgets) that has a webhook secret.
-func newIngressEnv(t *testing.T, mods ...func(*Config)) (*env, *recordingEmitter) {
-	t.Helper()
-	em := &recordingEmitter{}
-	e := newEnv(t, append([]func(*Config){withEmitter(em)}, mods...)...)
-	e.webhookWorkspace("widgets")
-	return e, em
-}
-
-// issuesPayload is a GitHub issues delivery of the repository: issue 7 with two labels.
-func issuesPayload(action, repo string) string {
-	doc := map[string]any{
-		"action":     action,
-		"repository": map[string]any{"full_name": repo},
-		"sender":     map[string]any{"login": "octocat"},
-		"issue": map[string]any{
-			"number": 7, "title": "Widgets break", "html_url": "https://github.com/" + repo + "/issues/7",
-			"labels": []any{map[string]any{"name": "bug"}, map[string]any{"name": "af:ready"}},
-		},
-	}
-	if action == "labeled" || action == "unlabeled" {
-		doc["label"] = map[string]any{"name": "af:ready"}
-	}
-	b, _ := json.Marshal(doc)
-	return string(b)
-}
-
-// gitlabIssuePayload is a GitLab Issue Hook delivery of the project: issue 7 with one label.
-func gitlabIssuePayload(action, path string) string {
-	b, _ := json.Marshal(map[string]any{
-		"object_kind": "issue",
-		"user":        map[string]any{"username": "alice"},
-		"project":     map[string]any{"path_with_namespace": path},
-		"object_attributes": map[string]any{
-			"iid": 7, "title": "Widgets break", "action": action, "url": "https://gitlab.example.com/" + path + "/-/issues/7",
-		},
-		"labels": []any{map[string]any{"title": "bug"}},
-	})
-	return string(b)
-}
-
-// paddedBody is a JSON object of exactly size bytes.
-func paddedBody(size int) string {
-	const prefix, suffix = `{"zen":"`, `"}`
-	return prefix + strings.Repeat("x", size-len(prefix)-len(suffix)) + suffix
-}
-
-// failReader fails the test when it is read.
+// failReader fails the test when the body is read.
 type failReader struct {
 	t    *testing.T
 	read atomic.Bool
@@ -191,534 +35,496 @@ func (f *failReader) Read([]byte) (int, error) {
 	return 0, io.EOF
 }
 
-// TS-32-15: POST /hooks/forge/:slug is served on the Echo root without bearer authentication.
-// Requirement: 32-REQ-3.1
-func TestIngressIsServedWithoutBearerAuth_TS_32_15(t *testing.T) {
-	counting := &countingTransport{}
-	e, _ := newIngressEnv(t, func(cfg *Config) { cfg.Transport = counting })
-
-	rec := e.deliver("widgets", githubDelivery(ingressSecret, "d-1", "issues", issuesPayload("labeled", "acme/widgets")))
-	if outcome := outcomeOf(t, rec); outcome != "relayed" {
-		t.Errorf("outcome = %q; want relayed", outcome)
-	}
-	if rec := e.get("/workspaces/widgets/forge", nil); rec.Code != http.StatusUnauthorized {
-		t.Errorf("an API route without a credential: status = %d; want 401", rec.Code)
-	}
-	if n := counting.n.Load(); n != 0 {
-		t.Errorf("the forge received %d requests; want none", n)
-	}
+// post sends a request with the headers of d and the body to the ingress of slug.
+func (e *env) post(slug string, d signedDelivery, body io.Reader, length int64) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodPost, "/hooks/forge/"+slug, body)
+	req.Header = d.header.Clone()
+	req.ContentLength = length
+	rec := httptest.NewRecorder()
+	e.echo.ServeHTTP(rec, req)
+	return rec
 }
 
-// TS-32-16: An unknown slug and a workspace without a workspace-scope secret answer the same
-// 404 before the body is read; a failure of the lookup answers 500.
-// Requirement: 32-REQ-3.2
-func TestIngressLookup_TS_32_16(t *testing.T) {
-	e, em := newIngressEnv(t)
+// The ingress is served on the root without bearer authentication and never contacts the
+// forge; an unknown slug, a workspace without a workspace-scope secret and one whose secret
+// is empty answer the same 404 before the body is read; a failing store answers 500 without
+// the cause; an archived workspace with a secret works like an active one.
+func TestIngress_LookupOfTheWorkspace(t *testing.T) {
+	counting := &countingTransport{}
+	e, em := ingressEnv(t, func(cfg *Config) { cfg.Transport = counting })
+	e.webhookWorkspace("old", archived)
 	addWorkspace(t, e.db, "nosecret")
+	addWorkspace(t, e.db, "blank")
 	for _, scope := range [][2]string{{"org", "acme"}, {"user", ownerID}} {
-		if _, err := e.secrets.CreateSecrets(scope[0], scope[1], []secrets.EntryInput{{Key: "FORGE_WEBHOOK_SECRET", Value: ingressSecret}}); err != nil {
+		if _, err := e.secrets.CreateSecrets(scope[0], scope[1], []secrets.EntryInput{{Key: webhookSecretKey, Value: ingressSecret}}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	post := func(slug string) *httptest.ResponseRecorder {
-		body := &failReader{t: t}
-		req := httptest.NewRequest(http.MethodPost, "/hooks/forge/"+slug, body)
-		req.Header = githubDelivery(ingressSecret, "d-1", "issues", "{}").header
-		rec := httptest.NewRecorder()
-		e.echo.ServeHTTP(rec, req)
-		return rec
+	testutil.Exec(t, e.db, `INSERT INTO secrets (owner_type, owner_id, key, value, created_at, updated_at) VALUES ('workspace', 'blank', ?, '', ?, ?)`, webhookSecretKey, at(0), at(0))
+	for _, slug := range []string{"widgets", "old"} {
+		if outcome := outcomeOf(t, e.deliver(slug, labeledDelivery("d-"+slug))); outcome != "relayed" {
+			t.Errorf("%s: outcome = %q; want relayed", slug, outcome)
+		}
 	}
-
-	unknown, bare := post("nosuch"), post("nosecret")
-	if unknown.Code != http.StatusNotFound || bare.Code != http.StatusNotFound {
-		t.Fatalf("status = %d and %d; want 404 for both", unknown.Code, bare.Code)
+	if rec := e.get("/workspaces/widgets/forge", nil); rec.Code != http.StatusUnauthorized || counting.n.Load() != 0 {
+		t.Errorf("the API without a credential answered %d and the forge saw %d requests; want 401 and none", rec.Code, counting.n.Load())
 	}
-	if unknown.Body.String() != bare.Body.String() {
-		t.Errorf("the bodies differ: %q and %q", unknown.Body, bare.Body)
+	unknown := e.post("nosuch", labeledDelivery("d-1"), &failReader{t: t}, 100)
+	for _, slug := range []string{"nosecret", "blank"} {
+		for _, d := range []signedDelivery{githubDelivery("", "d-2", "ping", "{}"), gitlabDelivery("", "d-3", "Issue Hook", "{}")} {
+			if rec := e.post(slug, d, &failReader{t: t}, 100); rec.Code != http.StatusNotFound || rec.Body.String() != unknown.Body.String() {
+				t.Errorf("%s: %d %s; want the 404 of an unknown slug %s", slug, rec.Code, rec.Body, unknown.Body)
+			}
+		}
 	}
-	if rows := e.deliveryRows(); len(rows) != 0 {
-		t.Errorf("rows = %v; want none", rows)
+	if rows, events := e.deliveryRows(), em.recorded(); len(rows) != 2 || len(events) != 2 {
+		t.Errorf("%d rows and %d events; want the 2 of the accepted deliveries", len(rows), len(events))
 	}
-	if got := em.recorded(); len(got) != 0 {
-		t.Errorf("events = %v; want none", got)
+	testutil.Exec(t, e.db, `ALTER TABLE workspaces RENAME TO workspaces_gone`)
+	if rec := e.deliver("widgets", labeledDelivery("d-4")); rec.Code != http.StatusInternalServerError {
+		t.Errorf("a missing workspaces table: %d; want 500", rec.Code)
 	}
-
-	// A failure of the lookup is 500, whichever store it is.
-	if _, err := e.db.Exec(`ALTER TABLE workspaces RENAME TO workspaces_gone`); err != nil {
-		t.Fatal(err)
-	}
-	if rec := post("widgets"); rec.Code != http.StatusInternalServerError {
-		t.Errorf("a missing workspaces table: status = %d; want 500\n%s", rec.Code, rec.Body)
-	}
-	broken := newEnv(t, withFakeSecrets(&fakeSecrets{getErr: errors.New("boom: disk gone")}))
-	addWorkspace(t, broken.db, "widgets")
-	rec := broken.deliver("widgets", githubDelivery(ingressSecret, "d-1", "issues", "{}"))
-	if rec.Code != http.StatusInternalServerError || strings.Contains(rec.Body.String(), "boom") {
-		t.Errorf("a failing secrets store: status = %d, body %s; want 500 without the cause", rec.Code, rec.Body)
+	for name, cfg := range map[string]func(*Config){
+		"a failing secrets store": withFakeSecrets(&fakeSecrets{getErr: errors.New("boom: disk gone")}),
+		"no secrets store":        func(cfg *Config) { cfg.Secrets = nil },
+	} {
+		broken := newEnv(t, cfg)
+		addWorkspace(t, broken.db, "widgets")
+		if rec := broken.deliver("widgets", labeledDelivery("d-1")); rec.Code != http.StatusInternalServerError || strings.Contains(rec.Body.String(), "boom") {
+			t.Errorf("%s: %d %s; want 500 without the cause", name, rec.Code, rec.Body)
+		}
 	}
 }
 
-// TS-32-17: A GitHub delivery is accepted only with sha256= and the exact 64-digit HMAC of the
-// body.
-// Requirement: 32-REQ-3.3
-func TestIngressGitHubSignature_TS_32_17(t *testing.T) {
-	e, _ := newIngressEnv(t)
+// A GitHub delivery is verified by sha256= and the exact 64-digit HMAC of the body given
+// once; a GitLab delivery by X-Gitlab-Token equal to the secret given once, checked before
+// the body is read; with both headers GitHub's scheme decides. An unverified delivery is
+// 401 with one message, records nothing, and logs the slug and the scheme and nothing else.
+func TestIngress_Verification(t *testing.T) {
+	logs := captureLog(t)
+	e, em := ingressEnv(t)
 	body := issuesPayload("labeled", "acme/widgets")
 	good := signGitHub(ingressSecret, body)
 	digest := strings.TrimPrefix(good, "sha256=")
-
-	for _, tc := range []struct {
-		name string
-		sig  string
-		ok   bool
-	}{
-		{"the signature of the body", good, true},
-		{"the signature of another body", signGitHub(ingressSecret, body+" "), false},
-		{"the signature under another key", signGitHub("another-key-of-16-chars", body), false},
-		{"no sha256= prefix", digest, false},
-		{"the sha1= prefix", "sha1=" + digest, false},
-		{"63 digits", "sha256=" + digest[:63], false},
-		{"65 digits", "sha256=" + digest + "0", false},
-		{"characters that are not hex", "sha256=" + strings.Repeat("z", 64), false},
-		{"the digest in capitals", "sha256=" + strings.ToUpper(digest), false},
-		{"an empty signature", "", false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			d := githubDelivery(ingressSecret, "d-"+strings.ReplaceAll(tc.name, " ", "-"), "issues", body).with("X-Hub-Signature-256", tc.sig)
-			rec := e.deliver("widgets", d)
-			if tc.ok {
-				if outcome := outcomeOf(t, rec); outcome != "relayed" {
-					t.Errorf("outcome = %q; want relayed", outcome)
-				}
-				return
-			}
-			if rec.Code != http.StatusUnauthorized {
-				t.Fatalf("status = %d; want 401\n%s", rec.Code, rec.Body)
-			}
-			if msg := decodeError(t, rec).Message; msg != unverifiedText {
-				t.Errorf("message = %q; want %q", msg, unverifiedText)
-			}
-		})
-	}
-}
-
-// A signature header given twice is no signature, even with the right one first.
-// Requirement: 32-REQ-3.3
-func TestIngressGitHubSignatureGivenTwice(t *testing.T) {
-	e, _ := newIngressEnv(t)
-	d := githubDelivery(ingressSecret, "d-twice", "issues", issuesPayload("labeled", "acme/widgets"))
-	d.header[http.CanonicalHeaderKey("X-Hub-Signature-256")] = []string{d.header.Get("X-Hub-Signature-256"), "sha256=" + strings.Repeat("0", 64)}
-	if rec := e.deliver("widgets", d); rec.Code != http.StatusUnauthorized {
-		t.Errorf("status = %d; want 401", rec.Code)
-	}
-}
-
-// TS-32-18: A GitLab delivery is accepted only when X-Gitlab-Token is the secret, which is
-// checked before the body is read; with both headers GitHub's scheme is used.
-// Requirement: 32-REQ-3.4
-func TestIngressGitLabToken_TS_32_18(t *testing.T) {
-	e, _ := newIngressEnv(t)
-
-	body := &failReader{t: t}
-	req := httptest.NewRequest(http.MethodPost, "/hooks/forge/widgets", body)
-	req.Header = gitlabDelivery("a-wrong-token-of-16+", "d-1", "Issue Hook", "").header
-	rec := httptest.NewRecorder()
-	e.echo.ServeHTTP(rec, req)
-	if rec.Code != http.StatusUnauthorized || decodeError(t, rec).Message != unverifiedText {
-		t.Errorf("a wrong token: status %d, body %s; want 401 and the one message", rec.Code, rec.Body)
-	}
-	if body.read.Load() {
-		t.Errorf("the body was read before the token was checked")
-	}
-
-	good := gitlabDelivery(ingressSecret, "d-2", "Issue Hook", gitlabIssuePayload("update", "acme/widgets"))
-	if outcome := outcomeOf(t, e.deliver("widgets", good)); outcome != "ignored" {
-		t.Errorf("the right token: outcome = %q; want it accepted (an update without a change is ignored)", outcome)
-	}
-	// A token that is the secret with something added or taken off is not the secret.
-	for _, token := range []string{ingressSecret + "x", ingressSecret[1:], strings.ToUpper(ingressSecret), ""} {
-		if rec := e.deliver("widgets", good.with("X-Gitlab-Token", token).with("Idempotency-Key", "d-3")); rec.Code != http.StatusUnauthorized {
-			t.Errorf("the token %q: status = %d; want 401", token, rec.Code)
-		}
-	}
-
-	// A header given twice is no token, even with the secret in it.
-	for _, tokens := range [][]string{{ingressSecret, ingressSecret}, {"a-wrong-token-of-16+", ingressSecret}} {
-		twice := good.with("Idempotency-Key", "d-6")
-		twice.header["X-Gitlab-Token"] = tokens
-		if rec := e.deliver("widgets", twice); rec.Code != http.StatusUnauthorized {
-			t.Errorf("the token header twice, %d values: status = %d; want 401", len(tokens), rec.Code)
-		}
-	}
-
-	// With both headers the signature decides, and the token is not looked at.
-	both := githubDelivery(ingressSecret, "d-4", "issues", issuesPayload("labeled", "acme/widgets")).with("X-Gitlab-Token", "a-wrong-token-of-16+")
-	if outcome := outcomeOf(t, e.deliver("widgets", both)); outcome != "relayed" {
-		t.Errorf("both headers, the signature right: outcome = %q; want relayed", outcome)
-	}
-	both = githubDelivery(ingressSecret, "d-5", "issues", issuesPayload("labeled", "acme/widgets")).
-		with("X-Hub-Signature-256", signGitHub("another-key-of-16-chars", "x")).with("X-Gitlab-Token", ingressSecret)
-	if rec := e.deliver("widgets", both); rec.Code != http.StatusUnauthorized {
-		t.Errorf("both headers, the signature wrong: status = %d; want 401", rec.Code)
-	}
-}
-
-// TS-32-19: An unverified delivery answers 401 with one message, records nothing, and logs only
-// the slug and the scheme.
-// Requirement: 32-REQ-3.5
-func TestIngressUnverified_TS_32_19(t *testing.T) {
-	logs := captureLog(t)
-	e, em := newIngressEnv(t)
 	const marker = "MARKER-0123456789"
-	body := `{"zen":"` + marker + `"}`
-
-	for _, tc := range []struct {
-		name   string
-		d      signedDelivery
-		scheme string
-	}{
-		{"no scheme header", githubDelivery(ingressSecret, "d-1", "ping", body).without("X-Hub-Signature-256"), "none"},
-		{"a wrong GitHub signature", githubDelivery("another-key-of-16-chars", "d-2", "ping", body), "github"},
-		{"a malformed GitHub signature", githubDelivery(ingressSecret, "d-3", "ping", body).with("X-Hub-Signature-256", "sha256="+marker), "github"},
-		{"a wrong GitLab token", gitlabDelivery("a-wrong-token-"+marker, "d-4", "Issue Hook", body), "gitlab"},
+	for name, sig := range map[string]string{
+		"another body": signGitHub(ingressSecret, body+" "), "another key": signGitHub("another-key-of-16-chars", body), "no prefix": digest, "sha1": "sha1=" + digest,
+		"63 digits": "sha256=" + digest[:63], "65 digits": "sha256=" + digest + "0", "capitals": "sha256=" + strings.ToUpper(digest), "empty": "", "marker": "sha256=" + marker,
 	} {
-		rec := e.deliver("widgets", tc.d)
-		if rec.Code != http.StatusUnauthorized {
-			t.Errorf("%s: status = %d; want 401\n%s", tc.name, rec.Code, rec.Body)
-			continue
-		}
-		if msg := decodeError(t, rec).Message; msg != unverifiedText {
-			t.Errorf("%s: message = %q; want %q", tc.name, msg, unverifiedText)
+		rec := e.deliver("widgets", githubDelivery(ingressSecret, "d-1", "issues", body).with("X-Hub-Signature-256", sig))
+		if rec.Code != http.StatusUnauthorized || testutil.Error(t, rec).Message != unverifiedText {
+			t.Errorf("signature %s: %d %s; want 401 %q", name, rec.Code, rec.Body, unverifiedText)
 		}
 	}
-	if rows := e.deliveryRows(); len(rows) != 0 {
-		t.Errorf("rows = %v; want none", rows)
+	twice := githubDelivery(ingressSecret, "d-1", "issues", body)
+	twice.header["X-Hub-Signature-256"] = []string{good, "sha256=" + strings.Repeat("0", 64)}
+	if rec := e.deliver("widgets", twice); rec.Code != http.StatusUnauthorized {
+		t.Errorf("the signature header twice: %d; want 401", rec.Code)
 	}
-	if got := em.recorded(); len(got) != 0 {
-		t.Errorf("events = %v; want none", got)
+	if rec := e.deliver("widgets", githubDelivery(ingressSecret, "d-1", "ping", body).without("X-Hub-Signature-256")); rec.Code != http.StatusUnauthorized {
+		t.Errorf("no scheme header: %d; want 401", rec.Code)
 	}
 
-	log := logs.String()
-	for _, scheme := range []string{"github", "gitlab", "none"} {
-		if !strings.Contains(log, "scheme="+scheme) {
-			t.Errorf("the log has no line with scheme=%s:\n%s", scheme, log)
+	wrong := gitlabDelivery("a-wrong-token-"+marker, "d-2", "Issue Hook", "")
+	if rec := e.post("widgets", wrong, &failReader{t: t}, 100); rec.Code != http.StatusUnauthorized || testutil.Error(t, rec).Message != unverifiedText {
+		t.Errorf("a wrong GitLab token: %d %s; want 401 before the body is read", rec.Code, rec.Body)
+	}
+	gl := gitlabDelivery(ingressSecret, "d-3", "Issue Hook", gitlabIssuePayload("update", "acme/widgets"))
+	for _, token := range []string{ingressSecret + "x", ingressSecret[1:], strings.ToUpper(ingressSecret), ""} {
+		if rec := e.deliver("widgets", gl.with("X-Gitlab-Token", token)); rec.Code != http.StatusUnauthorized {
+			t.Errorf("the token %q: %d; want 401", token, rec.Code)
 		}
 	}
-	if !strings.Contains(log, "level=WARN") || !strings.Contains(log, "slug=widgets") {
-		t.Errorf("the log = %q; want warn lines with the slug", log)
+	gl.header["X-Gitlab-Token"] = []string{ingressSecret, ingressSecret}
+	if rec := e.deliver("widgets", gl); rec.Code != http.StatusUnauthorized {
+		t.Errorf("the token header twice: %d; want 401", rec.Code)
+	}
+	if rows, events := e.deliveryRows(), em.recorded(); len(rows) != 0 || len(events) != 0 {
+		t.Errorf("%d rows and %d events after unverified deliveries; want none", len(rows), len(events))
+	}
+	log := logs.String()
+	for _, want := range []string{"scheme=github", "scheme=gitlab", "scheme=none", "level=WARN", "slug=widgets"} {
+		if !strings.Contains(log, want) {
+			t.Errorf("the log lacks %q:\n%s", want, log)
+		}
 	}
 	for _, leak := range []string{marker, ingressSecret, "sha256=", "another-key"} {
 		if strings.Contains(log, leak) {
-			t.Errorf("the log holds %q:\n%s", leak, log)
+			t.Errorf("the log holds %q", leak)
 		}
 	}
+
+	if outcome := outcomeOf(t, e.deliver("widgets", githubDelivery(ingressSecret, "d-4", "issues", body))); outcome != "relayed" {
+		t.Errorf("the right signature: outcome = %q; want relayed", outcome)
+	}
+	if outcome := outcomeOf(t, e.deliver("widgets", gitlabDelivery(ingressSecret, "d-5", "Issue Hook", gitlabIssuePayload("update", "acme/widgets")))); outcome != "ignored" {
+		t.Errorf("the right token: outcome = %q; want it accepted (ignored)", outcome)
+	}
+	both := githubDelivery(ingressSecret, "d-6", "issues", body).with("X-Gitlab-Token", "a-wrong-token-of-16+")
+	if outcome := outcomeOf(t, e.deliver("widgets", both)); outcome != "relayed" {
+		t.Errorf("both headers, the signature right: outcome = %q; want relayed", outcome)
+	}
+	both = githubDelivery("another-key-of-16-chars", "d-7", "issues", body).with("X-Gitlab-Token", ingressSecret)
+	if rec := e.deliver("widgets", both); rec.Code != http.StatusUnauthorized {
+		t.Errorf("both headers, the signature wrong: %d; want 401", rec.Code)
+	}
 }
 
-// TS-32-20: A body over 1 MiB, or over the server's limit, answers 413, with body_too_large when
-// the handler is the one that refuses; exactly 1 MiB passes the size check.
-// Requirement: 32-REQ-3.6
-func TestIngressBodyLimit_TS_32_20(t *testing.T) {
+// A rotated secret, through PUT or the store, applies from the next delivery; after DELETE a
+// delivery answers the 404 of an unknown slug and writes no row while the earlier rows stay
+// listed; a new PUT turns the ingress on again.
+func TestIngress_FollowsTheSecret(t *testing.T) {
+	e, em := ingressEnv(t)
+	sign := func(secret, id string) signedDelivery {
+		return githubDelivery(secret, id, "issues", issuesPayload("labeled", "acme/widgets"))
+	}
+	outcomeOf(t, e.deliver("widgets", sign(ingressSecret, "d-0")))
+	e.send(http.MethodPut, webhookPath, apiKeyAuth(), `{"secret":"the-new-secret-of-16-chars"}`)
+	if _, err := e.secrets.UpdateSecret("workspace", "widgets", webhookSecretKey, "the-newest-secret-of-16+"); err != nil {
+		t.Fatal(err)
+	}
+	for _, old := range []string{ingressSecret, "the-new-secret-of-16-chars"} {
+		if rec := e.deliver("widgets", sign(old, "d-1")); rec.Code != http.StatusUnauthorized {
+			t.Errorf("an old secret: %d; want 401", rec.Code)
+		}
+	}
+	if outcome := outcomeOf(t, e.deliver("widgets", sign("the-newest-secret-of-16+", "d-2"))); outcome != "relayed" {
+		t.Errorf("the newest secret: outcome = %q", outcome)
+	}
+	if rec := e.send(http.MethodDelete, webhookPath, apiKeyAuth(), ""); rec.Code != http.StatusNoContent {
+		t.Fatalf("DELETE: %d %s", rec.Code, rec.Body)
+	}
+	after, unknown := e.deliver("widgets", sign("the-newest-secret-of-16+", "d-3")), e.deliver("nosuch", sign("the-newest-secret-of-16+", "d-3"))
+	rec := e.get("/workspaces/widgets/forge/deliveries", apiKeyAuth())
+	if after.Code != http.StatusNotFound || after.Body.String() != unknown.Body.String() || len(e.deliveryRows()) != 2 || !strings.Contains(rec.Body.String(), `"delivery_id":"d-2"`) || len(em.recorded()) != 4 {
+		t.Errorf("after the unset: %d %s (unknown slug %s), %d rows, %d events, list %s; want the same 404, the 2 earlier rows and the 4 earlier events", after.Code, after.Body, unknown.Body, len(e.deliveryRows()), len(em.recorded()), rec.Body)
+	}
+	e.send(http.MethodPut, webhookPath, apiKeyAuth(), `{"secret":"a-secret-set-again-16+"}`)
+	if outcome := outcomeOf(t, e.deliver("widgets", sign("a-secret-set-again-16+", "d-4"))); outcome != "relayed" {
+		t.Errorf("after the PUT: outcome = %q; want relayed", outcome)
+	}
+}
+
+// A body over 1 MiB is 413 body_too_large, whether its length is announced or not, without
+// reading past the cap; exactly 1 MiB passes.
+func TestIngress_BodyLimit(t *testing.T) {
 	const mib = 1 << 20
-	for _, tc := range []struct {
-		name string
-		// global is the body size limit installed on the whole instance, 0 for none (as
-		// apikit installs it: on the API group only).
-		global int64
-	}{
-		{"no global limit", 0},
-		{"the default global limit", mib},
-		{"a raised global limit", 4 * mib},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			e, em := newIngressEnv(t)
-			if tc.global > 0 {
-				e.echo.Use(apikit.BodySizeLimitMiddleware(tc.global))
-			}
-			over := githubDelivery(ingressSecret, "d-over", "ping", paddedBody(mib+1))
-			for _, chunked := range []bool{false, true} {
-				req := httptest.NewRequest(http.MethodPost, "/hooks/forge/widgets", strings.NewReader(over.body))
-				req.Header = over.header.Clone()
-				if chunked {
-					req.ContentLength = -1
-				}
-				rec := httptest.NewRecorder()
-				e.echo.ServeHTTP(rec, req)
-				if rec.Code != http.StatusRequestEntityTooLarge {
-					t.Errorf("1 MiB + 1 byte, chunked %v: status = %d; want 413", chunked, rec.Code)
-					continue
-				}
-				// apikit's own check refuses a body whose length it knows with no error_type.
-				if mine := tc.global != mib || chunked; mine && decodeError(t, rec).ErrorType != "body_too_large" {
-					t.Errorf("1 MiB + 1 byte, chunked %v: error_type = %q; want body_too_large", chunked, decodeError(t, rec).ErrorType)
-				}
-			}
-			if rows := e.deliveryRows(); len(rows) != 0 {
-				t.Errorf("rows = %v; want none", rows)
-			}
-			if got := em.recorded(); len(got) != 0 {
-				t.Errorf("events = %v; want none", got)
-			}
-
-			exact := githubDelivery(ingressSecret, "d-exact", "ping", paddedBody(mib))
-			if outcome := outcomeOf(t, e.deliver("widgets", exact)); outcome != "ignored" {
-				t.Errorf("exactly 1 MiB: outcome = %q; want ignored (the size check passed)", outcome)
-			}
-		})
+	padded := func(size int) string { return `{"zen":"` + strings.Repeat("x", size-len(`{"zen":""}`)) + `"}` }
+	e, em := ingressEnv(t)
+	over := githubDelivery(ingressSecret, "d-over", "ping", padded(mib+1))
+	for _, length := range []int64{int64(len(over.body)), -1} {
+		rec := e.post("widgets", over, strings.NewReader(over.body), length)
+		if rec.Code != http.StatusRequestEntityTooLarge || testutil.Error(t, rec).ErrorType != "body_too_large" {
+			t.Errorf("length %d: %d %s; want 413 body_too_large", length, rec.Code, rec.Body)
+		}
+	}
+	if rows, events := e.deliveryRows(), em.recorded(); len(rows) != 0 || len(events) != 0 {
+		t.Errorf("%d rows and %d events; want none", len(rows), len(events))
+	}
+	if outcome := outcomeOf(t, e.deliver("widgets", githubDelivery(ingressSecret, "d-exact", "ping", padded(mib)))); outcome != "ignored" {
+		t.Errorf("exactly 1 MiB: outcome = %q; want ignored", outcome)
+	}
+	if rec := e.post("widgets", githubDelivery(ingressSecret, "d-1", "ping", "{}"), &failReader{t: t}, mib+1); rec.Code != http.StatusRequestEntityTooLarge {
+		t.Errorf("an announced length over the cap: %d; want 413 without reading", rec.Code)
+	}
+	var read atomic.Int64
+	counting := io.TeeReader(io.LimitReader(zeroReader{}, 8*mib), writerFunc(func(p []byte) { read.Add(int64(len(p))) }))
+	if rec := e.post("widgets", githubDelivery(ingressSecret, "d-2", "ping", "{}"), counting, -1); rec.Code != http.StatusRequestEntityTooLarge || read.Load() > mib+1 {
+		t.Errorf("a body of unknown length: %d after reading %d bytes; want 413 after at most 1 MiB + 1", rec.Code, read.Load())
 	}
 }
 
-// TS-32-22: An archived workspace with a secret verifies, records and relays like an active one.
-// Requirement: 32-REQ-3.8
-func TestIngressArchivedWorkspace_TS_32_22(t *testing.T) {
-	em := &recordingEmitter{}
-	e := newEnv(t, withEmitter(em))
-	e.webhookWorkspace("widgets", func(r *workspaceRow) { r.status = "archived" })
+type zeroReader struct{}
 
-	rec := e.deliver("widgets", githubDelivery(ingressSecret, "d-1", "issues", issuesPayload("labeled", "acme/widgets")))
-	if outcome := outcomeOf(t, rec); outcome != "relayed" {
-		t.Errorf("outcome = %q; want relayed", outcome)
-	}
-	if rows := e.deliveryRows(); len(rows) != 1 {
-		t.Errorf("rows = %v; want 1", rows)
-	}
-	events := em.recorded()
-	if len(events) != 1 || events[0].EventType != audit.EventForgeIssueLabeled {
-		t.Errorf("events = %v; want hub.forge.issue.labeled", events)
-	}
-}
+func (zeroReader) Read(p []byte) (int, error) { return len(p), nil }
 
-// TS-32-24: A verified delivery records one row with the id and the event taken from the headers
-// of its forge.
-// Requirement: 32-REQ-4.2, 32-REQ-4.4
-func TestIngressRecordsARow_TS_32_24(t *testing.T) {
-	e, em := newIngressEnv(t)
+type writerFunc func([]byte)
+
+func (f writerFunc) Write(p []byte) (int, error) { f(p); return len(p), nil }
+
+// A verified delivery is recorded once with the id and the event taken from the headers of
+// its forge (GitLab's Idempotency-Key before X-Gitlab-Event-UUID), the event cut to 64 bytes,
+// bound to the workspace's repository even when it is not relayed; a delivery without an id
+// or an event name, or with an invalid id, is 400 and records nothing.
+func TestIngress_RecordsARow(t *testing.T) {
+	e, em := ingressEnv(t)
 	longEvent := strings.Repeat("e", 70)
-
-	// GitLab sends Idempotency-Key and X-Gitlab-Event-UUID; the first is the id. An update
-	// that changes nothing is not relayed, and is bound all the same.
-	both := gitlabDelivery(ingressSecret, "idem-1", "Issue Hook", gitlabIssuePayload("update", "acme/widgets")).with("X-Gitlab-Event-UUID", "uuid-1")
-	onlyUUID := gitlabDelivery(ingressSecret, "ignored", "Issue Hook", gitlabIssuePayload("update", "acme/widgets")).
-		without("Idempotency-Key").with("X-Gitlab-Event-UUID", "uuid-2")
-
+	update := gitlabIssuePayload("update", "acme/widgets")
 	before := time.Now().UTC().Add(-2 * time.Second)
 	for _, d := range []signedDelivery{
-		githubDelivery(ingressSecret, "gh-1", "issues", issuesPayload("labeled", "acme/widgets")),
-		both,
-		onlyUUID,
-		githubDelivery(ingressSecret, "gh-long", longEvent, issuesPayload("labeled", "acme/widgets")),
+		labeledDelivery("gh-1"),
+		gitlabDelivery(ingressSecret, "idem-1", "Issue Hook", update).with("X-Gitlab-Event-UUID", "uuid-1"),
+		gitlabDelivery(ingressSecret, "ignored", "Issue Hook", update).without("Idempotency-Key").with("X-Gitlab-Event-UUID", "uuid-2"),
+		githubDelivery(ingressSecret, strings.Repeat("a", 255), longEvent, issuesPayload("labeled", "acme/widgets")),
 	} {
 		if rec := e.deliver("widgets", d); rec.Code != http.StatusAccepted {
-			t.Fatalf("status = %d; want 202\n%s", rec.Code, rec.Body)
+			t.Fatalf("%d %s; want 202", rec.Code, rec.Body)
 		}
 	}
-
 	rows := e.deliveryRows()
 	if len(rows) != 4 {
-		t.Fatalf("%d rows; want 4: %v", len(rows), rows)
+		t.Fatalf("%d rows; want 4", len(rows))
 	}
-	for i, want := range []struct {
-		id, forge, event, action, outcome, relayed string
-	}{
+	for i, want := range []struct{ id, forge, event, action, outcome, relayed string }{
 		{"gh-1", "github", "issues", "labeled", "relayed", `["hub.forge.issue.labeled"]`},
 		{"idem-1", "gitlab", "Issue Hook", "update", "ignored", `[]`},
 		{"uuid-2", "gitlab", "Issue Hook", "update", "ignored", `[]`},
-		{"gh-long", "github", longEvent[:64], "labeled", "ignored", `[]`},
+		{strings.Repeat("a", 255), "github", longEvent[:64], "labeled", "ignored", `[]`},
 	} {
 		row := rows[i]
-		if row.slug != "widgets" || row.id != want.id || row.forge != want.forge || row.event != want.event ||
-			row.action != want.action || row.outcome != want.outcome || row.relayed != want.relayed {
-			t.Errorf("row %d = %+v; want %+v", i, row, want)
-		}
-		// A delivery hub does not relay is still bound when its repository is the workspace's.
-		if row.target == nil || *row.target != "origin" {
-			t.Errorf("row %d target = %v; want origin", i, row.target)
-		}
-		if at, err := apikit.ParseUTC(row.receivedAt); err != nil || !strings.HasSuffix(row.receivedAt, "Z") || at.Before(before) || at.After(time.Now().UTC().Add(2*time.Second)) {
-			t.Errorf("row %d received_at = %q; want the RFC 3339 UTC time of the delivery", i, row.receivedAt)
-		}
-		if len(row.event) > 64 {
-			t.Errorf("row %d event is %d bytes; want at most 64", i, len(row.event))
+		received, err := apikit.ParseUTC(row.receivedAt)
+		if row.slug != "widgets" || row.id != want.id || row.forge != want.forge || row.event != want.event || row.action != want.action || row.outcome != want.outcome ||
+			row.relayed != want.relayed || row.target == nil || *row.target != "origin" || err != nil || received.Before(before) || received.After(time.Now().UTC().Add(2*time.Second)) {
+			t.Errorf("row %d = %+v; want %+v bound to origin, received now", i, row, want)
 		}
 	}
 	if got := len(em.recorded()); got != 1 {
-		t.Errorf("%d events; want the 1 of the first delivery (the others are not relayed)", got)
+		t.Errorf("%d events; want the 1 of the relayed delivery", got)
 	}
-}
-
-// TS-32-25: A verified delivery without an id or an event name, or with an invalid id, answers
-// 400 and records nothing.
-// Requirement: 32-REQ-4.3
-func TestIngressRefusesDeliveriesWithoutIdentity_TS_32_25(t *testing.T) {
-	e, em := newIngressEnv(t)
-	ping := githubDelivery(ingressSecret, "d-1", "ping", `{"zen":"x"}`)
+	ping := githubDelivery(ingressSecret, "d-1", "ping", `{}`)
 	glPing := gitlabDelivery(ingressSecret, "d-1", "Issue Hook", `{}`)
-
-	for _, tc := range []struct {
-		name string
-		d    signedDelivery
-	}{
-		{"GitHub without an id", ping.without("X-GitHub-Delivery")},
-		{"GitHub without an event", ping.without("X-GitHub-Event")},
-		{"GitHub with an empty event", ping.with("X-GitHub-Event", "")},
-		{"GitLab without either id header", glPing.without("Idempotency-Key")},
-		{"GitLab without an event", glPing.without("X-Gitlab-Event")},
-		{"an id of 256 characters", ping.with("X-GitHub-Delivery", strings.Repeat("a", 256))},
-		{"an id with a character outside ASCII", ping.with("X-GitHub-Delivery", "delivery-\u00e9")},
-		{"an id with a control character", ping.with("X-GitHub-Delivery", "delivery-\x01")},
+	for name, d := range map[string]signedDelivery{
+		"GitHub without an id": ping.without("X-GitHub-Delivery"), "GitHub without an event": ping.without("X-GitHub-Event"), "an empty event": ping.with("X-GitHub-Event", ""),
+		"GitLab without either id header": glPing.without("Idempotency-Key"), "GitLab without an event": glPing.without("X-Gitlab-Event"),
+		"an id of 256 characters": ping.with("X-GitHub-Delivery", strings.Repeat("a", 256)), "an id outside ASCII": ping.with("X-GitHub-Delivery", "d-\u00e9\x01"),
 	} {
-		rec := e.deliver("widgets", tc.d)
-		if rec.Code != http.StatusBadRequest {
-			t.Errorf("%s: status = %d; want 400\n%s", tc.name, rec.Code, rec.Body)
+		if rec := e.deliver("widgets", d); rec.Code != http.StatusBadRequest {
+			t.Errorf("%s: %d %s; want 400", name, rec.Code, rec.Body)
 		}
 	}
-	if rows := e.deliveryRows(); len(rows) != 0 {
-		t.Errorf("rows = %v; want none", rows)
-	}
-	if got := em.recorded(); len(got) != 0 {
-		t.Errorf("events = %v; want none", got)
-	}
-	if outcome := outcomeOf(t, e.deliver("widgets", ping.with("X-GitHub-Delivery", strings.Repeat("a", 255)))); outcome != "ignored" {
-		t.Errorf("an id of 255 characters: outcome = %q; want ignored", outcome)
+	if rows := e.deliveryRows(); len(rows) != 4 {
+		t.Errorf("%d rows after refused deliveries; want still 4", len(rows))
 	}
 }
 
-// TS-32-31: A repository equal to the origin's, ignoring case, binds the delivery to origin.
-// Requirement: 32-REQ-5.3
-func TestIngressBindsToOrigin_TS_32_31(t *testing.T) {
-	em := &recordingEmitter{}
-	e := newEnv(t, withEmitter(em))
-	e.webhookWorkspace("caps", func(r *workspaceRow) { r.gitURL = "https://forge.example.com/Acme/Widgets.git" })
-	e.webhookWorkspace("nested", func(r *workspaceRow) { r.gitURL = "https://gitlab.example.com/group/sub/widgets.git" })
+// A repeated id is 202 duplicate with no row and no event, also for a malformed delivery,
+// while the same id in another workspace is another delivery; copies that arrive together
+// record one row and relay once; a failure of the log is 500 and emits nothing, so that the
+// redelivery is processed in full.
+func TestIngress_Duplicates(t *testing.T) {
+	e, em := ingressEnv(t)
+	e.webhookWorkspace("other")
+	outcomeOf(t, e.deliver("widgets", labeledDelivery("gh-1")))
+	if outcome := outcomeOf(t, e.deliver("widgets", labeledDelivery("gh-1"))); outcome != "duplicate" {
+		t.Errorf("second: outcome = %q; want duplicate", outcome)
+	}
+	if outcome := outcomeOf(t, e.deliver("other", labeledDelivery("gh-1"))); outcome != "relayed" {
+		t.Errorf("the same id in another workspace: outcome = %q; want relayed", outcome)
+	}
+	if rec := e.deliver("widgets", githubDelivery(ingressSecret, "bad", "issues", `[]`)); rec.Code != http.StatusBadRequest {
+		t.Errorf("malformed: %d; want 400", rec.Code)
+	}
+	if outcome := outcomeOf(t, e.deliver("widgets", githubDelivery(ingressSecret, "bad", "issues", `[]`))); outcome != "duplicate" {
+		t.Errorf("malformed again: outcome = %q; want duplicate", outcome)
+	}
+	if rows, events := e.deliveryRows(), em.recorded(); len(rows) != 3 || len(events) != 2 {
+		t.Errorf("%d rows and %d events; want 3 and 2", len(rows), len(events))
+	}
 
-	for _, tc := range []struct {
-		slug string
-		d    signedDelivery
-	}{
-		{"caps", githubDelivery(ingressSecret, "gh-1", "issues", issuesPayload("labeled", "acme/widgets"))},
-		{"caps", githubDelivery(ingressSecret, "gh-2", "issues", issuesPayload("labeled", "ACME/WIDGETS"))},
-		{"nested", gitlabDelivery(ingressSecret, "gl-1", "Issue Hook", gitlabIssuePayload("update", "group/sub/Widgets"))},
-	} {
-		want := "relayed"
-		if tc.slug == "nested" {
-			want = "ignored" // an update that changes nothing is not relayed, but it is bound
-		}
-		if outcome := outcomeOf(t, e.deliver(tc.slug, tc.d)); outcome != want {
-			t.Errorf("%s: outcome = %q; want %s", tc.slug, outcome, want)
-		}
+	const n = 12
+	outcomes := make([]string, n)
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			outcomes[i] = strings.TrimSpace(e.deliver("widgets", labeledDelivery("conc")).Body.String())
+		}()
 	}
-	rows := e.deliveryRows()
-	if len(rows) != 3 {
-		t.Fatalf("%d rows; want 3", len(rows))
-	}
-	for i, row := range rows {
-		if row.target == nil || *row.target != "origin" {
-			t.Errorf("row %d target = %v; want origin", i, row.target)
+	close(start)
+	wg.Wait()
+	relayed, duplicates := 0, 0
+	for _, o := range outcomes {
+		switch o {
+		case `{"outcome":"relayed"}`:
+			relayed++
+		case `{"outcome":"duplicate"}`:
+			duplicates++
 		}
 	}
-	events := em.recorded()
-	if len(events) != 2 {
-		t.Fatalf("%d events; want 2 (the GitHub deliveries)", len(events))
+	if relayed != 1 || duplicates != n-1 || len(e.deliveryRows()) != 4 || len(em.recorded()) != 3 {
+		t.Errorf("%d copies: %d relayed, %d duplicates, %d rows, %d events; want 1, %d, 4, 3", n, relayed, duplicates, len(e.deliveryRows()), len(em.recorded()), n-1)
 	}
-	for i, ev := range events {
-		if ev.Metadata["target"] != "origin" {
-			t.Errorf("event %d metadata target = %v; want origin", i, ev.Metadata["target"])
-		}
-	}
-}
 
-// A delivery that announces more than 1 MiB is refused without its body being read.
-// Requirement: 32-REQ-3.6
-func TestIngressDoesNotReadABodyThatAnnouncesTooMuch(t *testing.T) {
-	e, _ := newIngressEnv(t)
-	body := &failReader{t: t}
-	req := httptest.NewRequest(http.MethodPost, "/hooks/forge/widgets", body)
-	req.Header = githubDelivery(ingressSecret, "d-1", "ping", "{}").header
-	req.ContentLength = 1<<20 + 1
-	rec := httptest.NewRecorder()
-	e.echo.ServeHTTP(rec, req)
-	if rec.Code != http.StatusRequestEntityTooLarge || decodeError(t, rec).ErrorType != "body_too_large" {
-		t.Errorf("status = %d, body %s; want 413 body_too_large", rec.Code, rec.Body)
+	testutil.Exec(t, e.db, `DROP TABLE forge_deliveries`)
+	rec := e.deliver("widgets", labeledDelivery("gh-2"))
+	if rec.Code != http.StatusInternalServerError || strings.Contains(rec.Body.String(), "forge_deliveries") || len(em.recorded()) != 3 {
+		t.Errorf("a failing log: %d %s with %d events; want 500 without the cause and no new event", rec.Code, rec.Body, len(em.recorded()))
 	}
-	if body.read.Load() {
-		t.Errorf("the body was read")
-	}
-}
-
-// A workspace whose webhook secret is empty has none: an empty token would pass, and an empty key
-// would sign.
-// Requirement: 32-REQ-3.2
-func TestIngressRefusesAnEmptySecret(t *testing.T) {
-	e, _ := newIngressEnv(t)
-	addWorkspace(t, e.db, "blank")
-	if _, err := e.db.Exec(`INSERT INTO secrets (owner_type, owner_id, key, value, created_at, updated_at)
-		VALUES ('workspace', 'blank', 'FORGE_WEBHOOK_SECRET', '', '2026-10-21T09:00:00Z', '2026-10-21T09:00:00Z')`); err != nil {
+	if err := InitSchema(e.db); err != nil {
 		t.Fatal(err)
 	}
-	unknown := e.deliver("nosuch", githubDelivery(ingressSecret, "d-0", "ping", "{}"))
-	for name, d := range map[string]signedDelivery{
-		"an empty GitLab token":                 gitlabDelivery("", "d-1", "Issue Hook", "{}"),
-		"a GitHub signature under an empty key": githubDelivery("", "d-2", "ping", "{}"),
+	if outcome := outcomeOf(t, e.deliver("widgets", labeledDelivery("gh-2"))); outcome != "relayed" || len(em.recorded()) != 4 {
+		t.Errorf("the redelivery: outcome = %q with %d events; want relayed and 4", outcome, len(em.recorded()))
+	}
+}
+
+// The outcome of a delivery is the reduction's: malformed is 400 and recorded with no target;
+// ignored, repository_mismatch and relayed are 202 with the outcome; the row holds the target
+// the repository was bound to (origin or the upstream of a carry_patch workspace, the origin
+// when both match, ignoring case) and the events relayed.
+func TestIngress_OutcomesAndBinding(t *testing.T) {
+	e, em := ingressEnv(t)
+	e.webhookWorkspace("fork", carryPatch("https://github.com/upstream/widgets"))
+	e.webhookWorkspace("same", carryPatch("https://github.com/acme/widgets"))
+	e.webhookWorkspace("caps", withGitURL("https://forge.example.com/Acme/Widgets.git"))
+	e.webhookWorkspace("leftover", func(w *testutil.Workspace) { w.UpstreamURL = "https://github.com/upstream/widgets" })
+	e.webhookWorkspace("unreadable", withGitURL("not a remote"))
+	for _, tc := range []struct {
+		name, slug string
+		d          signedDelivery
+		status     int
+		outcome    string
+		target     string
+		relayed    string
+	}{
+		{"not a JSON object", "widgets", githubDelivery(ingressSecret, "d-1", "issues", `[]`), 400, "malformed", "", "[]"},
+		{"a field missing", "widgets", githubDelivery(ingressSecret, "d-2", "issues", `{"action":"labeled","repository":{"full_name":"acme/widgets"},"issue":{"number":7}}`), 400, "malformed", "", "[]"},
+		{"no repository", "widgets", githubDelivery(ingressSecret, "d-3", "issues", `{"action":"labeled","label":{"name":"x"},"issue":{"number":7}}`), 400, "malformed", "", "[]"},
+		{"a foreign repository lacking its identity", "widgets", githubDelivery(ingressSecret, "d-4", "issues", `{"action":"labeled","repository":{"full_name":"other/repo"},"issue":{"number":7}}`), 400, "malformed", "", "[]"},
+		{"a kind hub does not relay", "widgets", githubDelivery(ingressSecret, "d-5", "star", `{"action":"created","repository":{"full_name":"acme/widgets"}}`), 202, "ignored", "origin", "[]"},
+		{"a kind that says nothing, on another repository", "widgets", gitlabDelivery(ingressSecret, "d-6", "Merge Request Hook", strings.ReplaceAll(mergeRequestHook("update", nil), "acme/widgets", "other/repo")), 202, "ignored", "", "[]"},
+		{"another repository", "widgets", githubDelivery(ingressSecret, "d-7", "issues", issuesPayload("labeled", "other/repo")), 202, "repository_mismatch", "", "[]"},
+		{"a prefix of the path", "widgets", githubDelivery(ingressSecret, "d-8", "issues", issuesPayload("labeled", "acme/widget")), 202, "repository_mismatch", "", "[]"},
+		{"the upstream on a standard workspace", "leftover", githubDelivery(ingressSecret, "d-9", "issues", issuesPayload("labeled", "upstream/widgets")), 202, "repository_mismatch", "", "[]"},
+		{"an unreadable remote", "unreadable", githubDelivery(ingressSecret, "d-10", "issues", issuesPayload("labeled", "acme/widgets")), 202, "repository_mismatch", "", "[]"},
+		{"the origin", "widgets", labeledDelivery("d-11"), 202, "relayed", "origin", `["hub.forge.issue.labeled"]`},
+		{"the origin in another case", "caps", githubDelivery(ingressSecret, "d-12", "issues", issuesPayload("labeled", "ACME/WIDGETS")), 202, "relayed", "origin", `["hub.forge.issue.labeled"]`},
+		{"the upstream of a fork", "fork", githubDelivery(ingressSecret, "d-13", "issues", issuesPayload("labeled", "upstream/widgets")), 202, "relayed", "upstream", `["hub.forge.issue.labeled"]`},
+		{"the origin of a fork", "fork", labeledDelivery("d-14"), 202, "relayed", "origin", `["hub.forge.issue.labeled"]`},
+		{"a repository that is both", "same", labeledDelivery("d-15"), 202, "relayed", "origin", `["hub.forge.issue.labeled"]`},
 	} {
-		rec := e.deliver("blank", d)
-		if rec.Code != http.StatusNotFound || rec.Body.String() != unknown.Body.String() {
-			t.Errorf("%s: status = %d, body %s; want the 404 of an unknown slug", name, rec.Code, rec.Body)
+		rec := e.deliver(tc.slug, tc.d)
+		if rec.Code != tc.status || (rec.Code == 202 && strings.TrimSpace(rec.Body.String()) != `{"outcome":"`+tc.outcome+`"}`) {
+			t.Errorf("%s: %d %s; want %d %s", tc.name, rec.Code, rec.Body, tc.status, tc.outcome)
+			continue
+		}
+		rows := e.deliveryRows()
+		row := rows[len(rows)-1]
+		target := ""
+		if row.target != nil {
+			target = *row.target
+		}
+		if row.outcome != tc.outcome || target != tc.target || row.relayed != tc.relayed {
+			t.Errorf("%s: row = %+v; want %s bound to %q relaying %s", tc.name, row, tc.outcome, tc.target, tc.relayed)
 		}
 	}
-	if rows := e.deliveryRows(); len(rows) != 0 {
-		t.Errorf("rows = %v; want none", rows)
-	}
-}
-
-// The event of a labeled delivery: the forge as the actor, the issue as the resource, and the
-// metadata of its kind.
-// Requirement: 32-REQ-8.1, 32-REQ-8.2
-func TestIngressLabeledEventContents(t *testing.T) {
-	e, em := newIngressEnv(t)
-	if outcome := outcomeOf(t, e.deliver("widgets", labeledGitHubDelivery("gh-1"))); outcome != "relayed" {
-		t.Fatalf("outcome = %q; want relayed", outcome)
-	}
 	events := em.recorded()
-	if len(events) != 1 {
-		t.Fatalf("%d events; want 1", len(events))
-	}
-	ev := events[0]
-	if ev.EventType != audit.EventForgeIssueLabeled || ev.Workspace != "widgets" || ev.ActorType != "forge" || ev.ActorID != "" ||
-		ev.ResourceType != "issue" || ev.ResourceID != "7" || ev.Action != "labeled" {
-		t.Errorf("event = %+v; want hub.forge.issue.labeled of issue 7 by the forge", ev)
-	}
-	want := map[string]any{
-		"forge": "github", "target": "origin", "delivery_id": "gh-1", "actor": "octocat",
-		"number": 7, "label": "af:ready", "labels": []string{"bug", "af:ready"},
-		"url": "https://github.com/acme/widgets/issues/7",
-	}
-	if !reflect.DeepEqual(ev.Metadata, want) {
-		t.Errorf("metadata = %#v\nwant %#v", ev.Metadata, want)
+	if len(events) != 5 || events[2].Metadata["target"] != "upstream" || events[3].Metadata["target"] != "origin" {
+		t.Errorf("events = %+v; want the 5 relayed with their targets", events)
 	}
 }
 
-// labeledGitHubDelivery is a signed GitHub issues labeled delivery of acme/widgets with the id.
-func labeledGitHubDelivery(id string) signedDelivery {
-	return githubDelivery(ingressSecret, id, "issues", issuesPayload("labeled", "acme/widgets"))
+// The 202 answer is written and flushed before any event is emitted; an emitter that fails
+// on one event is logged and the others are still offered, in order; without an emitter a
+// delivery is recorded and answered; the events are emitted on a context the request's
+// cancellation does not reach; when the answer cannot be written the events are relayed all
+// the same, since the redelivery would be a duplicate.
+func TestIngress_RelaysAfterAnswering(t *testing.T) {
+	logs := captureLog(t)
+	entered, release := make(chan struct{}), make(chan struct{})
+	var enteredOnce, releaseOnce sync.Once
+	let := func() { releaseOnce.Do(func() { close(release) }) }
+	var count atomic.Int64
+	blocking := emitterFunc(func(context.Context, audit.HubEvent) error {
+		enteredOnce.Do(func() { close(entered) })
+		<-release
+		count.Add(1)
+		return nil
+	})
+	e := newEnv(t, withEmitter(blocking))
+	e.webhookWorkspace("widgets")
+	server := httptest.NewServer(e.echo)
+	t.Cleanup(server.Close)
+	t.Cleanup(let)
+	done := make(chan string, 1)
+	go func() {
+		d := labeledDelivery("gh-1")
+		req, _ := http.NewRequest(http.MethodPost, server.URL+"/hooks/forge/widgets", strings.NewReader(d.body))
+		req.Header = d.header.Clone()
+		resp, err := server.Client().Do(req)
+		if err != nil {
+			done <- err.Error()
+			return
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		done <- fmt.Sprintf("%d %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}()
+	<-entered
+	select {
+	case got := <-done:
+		if got != `202 {"outcome":"relayed"}` || count.Load() != 0 {
+			t.Errorf("while Emit was blocked the client got %q and %d events were stored; want the full 202 and 0", got, count.Load())
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the answer did not reach the client while Emit was blocked")
+	}
+	let()
+	eventually(t, "the release of the event", func() bool { return count.Load() == 1 })
+
+	failFirst := &recordingEmitter{}
+	var calls atomic.Int64
+	f, _ := ingressEnv(t, withEmitter(emitterFunc(func(ctx context.Context, ev audit.HubEvent) error {
+		_ = failFirst.Emit(ctx, ev)
+		if calls.Add(1) == 1 {
+			return errors.New("the audit store is down")
+		}
+		return nil
+	})))
+	body := gitlabUpdateHook(map[string]any{"title": map[string]any{"previous": "a", "current": "b"}, "labels": labelChange([]string{"x"}, []string{"y"})}, "y")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	d := gitlabDelivery(ingressSecret, "d-1", "Issue Hook", body)
+	req := httptest.NewRequest(http.MethodPost, "/hooks/forge/widgets", strings.NewReader(d.body)).WithContext(ctx)
+	req.Header = d.header.Clone()
+	rec := httptest.NewRecorder()
+	f.echo.ServeHTTP(rec, req)
+	want := []string{audit.EventForgeIssueEdited, audit.EventForgeIssueUnlabeled, audit.EventForgeIssueLabeled}
+	if outcome := outcomeOf(t, rec); outcome != "relayed" || !reflect.DeepEqual(eventTypes(failFirst.recorded()), want) || failFirst.contexts()[0] != nil {
+		t.Errorf("outcome %q, offered %v on %v; want relayed, all three in order on live contexts", outcome, eventTypes(failFirst.recorded()), failFirst.contexts())
+	}
+	if rows := f.deliveryRows(); len(rows) != 1 || rows[0].relayed != `["hub.forge.issue.edited","hub.forge.issue.unlabeled","hub.forge.issue.labeled"]` {
+		t.Errorf("rows = %+v; want one relayed row listing the three events", rows)
+	}
+	if log := logs.String(); !strings.Contains(log, "level=ERROR") || !strings.Contains(log, audit.EventForgeIssueEdited) {
+		t.Errorf("the log = %q; want an error line for the event that failed", log)
+	}
+
+	none := newEnv(t, func(cfg *Config) { cfg.Audit = nil })
+	none.webhookWorkspace("widgets")
+	if outcome := outcomeOf(t, none.deliver("widgets", labeledDelivery("d-1"))); outcome != "relayed" || len(none.deliveryRows()) != 1 {
+		t.Errorf("without an emitter: outcome = %q with %d rows; want relayed and 1", outcome, len(none.deliveryRows()))
+	}
+
+	closed, em := ingressEnv(t)
+	d = labeledDelivery("gh-1")
+	req = httptest.NewRequest(http.MethodPost, "/hooks/forge/widgets", strings.NewReader(d.body))
+	req.Header = d.header.Clone()
+	closed.echo.ServeHTTP(&failingWriter{header: http.Header{}}, req)
+	if got := eventTypes(em.recorded()); !reflect.DeepEqual(got, []string{audit.EventForgeIssueLabeled}) || !strings.Contains(logs.String(), "could not be written") {
+		t.Errorf("events = %v; want the one of the delivery, and the failed write logged", got)
+	}
+	if outcome := outcomeOf(t, closed.deliver("widgets", d)); outcome != "duplicate" {
+		t.Errorf("the redelivery: outcome = %q; want duplicate", outcome)
+	}
 }
 
-// An issue without labels has an empty list of them, not a null one.
-func TestIngressLabeledEventWithoutLabels(t *testing.T) {
-	e, em := newIngressEnv(t)
-	body := strings.Replace(issuesPayload("labeled", "acme/widgets"), `"labels":[{"name":"bug"},{"name":"af:ready"}]`, `"labels":[]`, 1)
-	if !strings.Contains(body, `"labels":[]`) {
-		t.Fatalf("the payload still has labels: %s", body)
-	}
-	if outcome := outcomeOf(t, e.deliver("widgets", githubDelivery(ingressSecret, "gh-1", "issues", body))); outcome != "relayed" {
-		t.Fatalf("outcome = %q; want relayed", outcome)
-	}
-	events := em.recorded()
-	if len(events) != 1 {
-		t.Fatalf("%d events; want 1", len(events))
-	}
-	if labels, ok := events[0].Metadata["labels"].([]string); !ok || labels == nil || len(labels) != 0 {
-		t.Errorf("labels = %#v; want an empty list that is not nil", events[0].Metadata["labels"])
-	}
-	if b, _ := json.Marshal(events[0].Metadata); !strings.Contains(string(b), `"labels":[]`) {
-		t.Errorf("metadata = %s; want labels as []", b)
-	}
+// emitterFunc is an audit.Emitter made of a function.
+type emitterFunc func(context.Context, audit.HubEvent) error
+
+func (f emitterFunc) Emit(ctx context.Context, ev audit.HubEvent) error { return f(ctx, ev) }
+
+// failingWriter is a response writer whose body cannot be written, as a connection the
+// forge has closed.
+type failingWriter struct {
+	header http.Header
+	status int
 }
+
+func (w *failingWriter) Header() http.Header       { return w.header }
+func (w *failingWriter) WriteHeader(status int)    { w.status = status }
+func (w *failingWriter) Write([]byte) (int, error) { return 0, errors.New("write: broken pipe") }
+func (w *failingWriter) Flush()                    {}

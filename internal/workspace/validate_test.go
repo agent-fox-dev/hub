@@ -1,212 +1,61 @@
 package workspace
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
-// TS-01-2: Verify that the slug validator accepts slugs that are 3–64 chars,
-// lowercase alphanumeric + hyphens, start with a letter, have no trailing
-// hyphen, and have no consecutive hyphens.
-// Requirement: 01-REQ-1.2
-func TestWorkspaceValidateSlug_ValidSlugs(t *testing.T) {
-	valid := []struct {
-		name string
-		slug string
-	}{
-		{"three chars minimum", "abc"},
-		{"with hyphens", "my-workspace"},
-		{"alphanumeric mixed", "a1b2c3"},
-		{"multiple hyphens separated", "workspace-one-two"},
-		{"64 chars maximum", "abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrstuvwxyz01"},
-	}
-
-	for _, tc := range valid {
-		t.Run(tc.name, func(t *testing.T) {
-			if err := validateSlug(tc.slug); err != nil {
-				t.Errorf("validateSlug(%q) returned error: %v; want nil", tc.slug, err)
-			}
-		})
-	}
-}
-
-// TS-01-3: Verify that the slug validator rejects slugs failing format,
-// length, leading-character, trailing-hyphen, or consecutive-hyphen rules.
-// Requirement: 01-REQ-1.3
-func TestWorkspaceValidateSlug_InvalidSlugs(t *testing.T) {
-	invalid := []struct {
-		name string
-		slug string
-	}{
-		{"too short (2 chars)", "ab"},
-		{"uppercase letters", "MY-WORKSPACE"},
-		{"leading hyphen", "-bad-start"},
-		{"trailing hyphen", "bad-end-"},
-		{"consecutive hyphens", "bad--consecutive"},
-		{"contains space", "has space"},
-		{"contains underscore", "has_underscore"},
-	}
-
-	for _, tc := range invalid {
-		t.Run(tc.name, func(t *testing.T) {
-			if err := validateSlug(tc.slug); err == nil {
-				t.Errorf("validateSlug(%q) returned nil; want error", tc.slug)
-			}
-		})
-	}
-}
-
-// TS-01-E1: Verify that the slug validator rejects slugs of exactly 2
-// characters (below minimum) and exactly 65 characters (above maximum).
-// Requirement: 01-REQ-1.E1
-func TestWorkspaceValidateSlug_BoundaryLengths(t *testing.T) {
-	t.Run("too short 2 chars", func(t *testing.T) {
-		if err := validateSlug("ab"); err == nil {
-			t.Error("validateSlug(2-char slug) returned nil; want error")
+// TestValidate_Slug: 3 to 64 lowercase letters, digits and single hyphens,
+// starting with a letter and not ending with a hyphen.
+func TestValidate_Slug(t *testing.T) {
+	for _, ok := range []string{"abc", "a-b", "a1b2", "abc-123-xyz", "a" + strings.Repeat("b", 62) + "c", "a1"[:2] + "x"} {
+		if err := validateSlug(ok); err != nil {
+			t.Errorf("%q: %v", ok, err)
 		}
-	})
-
-	t.Run("too long 65 chars", func(t *testing.T) {
-		slug65 := "abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrstuvwxyz012"
-		if len(slug65) != 65 {
-			t.Fatalf("test setup: slug65 has length %d, want 65", len(slug65))
+	}
+	for bad, want := range map[string]string{
+		"ab": "at least 3", strings.Repeat("a", 65): "at most 64", "1ab": "lowercase letter", "-ab": "lowercase letter",
+		"ab-": "end with a hyphen", "a--b": "consecutive hyphens", "aBc": "only lowercase", "a_b": "only lowercase", "a b": "only lowercase",
+	} {
+		if err := validateSlug(bad); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%q: %v; want %q", bad, err, want)
 		}
-		if err := validateSlug(slug65); err == nil {
-			t.Error("validateSlug(65-char slug) returned nil; want error")
+	}
+}
+
+// TestValidate_GitURL: https://host/path or git@host:path, both parts
+// non-empty, nothing else.
+func TestValidate_GitURL(t *testing.T) {
+	for _, ok := range []string{"https://github.com/org/repo", "https://h/p.git", "git@github.com:org/repo.git", "git@h:p"} {
+		if err := validateGitURL(ok); err != nil {
+			t.Errorf("%q: %v", ok, err)
 		}
-	})
-}
-
-// TS-01-E2: Verify that the slug validator rejects slugs starting with a
-// digit or hyphen.
-// Requirement: 01-REQ-1.E2
-func TestWorkspaceValidateSlug_InvalidLeadingChars(t *testing.T) {
-	t.Run("starts with digit", func(t *testing.T) {
-		if err := validateSlug("1workspace"); err == nil {
-			t.Error("validateSlug(digit-start slug) returned nil; want error")
+	}
+	for bad, want := range map[string]string{
+		"": "must not be empty", "http://h/p": "not plain HTTP", "https://": "HTTPS format", "https://host": "HTTPS format",
+		"https:///p": "HTTPS format", "git@host": "SSH format", "git@:p": "SSH format", "git@h:": "SSH format",
+		"ssh://git@h/p": "HTTPS (https://) or SSH (git@)", "github.com/org/repo": "HTTPS (https://) or SSH (git@)",
+	} {
+		if err := validateGitURL(bad); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%q: %v; want %q", bad, err, want)
 		}
-	})
+	}
+}
 
-	t.Run("starts with hyphen", func(t *testing.T) {
-		if err := validateSlug("-workspace"); err == nil {
-			t.Error("validateSlug(hyphen-start slug) returned nil; want error")
+// TestValidate_Branch: git's ref name rules, including the option-like names.
+func TestValidate_Branch(t *testing.T) {
+	for _, ok := range []string{"main", "feature/x-1", "a.b", "v1.0", "release/2026.01", "UPPER", "with_underscore"} {
+		if err := validateBranch(ok); err != nil {
+			t.Errorf("%q: %v", ok, err)
 		}
-	})
-}
-
-// TS-01-4: Verify that the git_url validator accepts valid HTTPS and SSH URLs
-// with non-empty host and path.
-// Requirement: 01-REQ-1.4
-func TestWorkspaceValidateGitURL_ValidURLs(t *testing.T) {
-	valid := []struct {
-		name string
-		url  string
-	}{
-		{"HTTPS github", "https://github.com/org/repo"},
-		{"HTTPS gitlab", "https://gitlab.com/team/project"},
-		{"SSH github", "git@github.com:org/repo"},
-		{"SSH bitbucket with .git", "git@bitbucket.org:team/project.git"},
 	}
-
-	for _, tc := range valid {
-		t.Run(tc.name, func(t *testing.T) {
-			if err := validateGitURL(tc.url); err != nil {
-				t.Errorf("validateGitURL(%q) returned error: %v; want nil", tc.url, err)
-			}
-		})
-	}
-}
-
-// TS-01-5: Verify that the git_url validator rejects empty URLs, plain HTTP
-// URLs, URLs with empty host, and URLs with empty path.
-// Requirement: 01-REQ-1.5
-func TestWorkspaceValidateGitURL_InvalidURLs(t *testing.T) {
-	invalid := []struct {
-		name string
-		url  string
-	}{
-		{"empty string", ""},
-		{"plain HTTP", "http://github.com/org/repo"},
-		{"HTTPS empty host", "https:///repo"},
-		{"HTTPS empty path", "https://github.com/"},
-		{"SSH empty host", "git@:/org/repo"},
-		{"SSH empty path", "git@github.com:"},
-	}
-
-	for _, tc := range invalid {
-		t.Run(tc.name, func(t *testing.T) {
-			if err := validateGitURL(tc.url); err == nil {
-				t.Errorf("validateGitURL(%q) returned nil; want error", tc.url)
-			}
-		})
-	}
-}
-
-// TS-01-E4: Verify that the git_url validator rejects plain HTTP URLs
-// (http://).
-// Requirement: 01-REQ-1.E4
-func TestWorkspaceValidateGitURL_PlainHTTP(t *testing.T) {
-	if err := validateGitURL("http://github.com/org/repo"); err == nil {
-		t.Error("validateGitURL(http:// URL) returned nil; want error")
-	}
-}
-
-// TS-01-6: Verify that the branch validator accepts valid git ref names that
-// comply with all git ref naming rules.
-// Requirement: 01-REQ-1.6
-func TestWorkspaceValidateBranch_ValidBranches(t *testing.T) {
-	valid := []struct {
-		name   string
-		branch string
-	}{
-		{"simple name", "main"},
-		{"with slash", "feature/my-feature"},
-		{"with dot and digits", "release-1.0"},
-		{"hotfix with slash", "hotfix/fix-123"},
-	}
-
-	for _, tc := range valid {
-		t.Run(tc.name, func(t *testing.T) {
-			if err := validateBranch(tc.branch); err != nil {
-				t.Errorf("validateBranch(%q) returned error: %v; want nil", tc.branch, err)
-			}
-		})
-	}
-}
-
-// TS-01-7: Verify that the branch validator rejects branch values that
-// violate git ref naming rules.
-// Requirement: 01-REQ-1.7
-func TestWorkspaceValidateBranch_InvalidBranches(t *testing.T) {
-	invalid := []struct {
-		name   string
-		branch string
-	}{
-		{"contains space", "branch with space"},
-		{"contains tilde", "branch~1"},
-		{"contains caret", "branch^2"},
-		{"contains colon", "branch:name"},
-		{"contains question mark", "branch?q"},
-		{"contains asterisk", "branch*"},
-		{"contains bracket", "branch[0]"},
-		{"contains backslash", "branch\\path"},
-		{"double dot sequence", "branch..name"},
-		{"trailing .lock", "branch.lock"},
-		{"trailing dot", "branch."},
-		{"leading dot", ".branch"},
-	}
-
-	for _, tc := range invalid {
-		t.Run(tc.name, func(t *testing.T) {
-			if err := validateBranch(tc.branch); err == nil {
-				t.Errorf("validateBranch(%q) returned nil; want error", tc.branch)
-			}
-		})
-	}
-}
-
-// TS-01-E3: Verify that the branch validator rejects an explicitly provided
-// empty string branch.
-// Requirement: 01-REQ-1.E3
-func TestWorkspaceValidateBranch_EmptyString(t *testing.T) {
-	if err := validateBranch(""); err == nil {
-		t.Error("validateBranch(\"\") returned nil; want error")
+	for bad, want := range map[string]string{
+		"": "must not be empty", "a b": "spaces", "a\tb": "control characters", "a~b": "'~'", "a^b": "'^'", "a:b": "':'",
+		"a?b": "'?'", "a*b": "'*'", "a[b": "'['", `a\b`: `'\'`, "a..b": "'..'", "x.lock": "'.lock'", "x.": "end with '.'",
+		".x": "leading dot", "a/.b": "leading dot", "-flag": "branch", "a//b": "branch", "a/": "branch", "@": "branch",
+	} {
+		if err := validateBranch(bad); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%q: %v; want %q", bad, err, want)
+		}
 	}
 }

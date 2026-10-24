@@ -3,452 +3,163 @@ package workspace
 import (
 	"fmt"
 	"net/http"
+	"slices"
 	"testing"
-	"time"
+
+	"github.com/txsvc/apikit"
+
+	"github.com/agent-fox-dev/hub/internal/testutil"
 )
 
-// TS-01-32: Verify that GET /api/v1/workspaces with admin token returns all
-// workspaces across all users, excluding archived by default, ordered by
-// created_at descending.
-// Requirement: 01-REQ-6.1
-func TestWorkspaceList_AdminAllUsers(t *testing.T) {
-	env := newTestEnv(t)
-
-	// Seed workspaces for two different users.
-	env.seedWorkspace(t, &Workspace{
-		Slug:    "alice-ws",
-		GitURL:  "https://github.com/org/alice-repo",
-		OwnerID: "alice-id",
-		Status:  "pending",
-	})
-	env.seedWorkspace(t, &Workspace{
-		Slug:    "alice-archived",
-		GitURL:  "https://github.com/org/alice-repo2",
-		OwnerID: "alice-id",
-		Status:  "archived",
-	})
-	env.seedWorkspace(t, &Workspace{
-		Slug:    "bob-ws",
-		GitURL:  "https://github.com/org/bob-repo",
-		OwnerID: "bob-id",
-		Status:  "pending",
-	})
-
-	rec := env.doRequest(t, http.MethodGet, "/api/v1/workspaces", "", adminAuth())
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("GET /api/v1/workspaces status = %d; want %d",
-			rec.Code, http.StatusOK)
+// seedListed inserts a workspace with an explicit created_at; org "" is NULL.
+func seedListed(t *testing.T, v *env, slug, ownerID, org, status, createdAt string) {
+	t.Helper()
+	var orgID any
+	if org != "" {
+		orgID = org
 	}
+	testutil.Exec(t, v.db, `INSERT INTO workspaces (slug, git_url, owner_id, org_id, status, display_name, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, slug, "https://github.com/org/"+slug, ownerID, orgID, status, slug, createdAt, createdAt)
+}
 
-	workspaces := parseWorkspaceListJSON(t, rec)
-	slugs := make(map[string]bool)
-	for _, ws := range workspaces {
-		slugs[ws.Slug] = true
+// listed returns the slugs of a listing, in order, and the access of each.
+func listed(t *testing.T, v *env, path string, auth *apikit.AuthInfo) ([]string, map[string]string) {
+	t.Helper()
+	rec := v.do(t, http.MethodGet, path, "", auth)
+	expectStatus(t, rec, http.StatusOK)
+	var slugs []string
+	access := map[string]string{}
+	for _, obj := range testutil.Objects(t, rec) {
+		slug := obj["slug"].(string)
+		slugs = append(slugs, slug)
+		access[slug], _ = obj["access"].(string)
 	}
+	return slugs, access
+}
 
-	if !slugs["alice-ws"] {
-		t.Error("missing alice-ws in admin listing")
-	}
-	if !slugs["bob-ws"] {
-		t.Error("missing bob-ws in admin listing")
-	}
-	if slugs["alice-archived"] {
-		t.Error("alice-archived (archived) should NOT appear in default listing")
-	}
+// TestList_ReadableSet: an admin lists everything with access admin; a user
+// lists its own and its orgs' workspaces, newest first, archived ones only on
+// request; a stranger lists nothing.
+func TestList_ReadableSet(t *testing.T) {
+	v := newEnv(t)
+	testutil.SeedOrg(t, v.db, "O", "org-o", "")
+	testutil.SeedOrg(t, v.db, "Z", "org-z", "")
+	testutil.SeedOrgMember(t, v.db, "O", member)
+	testutil.SeedOrgMember(t, v.db, "Z", owner)
+	seedListed(t, v, "w1-owned", member, "", "ready", "2026-01-01T00:00:01Z")
+	seedListed(t, v, "w2-member", owner, "O", "ready", "2026-01-01T00:00:03Z")
+	seedListed(t, v, "w3-archived", owner, "O", "archived", "2026-01-01T00:00:02Z")
+	seedListed(t, v, "w4-other", owner, "Z", "ready", "2026-01-01T00:00:04Z")
 
-	// Verify ordering by created_at descending.
-	for i := 1; i < len(workspaces); i++ {
-		prev, errP := time.Parse(time.RFC3339, workspaces[i-1].CreatedAt)
-		curr, errC := time.Parse(time.RFC3339, workspaces[i].CreatedAt)
-		if errP != nil || errC != nil {
-			t.Errorf("invalid RFC 3339 timestamp at index %d", i)
-			continue
-		}
-		if prev.Before(curr) {
-			t.Errorf("workspaces not ordered by created_at desc: index %d (%s) < index %d (%s)",
-				i-1, workspaces[i-1].CreatedAt, i, workspaces[i].CreatedAt)
+	slugs, access := listed(t, v, "/api/v1/workspaces", testutil.Admin())
+	if want := []string{"w4-other", "w2-member", "w1-owned"}; !slices.Equal(slugs, want) || access["w1-owned"] != "admin" {
+		t.Errorf("admin: %v %v; want %v, all admin", slugs, access, want)
+	}
+	slugs, _ = listed(t, v, "/api/v1/workspaces?include_archived=true", testutil.Admin())
+	if want := []string{"w4-other", "w2-member", "w3-archived", "w1-owned"}; !slices.Equal(slugs, want) {
+		t.Errorf("admin with archived: %v; want %v", slugs, want)
+	}
+	slugs, access = listed(t, v, "/api/v1/workspaces?include_archived=true", testutil.User(member))
+	if want := []string{"w2-member", "w3-archived", "w1-owned"}; !slices.Equal(slugs, want) || access["w1-owned"] != "owner" || access["w2-member"] != "member" {
+		t.Errorf("member: %v %v; want %v with owner and member access", slugs, access, want)
+	}
+	slugs, _ = listed(t, v, "/api/v1/workspaces", testutil.PAT(member, "workspaces:read"))
+	if want := []string{"w2-member", "w1-owned"}; !slices.Equal(slugs, want) {
+		t.Errorf("read PAT: %v; want %v", slugs, want)
+	}
+	if slugs, _ := listed(t, v, "/api/v1/workspaces", testutil.User(stranger)); len(slugs) != 0 {
+		t.Errorf("stranger: %v; want nothing", slugs)
+	}
+	// A bound PAT lists at most its workspace, archived only on request.
+	testutil.BindToken(t, v.db, "tok-a", "w3-archived")
+	bound := testutil.BoundPAT(owner, "tok-a", "workspaces:read")
+	if slugs, _ := listed(t, v, "/api/v1/workspaces", bound); len(slugs) != 0 {
+		t.Errorf("bound to an archived workspace: %v; want nothing", slugs)
+	}
+	if slugs, _ := listed(t, v, "/api/v1/workspaces?include_archived=true", bound); !slices.Equal(slugs, []string{"w3-archived"}) {
+		t.Errorf("bound with archived: %v; want w3-archived", slugs)
+	}
+}
+
+// TestList_Refusals: no credential is 401, a PAT without the read scope 404,
+// a failing query 500.
+func TestList_Refusals(t *testing.T) {
+	v := newEnv(t)
+	expectStatus(t, v.do(t, http.MethodGet, "/api/v1/workspaces", "", nil), http.StatusUnauthorized)
+	expectError(t, v.do(t, http.MethodGet, "/api/v1/workspaces", "", testutil.PAT(owner, "users:read")), http.StatusNotFound, "workspace not found", "")
+	testutil.Exec(t, v.db, `DROP TABLE workspaces`)
+	expectStatus(t, v.do(t, http.MethodGet, "/api/v1/workspaces", "", testutil.Admin()), http.StatusInternalServerError)
+	expectStatus(t, v.do(t, http.MethodGet, "/api/v1/workspaces", "", testutil.User(owner)), http.StatusInternalServerError)
+}
+
+// TestList_ManySlugs: a readable set larger than one query's chunk is listed
+// once per workspace, newest first, with ties broken by slug.
+func TestList_ManySlugs(t *testing.T) {
+	v := newEnv(t)
+	for i := 0; i < listSlugChunk+1; i++ {
+		seedListed(t, v, fmt.Sprintf("ws-%03d", (i*7)%(listSlugChunk+1)), owner, "", "ready",
+			fmt.Sprintf("2026-01-01T00:%02d:%02dZ", (i/60)%60, i%60))
+	}
+	slugs, _ := listed(t, v, "/api/v1/workspaces", testutil.User(owner))
+	if len(slugs) != listSlugChunk+1 || len(slices.Compact(slices.Clone(slugs))) != len(slugs) {
+		t.Fatalf("listed %d workspaces (%d distinct); want %d", len(slugs), len(slices.Compact(slices.Clone(slugs))), listSlugChunk+1)
+	}
+	rows, err := listWorkspacesBySlugChunks(v.db, slugs, false, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 1; i < len(rows); i++ {
+		a, b := rows[i-1], rows[i]
+		if a.CreatedAt < b.CreatedAt || (a.CreatedAt == b.CreatedAt && a.Slug > b.Slug) || a.Slug != slugs[i-1] {
+			t.Fatalf("order broken at %d: %s %s before %s %s (listing had %s)", i, a.Slug, a.CreatedAt, b.Slug, b.CreatedAt, slugs[i-1])
 		}
 	}
 }
 
-// TS-01-33: Verify that GET /api/v1/workspaces with user API key or PAT
-// returns only the authenticated user's workspaces, excluding archived by
-// default, ordered by created_at descending.
-// Requirement: 01-REQ-6.2
-func TestWorkspaceList_UserOwnOnly(t *testing.T) {
-	env := newTestEnv(t)
+// TestGet_Workspace: the owner, a member of its org and an admin read a
+// workspace, each with its own access; org_slug and hub_url come from the org;
+// a stranger, a bound token of another workspace and a PAT without the read
+// scope get 404.
+func TestGet_Workspace(t *testing.T) {
+	v := newEnv(t)
+	swap(t, &defaultExternalURL, "https://hub.test")
+	v.orgWorkspace(t, "team")
+	v.seed(t, &Workspace{Slug: "solo", OwnerID: owner})
+	testutil.BindToken(t, v.db, "tok-solo", "solo")
 
-	env.seedWorkspace(t, &Workspace{
-		Slug:    "alice-ws",
-		GitURL:  "https://github.com/org/alice-repo",
-		OwnerID: "alice-id",
-		Status:  "pending",
-	})
-	env.seedWorkspace(t, &Workspace{
-		Slug:    "alice-archived",
-		GitURL:  "https://github.com/org/alice-repo2",
-		OwnerID: "alice-id",
-		Status:  "archived",
-	})
-	env.seedWorkspace(t, &Workspace{
-		Slug:    "bob-ws",
-		GitURL:  "https://github.com/org/bob-repo",
-		OwnerID: "bob-id",
-		Status:  "pending",
-	})
-
-	t.Run("user API key", func(t *testing.T) {
-		rec := env.doRequest(t, http.MethodGet, "/api/v1/workspaces", "", userAuth("alice-id"))
-
-		if rec.Code != http.StatusOK {
-			t.Fatalf("status = %d; want %d", rec.Code, http.StatusOK)
+	for _, c := range []struct {
+		auth   *apikit.AuthInfo
+		access string
+	}{
+		{testutil.User(owner), "owner"}, {testutil.User(member), "member"}, {testutil.Admin(), "admin"},
+		{testutil.PAT(member, "workspaces:write"), "member"},
+	} {
+		rec := v.do(t, http.MethodGet, "/api/v1/workspaces/team", "", c.auth)
+		expectStatus(t, rec, http.StatusOK)
+		got := testutil.Object(t, rec)
+		if got["slug"] != "team" || got["access"] != c.access || got["org_slug"] != "acme" || got["hub_url"] != "https://hub.test/git/acme/team.git" {
+			t.Errorf("%v: %v", c.auth, got)
 		}
-
-		workspaces := parseWorkspaceListJSON(t, rec)
-		slugs := make(map[string]bool)
-		for _, ws := range workspaces {
-			slugs[ws.Slug] = true
-		}
-
-		if !slugs["alice-ws"] {
-			t.Error("missing alice-ws")
-		}
-		if slugs["alice-archived"] {
-			t.Error("alice-archived should NOT appear (archived, default excluded)")
-		}
-		if slugs["bob-ws"] {
-			t.Error("bob-ws should NOT appear (different owner)")
-		}
-
-		// Verify ordering by created_at descending.
-		for i := 1; i < len(workspaces); i++ {
-			prev, errP := time.Parse(time.RFC3339, workspaces[i-1].CreatedAt)
-			curr, errC := time.Parse(time.RFC3339, workspaces[i].CreatedAt)
-			if errP != nil || errC != nil {
-				continue
-			}
-			if prev.Before(curr) {
-				t.Errorf("not ordered by created_at desc at index %d", i)
-			}
-		}
-	})
-
-	t.Run("PAT with workspaces:read", func(t *testing.T) {
-		rec := env.doRequest(t, http.MethodGet, "/api/v1/workspaces", "",
-			patAuth("alice-id", "workspaces:read"))
-
-		if rec.Code != http.StatusOK {
-			t.Fatalf("status = %d; want %d", rec.Code, http.StatusOK)
-		}
-
-		workspaces := parseWorkspaceListJSON(t, rec)
-		for _, ws := range workspaces {
-			if ws.OwnerID != "alice-id" {
-				t.Errorf("returned workspace %q has owner_id %q; want %q",
-					ws.Slug, ws.OwnerID, "alice-id")
-			}
-			if ws.Status == "archived" {
-				t.Errorf("returned workspace %q has status %q; archived should be excluded",
-					ws.Slug, ws.Status)
-			}
-		}
-	})
-}
-
-// TS-01-34: Verify that GET /api/v1/workspaces?include_archived=true includes
-// archived workspaces in the result set.
-// Requirement: 01-REQ-6.3
-func TestWorkspaceList_IncludeArchived(t *testing.T) {
-	env := newTestEnv(t)
-
-	env.seedWorkspace(t, &Workspace{
-		Slug:    "alice-ws",
-		GitURL:  "https://github.com/org/alice-repo",
-		OwnerID: "alice-id",
-		Status:  "pending",
-	})
-	env.seedWorkspace(t, &Workspace{
-		Slug:    "alice-archived",
-		GitURL:  "https://github.com/org/alice-repo2",
-		OwnerID: "alice-id",
-		Status:  "archived",
-	})
-
-	rec := env.doRequest(t, http.MethodGet,
-		"/api/v1/workspaces?include_archived=true", "",
-		userAuth("alice-id"))
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d; want %d", rec.Code, http.StatusOK)
 	}
-
-	workspaces := parseWorkspaceListJSON(t, rec)
-	slugs := make(map[string]bool)
-	for _, ws := range workspaces {
-		slugs[ws.Slug] = true
+	for name, auth := range map[string]*apikit.AuthInfo{
+		"stranger": testutil.User(stranger), "read PAT of a stranger": testutil.PAT(stranger, "workspaces:read"),
+		"bound elsewhere": testutil.BoundPAT(owner, "tok-solo", "workspaces:read"), "PAT without scope": testutil.PAT(owner, "users:read"),
+	} {
+		expectError(t, v.do(t, http.MethodGet, "/api/v1/workspaces/team", "", auth), http.StatusNotFound, "workspace not found", "")
+		_ = name
 	}
+	expectStatus(t, v.do(t, http.MethodGet, "/api/v1/workspaces/team", "", nil), http.StatusUnauthorized)
+	expectError(t, v.do(t, http.MethodGet, "/api/v1/workspaces/nope", "", testutil.Admin()), http.StatusNotFound, "workspace not found", "")
 
-	if !slugs["alice-ws"] {
-		t.Error("missing active workspace alice-ws")
+	// A workspace without an org has no org_slug and no hub_url; without an
+	// external URL there is no hub_url either.
+	testutil.Exec(t, v.db, `UPDATE workspaces SET org_id = NULL WHERE slug = 'solo'`)
+	got := testutil.Object(t, v.do(t, http.MethodGet, "/api/v1/workspaces/solo", "", testutil.User(owner)))
+	if got["org_slug"] != nil || got["hub_url"] != nil {
+		t.Errorf("without org: org_slug %v hub_url %v", got["org_slug"], got["hub_url"])
 	}
-	if !slugs["alice-archived"] {
-		t.Error("missing archived workspace alice-archived")
+	defaultExternalURL = ""
+	if got := testutil.Object(t, v.do(t, http.MethodGet, "/api/v1/workspaces/team", "", testutil.User(owner))); got["hub_url"] != nil {
+		t.Errorf("without an external URL: hub_url %v", got["hub_url"])
 	}
-}
-
-// TS-01-35: Verify that GET /api/v1/workspaces returns an empty array when no
-// workspaces match the query criteria.
-// Requirement: 01-REQ-6.4
-func TestWorkspaceList_Empty(t *testing.T) {
-	env := newTestEnv(t)
-
-	// Alice exists but owns no workspaces.
-	rec := env.doRequest(t, http.MethodGet, "/api/v1/workspaces", "",
-		userAuth("alice-id"))
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d; want %d", rec.Code, http.StatusOK)
-	}
-
-	workspaces := parseWorkspaceListJSON(t, rec)
-	if len(workspaces) != 0 {
-		t.Errorf("got %d workspaces; want 0", len(workspaces))
-	}
-}
-
-// TS-01-36: Verify that GET /api/v1/workspaces/:slug returns the workspace
-// record for an authorized credential.
-// Requirement: 01-REQ-7.1
-func TestWorkspaceGet_Success(t *testing.T) {
-	env := newTestEnv(t)
-
-	branch := "main"
-	env.seedWorkspace(t, &Workspace{
-		Slug:    "alice-ws",
-		GitURL:  "https://github.com/org/alice-repo",
-		Branch:  &branch,
-		OwnerID: "alice-id",
-		Status:  "pending",
-	})
-
-	rec := env.doRequest(t, http.MethodGet, "/api/v1/workspaces/alice-ws", "",
-		userAuth("alice-id"))
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d; want %d", rec.Code, http.StatusOK)
-	}
-
-	ws := parseWorkspaceJSON(t, rec)
-	if ws.Slug != "alice-ws" {
-		t.Errorf("slug = %q; want %q", ws.Slug, "alice-ws")
-	}
-	if ws.GitURL != "https://github.com/org/alice-repo" {
-		t.Errorf("git_url = %q; want %q", ws.GitURL, "https://github.com/org/alice-repo")
-	}
-	if ws.Branch == nil || *ws.Branch != "main" {
-		t.Errorf("branch = %v; want %q", ws.Branch, "main")
-	}
-	if ws.OwnerID != "alice-id" {
-		t.Errorf("owner_id = %q; want %q", ws.OwnerID, "alice-id")
-	}
-	if ws.Status != "pending" {
-		t.Errorf("status = %q; want %q", ws.Status, "pending")
-	}
-	if _, err := time.Parse(time.RFC3339, ws.CreatedAt); err != nil {
-		t.Errorf("created_at %q is not valid RFC 3339: %v", ws.CreatedAt, err)
-	}
-	if _, err := time.Parse(time.RFC3339, ws.UpdatedAt); err != nil {
-		t.Errorf("updated_at %q is not valid RFC 3339: %v", ws.UpdatedAt, err)
-	}
-}
-
-// TS-01-37: Verify that GET /api/v1/workspaces/:slug returns HTTP 404 when no
-// workspace exists with the given slug.
-// Requirement: 01-REQ-7.2
-func TestWorkspaceGet_NotFound(t *testing.T) {
-	env := newTestEnv(t)
-
-	rec := env.doRequest(t, http.MethodGet, "/api/v1/workspaces/nonexistent-ws", "",
-		userAuth("alice-id"))
-
-	if rec.Code != http.StatusNotFound {
-		t.Errorf("status = %d; want %d", rec.Code, http.StatusNotFound)
-	}
-	resp := parseErrorEnvelope(t, rec)
-	if resp.Error.Code != http.StatusNotFound {
-		t.Errorf("error.code = %d; want %d", resp.Error.Code, http.StatusNotFound)
-	}
-	if resp.Error.Message == "" {
-		t.Error("error.message is empty; want non-empty descriptive message")
-	}
-}
-
-// TS-01-38: Verify that GET /api/v1/workspaces/:slug returns HTTP 404 (not 403)
-// when the workspace exists but the credential doesn't own it.
-// Requirement: 01-REQ-7.3
-func TestWorkspaceGet_OtherUserWorkspace_Returns404(t *testing.T) {
-	env := newTestEnv(t)
-
-	// Bob's workspace.
-	env.seedWorkspace(t, &Workspace{
-		Slug:    "bob-ws",
-		GitURL:  "https://github.com/org/bob-repo",
-		OwnerID: "bob-id",
-		Status:  "pending",
-	})
-
-	// Alice tries to access Bob's workspace.
-	rec := env.doRequest(t, http.MethodGet, "/api/v1/workspaces/bob-ws", "",
-		userAuth("alice-id"))
-
-	if rec.Code != http.StatusNotFound {
-		t.Errorf("status = %d; want %d (must be 404, not 403, to prevent slug enumeration)",
-			rec.Code, http.StatusNotFound)
-	}
-	resp := parseErrorEnvelope(t, rec)
-	if resp.Error.Code != http.StatusNotFound {
-		t.Errorf("error.code = %d; want %d", resp.Error.Code, http.StatusNotFound)
-	}
-	if rec.Code == http.StatusForbidden {
-		t.Error("returned 403 instead of 404; this leaks slug existence information")
-	}
-}
-
-// TS-01-E11: Verify that GET /api/v1/workspaces returns all matching workspaces
-// without pagination; no pagination headers or cursors in the response.
-// Requirement: 01-REQ-6.E1
-func TestWorkspaceList_NoPagination(t *testing.T) {
-	env := newTestEnv(t)
-
-	// Seed 25 active workspaces for alice.
-	for i := 0; i < 25; i++ {
-		env.seedWorkspace(t, &Workspace{
-			Slug:    fmt.Sprintf("alice-ws-%02d", i),
-			GitURL:  fmt.Sprintf("https://github.com/org/repo-%02d", i),
-			OwnerID: "alice-id",
-			Status:  "pending",
-		})
-	}
-
-	rec := env.doRequest(t, http.MethodGet, "/api/v1/workspaces", "",
-		userAuth("alice-id"))
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d; want %d", rec.Code, http.StatusOK)
-	}
-
-	workspaces := parseWorkspaceListJSON(t, rec)
-	if len(workspaces) != 25 {
-		t.Errorf("got %d workspaces; want 25", len(workspaces))
-	}
-
-	// Verify no pagination headers are present.
-	if link := rec.Header().Get("Link"); link != "" {
-		t.Errorf("Link header = %q; want empty (no pagination)", link)
-	}
-	if cursor := rec.Header().Get("X-Next-Cursor"); cursor != "" {
-		t.Errorf("X-Next-Cursor header = %q; want empty (no pagination)", cursor)
-	}
-
-	// Verify the response is a plain JSON array, not a paginated envelope.
-	// parseWorkspaceListJSON already validates it's an array; if it were
-	// an object like {"data":[...],"cursor":"..."} the parse would fail.
-}
-
-// TestWorkspaceGet_HubURL verifies the hub_url field in workspace responses.
-func TestWorkspaceGet_HubURL(t *testing.T) {
-	env := newTestEnv(t)
-
-	orgID := "personal-org-alice-id"
-	orgSlug := "personal-alice-id"
-	env.seedWorkspace(t, &Workspace{
-		Slug:    "alice-ws",
-		GitURL:  "https://github.com/org/alice-repo",
-		OwnerID: "alice-id",
-		OrgID:   &orgID,
-		Status:  "pending",
-	})
-
-	t.Run("null when external URL not configured", func(t *testing.T) {
-		old := defaultExternalURL
-		defaultExternalURL = ""
-		defer func() { defaultExternalURL = old }()
-
-		rec := env.doRequest(t, http.MethodGet, "/api/v1/workspaces/alice-ws", "",
-			userAuth("alice-id"))
-		if rec.Code != http.StatusOK {
-			t.Fatalf("status = %d; want %d", rec.Code, http.StatusOK)
-		}
-		ws := parseWorkspaceJSON(t, rec)
-		if ws.HubURL != nil {
-			t.Errorf("hub_url = %q; want nil when external URL not configured", *ws.HubURL)
-		}
-	})
-
-	t.Run("computed when external URL configured", func(t *testing.T) {
-		old := defaultExternalURL
-		defaultExternalURL = "https://hub.example.com"
-		defer func() { defaultExternalURL = old }()
-
-		rec := env.doRequest(t, http.MethodGet, "/api/v1/workspaces/alice-ws", "",
-			userAuth("alice-id"))
-		if rec.Code != http.StatusOK {
-			t.Fatalf("status = %d; want %d", rec.Code, http.StatusOK)
-		}
-		ws := parseWorkspaceJSON(t, rec)
-		want := "https://hub.example.com/git/" + orgSlug + "/alice-ws.git"
-		if ws.HubURL == nil || *ws.HubURL != want {
-			t.Errorf("hub_url = %v; want %q", ws.HubURL, want)
-		}
-	})
-
-	t.Run("present in list response", func(t *testing.T) {
-		old := defaultExternalURL
-		defaultExternalURL = "https://hub.example.com"
-		defer func() { defaultExternalURL = old }()
-
-		rec := env.doRequest(t, http.MethodGet, "/api/v1/workspaces", "",
-			userAuth("alice-id"))
-		if rec.Code != http.StatusOK {
-			t.Fatalf("status = %d; want %d", rec.Code, http.StatusOK)
-		}
-		workspaces := parseWorkspaceListJSON(t, rec)
-		found := false
-		for _, ws := range workspaces {
-			if ws.Slug == "alice-ws" {
-				found = true
-				want := "https://hub.example.com/git/" + orgSlug + "/alice-ws.git"
-				if ws.HubURL == nil || *ws.HubURL != want {
-					t.Errorf("hub_url = %v; want %q", ws.HubURL, want)
-				}
-			}
-		}
-		if !found {
-			t.Error("alice-ws not found in list response")
-		}
-	})
-
-	t.Run("null when workspace has no org_id", func(t *testing.T) {
-		old := defaultExternalURL
-		defaultExternalURL = "https://hub.example.com"
-		defer func() { defaultExternalURL = old }()
-
-		env.seedWorkspace(t, &Workspace{
-			Slug:    "no-org-ws",
-			GitURL:  "https://github.com/org/no-org-repo",
-			OwnerID: "alice-id",
-			Status:  "pending",
-		})
-
-		rec := env.doRequest(t, http.MethodGet, "/api/v1/workspaces/no-org-ws", "",
-			userAuth("alice-id"))
-		if rec.Code != http.StatusOK {
-			t.Fatalf("status = %d; want %d", rec.Code, http.StatusOK)
-		}
-		ws := parseWorkspaceJSON(t, rec)
-		if ws.HubURL != nil {
-			t.Errorf("hub_url = %q; want nil for workspace with no org_id", *ws.HubURL)
-		}
-	})
 }

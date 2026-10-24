@@ -1,228 +1,61 @@
 package audit
 
 import (
-	"bytes"
 	"context"
-	"fmt"
-	"log/slog"
-	"strings"
 	"testing"
+	"time"
 )
 
-// mockEmitter records Emit calls for compile-time interface verification.
-type mockEmitter struct {
-	calls []HubEvent
-}
-
-func (m *mockEmitter) Emit(_ context.Context, event HubEvent) error {
-	m.calls = append(m.calls, event)
-	return nil
-}
-
-// failingStore is a Store that always returns errors on insert.
-type failingStore struct{}
-
-func (f *failingStore) InsertHubEvent(_ context.Context, _ HubEventRow) error {
-	return fmt.Errorf("simulated database error")
-}
-
-func (f *failingStore) CreateSession(_ context.Context, _ *Session) (*Session, bool, error) {
-	return nil, false, fmt.Errorf("simulated database error")
-}
-
-func (f *failingStore) GetSession(_ context.Context, _ string) (*Session, error) {
-	return nil, fmt.Errorf("simulated database error")
-}
-
-func (f *failingStore) CompleteSession(_ context.Context, _ string, _ *CompleteSessionRequest) (*Session, error) {
-	return nil, fmt.Errorf("simulated database error")
-}
-
-func (f *failingStore) InsertTokenUsage(_ context.Context, _ *TokenUsage) (*TokenUsage, error) {
-	return nil, fmt.Errorf("simulated database error")
-}
-
-func (f *failingStore) ListSessions(_ context.Context, _ SessionListParams, _ []string) (*SessionListResponse, error) {
-	return nil, fmt.Errorf("simulated database error")
-}
-
-func (f *failingStore) GetSessionWithSummary(_ context.Context, _ string) (*Session, error) {
-	return nil, fmt.Errorf("simulated database error")
-}
-
-func (f *failingStore) ListTokenUsage(_ context.Context, _ string, _ UsageListParams) (*UsageListResponse, error) {
-	return nil, fmt.Errorf("simulated database error")
-}
-
-func (f *failingStore) GetWorkspaceCost(_ context.Context, _ CostParams) (*CostResponse, error) {
-	return nil, fmt.Errorf("simulated database error")
-}
-
-func (f *failingStore) ForceCloseSessions(_ context.Context, _ string, _ string, _ string) ([]ForceCloseResult, error) {
-	return nil, fmt.Errorf("simulated database error")
-}
-
-// TS-17-10: Emitter interface and HubEvent struct are exported from the
-// internal/audit package with the correct fields.
-func TestEmitterInterface(t *testing.T) {
-	// Compile-time check: mockEmitter satisfies Emitter
-	var _ Emitter = (*mockEmitter)(nil)
-
-	// Verify HubEvent has all required fields
-	event := HubEvent{
-		EventType:    "test.event",
-		ActorID:      "actor-1",
-		ActorType:    "system",
-		ResourceType: "workspace",
-		ResourceID:   "ws1",
-		Action:       "create",
-		Workspace:    "ws1",
-		Metadata:     map[string]any{"key": "value"},
-	}
-
-	if event.EventType != "test.event" {
-		t.Errorf("EventType = %q, want %q", event.EventType, "test.event")
-	}
-	if event.ActorID != "actor-1" {
-		t.Errorf("ActorID = %q, want %q", event.ActorID, "actor-1")
-	}
-	if event.ActorType != "system" {
-		t.Errorf("ActorType = %q, want %q", event.ActorType, "system")
-	}
-	if event.Metadata == nil {
-		t.Error("Metadata should not be nil")
-	}
-}
-
-// TS-17-11: Default Emitter.Emit generates a UUID for the event id, sets
-// ingested_at to current UTC time, and inserts into hub_audit_events.
-func TestDefaultEmitter_EmitWritesToHubAuditEvents(t *testing.T) {
-	db := openTestAuditDBWithSchema(t)
-
-	store := NewStore(db)
-	emitter := NewEmitter(store, nil)
-
-	event := HubEvent{
-		EventType:    "workspace.created",
-		ActorID:      "user1",
-		ActorType:    "pat",
-		ResourceType: "workspace",
-		ResourceID:   "ws1",
-		Action:       "create",
-		Workspace:    "ws1",
-		Metadata:     map[string]any{},
-	}
-
-	err := emitter.Emit(context.Background(), event)
+// Emit stores the event in hub_audit_events with a generated id, the current
+// time as timestamp and ingestion time and the metadata as JSON, counts it
+// and broadcasts it, with the generated fields filled in, to the SSE
+// manager when one is wired.
+func TestEmitter_StoresCountsAndBroadcasts(t *testing.T) {
+	env := newEnv(t)
+	conn, _ := env.mgr.Register(sseFilters{})
+	before := time.Now().UTC().Add(-time.Second)
+	err := env.emitter.Emit(context.Background(), HubEvent{EventType: EventTokenBind, ActorID: "u1", ActorType: "pat", ResourceType: "token",
+		ResourceID: "tok", Action: "bind", Workspace: "w", Metadata: map[string]any{"token_id": "tok"}})
 	if err != nil {
-		t.Fatalf("Emit returned error: %v", err)
+		t.Fatalf("Emit: %v", err)
 	}
-
-	// Verify the row was inserted into hub_audit_events
-	var (
-		id         string
-		eventType  string
-		actorID    string
-		actorType  string
-		ingestedAt string
-	)
-	err = db.QueryRow(`SELECT id, event_type, actor_id, actor_type, ingested_at
-		FROM hub_audit_events LIMIT 1`).Scan(&id, &eventType, &actorID, &actorType, &ingestedAt)
-	if err != nil {
-		t.Fatalf("query hub_audit_events: %v", err)
+	var id, ts, meta, actorType string
+	if err := env.duck.QueryRow("SELECT id, timestamp, metadata, actor_type FROM hub_audit_events WHERE event_type = ?", EventTokenBind).Scan(&id, &ts, &meta, &actorType); err != nil {
+		t.Fatal(err)
 	}
-
-	if id == "" {
-		t.Error("event id should not be empty (UUID expected)")
+	when, perr := time.Parse(time.RFC3339Nano, ts)
+	if ValidateUUID(id) != nil || perr != nil || when.Before(before) || meta != `{"token_id":"tok"}` || actorType != "pat" {
+		t.Errorf("stored row id %q ts %q meta %q actor_type %q", id, ts, meta, actorType)
 	}
-	if eventType != "workspace.created" {
-		t.Errorf("event_type = %q, want %q", eventType, "workspace.created")
+	select {
+	case ev := <-conn.ch:
+		if ev.ID != id || ev.Timestamp != ts || ev.Workspace != "w" || ev.Metadata["token_id"] != "tok" {
+			t.Errorf("broadcast %+v; want the stored event", ev)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("event not broadcast")
 	}
-	if actorID != "user1" {
-		t.Errorf("actor_id = %q, want %q", actorID, "user1")
+	if got := counter(t, env.metrics.AuditEventsTotal, "hub", EventTokenBind); got != 1 {
+		t.Errorf("hub events counted %v; want 1", got)
 	}
-	if actorType != "pat" {
-		t.Errorf("actor_type = %q, want %q", actorType, "pat")
-	}
-	if ingestedAt == "" {
-		t.Error("ingested_at should not be empty")
+	if err := NewEmitter(env.store, nil).Emit(context.Background(), HubEvent{EventType: "hub.x"}); err != nil || env.count(t, "hub_audit_events", "event_type = 'hub.x' AND metadata = '{}'") != 1 {
+		t.Errorf("emit without manager or metadata: %v", err)
 	}
 }
 
-// TS-17-12: Default Emitter.Emit returns nil even when the Store insert
-// fails, and logs the error via slog.
-func TestDefaultEmitter_EmitSwallowsError(t *testing.T) {
-	// Capture slog output to verify error logging
-	var buf bytes.Buffer
-	handler := slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})
-	origLogger := slog.Default()
-	slog.SetDefault(slog.New(handler))
-	t.Cleanup(func() { slog.SetDefault(origLogger) })
-
-	store := &failingStore{}
-	emitter := NewEmitter(store, nil)
-
-	event := HubEvent{
-		EventType:    "test.event",
-		ActorID:      "actor-1",
-		ActorType:    "system",
-		ResourceType: "workspace",
-		ResourceID:   "ws1",
-		Action:       "create",
-		Workspace:    "ws1",
-		Metadata:     map[string]any{},
+// A failed insert is logged and swallowed: Emit returns nil, nothing is
+// broadcast and nothing is counted.
+func TestEmitter_SwallowsStoreErrors(t *testing.T) {
+	env := newEnv(t)
+	conn, _ := env.mgr.Register(sseFilters{})
+	if err := NewEmitter(failingStore{}, env.mgr).Emit(context.Background(), HubEvent{EventType: "hub.x"}); err != nil {
+		t.Errorf("Emit over a failing store: %v; want nil", err)
 	}
-
-	err := emitter.Emit(context.Background(), event)
-	if err != nil {
-		t.Fatalf("Emit() returned error: %v; want nil (errors should be swallowed)", err)
+	env.mgr.Broadcast(liveEvent("end", "w"))
+	if ev := <-conn.ch; ev.ID != "end" {
+		t.Errorf("a failed event was broadcast: %+v", ev)
 	}
-
-	// Verify that the error was logged
-	logOutput := buf.String()
-	if !strings.Contains(strings.ToUpper(logOutput), "ERROR") {
-		t.Errorf("expected slog output to contain error-level message, got: %q", logOutput)
-	}
-}
-
-// TS-17-13: HubEvent.ActorType accepts all four valid values without
-// runtime validation at ingestion time.
-func TestDefaultEmitter_ActorTypeValues(t *testing.T) {
-	db := openTestAuditDBWithSchema(t)
-
-	store := NewStore(db)
-	emitter := NewEmitter(store, nil)
-
-	actorTypes := []string{"admin_token", "api_key", "pat", "system"}
-	for _, at := range actorTypes {
-		t.Run(at, func(t *testing.T) {
-			event := HubEvent{
-				EventType:    "test.event",
-				ActorID:      "actor-1",
-				ActorType:    at,
-				ResourceType: "workspace",
-				ResourceID:   "ws1",
-				Action:       "create",
-				Workspace:    "ws1",
-				Metadata:     map[string]any{},
-			}
-
-			err := emitter.Emit(context.Background(), event)
-			if err != nil {
-				t.Fatalf("Emit with ActorType=%q returned error: %v", at, err)
-			}
-
-			// Verify the row exists with correct actor_type
-			var count int
-			err = db.QueryRow(
-				"SELECT COUNT(*) FROM hub_audit_events WHERE actor_type = ?", at,
-			).Scan(&count)
-			if err != nil {
-				t.Fatalf("count query: %v", err)
-			}
-			if count < 1 {
-				t.Errorf("expected at least 1 row with actor_type=%q, got %d", at, count)
-			}
-		})
+	if got := counter(t, env.metrics.AuditEventsTotal, "hub", "hub.x"); got != 0 {
+		t.Errorf("failed event counted %v", got)
 	}
 }

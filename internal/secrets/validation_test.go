@@ -5,149 +5,76 @@ import (
 	"testing"
 )
 
-// ---------------------------------------------------------------------------
-// TS-07-4: Verifies that keys containing only alphanumeric characters and
-// underscores, not starting with a digit, and at most 255 characters are
-// accepted as valid.
-// Requirement: 07-REQ-2.1
-// ---------------------------------------------------------------------------
-
-func TestValidateKey_ValidAlphanumericUnderscore(t *testing.T) {
-	if err := ValidateKey("VALID_KEY_123"); err != nil {
-		t.Errorf("ValidateKey(%q) returned error: %v; want nil", "VALID_KEY_123", err)
+func TestValidateKey(t *testing.T) {
+	cases := []struct {
+		key  string
+		want string // a fragment of the error, "" for valid
+	}{
+		{"DATABASE_URL", ""},
+		{"a", ""},
+		{"_private", ""},
+		{"mixed_Case_123", ""},
+		{strings.Repeat("K", MaxKeyLength), ""},
+		{"", "must not be empty"},
+		{strings.Repeat("K", MaxKeyLength+1), "exceeds maximum length"},
+		{"1KEY", "must not start with a digit"},
+		{"MY-KEY", "invalid character"},
+		{"MY.KEY", "invalid character"},
+		{"MY KEY", "invalid character"},
+		{"KEY$", "invalid character"},
 	}
-}
-
-func TestValidateKey_ValidSingleCharacter(t *testing.T) {
-	if err := ValidateKey("A"); err != nil {
-		t.Errorf("ValidateKey(%q) returned error: %v; want nil", "A", err)
-	}
-}
-
-func TestValidateKey_ValidAllLowercase(t *testing.T) {
-	if err := ValidateKey("my_key"); err != nil {
-		t.Errorf("ValidateKey(%q) returned error: %v; want nil", "my_key", err)
-	}
-}
-
-func TestValidateKey_ValidUnderscorePrefix(t *testing.T) {
-	if err := ValidateKey("_private"); err != nil {
-		t.Errorf("ValidateKey(%q) returned error: %v; want nil", "_private", err)
-	}
-}
-
-// 07-REQ-2.E2: Key exactly 255 characters long — at the limit, accepted.
-func TestValidateKey_ExactlyMaxLength(t *testing.T) {
-	key := strings.Repeat("A", MaxKeyLength) // 255 chars
-	if err := ValidateKey(key); err != nil {
-		t.Errorf("ValidateKey(255 chars) returned error: %v; want nil", err)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// TS-07-5: Verifies that a key containing invalid characters (e.g., hyphen)
-// is rejected before any entries are written.
-// Requirement: 07-REQ-2.2
-// ---------------------------------------------------------------------------
-
-func TestValidateKey_InvalidHyphen(t *testing.T) {
-	if err := ValidateKey("INVALID-KEY"); err == nil {
-		t.Error("ValidateKey(\"INVALID-KEY\") returned nil; want error for invalid character '-'")
-	}
-}
-
-func TestValidateKey_InvalidDot(t *testing.T) {
-	if err := ValidateKey("INVALID.KEY"); err == nil {
-		t.Error("ValidateKey(\"INVALID.KEY\") returned nil; want error for invalid character '.'")
-	}
-}
-
-func TestValidateKey_InvalidSpace(t *testing.T) {
-	if err := ValidateKey("INVALID KEY"); err == nil {
-		t.Error("ValidateKey(\"INVALID KEY\") returned nil; want error for space character")
-	}
-}
-
-func TestValidateKey_InvalidSpecialChars(t *testing.T) {
-	for _, key := range []string{"KEY!", "KEY@HOST", "KEY#1", "KEY$VAR", "KEY%25"} {
-		if err := ValidateKey(key); err == nil {
-			t.Errorf("ValidateKey(%q) returned nil; want error for special character", key)
+	for _, c := range cases {
+		err := ValidateKey(c.key)
+		if (err == nil) != (c.want == "") || (err != nil && !strings.Contains(err.Error(), c.want)) {
+			t.Errorf("ValidateKey(%q) = %v, want %q", c.key, err, c.want)
 		}
 	}
 }
 
-// 07-REQ-2.E4: Key starts with a digit — rejected.
-func TestValidateKey_StartsWithDigit(t *testing.T) {
-	if err := ValidateKey("1_KEY"); err == nil {
-		t.Error("ValidateKey(\"1_KEY\") returned nil; want error for key starting with digit")
+func TestValidateValue_LimitsSize(t *testing.T) {
+	if err := ValidateValue(""); err != nil {
+		t.Errorf("empty value: %v", err)
+	}
+	if err := ValidateValue(strings.Repeat("x", MaxValueSize)); err != nil {
+		t.Errorf("value of the maximum size: %v", err)
+	}
+	if err := ValidateValue(strings.Repeat("x", MaxValueSize+1)); err == nil || !strings.Contains(err.Error(), "exceeds maximum") {
+		t.Errorf("oversized value: %v, want the size error", err)
 	}
 }
 
-func TestValidateKey_StartsWithDigitOnly(t *testing.T) {
-	if err := ValidateKey("123"); err == nil {
-		t.Error("ValidateKey(\"123\") returned nil; want error for key starting with digit")
+func TestValidateEntries(t *testing.T) {
+	cases := []struct {
+		name    string
+		entries []EntryInput
+		want    string
+	}{
+		{"one entry", []EntryInput{{Key: "A", Value: "1"}}, ""},
+		{"nil", nil, "must not be empty"},
+		{"empty", []EntryInput{}, "must not be empty"},
+		{"duplicate", []EntryInput{{Key: "A"}, {Key: "A"}}, "duplicate key"},
+		{"duplicate ignoring case", []EntryInput{{Key: "Key"}, {Key: "KEY"}}, "duplicate key"},
+		{"invalid key", []EntryInput{{Key: "1A"}}, "must not start with a digit"},
+		{"oversized value", []EntryInput{{Key: "A", Value: strings.Repeat("x", MaxValueSize+1)}}, "exceeds maximum"},
+	}
+	for _, c := range cases {
+		err := ValidateEntries(c.entries)
+		if (err == nil) != (c.want == "") || (err != nil && !strings.Contains(err.Error(), c.want)) {
+			t.Errorf("%s: %v, want %q", c.name, err, c.want)
+		}
 	}
 }
 
-// 07-REQ-2.E1: Key exactly 256 characters long — one over the limit, rejected.
-func TestValidateKey_ExceedsMaxLength(t *testing.T) {
-	key := strings.Repeat("A", MaxKeyLength+1) // 256 chars
-	if err := ValidateKey(key); err == nil {
-		t.Error("ValidateKey(256 chars) returned nil; want error for exceeding max length")
+// Values are stored base64-encoded and decode back to the raw bytes,
+// whatever they contain; a stored value that is not base64 is an error.
+func TestEncodeDecodeValue_RoundTrip(t *testing.T) {
+	for _, raw := range []string{"", "plain", "line1\nline2\n", "key: value\n  nested: true", "émoji 🔑 \x00 \"quotes\""} {
+		got, err := DecodeValue(EncodeValue(raw))
+		if err != nil || got != raw {
+			t.Errorf("DecodeValue(EncodeValue(%q)) = %q, %v", raw, got, err)
+		}
 	}
-}
-
-// 07-REQ-2.E3: Empty key — rejected.
-func TestValidateKey_EmptyString(t *testing.T) {
-	if err := ValidateKey(""); err == nil {
-		t.Error("ValidateKey(\"\") returned nil; want error for empty key")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// 07-REQ-2.E5: Cross-request duplicate key — store rejects a key that already
-// exists at the same (owner_type, owner_id) scope.
-// ---------------------------------------------------------------------------
-
-func TestStoreCrossRequestDuplicateKey(t *testing.T) {
-	db := openTestDB(t)
-	store := NewStore(db)
-
-	// First create should succeed.
-	_, err := store.CreateSecrets("user", "test-user", []EntryInput{
-		{Key: "MY_KEY", Value: "value1"},
-	})
-	if err != nil {
-		t.Fatalf("first CreateSecrets() returned error: %v", err)
-	}
-
-	// Second create with the same key should fail with a conflict error.
-	_, err = store.CreateSecrets("user", "test-user", []EntryInput{
-		{Key: "MY_KEY", Value: "value2"},
-	})
-	if err == nil {
-		t.Error("second CreateSecrets() with duplicate key returned nil; want conflict error")
-	}
-}
-
-// 07-REQ-2.1: Case-insensitive uniqueness across requests within same scope.
-func TestStoreCrossRequestDuplicateKey_CaseInsensitive(t *testing.T) {
-	db := openTestDB(t)
-	store := NewStore(db)
-
-	// Create with "DB_HOST".
-	_, err := store.CreateSecrets("user", "test-user", []EntryInput{
-		{Key: "DB_HOST", Value: "value1"},
-	})
-	if err != nil {
-		t.Fatalf("CreateSecrets(DB_HOST) returned error: %v", err)
-	}
-
-	// Create with "db_host" (different case) should fail — case-insensitive conflict.
-	_, err = store.CreateSecrets("user", "test-user", []EntryInput{
-		{Key: "db_host", Value: "value2"},
-	})
-	if err == nil {
-		t.Error("CreateSecrets(db_host) after DB_HOST returned nil; want case-insensitive conflict error")
+	if _, err := DecodeValue("not base64!"); err == nil {
+		t.Error("DecodeValue of malformed input: nil error")
 	}
 }

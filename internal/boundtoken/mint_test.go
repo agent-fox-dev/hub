@@ -2,304 +2,158 @@ package boundtoken
 
 import (
 	"context"
-	"io"
+	"fmt"
 	"net/http"
 	"strconv"
-	"sync"
+	"strings"
 	"testing"
 
-	"github.com/labstack/echo/v4"
 	"github.com/txsvc/apikit"
+
+	"github.com/agent-fox-dev/hub/internal/audit"
+	"github.com/agent-fox-dev/hub/internal/testutil"
+	"github.com/agent-fox-dev/hub/internal/wsaccess"
 )
 
-// stubAPIKit stands in for apikit's server.Echo(): it records every request
-// and answers with status and body, or with reply when set.
-type stubAPIKit struct {
-	mu     sync.Mutex
-	calls  int
-	req    *http.Request
-	body   []byte
-	status int
-	answer string
-	reply  func(w http.ResponseWriter, r *http.Request, body []byte)
-}
-
-func newStub(status int, answer string) *stubAPIKit {
-	return &stubAPIKit{status: status, answer: answer}
-}
-
-func (s *stubAPIKit) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	body, _ := io.ReadAll(r.Body)
-	s.mu.Lock()
-	s.calls++
-	s.req, s.body = r, body
-	reply := s.reply
-	s.mu.Unlock()
-	if reply != nil {
-		reply(w, r, body)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(s.status)
-	_, _ = io.WriteString(w, s.answer)
-}
-
-const mintPath = "/api/v1/workspaces/s/tokens"
-
-// okAnswer is a well-formed apikit 201 for token id T1.
-const okAnswer = `{"token_id":"T1","name":"svc","token":"ak_pat_T1_supersecret","permissions":["workspaces:read"],"expires_at":null,"created_at":"2026-10-21T10:00:00Z"}`
-
-// TS-34-1: RegisterRoutes mounts POST and GET /workspaces/:slug/tokens on the
-// API group; without credentials both answer 401 and apikit is not called.
-// Requirement: 34-REQ-1.1
-func TestRegisterRoutes_TS_34_1(t *testing.T) {
-	stub := newStub(http.StatusCreated, okAnswer)
-	env := newTestEnv(t, Config{APIKit: stub})
-	seedWorkspace(t, env.db, "s", "u1", "ready")
-	found := map[string]bool{}
-	for _, r := range env.e.Routes() {
-		if r.Path == "/api/v1/workspaces/:slug/tokens" {
-			found[r.Method] = true
-		}
-	}
-	if !found[http.MethodPost] || !found[http.MethodGet] {
-		t.Errorf("routes %v; want POST and GET /api/v1/workspaces/:slug/tokens", found)
-	}
-	for _, m := range []string{http.MethodPost, http.MethodGet} {
-		if rec := env.do(m, mintPath, nil, `{}`, nil); rec.Code != http.StatusUnauthorized {
-			t.Errorf("%s without credentials: %d; want 401", m, rec.Code)
-		}
-	}
-	if stub.calls != 0 {
-		t.Errorf("apikit calls = %d; want 0", stub.calls)
-	}
-}
-
-// TS-34-2: Minting with no credential answers 401 without contacting apikit.
-// Requirement: 34-REQ-1.2
-func TestMint_NoCredential_TS_34_2(t *testing.T) {
-	stub := newStub(http.StatusCreated, okAnswer)
-	env := newTestEnv(t, Config{APIKit: stub})
-	seedWorkspace(t, env.db, "s", "u1", "ready")
-	rec := env.do(http.MethodPost, mintPath, nil, `{"name":"n"}`, nil)
-	if rec.Code != http.StatusUnauthorized || parseError(t, rec).Error.Message != "authentication required" || stub.calls != 0 {
-		t.Errorf("(%d, %s), apikit calls %d; want 401 authentication required and no call", rec.Code, rec.Body, stub.calls)
-	}
-}
-
-// TS-34-3: A PAT bound to any workspace, the path's own included, is refused
-// with token_bound and reported once per request. Requirement: 34-REQ-1.3
-func TestMint_BoundPAT_TS_34_3(t *testing.T) {
-	stub := newStub(http.StatusCreated, okAnswer)
-	env := newTestEnv(t, Config{APIKit: stub})
-	seedWorkspace(t, env.db, "S", "u1", "ready")
-	seedWorkspace(t, env.db, "X", "u1", "ready")
-	bind(t, env.db, "T", "S")
-	reports := recordRefusals(t)
-
-	for i, slug := range []string{"S", "X"} {
-		rec := env.do(http.MethodPost, "/api/v1/workspaces/"+slug+"/tokens", pat("u1", "T", "tokens:manage"), `{"name":"n"}`, nil)
-		b := parseError(t, rec)
-		if rec.Code != http.StatusForbidden || b.Error.ErrorType != "token_bound" || b.Error.Message != "this token is bound to workspace S" {
-			t.Errorf("%s: (%d, %s); want 403 token_bound: this token is bound to workspace S", slug, rec.Code, rec.Body)
-		}
-		if len(*reports) != i+1 || (*reports)[i].Status != http.StatusForbidden || (*reports)[i].Surface != "api" || (*reports)[i].RequestedSlug != slug {
-			t.Errorf("%s: reports %+v; want one more with status 403, surface api", slug, *reports)
-		}
-	}
-	var pats int
-	_ = env.db.QueryRow(`SELECT COUNT(*) FROM pats`).Scan(&pats)
-	if stub.calls != 0 || pats != 0 {
-		t.Errorf("apikit calls %d, pats rows %d; want 0 and 0", stub.calls, pats)
-	}
-}
-
-// TS-34-4: A binding lookup error for a PAT caller answers 500.
-// Requirement: 34-REQ-1.4
-func TestMint_LookupError_TS_34_4(t *testing.T) {
-	stub := newStub(http.StatusCreated, okAnswer)
-	env := newTestEnv(t, Config{APIKit: stub})
-	seedWorkspace(t, env.db, "s", "u1", "ready")
-	if _, err := env.db.Exec(`DROP TABLE token_workspace_bindings`); err != nil {
-		t.Fatal(err)
-	}
-	rec := env.do(http.MethodPost, mintPath, pat("u1", "T", "tokens:manage"), `{"name":"n"}`, nil)
-	if rec.Code != http.StatusInternalServerError || parseError(t, rec).Error.Message != "internal server error" || stub.calls != 0 {
-		t.Errorf("(%d, %s), apikit calls %d; want 500 internal server error and no call", rec.Code, rec.Body, stub.calls)
-	}
-}
-
-// TS-34-5: An admin token cannot mint a bound token. Requirement: 34-REQ-1.5
-func TestMint_Admin_TS_34_5(t *testing.T) {
-	stub := newStub(http.StatusCreated, okAnswer)
-	env := newTestEnv(t, Config{APIKit: stub})
-	seedWorkspace(t, env.db, "s", "u1", "ready")
-	rec := env.do(http.MethodPost, mintPath, admin(), `{"name":"n"}`, nil)
-	const want = "admin tokens cannot mint bound tokens; a real user is required as the token's owner"
-	if rec.Code != http.StatusForbidden || parseError(t, rec).Error.Message != want || stub.calls != 0 {
-		t.Errorf("(%d, %s), apikit calls %d; want 403 %q and no call", rec.Code, rec.Body, stub.calls, want)
-	}
-}
-
-// TS-34-6: A missing workspace and a workspace of another owner answer 404.
-// (Every caller AuthorizeWorkspace allows is the owner today, so the explicit
-// owner check is exercised through the non-owner cases; erratum 34.)
-// Requirement: 34-REQ-1.6
-func TestMint_NotFound_TS_34_6(t *testing.T) {
-	stub := newStub(http.StatusCreated, okAnswer)
-	env := newTestEnv(t, Config{APIKit: stub})
-	seedWorkspace(t, env.db, "a", "u1", "ready")
-	seedWorkspace(t, env.db, "b", "u2", "ready")
+// Minting is refused before apikit is called: without a credential, for a
+// bound PAT (reported), for an admin token, for anyone but the owner (the
+// member of the org included, with the unknown workspace's 404) and for a
+// workspace that is archived.
+func TestMint_RefusesBeforeDelegating(t *testing.T) {
+	v := newEnv(t)
+	testutil.SeedWorkspace(t, v.db, testutil.Workspace{Slug: "archived", OwnerID: owner, Status: "archived"})
+	testutil.BindToken(t, v.db, "bound", "elsewhere")
+	refusals := captureRefusals(t)
+	bound := testutil.BoundPAT(owner, "bound", "tokens:manage")
 	for _, c := range []struct {
-		slug string
-		auth *apikit.AuthInfo
+		name, path   string
+		auth         *apikit.AuthInfo
+		status       int
+		message, typ string
 	}{
-		{"missing", apiKey("u1")}, {"b", apiKey("u1")}, {"a", apiKey("u2")}, {"b", pat("u1", "T", "tokens:manage")},
+		{"no credential", mintPath, nil, http.StatusUnauthorized, "authentication required", ""},
+		{"bound PAT", mintPath, bound, http.StatusForbidden, "this token is bound to workspace elsewhere", wsaccess.ErrorTypeTokenBound},
+		{"admin", mintPath, testutil.Admin(), http.StatusForbidden, "admin tokens cannot mint bound tokens; a real user is required as the token's owner", ""},
+		{"member", mintPath, testutil.User(member), http.StatusNotFound, "workspace not found", ""},
+		{"stranger", mintPath, testutil.PAT(stranger, "tokens:manage"), http.StatusNotFound, "workspace not found", ""},
+		{"unknown", "/api/v1/workspaces/ghost/tokens", testutil.User(owner), http.StatusNotFound, "workspace not found", ""},
+		{"archived", "/api/v1/workspaces/archived/tokens", testutil.User(owner), http.StatusBadRequest, "workspace is archived", ""},
 	} {
-		rec := env.do(http.MethodPost, "/api/v1/workspaces/"+c.slug+"/tokens", c.auth, `{"name":"n"}`, nil)
-		if rec.Code != http.StatusNotFound || parseError(t, rec).Error.Message != "workspace not found" {
-			t.Errorf("%s as %s: (%d, %s); want 404 workspace not found", c.slug, c.auth.UserID, rec.Code, rec.Body)
+		rec := testutil.Request(t, v.e, http.MethodPost, c.path, `{"name":"svc"}`, c.auth)
+		if rec.Code != c.status || testutil.Error(t, rec).Message != c.message || testutil.Error(t, rec).ErrorType != c.typ {
+			t.Errorf("%s: %d %s; want %d %q", c.name, rec.Code, rec.Body, c.status, c.message)
 		}
 	}
-	if stub.calls != 0 {
-		t.Errorf("apikit calls = %d; want 0", stub.calls)
+	if v.stub.calls != 0 {
+		t.Errorf("apikit was called %d times behind a refusal", v.stub.calls)
 	}
+	want := wsaccess.BoundRefusal{TokenID: "bound", UserID: owner, BoundSlug: "elsewhere", RequestedSlug: slug, Method: "POST",
+		Route: "/api/v1/workspaces/:slug/tokens", Status: http.StatusForbidden, Surface: wsaccess.SurfaceAPI}
+	if len(*refusals) != 1 || (*refusals)[0] != want {
+		t.Errorf("refusals %+v, want %+v", *refusals, want)
+	}
+	testutil.Exec(t, v.db, `DROP TABLE token_workspace_bindings`)
+	wantRefusal(t, v.mint(t, bound, ""), http.StatusInternalServerError, "internal server error", "")
 }
 
-// TS-34-7: The owner of an archived workspace is refused with 400.
-// Requirement: 34-REQ-1.7
-func TestMint_Archived_TS_34_7(t *testing.T) {
-	stub := newStub(http.StatusCreated, okAnswer)
-	env := newTestEnv(t, Config{APIKit: stub})
-	seedWorkspace(t, env.db, "s", "u1", "archived")
-	rec := env.do(http.MethodPost, mintPath, apiKey("u1"), `{"name":"n"}`, nil)
-	if rec.Code != http.StatusBadRequest || parseError(t, rec).Error.Message != "workspace is archived" || stub.calls != 0 {
-		t.Errorf("(%d, %s), apikit calls %d; want 400 workspace is archived and no call", rec.Code, rec.Body, stub.calls)
-	}
-}
-
-// TS-34-8 (property): apikit is invoked exactly when all six checks pass, the
-// first failing check answers, and hub does no tokens:manage check.
-// Requirement: 34-REQ-1.8
-func TestMint_PropertyCheckOrder_TS_34_8(t *testing.T) {
-	type caller struct {
-		name       string
-		auth       *apikit.AuthInfo
-		bound      bool
-		lookupFail bool
-	}
-	callers := []caller{
-		{"none", nil, false, false},
-		{"bound pat", pat("u1", "TB", "tokens:manage"), true, false},
-		{"bound pat, lookup fails", pat("u1", "TB", "tokens:manage"), true, true},
-		{"admin", admin(), false, false},
-		{"api_key", apiKey("u1"), false, false},
-		{"pat without tokens:manage", pat("u1", "TU", "workspaces:read"), false, false},
-	}
-	workspaces := map[string]struct{ owner, status string }{
-		"missing": {}, "other": {"u2", "ready"}, "archived": {"u1", "archived"}, "ready": {"u1", "ready"},
-	}
-	for _, c := range callers {
-		for wsName, w := range workspaces {
-			stub := newStub(http.StatusCreated, okAnswer)
-			env := newTestEnv(t, Config{APIKit: stub})
-			if w.owner != "" {
-				seedWorkspace(t, env.db, "s", w.owner, w.status)
-			}
-			if c.bound {
-				bind(t, env.db, "TB", "elsewhere")
-			}
-			if c.lookupFail {
-				if _, err := env.db.Exec(`DROP TABLE token_workspace_bindings`); err != nil {
-					t.Fatal(err)
-				}
-			}
-			want := 0 // delegated
-			switch {
-			case c.auth == nil:
-				want = http.StatusUnauthorized
-			case c.lookupFail:
-				want = http.StatusInternalServerError
-			case c.bound:
-				want = http.StatusForbidden
-			case c.name == "admin":
-				want = http.StatusForbidden
-			case wsName == "missing" || wsName == "other":
-				want = http.StatusNotFound
-			case wsName == "archived":
-				want = http.StatusBadRequest
-			}
-			rec := env.do(http.MethodPost, mintPath, c.auth, `{"name":"n","permissions":["workspaces:read"]}`, nil)
-			if (stub.calls == 1) != (want == 0) || stub.calls > 1 {
-				t.Errorf("%s on %s: apikit calls %d; want delegation only when every check passes", c.name, wsName, stub.calls)
-			}
-			if want != 0 && rec.Code != want {
-				t.Errorf("%s on %s: status %d; want %d", c.name, wsName, rec.Code, want)
-			}
-		}
-	}
-}
-
-// ctxMarker is the context key of TS-34-9's marker.
-type ctxMarker struct{}
-
-// TS-34-9: The inner request carries the caller's body bytes, Authorization
-// header verbatim, Content-Type and Content-Length, and the caller's context.
-// Requirement: 34-REQ-2.1
-func TestMint_InnerRequest_TS_34_9(t *testing.T) {
-	stub := newStub(http.StatusCreated, okAnswer)
-	db := openTestDB(t)
-	seedWorkspace(t, db, "s", "u1", "ready")
-	e := echo.New()
-	api := e.Group("/api/v1")
-	api.Use(testAuthMiddleware(), func(next echo.HandlerFunc) echo.HandlerFunc {
-		return func(c echo.Context) error {
-			c.SetRequest(c.Request().WithContext(context.WithValue(c.Request().Context(), ctxMarker{}, "marker")))
-			return next(c)
-		}
-	})
-	RegisterRoutes(api, Config{DB: db, APIKit: stub})
-	env := &testEnv{e: e, db: db}
-
+// The owner's request is served by apikit's own POST /user/tokens, under the
+// group's mount point, with the body, the Authorization header, the content
+// type and length and the context of the caller; the 201 is bound to the
+// workspace, answered with the token and the workspace under Cache-Control
+// no-store, and recorded as hub.token.bind on a context the caller cannot
+// cancel; an emitter's error does not change the answer.
+func TestMint_DelegatesToAPIKitAndBinds(t *testing.T) {
+	v := newEnv(t)
+	v.stub.tokenID, v.audit.err = "T1", context.DeadlineExceeded
 	sent := "{ \"name\" : \"svc\",\n  \"permissions\": [\"workspaces:read\"], \"unknown\": 1 }  "
-	header := http.Header{"Authorization": {"Bearer ak_key1_verbatim-SECRET"}}
-	env.do(http.MethodPost, mintPath, apiKey("u1"), sent, header)
-	if stub.calls != 1 {
-		t.Fatalf("apikit calls = %d; want 1", stub.calls)
+	rec := v.mint(t, testutil.User(owner), sent)
+	if rec.Code != http.StatusCreated || rec.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("mint: %d %s, Cache-Control %q", rec.Code, rec.Body, rec.Header().Get("Cache-Control"))
 	}
-	r := stub.req
-	if r.Method != http.MethodPost || r.URL.Path != "/api/v1/user/tokens" {
-		t.Errorf("inner request %s %s; want POST /api/v1/user/tokens", r.Method, r.URL.Path)
+	r := v.stub.req
+	if v.stub.calls != 1 || r.Method != http.MethodPost || r.URL.Path != "/api/v1/user/tokens" || string(v.stub.body) != sent ||
+		r.Header.Get("Authorization") != "Bearer ak_key1_verbatim-SECRET" || r.Header.Get("Content-Type") != "application/json" ||
+		r.ContentLength != int64(len(sent)) || r.Header.Get("Content-Length") != strconv.Itoa(len(sent)) {
+		t.Errorf("inner request %s %s %v body %q", r.Method, r.URL.Path, r.Header, v.stub.body)
 	}
-	if string(stub.body) != sent {
-		t.Errorf("inner body %q; want the caller's bytes %q", stub.body, sent)
+	got := testutil.Object(t, rec)
+	if got["token_id"] != "T1" || got["token"] != "ak_pat_T1_supersecret" || got["name"] != "svc" || got["workspace"] != slug ||
+		got["expires_at"] != "2027-01-19T10:00:00Z" || got["created_at"] != "2026-10-21T10:00:00Z" || len(got["permissions"].([]any)) != 1 {
+		t.Errorf("body %v", got)
 	}
-	if got := r.Header.Get("Authorization"); got != "Bearer ak_key1_verbatim-SECRET" {
-		t.Errorf("inner Authorization %q; want the caller's verbatim", got)
+	if v.bindingsOf(t, "T1") != 1 || v.revoked(t, "T1") {
+		t.Error("the token is not bound and live")
 	}
-	if r.Header.Get("Content-Type") != "application/json" || r.ContentLength != int64(len(sent)) || r.Header.Get("Content-Length") != strconv.Itoa(len(sent)) {
-		t.Errorf("inner Content-Type %q, Content-Length %d/%q; want application/json and %d", r.Header.Get("Content-Type"), r.ContentLength, r.Header.Get("Content-Length"), len(sent))
+	evs := v.audit.events()
+	if len(evs) != 1 || evs[0].EventType != audit.EventTokenBind || evs[0].ActorID != owner || evs[0].ActorType != "api_key" ||
+		evs[0].ResourceType != "token" || evs[0].ResourceID != "T1" || evs[0].Action != "bind" || evs[0].Workspace != slug ||
+		fmt.Sprint(evs[0].Metadata) != "map[expires_at:2027-01-19T10:00:00Z permissions:[workspaces:read] token_id:T1 workspace:s]" {
+		t.Errorf("events %+v", evs)
 	}
-	if r.Context().Value(ctxMarker{}) != "marker" {
-		t.Error("the inner request does not carry the caller's context")
+	if v.audit.ctxs[0].Done() != nil {
+		t.Error("the event's context can be cancelled by the caller")
+	}
+	// Without an emitter the mint succeeds and emits nothing.
+	e, api := testutil.API()
+	RegisterRoutes(api, Config{DB: v.db, APIKit: v.stub})
+	v.e, v.stub.tokenID, v.stub.answer = e, "T2", strings.ReplaceAll(okAnswer, "T1", "T2")
+	if rec := v.mint(t, testutil.User(owner), ""); rec.Code != http.StatusCreated || v.bindingsOf(t, "T2") != 1 || len(v.audit.events()) != 1 {
+		t.Errorf("without an emitter: %d %s, %d events", rec.Code, rec.Body, len(v.audit.events()))
 	}
 }
 
-// TS-34-10 (property): The inner path is the route template minus
-// /workspaces/:slug/tokens plus /user/tokens, for any mount prefix.
-// Requirement: 34-REQ-2.2
-func TestMint_PropertyInnerPath_TS_34_10(t *testing.T) {
-	for _, prefix := range []string{"", "/api/v1", "/x", "/a/b/c"} {
-		stub := newStub(http.StatusCreated, okAnswer)
-		db := openTestDB(t)
-		seedWorkspace(t, db, "s", "u1", "ready")
-		e := echo.New()
-		g := e.Group(prefix)
-		g.Use(testAuthMiddleware())
-		RegisterRoutes(g, Config{DB: db, APIKit: stub})
-		(&testEnv{e: e, db: db}).do(http.MethodPost, prefix+"/workspaces/s/tokens", apiKey("u1"), `{"name":"n"}`, nil)
-		if stub.calls != 1 || stub.req.URL.Path != prefix+"/user/tokens" {
-			t.Errorf("prefix %q: apikit calls %d, path %v; want one call to %s/user/tokens", prefix, stub.calls, stub.req, prefix)
+// Any answer of apikit but a 201 reaches the caller unchanged, with no binding
+// and no event; an unreadable body is 400.
+func TestMint_PassesRefusalsThrough(t *testing.T) {
+	v := newEnv(t)
+	v.stub.status, v.stub.answer = http.StatusForbidden, `{"error":{"code":403,"message":"PAT requires tokens:manage scope"}}`
+	rec := v.mint(t, testutil.PAT(owner, "workspaces:read"), "")
+	if rec.Code != http.StatusForbidden || rec.Body.String() != v.stub.answer || rec.Header().Get("Content-Type") != "application/json" {
+		t.Errorf("%d %s %s", rec.Code, rec.Header().Get("Content-Type"), rec.Body)
+	}
+	if testutil.Count(t, v.db, `SELECT COUNT(*) FROM token_workspace_bindings`) != 0 || len(v.audit.events()) != 0 {
+		t.Error("a refused mint left a binding or an event")
+	}
+}
+
+// A minted token that cannot be bound is revoked before the answer and no
+// event is emitted; no path logs the token or the Authorization header.
+func TestMint_RevokesTokenItCannotBind(t *testing.T) {
+	cases := []struct {
+		name, answer string
+		before       func(v *env)
+		status       int
+		message      string
+		revoked      bool
+	}{
+		{"workspace vanished", okAnswer, func(v *env) { testutil.Exec(t, v.db, `DELETE FROM workspaces`) }, http.StatusNotFound, "workspace not found", true},
+		{"insert fails", okAnswer, func(v *env) { testutil.Exec(t, v.db, `DROP TABLE token_workspace_bindings`) }, http.StatusInternalServerError, msgBindFailed, true},
+		{"answer cut short", `{"token_id":"T1","name":"svc","tok`, nil, http.StatusInternalServerError, msgBindFailed, true},
+		{"answer without token", `{"token_id":"T1","name":"svc"}`, nil, http.StatusInternalServerError, msgBindFailed, true},
+		{"answer without id", `{"token":"ak_pat_T1_supersecret"}`, nil, http.StatusInternalServerError, msgBindFailed, false},
+	}
+	for _, c := range cases {
+		v := newEnv(t)
+		logs := captureLogs(t)
+		v.stub.tokenID, v.stub.answer = "T1", c.answer
+		if c.before != nil {
+			v.stub.before = func() { c.before(v) }
 		}
+		wantRefusal(t, v.mint(t, testutil.User(owner), ""), c.status, c.message, "")
+		if v.revoked(t, "T1") != c.revoked || v.bindingsOf(t, "T1") != 0 || len(v.audit.events()) != 0 {
+			t.Errorf("%s: revoked %v (want %v), bindings %d, events %d", c.name, v.revoked(t, "T1"), c.revoked, v.bindingsOf(t, "T1"), len(v.audit.events()))
+		}
+		if l := logs.String(); !strings.Contains(l, "could not be bound") || strings.Contains(l, "supersecret") || strings.Contains(l, "verbatim-SECRET") {
+			t.Errorf("%s: logs %q", c.name, l)
+		}
+	}
+	// A failed revocation is logged and the answer stays.
+	v := newEnv(t)
+	logs := captureLogs(t)
+	v.stub.tokenID = "T1"
+	v.stub.before = func() { testutil.Exec(t, v.db, `DROP TABLE token_workspace_bindings; DROP TABLE pats`) }
+	wantRefusal(t, v.mint(t, testutil.User(owner), ""), http.StatusInternalServerError, msgBindFailed, "")
+	if !strings.Contains(logs.String(), "revoking it failed") {
+		t.Errorf("logs %q", logs.String())
 	}
 }

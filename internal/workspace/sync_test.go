@@ -1,200 +1,375 @@
 package workspace
 
 import (
-	"bytes"
-	"log"
+	"context"
+	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/go-git/go-git/v5/plumbing/transport"
+	githttp "github.com/go-git/go-git/v5/plumbing/transport/http"
+	"github.com/labstack/echo/v4"
+	"github.com/txsvc/apikit"
+
+	"github.com/agent-fox-dev/hub/internal/testutil"
+	"github.com/agent-fox-dev/hub/internal/wslock"
 )
 
-// ========================================================================
-// Spec 14 Task 5.1: Sync working tree reset after fast-forward
-// (TS-14-30)
-// Requirements: 14-REQ-14.1
-// ========================================================================
+const upstreamSHA = "1111111111111111111111111111111111111111"
 
-// TS-14-30: After sync fast-forward advances the local branch ref,
-// worktree.Reset with HardReset updates on-disk files to match the new HEAD.
-//
-// Preconditions:
-//   - A real git repository is initialised in a temp directory with two commits
-//   - The local ref points to the first commit
-//   - defaultSyncUpdateLocalRefFn is accessible for testing (same package)
-//
-// Requirement: 14-REQ-14.1
-func TestSyncWorktreeReset_FastForwardUpdatesOnDiskFiles(t *testing.T) {
-	// Create a real git repo with two commits.
-	dir := t.TempDir()
-	syncGit(t, "", "init", "-b", "main", dir)
-	syncGit(t, dir, "config", "user.name", "Test User")
-	syncGit(t, dir, "config", "user.email", "test@example.com")
-
-	// First commit: tracked file with initial content.
-	if err := os.WriteFile(filepath.Join(dir, "tracked.txt"), []byte("initial content"), 0o644); err != nil {
-		t.Fatalf("write tracked.txt: %v", err)
-	}
-	syncGit(t, dir, "add", ".")
-	syncGit(t, dir, "commit", "-m", "first commit")
-	firstSHA := syncGit(t, dir, "rev-parse", "HEAD")
-
-	// Second commit: update the tracked file.
-	if err := os.WriteFile(filepath.Join(dir, "tracked.txt"), []byte("updated content"), 0o644); err != nil {
-		t.Fatalf("write tracked.txt: %v", err)
-	}
-	syncGit(t, dir, "add", ".")
-	syncGit(t, dir, "commit", "-m", "second commit")
-	secondSHA := syncGit(t, dir, "rev-parse", "HEAD")
-
-	if firstSHA == secondSHA {
-		t.Fatalf("first and second commit SHAs must differ; both are %s", firstSHA)
-	}
-
-	// Reset HEAD back to first commit so working tree reflects old state.
-	syncGit(t, dir, "reset", "--hard", firstSHA)
-
-	// Sanity: verify working tree is at first commit.
-	content, err := os.ReadFile(filepath.Join(dir, "tracked.txt"))
-	if err != nil {
-		t.Fatalf("read tracked.txt after reset: %v", err)
-	}
-	if string(content) != "initial content" {
-		t.Fatalf("tracked.txt = %q after reset; want %q", string(content), "initial content")
-	}
-
-	// Act: call defaultSyncUpdateLocalRefFn to advance ref to second commit.
-	err = defaultSyncUpdateLocalRefFn(dir, nil, secondSHA)
-	if err != nil {
-		t.Fatalf("defaultSyncUpdateLocalRefFn returned error: %v", err)
-	}
-
-	// Assert: on-disk file content must match the second commit (14-REQ-14.1).
-	// The function must call worktree.Reset with HardReset after advancing the
-	// ref, so on-disk files reflect the new HEAD immediately.
-	content, err = os.ReadFile(filepath.Join(dir, "tracked.txt"))
-	if err != nil {
-		t.Fatalf("read tracked.txt after sync: %v", err)
-	}
-	if string(content) != "updated content" {
-		t.Errorf("tracked.txt = %q; want %q (working tree must match new HEAD after sync fast-forward)",
-			string(content), "updated content")
-	}
-
-	// Assert: git status --porcelain shows clean working tree.
-	status := syncGit(t, dir, "status", "--porcelain")
-	if status != "" {
-		t.Errorf("git status --porcelain = %q; want empty (clean working tree after reset)", status)
-	}
-
-	// Assert: HEAD now points to the second commit.
-	head := syncGit(t, dir, "rev-parse", "HEAD")
-	if head != secondSHA {
-		t.Errorf("HEAD = %q; want %q", head, secondSHA)
-	}
-}
-
-// ========================================================================
-// Spec 14 Task 5.2: Sync working tree reset failure (best-effort)
-// (TS-14-31)
-// Requirements: 14-REQ-14.2
-// Property: 14-PROP-4
-// ========================================================================
-
-// TS-14-31: When worktree.Reset fails after a successful ref update,
-// defaultSyncUpdateLocalRefFn logs the error and returns nil.
-//
-// The test makes the working tree directory read-only to prevent file
-// creation during worktree.Reset, while keeping .git writable for the ref
-// update. The function must:
-//   - return nil (the ref update is already committed; 14-PROP-4)
-//   - emit an error-level log about the reset failure (14-REQ-14.2)
-//
-// Requirement: 14-REQ-14.2
-// Property: 14-PROP-4 (worktree.Reset failure never fails the sync)
-func TestSyncWorktreeReset_FailureDoesNotFailSync(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("permission-based reset failure test not reliable on Windows")
-	}
-	if os.Getuid() == 0 {
-		t.Skip("cannot test permission denial as root")
-	}
-
-	// Create a real git repo with two commits.
-	dir := t.TempDir()
-	syncGit(t, "", "init", "-b", "main", dir)
-	syncGit(t, dir, "config", "user.name", "Test User")
-	syncGit(t, dir, "config", "user.email", "test@example.com")
-
-	// First commit.
-	if err := os.WriteFile(filepath.Join(dir, "existing.txt"), []byte("v1"), 0o644); err != nil {
-		t.Fatalf("write existing.txt: %v", err)
-	}
-	syncGit(t, dir, "add", ".")
-	syncGit(t, dir, "commit", "-m", "first commit")
-
-	// Second commit adds a NEW file (worktree.Reset must create it on disk).
-	if err := os.WriteFile(filepath.Join(dir, "existing.txt"), []byte("v2"), 0o644); err != nil {
-		t.Fatalf("write existing.txt: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "newfile.txt"), []byte("new content"), 0o644); err != nil {
-		t.Fatalf("write newfile.txt: %v", err)
-	}
-	syncGit(t, dir, "add", ".")
-	syncGit(t, dir, "commit", "-m", "second commit")
-	secondSHA := syncGit(t, dir, "rev-parse", "HEAD")
-
-	// Reset to first commit (removes newfile.txt from working tree).
-	syncGit(t, dir, "reset", "--hard", "HEAD~1")
-
-	// Make root directory read-only to cause worktree.Reset failure.
-	// The .git subdirectory remains writable (Unix permissions are per-directory),
-	// so PlainOpen and SetReference succeed. Creating newfile.txt in the
-	// read-only root directory will fail during worktree.Reset.
-	if err := os.Chmod(dir, 0o555); err != nil {
-		t.Fatalf("chmod dir: %v", err)
-	}
-	t.Cleanup(func() { os.Chmod(dir, 0o755) })
-
-	// Capture log output to verify error logging.
-	var logBuf bytes.Buffer
-	log.SetOutput(&logBuf)
-	defer log.SetOutput(os.Stderr)
-
-	// Act: call defaultSyncUpdateLocalRefFn.
-	err := defaultSyncUpdateLocalRefFn(dir, nil, secondSHA)
-
-	// Assert: function must return nil (14-REQ-14.2, 14-PROP-4).
-	// A worktree.Reset failure after a successful ref update must NOT
-	// cause the sync operation to fail.
-	if err != nil {
-		t.Errorf("defaultSyncUpdateLocalRefFn returned %v; want nil "+
-			"(worktree.Reset failure must not fail sync — 14-PROP-4)", err)
-	}
-
-	// Assert: an error-level log was emitted about the reset failure (14-REQ-14.2).
-	logOutput := logBuf.String()
-	if logOutput == "" {
-		t.Error("no log output emitted; want error-level log about worktree reset failure (14-REQ-14.2)")
-	}
-}
-
-// syncGit runs a git command and returns trimmed stdout. Fails the test on error.
-func syncGit(t *testing.T, dir string, args ...string) string {
+func syncReq(t *testing.T, v *env, slug, query string, auth *apikit.AuthInfo) *httptest.ResponseRecorder {
 	t.Helper()
-	cmd := exec.Command("git", args...)
-	if dir != "" {
-		cmd.Dir = dir
+	return v.do(t, http.MethodPost, "/api/v1/workspaces/"+slug+"/sync"+query, "", auth)
+}
+
+// TestSync_UpToDate: an up-to-date fetch records the upstream HEAD and the
+// time, keeps head_sha, passes the stored credential and the branch to the
+// fetch, and records the event.
+func TestSync_UpToDate(t *testing.T) {
+	v := newEnv(t)
+	v.seed(t, &Workspace{Slug: "ws", OwnerID: owner, Status: "ready", Branch: strPtr("dev"), HeadSHA: strPtr(headSHA), SyncError: strPtr("old")})
+	storeSecrets(t, v.db, "ws", "GIT_USERNAME", "bob", "GIT_PASSWORD", "pw")
+	var gotPath, gotBranch, gotLocal string
+	var gotAuth transport.AuthMethod
+	swap(t, &syncFetchAndCompareFn, func(_ context.Context, repoPath string, auth transport.AuthMethod, branch *string, local string) (string, string, error) {
+		gotPath, gotAuth, gotBranch, gotLocal = repoPath, auth, *branch, local
+		return upstreamSHA, "up_to_date", nil
+	})
+	rec := syncReq(t, v, "ws", "", testutil.User(owner))
+	expectStatus(t, rec, http.StatusOK)
+	got := testutil.Object(t, rec)
+	if got["upstream_head_sha"] != upstreamSHA || got["head_sha"] != headSHA || got["last_sync_at"] == nil || got["sync_error"] != nil {
+		t.Errorf("response %v", got)
 	}
-	cmd.Env = append(os.Environ(),
-		"GIT_CONFIG_NOSYSTEM=1",
-		"GIT_TERMINAL_PROMPT=0",
-	)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("git %v (dir=%s) failed: %v\n%s", args, dir, err, out)
+	if gotPath != v.trunk("ws") || gotBranch != "dev" || gotLocal != headSHA || *gotAuth.(*githttp.BasicAuth) != (githttp.BasicAuth{Username: "bob", Password: "pw"}) {
+		t.Errorf("fetch got %s %s %s %+v", gotPath, gotBranch, gotLocal, gotAuth)
 	}
-	return strings.TrimSpace(string(out))
+	if ev := v.events.one(t, "hub.workspace.sync"); ev.Metadata["result"] != "up_to_date" || ev.Workspace != "ws" {
+		t.Errorf("event %+v", ev)
+	}
+}
+
+// TestSync_FastForward: a fast-forward moves the local ref and head_sha to the
+// upstream HEAD.
+func TestSync_FastForward(t *testing.T) {
+	v := newEnv(t)
+	v.seed(t, &Workspace{Slug: "ws", OwnerID: owner, Status: "ready", HeadSHA: strPtr(headSHA)})
+	updated := stubSync(t, upstreamSHA, "fast_forward", nil, nil)
+	rec := syncReq(t, v, "ws", "", testutil.Admin())
+	expectStatus(t, rec, http.StatusOK)
+	if got := testutil.Object(t, rec); got["head_sha"] != upstreamSHA || got["upstream_head_sha"] != upstreamSHA || got["sync_error"] != nil || got["last_sync_at"] == nil {
+		t.Errorf("response %v", got)
+	}
+	if len(*updated) != 1 || (*updated)[0] != upstreamSHA {
+		t.Errorf("ref updates %v", *updated)
+	}
+	if ev := v.events.one(t, "hub.workspace.sync"); ev.Metadata["result"] != "fast_forward" {
+		t.Errorf("event %+v", ev)
+	}
+}
+
+// TestSync_Failures: each failure of the git steps records the reason as
+// sync_error, leaves head_sha unchanged and emits no event; a divergence is reported
+// with the upstream HEAD and the way out.
+func TestSync_Failures(t *testing.T) {
+	v := newEnv(t)
+	cases := []struct {
+		name    string
+		sha     string
+		outcome string
+		err     error
+		refErr  error
+		code    int
+		msg     string
+		errText string
+	}{
+		{"diverged", upstreamSHA, "diverged", nil, nil, http.StatusConflict, "diverged; use --reset-to-upstream", "upstream history has diverged"},
+		{"fetch error", "", "", errors.New("dial tcp: refused"), nil, http.StatusBadGateway, "upstream fetch error", "upstream fetch failed: dial tcp: refused"},
+		{"ref update error", upstreamSHA, "fast_forward", nil, errors.New("locked ref"), http.StatusBadGateway, "could not fast-forward", "ref update failed: locked ref"},
+		{"unknown outcome", upstreamSHA, "sideways", nil, nil, http.StatusInternalServerError, "unexpected sync outcome", "unexpected sync outcome: sideways"},
+	}
+	for i, c := range cases {
+		slug := "ws" + string(rune('a'+i))
+		v.seed(t, &Workspace{Slug: slug, OwnerID: owner, Status: "ready", HeadSHA: strPtr(headSHA)})
+		stubSync(t, c.sha, c.outcome, c.err, c.refErr)
+		expectError(t, syncReq(t, v, slug, "", testutil.User(owner)), c.code, c.msg, "")
+		if !strings.Contains(v.column(t, slug, "sync_error"), c.errText) || v.column(t, slug, "head_sha") != headSHA || v.column(t, slug, "last_sync_at") != "" {
+			t.Errorf("%s: error %q, head %s, last sync %q", c.name, v.column(t, slug, "sync_error"), v.column(t, slug, "head_sha"), v.column(t, slug, "last_sync_at"))
+		}
+		if c.name == "diverged" && v.column(t, slug, "upstream_head_sha") != upstreamSHA {
+			t.Error("the divergence did not record the upstream HEAD")
+		}
+	}
+	if len(v.events.ofType("hub.workspace.sync")) != 0 {
+		t.Error("a failed sync emitted an event")
+	}
+
+	// Without the sync functions, or without a readable credential, the sync
+	// fails before fetching.
+	v.seed(t, &Workspace{Slug: "uninit", OwnerID: owner, Status: "ready"})
+	swap(t, &syncFetchAndCompareFn, nil)
+	expectError(t, syncReq(t, v, "uninit", "", testutil.User(owner)), http.StatusBadGateway, "sync system not initialized", "")
+	expectError(t, syncReq(t, v, "uninit", "?reset_to_upstream=true", testutil.User(owner)), http.StatusBadGateway, "sync system not initialized", "")
+	if v.column(t, "uninit", "sync_error") != "sync system not initialized" {
+		t.Error("the uninitialized sync left sync_error " + v.column(t, "uninit", "sync_error"))
+	}
+	v.seed(t, &Workspace{Slug: "no-cred", OwnerID: owner, Status: "ready"})
+	testutil.Exec(t, v.db, `DROP TABLE secrets`)
+	expectError(t, syncReq(t, v, "no-cred", "", testutil.User(owner)), http.StatusBadGateway, "credential resolution error", "")
+	if !strings.Contains(v.column(t, "no-cred", "sync_error"), "credential resolution failed") {
+		t.Errorf("sync_error %q", v.column(t, "no-cred", "sync_error"))
+	}
+}
+
+// TestSync_Preconditions: the workspace must be ready with sync enabled and
+// no other operation (another sync included) holding it; the caller must
+// have write access.
+func TestSync_Preconditions(t *testing.T) {
+	v := newEnv(t)
+	stubSync(t, upstreamSHA, "up_to_date", nil, nil)
+	v.orgWorkspace(t, "team")
+	v.seed(t, &Workspace{Slug: "archived", OwnerID: owner, Status: "archived"})
+	v.seed(t, &Workspace{Slug: "pending", OwnerID: owner, Status: "pending"})
+	disabled := DefaultSettings()
+	disabled.SyncEnabled = false
+	v.seed(t, &Workspace{Slug: "disabled", OwnerID: owner, Status: "ready", Settings: disabled})
+	v.ready(t, "busy", owner)
+	unlock, _ := wslock.TryLock("busy")
+	defer unlock()
+	o := testutil.User(owner)
+	for _, c := range []struct {
+		name, slug string
+		auth       *apikit.AuthInfo
+		code       int
+		msg        string
+	}{
+		{"archived", "archived", o, http.StatusBadRequest, "workspace is not ready"},
+		{"clone not ready", "pending", o, http.StatusBadRequest, "workspace is not ready"},
+		{"disabled", "disabled", o, http.StatusBadRequest, "sync is disabled for this workspace; set the sync_enabled setting"},
+		{"busy", "busy", o, http.StatusConflict, "another operation is running"},
+		{"unauthenticated", "team", nil, http.StatusUnauthorized, "authentication required"},
+		{"read PAT", "team", testutil.PAT(owner, "workspaces:read"), http.StatusForbidden, "workspaces:write scope"},
+		{"member", "team", testutil.User(member), http.StatusForbidden, "read-only access"},
+		{"stranger", "team", testutil.User(stranger), http.StatusNotFound, "workspace not found"},
+		{"unknown", "nope", o, http.StatusNotFound, "workspace not found"},
+	} {
+		if msg := expectStatus(t, syncReq(t, v, c.slug, "", c.auth), c.code); !strings.Contains(msg, c.msg) {
+			t.Errorf("%s: %q; want %q", c.name, msg, c.msg)
+		}
+	}
+	expectError(t, syncReq(t, v, "busy", "", o), http.StatusConflict, "another operation is running on this workspace; retry later", "workspace_busy")
+	if v.column(t, "busy", "sync_error") != "" || v.column(t, "busy", "last_sync_at") != "" || v.column(t, "disabled", "last_sync_at") != "" {
+		t.Error("a refused sync recorded an outcome")
+	}
+	// A rebuild in progress does not block the sync, and a member's org-mate
+	// owner syncs a carry_patch workspace the standard way when no extension
+	// is registered.
+	end, _ := wslock.BeginRebuild("team")
+	defer end()
+	expectStatus(t, syncReq(t, v, "team", "", o), http.StatusOK)
+}
+
+// TestSync_ConcurrentSyncs: two syncs of one workspace cannot both run: the
+// first holds the workspace lock while it fetches and the second is refused
+// as busy, without touching the workspace; the lock is released after.
+func TestSync_ConcurrentSyncs(t *testing.T) {
+	v := newEnv(t)
+	v.ready(t, "ws", owner)
+	fetching, release := make(chan struct{}), make(chan struct{})
+	swap(t, &syncFetchAndCompareFn, func(context.Context, string, transport.AuthMethod, *string, string) (string, string, error) {
+		close(fetching)
+		<-release
+		return upstreamSHA, "up_to_date", nil
+	})
+	swap(t, &syncUpdateLocalRefFn, func(string, *string, string) error { return nil })
+	first := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		v.e.ServeHTTP(first, request(context.Background(), http.MethodPost, "/api/v1/workspaces/ws/sync", testutil.User(owner)))
+		close(done)
+	}()
+	<-fetching
+	expectError(t, syncReq(t, v, "ws", "", testutil.User(owner)), http.StatusConflict, "another operation is running", "workspace_busy")
+	if v.column(t, "ws", "sync_error") != "" || v.column(t, "ws", "last_sync_at") != "" {
+		t.Error("the refused sync recorded an outcome")
+	}
+	close(release)
+	<-done
+	expectStatus(t, first, http.StatusOK)
+	if unlock, ok := wslock.TryLock("ws"); !ok {
+		t.Error("the finished sync still holds the lock")
+	} else {
+		unlock()
+	}
+	// A success the database refuses to record is a 500.
+	v.ready(t, "down", owner)
+	stubSync(t, upstreamSHA, "up_to_date", nil, nil)
+	testutil.Exec(t, v.db, `CREATE TRIGGER no_record BEFORE UPDATE ON workspaces WHEN NEW.last_sync_at IS NOT NULL BEGIN SELECT RAISE(FAIL, 'down'); END`)
+	expectError(t, syncReq(t, v, "down", "", testutil.User(owner)), http.StatusInternalServerError, "failed to update sync status", "")
+}
+
+// TestSync_CancelledRequest: a request whose context is cancelled while the
+// fetch runs ends with a sync_error naming the interruption.
+func TestSync_CancelledRequest(t *testing.T) {
+	v := newEnv(t)
+	v.ready(t, "ws", owner)
+	started := make(chan struct{})
+	swap(t, &syncFetchAndCompareFn, func(ctx context.Context, _ string, _ transport.AuthMethod, _ *string, _ string) (string, string, error) {
+		close(started)
+		<-ctx.Done()
+		return "", "", ctx.Err()
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	rec := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		v.e.ServeHTTP(rec, request(ctx, http.MethodPost, "/api/v1/workspaces/ws/sync", testutil.User(owner)))
+		close(done)
+	}()
+	<-started
+	cancel()
+	<-done
+	if rec.Code != http.StatusGatewayTimeout || !strings.Contains(v.column(t, "ws", "sync_error"), "sync interrupted: context canceled") || v.column(t, "ws", "last_sync_at") != "" {
+		t.Errorf("status %d, sync_error %q, last_sync_at %q", rec.Code, v.column(t, "ws", "sync_error"), v.column(t, "ws", "last_sync_at"))
+	}
+}
+
+// TestSync_ResetToUpstream: reset_to_upstream forces the local ref to the
+// upstream HEAD whatever the ancestry, and records it as head_sha; a failed
+// fetch or ref update leaves head_sha alone.
+func TestSync_ResetToUpstream(t *testing.T) {
+	v := newEnv(t)
+	v.seed(t, &Workspace{Slug: "ws", OwnerID: owner, Status: "ready", HeadSHA: strPtr(headSHA), SyncError: strPtr("diverged")})
+	updated := stubSync(t, upstreamSHA, "diverged", nil, nil)
+	rec := syncReq(t, v, "ws", "?reset_to_upstream=true", testutil.User(owner))
+	expectStatus(t, rec, http.StatusOK)
+	if got := testutil.Object(t, rec); got["head_sha"] != upstreamSHA || got["upstream_head_sha"] != upstreamSHA || got["sync_error"] != nil || got["last_sync_at"] == nil {
+		t.Errorf("response %v", got)
+	}
+	if len(*updated) != 1 || (*updated)[0] != upstreamSHA {
+		t.Errorf("ref updates %v", *updated)
+	}
+	if ev := v.events.one(t, "hub.workspace.sync"); ev.Metadata["result"] != "reset_to_upstream" {
+		t.Errorf("event %+v", ev)
+	}
+
+	stubSync(t, "", "", errors.New("no route"), nil)
+	expectError(t, syncReq(t, v, "ws", "?reset_to_upstream=true", testutil.User(owner)), http.StatusBadGateway, "reset-to-upstream failed: upstream fetch error", "")
+	stubSync(t, headSHA, "diverged", nil, errors.New("locked"))
+	expectError(t, syncReq(t, v, "ws", "?reset_to_upstream=true", testutil.User(owner)), http.StatusBadGateway, "could not update integration branch", "")
+	if v.column(t, "ws", "head_sha") != upstreamSHA || !strings.Contains(v.column(t, "ws", "sync_error"), "reset-to-upstream ref update failed: locked") {
+		t.Errorf("after the failures: head %s, error %q", v.column(t, "ws", "head_sha"), v.column(t, "ws", "sync_error"))
+	}
+}
+
+// TestSync_CarryPatchExtension: a carry_patch workspace is synced by the
+// registered extension, whose fields are merged into the re-read workspace;
+// an extension that declines falls through to the standard sync and one that
+// fails has answered already.
+func TestSync_CarryPatchExtension(t *testing.T) {
+	v := newEnv(t)
+	v.orgWorkspace(t, "team")
+	var gotSlug, gotPath string
+	swap(t, &syncExtension, SyncExtension(func(_ echo.Context, slug, repoPath string) (map[string]any, bool, error) {
+		gotSlug, gotPath = slug, repoPath
+		testutil.Exec(t, v.db, `UPDATE workspaces SET upstream_head_sha = ? WHERE slug = ?`, upstreamSHA, slug)
+		return map[string]any{"patches_merged": []string{"feature/a"}, "rebuild_triggered": true, "status": "shadowed"}, true, nil
+	}))
+	rec := syncReq(t, v, "team", "", testutil.User(owner))
+	expectStatus(t, rec, http.StatusOK)
+	got := testutil.Object(t, rec)
+	if got["slug"] != "team" || got["upstream_head_sha"] != upstreamSHA || got["rebuild_triggered"] != true || got["status"] != "shadowed" || got["access"] != "owner" {
+		t.Errorf("response %v", got)
+	}
+	if merged, _ := got["patches_merged"].([]any); len(merged) != 1 || merged[0] != "feature/a" || gotSlug != "team" || gotPath != v.trunk("team") {
+		t.Errorf("extension got %s %s; merged %v", gotSlug, gotPath, got["patches_merged"])
+	}
+
+	stubSync(t, upstreamSHA, "up_to_date", nil, nil)
+	RegisterSyncExtension(func(echo.Context, string, string) (map[string]any, bool, error) { return nil, false, nil })
+	rec = syncReq(t, v, "team", "", testutil.User(owner))
+	expectStatus(t, rec, http.StatusOK)
+	if got := testutil.Object(t, rec); got["patches_merged"] != nil || got["last_sync_at"] == nil {
+		t.Errorf("fallthrough response %v", got)
+	}
+
+	RegisterSyncExtension(func(c echo.Context, _, _ string) (map[string]any, bool, error) {
+		return nil, false, c.JSON(http.StatusTeapot, map[string]string{"extension": "failed"})
+	})
+	if rec := syncReq(t, v, "team", "", testutil.User(owner)); rec.Code != http.StatusTeapot {
+		t.Errorf("extension failure: %d %s", rec.Code, rec.Body)
+	}
+	// A standard workspace never sees the extension.
+	v.ready(t, "std", owner)
+	RegisterSyncExtension(func(echo.Context, string, string) (map[string]any, bool, error) {
+		t.Error("called")
+		return nil, true, nil
+	})
+	expectStatus(t, syncReq(t, v, "std", "", testutil.User(owner)), http.StatusOK)
+}
+
+// TestSync_GitFetchAndCompare: against real repositories the fetch reports
+// up_to_date, fast_forward and diverged, and the ref update moves the branch
+// and the working tree.
+func TestSync_GitFetchAndCompare(t *testing.T) {
+	trunk := filepath.Join(t.TempDir(), "trunk")
+	bare := newTrunk(t, trunk)
+	gitRun(t, trunk, "push", "-q", "origin", "main")
+	base := gitRun(t, trunk, "rev-parse", "HEAD")
+
+	sha, outcome, err := defaultSyncFetchAndCompareFn(context.Background(), trunk, nil, nil, base)
+	if err != nil || sha != base || outcome != "up_to_date" {
+		t.Fatalf("up to date: %s %s %v", sha, outcome, err)
+	}
+	if _, outcome, _ := defaultSyncFetchAndCompareFn(context.Background(), trunk, nil, strPtr("main"), ""); outcome != "up_to_date" {
+		t.Errorf("without a local HEAD: %s; want up_to_date", outcome)
+	}
+
+	// Origin advances: fast-forward, then the ref update brings the file in.
+	work := filepath.Join(t.TempDir(), "work")
+	gitRun(t, filepath.Dir(work), "clone", "-q", bare, work)
+	next := commit(t, work, "next.txt", "next")
+	gitRun(t, work, "push", "-q", "origin", "main")
+	sha, outcome, err = defaultSyncFetchAndCompareFn(context.Background(), trunk, nil, nil, base)
+	if err != nil || sha != next || outcome != "fast_forward" {
+		t.Fatalf("after origin advanced: %s %s %v; want %s fast_forward", sha, outcome, err, next)
+	}
+	if err := defaultSyncUpdateLocalRefFn(trunk, nil, next); err != nil {
+		t.Fatal(err)
+	}
+	if gitRun(t, trunk, "rev-parse", "main") != next || gitRun(t, trunk, "status", "--porcelain") != "" {
+		t.Error("the ref update did not move main and reset the working tree")
+	}
+	if _, err := os.Stat(filepath.Join(trunk, "next.txt")); err != nil {
+		t.Error("the working tree lacks the fetched file")
+	}
+
+	// Origin is rewritten: diverged, and the local commit unknown to the
+	// trunk is diverged as well.
+	gitRun(t, work, "reset", "-q", "--hard", base)
+	rewritten := commit(t, work, "other.txt", "other")
+	gitRun(t, work, "push", "-q", "--force", "origin", "main")
+	if sha, outcome, err := defaultSyncFetchAndCompareFn(context.Background(), trunk, nil, strPtr("main"), next); err != nil || sha != rewritten || outcome != "diverged" {
+		t.Errorf("after a force push: %s %s %v; want %s diverged", sha, outcome, err, rewritten)
+	}
+	if _, outcome, _ := defaultSyncFetchAndCompareFn(context.Background(), trunk, nil, nil, upstreamSHA); outcome != "diverged" {
+		t.Errorf("unknown local commit: %s; want diverged", outcome)
+	}
+	// A failed ref update's working tree reset is not an error.
+	if err := defaultSyncUpdateLocalRefFn(trunk, strPtr("main"), rewritten); err != nil {
+		t.Errorf("ref update to the rewritten tip: %v", err)
+	}
+	if _, _, err := defaultSyncFetchAndCompareFn(context.Background(), t.TempDir(), nil, nil, ""); err == nil || !strings.Contains(err.Error(), "open repository") {
+		t.Errorf("no repository: %v", err)
+	}
+	if err := defaultSyncUpdateLocalRefFn(t.TempDir(), nil, next); err == nil {
+		t.Error("ref update without a repository succeeded")
+	}
+	if !isShallowError(errors.New("object not found")) || isShallowError(errors.New("refused")) || isShallowError(nil) {
+		t.Error("isShallowError")
+	}
 }

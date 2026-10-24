@@ -2,921 +2,447 @@ package carrypatch
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/txsvc/apikit"
+
+	"github.com/agent-fox-dev/aflib/jobqueue"
 )
 
-// ===========================================================================
-// TS-16-1: POST /api/v1/workspaces/:slug/rebuild on a valid carry_patch
-// workspace enqueues a rebuild job with correct key, group_key, and strategy
-// captured at enqueue time, returning HTTP 202 with the queued job record.
-//
-// Requirement: 16-REQ-1.1
-// ===========================================================================
+const wsPath = "/api/v1/workspaces/ws"
 
-func TestSubmitRebuild_ValidRequest_Returns202(t *testing.T) {
-	env := newRebuildTestEnv(t)
+// rebuildEnv is a patchEnv with one active patch, so a rebuild may be submitted.
+func rebuildEnv(t *testing.T) *env {
+	t.Helper()
+	e := patchEnv(t)
+	seedPatch(t, e.db, "ws", "p1", "feature/a", 1, "active")
+	return e
+}
 
-	// Seed a ready carry_patch workspace.
-	seedWorkspace(t, env.db, "my-workspace", "alice", "ready", "carry_patch", "integration")
+// Submitting a rebuild enqueues one job keyed by the workspace and serialised by
+// its integration branch, with the strategy and fail mode captured from the
+// settings or the body, and audits the enqueue.
+func TestSubmitRebuild_EnqueuesWithCapturedStrategy(t *testing.T) {
+	e := rebuildEnv(t)
+	e.vars["REBUILD_STRATEGY"] = StrategyMerge
+	e.vars["REBUILD_FAIL_MODE"] = FailModeContinue
 
-	// Seed at least one active patch.
-	seedPatch(t, env.db, "patch-1", "my-workspace", "feature/foo", 1, PatchStatusActive)
-
-	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/my-workspace/rebuild", "", rebuildUserAuth("alice"))
-
-	if rec.Code != http.StatusAccepted {
-		t.Fatalf("POST /rebuild status = %d; want %d; body = %s",
-			rec.Code, http.StatusAccepted, rec.Body.String())
+	got := e.want(e.do(http.MethodPost, wsPath+"/rebuild", "", pat("alice", "rebuilds:write")), http.StatusAccepted)
+	if got["type"] != "rebuild" || got["key"] != "ws" || got["group_key"] != "ws:integration" || got["status"] != jobqueue.StatusQueued || got["id"] == "" {
+		t.Errorf("job response = %v", got)
+	}
+	payload := got["payload"].(map[string]any)
+	if payload["strategy"] != StrategyMerge || payload["fail_mode"] != FailModeContinue || payload["integration_branch"] != "integration" || payload["submitted_by"] != "alice" {
+		t.Errorf("payload = %v", payload)
+	}
+	events := e.audit.ofType("hub.rebuild.enqueue")
+	if len(events) != 1 || events[0].ResourceID != got["id"] || events[0].Metadata["patch_count"] != 1 || events[0].ActorID != "alice" || events[0].ActorType != "pat" {
+		t.Errorf("enqueue event = %+v", events)
+	}
+	jobs := e.jobs("ws")
+	if len(jobs) != 1 || jobs[0].GroupKey != "ws:integration" {
+		t.Errorf("jobs = %+v", jobs)
 	}
 
-	resp := parseRebuildJobResponse(t, rec)
-
-	if resp.ID == "" {
-		t.Error("expected non-empty job ID in response")
-	}
-	if resp.Status != "queued" {
-		t.Errorf("expected status='queued', got %q", resp.Status)
-	}
-	if resp.Type != "rebuild" {
-		t.Errorf("expected type='rebuild', got %q", resp.Type)
-	}
-	if resp.Key != "my-workspace" {
-		t.Errorf("expected key='my-workspace', got %q", resp.Key)
-	}
-	// group_key should be '<workspace_slug>:<integration_branch>'
-	expectedGroupKey := "my-workspace:integration"
-	if resp.GroupKey != expectedGroupKey {
-		t.Errorf("expected group_key=%q, got %q", expectedGroupKey, resp.GroupKey)
+	// A second submission while the first is queued is refused.
+	_, kind := e.wantErr(e.do(http.MethodPost, wsPath+"/rebuild", "", alice), http.StatusConflict)
+	if kind != "concurrent_rebuild" {
+		t.Errorf("duplicate error_type = %q", kind)
 	}
 
-	// Verify payload contains captured strategy.
-	var payload RebuildPayload
-	if err := json.Unmarshal(resp.Payload, &payload); err != nil {
-		t.Fatalf("failed to unmarshal payload: %v", err)
+	// The body overrides the settings; the defaults are rebase and no fail mode.
+	mustExec(t, e.db, `DELETE FROM jobs`)
+	got = e.want(e.do(http.MethodPost, wsPath+"/rebuild", `{"strategy":"rebase","fail_mode":"fail_fast"}`, alice), http.StatusAccepted)
+	payload = got["payload"].(map[string]any)
+	if payload["strategy"] != StrategyRebase || payload["fail_mode"] != FailModeFailFast {
+		t.Errorf("overridden payload = %v", payload)
 	}
-	if payload.Strategy != "rebase" {
-		t.Errorf("expected payload.strategy='rebase', got %q", payload.Strategy)
-	}
-	if payload.WorkspaceSlug != "my-workspace" {
-		t.Errorf("expected payload.workspace_slug='my-workspace', got %q", payload.WorkspaceSlug)
+	mustExec(t, e.db, `DELETE FROM jobs`)
+	delete(e.vars, "REBUILD_STRATEGY")
+	delete(e.vars, "REBUILD_FAIL_MODE")
+	e.audited = false
+	got = e.want(e.do(http.MethodPost, wsPath+"/rebuild", "", alice), http.StatusAccepted)
+	if raw, _ := json.Marshal(got["payload"]); !strings.Contains(string(raw), `"strategy":"rebase"`) || strings.Contains(string(raw), "fail_mode") {
+		t.Errorf("default payload = %s", raw)
 	}
 }
 
-// Test that the REBUILD_STRATEGY is captured at enqueue time, not at
-// execution time. This validates 16-PROP-3.
-func TestSubmitRebuild_StrategyCapturedAtEnqueueTime(t *testing.T) {
-	// Override GetVariable to return 'merge' strategy.
-	mergeEnv := newRebuildTestEnvWithStrategy(t, "merge")
+func TestSubmitRebuild_RefusesUnfitWorkspacesAndBodies(t *testing.T) {
+	e := rebuildEnv(t)
+	seedWS(t, e.db, ws{slug: "std", mode: "standard"})
+	seedWS(t, e.db, ws{slug: "archived", status: "archived"})
+	seedWS(t, e.db, ws{slug: "cloning", status: "cloning"})
+	seedWS(t, e.db, ws{slug: "empty"})
+	seedPatch(t, e.db, "empty", "pe", "feature/e", 1, "disabled")
 
-	seedWorkspace(t, mergeEnv.db, "ws-merge", "alice", "ready", "carry_patch", "integration")
-	seedPatch(t, mergeEnv.db, "patch-m1", "ws-merge", "feature/bar", 1, PatchStatusActive)
-
-	rec := mergeEnv.doRequest(t, http.MethodPost, "/api/v1/workspaces/ws-merge/rebuild", "", rebuildUserAuth("alice"))
-
-	if rec.Code != http.StatusAccepted {
-		t.Fatalf("POST /rebuild status = %d; want %d; body = %s",
-			rec.Code, http.StatusAccepted, rec.Body.String())
+	cases := []struct {
+		name, slug, body, want, kind string
+		status                       int
+	}{
+		{"standard", "std", "", "rebuild is only supported for carry_patch workspaces", "workspace_mode_mismatch", 400},
+		{"archived", "archived", "", "workspace is not ready", "", 400},
+		{"clone not ready", "cloning", "", "workspace is not ready", "", 400},
+		{"no active patches", "empty", "", "no patches with status active or conflict", "no_active_patches", 400},
+		{"unknown", "none", "", "workspace not found", "", 404},
+		{"bad strategy", "ws", `{"strategy":"squash"}`, "strategy must be 'rebase' or 'merge'", "", 400},
+		{"bad fail mode", "ws", `{"fail_mode":"stop"}`, "fail_mode must be 'fail_fast' or 'continue'", "", 400},
+		{"malformed", "ws", `{"strategy":`, "invalid request body", "", 400},
 	}
-
-	resp := parseRebuildJobResponse(t, rec)
-	var payload RebuildPayload
-	if err := json.Unmarshal(resp.Payload, &payload); err != nil {
-		t.Fatalf("failed to unmarshal payload: %v", err)
-	}
-	if payload.Strategy != "merge" {
-		t.Errorf("expected payload.strategy='merge' (captured at enqueue time), got %q", payload.Strategy)
-	}
-}
-
-// Test that when REBUILD_STRATEGY is not set, defaults to 'rebase'.
-func TestSubmitRebuild_DefaultStrategy_IsRebase(t *testing.T) {
-	env := newRebuildTestEnvWithStrategy(t, "")
-
-	seedWorkspace(t, env.db, "ws-default", "alice", "ready", "carry_patch", "integration")
-	seedPatch(t, env.db, "patch-d1", "ws-default", "feature/foo", 1, PatchStatusActive)
-
-	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/ws-default/rebuild", "", rebuildUserAuth("alice"))
-
-	if rec.Code != http.StatusAccepted {
-		t.Fatalf("POST /rebuild status = %d; want %d; body = %s",
-			rec.Code, http.StatusAccepted, rec.Body.String())
-	}
-
-	resp := parseRebuildJobResponse(t, rec)
-	var payload RebuildPayload
-	if err := json.Unmarshal(resp.Payload, &payload); err != nil {
-		t.Fatalf("failed to unmarshal payload: %v", err)
-	}
-	if payload.Strategy != "rebase" {
-		t.Errorf("expected default strategy='rebase', got %q", payload.Strategy)
-	}
-}
-
-// ===========================================================================
-// 16-REQ-1.E1: POST /rebuild on a 'standard' mode workspace returns HTTP 400.
-// ===========================================================================
-
-func TestSubmitRebuild_StandardMode_Returns400(t *testing.T) {
-	env := newRebuildTestEnv(t)
-
-	seedWorkspace(t, env.db, "ws-std", "alice", "ready", "standard", "")
-
-	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/ws-std/rebuild", "", rebuildUserAuth("alice"))
-
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("POST /rebuild (standard mode) status = %d; want %d; body = %s",
-			rec.Code, http.StatusBadRequest, rec.Body.String())
-	}
-
-	resp := parseErrorEnvelope(t, rec)
-	if resp.Error.Message == "" {
-		t.Error("expected non-empty error message for standard mode workspace")
-	}
-}
-
-// ===========================================================================
-// 16-REQ-1.E2: POST /rebuild when workspace status is not ready (archived, cloning, ...)
-// returns HTTP 400.
-// ===========================================================================
-
-func TestSubmitRebuild_WorkspaceNotActive_Returns400(t *testing.T) {
-	env := newRebuildTestEnv(t)
-
-	seedWorkspace(t, env.db, "ws-archived", "alice", "archived", "carry_patch", "integration")
-	seedPatch(t, env.db, "patch-a1", "ws-archived", "feature/foo", 1, PatchStatusActive)
-
-	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/ws-archived/rebuild", "", rebuildUserAuth("alice"))
-
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("POST /rebuild (archived workspace) status = %d; want %d; body = %s",
-			rec.Code, http.StatusBadRequest, rec.Body.String())
-	}
-
-	resp := parseErrorEnvelope(t, rec)
-	if resp.Error.Message == "" {
-		t.Error("expected non-empty error message for archived workspace")
-	}
-}
-
-func TestSubmitRebuild_CloneNotReady_Returns400(t *testing.T) {
-	env := newRebuildTestEnv(t)
-
-	seedWorkspace(t, env.db, "ws-cloning", "alice", "cloning", "carry_patch", "integration")
-	seedPatch(t, env.db, "patch-c1", "ws-cloning", "feature/foo", 1, PatchStatusActive)
-
-	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/ws-cloning/rebuild", "", rebuildUserAuth("alice"))
-
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("POST /rebuild (clone not ready) status = %d; want %d; body = %s",
-			rec.Code, http.StatusBadRequest, rec.Body.String())
-	}
-
-	resp := parseErrorEnvelope(t, rec)
-	if resp.Error.Message == "" {
-		t.Error("expected non-empty error message for clone not ready")
-	}
-}
-
-// ===========================================================================
-// 16-REQ-1.E3: POST /rebuild when no patches have status 'active' or
-// 'conflict' returns HTTP 400.
-// ===========================================================================
-
-func TestSubmitRebuild_NoActivePatches_Returns400(t *testing.T) {
-	env := newRebuildTestEnv(t)
-
-	seedWorkspace(t, env.db, "ws-nopatch", "alice", "ready", "carry_patch", "integration")
-
-	// Seed only disabled and merged_upstream patches — no active or conflict.
-	seedPatch(t, env.db, "patch-d1", "ws-nopatch", "feature/disabled", 1, PatchStatusDisabled)
-	seedPatch(t, env.db, "patch-m1", "ws-nopatch", "feature/merged", 2, PatchStatusMergedUpstream)
-
-	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/ws-nopatch/rebuild", "", rebuildUserAuth("alice"))
-
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("POST /rebuild (no active patches) status = %d; want %d; body = %s",
-			rec.Code, http.StatusBadRequest, rec.Body.String())
-	}
-
-	resp := parseErrorEnvelope(t, rec)
-	if resp.Error.Message == "" {
-		t.Error("expected non-empty error message for no active patches")
-	}
-}
-
-func TestSubmitRebuild_EmptyPatchList_Returns400(t *testing.T) {
-	env := newRebuildTestEnv(t)
-
-	seedWorkspace(t, env.db, "ws-empty", "alice", "ready", "carry_patch", "integration")
-	// No patches at all.
-
-	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/ws-empty/rebuild", "", rebuildUserAuth("alice"))
-
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("POST /rebuild (empty patch list) status = %d; want %d; body = %s",
-			rec.Code, http.StatusBadRequest, rec.Body.String())
-	}
-}
-
-// ===========================================================================
-// 16-REQ-1.E4: POST /rebuild when a rebuild job is already queued or running
-// returns HTTP 409.
-// ===========================================================================
-
-func TestSubmitRebuild_DuplicateJob_Returns409(t *testing.T) {
-	env := newRebuildTestEnv(t)
-
-	seedWorkspace(t, env.db, "ws-dup", "alice", "ready", "carry_patch", "integration")
-	seedPatch(t, env.db, "patch-dup1", "ws-dup", "feature/foo", 1, PatchStatusActive)
-
-	// First submission should succeed.
-	rec1 := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/ws-dup/rebuild", "", rebuildUserAuth("alice"))
-	if rec1.Code != http.StatusAccepted {
-		t.Fatalf("first POST /rebuild status = %d; want %d; body = %s",
-			rec1.Code, http.StatusAccepted, rec1.Body.String())
-	}
-
-	// Second submission should return 409.
-	rec2 := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/ws-dup/rebuild", "", rebuildUserAuth("alice"))
-	if rec2.Code != http.StatusConflict {
-		t.Fatalf("duplicate POST /rebuild status = %d; want %d; body = %s",
-			rec2.Code, http.StatusConflict, rec2.Body.String())
-	}
-
-	resp := parseErrorEnvelope(t, rec2)
-	if resp.Error.Message == "" {
-		t.Error("expected non-empty error message for duplicate rebuild submission")
-	}
-}
-
-// ===========================================================================
-// 16-REQ-1.E8: POST /rebuild by a PAT without 'rebuilds:write' scope
-// returns HTTP 403.
-// ===========================================================================
-
-func TestSubmitRebuild_PATWithoutScope_Returns403(t *testing.T) {
-	env := newRebuildTestEnv(t)
-
-	seedWorkspace(t, env.db, "ws-perm", "alice", "ready", "carry_patch", "integration")
-	seedPatch(t, env.db, "patch-p1", "ws-perm", "feature/foo", 1, PatchStatusActive)
-
-	// PAT with only rebuilds:read scope (no rebuilds:write).
-	auth := rebuildPATAuth("alice", "rebuilds:read")
-	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/ws-perm/rebuild", "", auth)
-
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("POST /rebuild (PAT without write scope) status = %d; want %d; body = %s",
-			rec.Code, http.StatusForbidden, rec.Body.String())
-	}
-
-	resp := parseErrorEnvelope(t, rec)
-	if resp.Error.Message == "" {
-		t.Error("expected non-empty error message for missing permission scope")
-	}
-}
-
-func TestSubmitRebuild_PATWithWriteScope_Returns202(t *testing.T) {
-	env := newRebuildTestEnv(t)
-
-	seedWorkspace(t, env.db, "ws-pat-ok", "alice", "ready", "carry_patch", "integration")
-	seedPatch(t, env.db, "patch-pa1", "ws-pat-ok", "feature/foo", 1, PatchStatusActive)
-
-	// PAT with rebuilds:write scope should succeed.
-	auth := rebuildPATAuth("alice", "rebuilds:write")
-	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/ws-pat-ok/rebuild", "", auth)
-
-	if rec.Code != http.StatusAccepted {
-		t.Fatalf("POST /rebuild (PAT with write scope) status = %d; want %d; body = %s",
-			rec.Code, http.StatusAccepted, rec.Body.String())
-	}
-}
-
-// ===========================================================================
-// TS-NS-1: POST /rebuild with body {"strategy":"merge"} uses merge strategy
-// regardless of the REBUILD_STRATEGY variable.
-// Requirement: NS-REQ-1
-// ===========================================================================
-
-func TestSubmitRebuild_BodyStrategyOverride(t *testing.T) {
-	// Create env where GetVariable returns 'rebase' (default).
-	env := newRebuildTestEnvWithStrategy(t, "rebase")
-
-	seedWorkspace(t, env.db, "ws-override", "alice", "ready", "carry_patch", "integration")
-	seedPatch(t, env.db, "patch-o1", "ws-override", "feature/foo", 1, PatchStatusActive)
-
-	// Send POST with body strategy=merge; variable says rebase.
-	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/ws-override/rebuild",
-		`{"strategy":"merge"}`, rebuildUserAuth("alice"))
-
-	if rec.Code != http.StatusAccepted {
-		t.Fatalf("POST /rebuild status = %d; want %d; body = %s",
-			rec.Code, http.StatusAccepted, rec.Body.String())
-	}
-
-	resp := parseRebuildJobResponse(t, rec)
-	var payload RebuildPayload
-	if err := json.Unmarshal(resp.Payload, &payload); err != nil {
-		t.Fatalf("failed to unmarshal payload: %v", err)
-	}
-	if payload.Strategy != "merge" {
-		t.Errorf("expected payload.strategy='merge' (body override), got %q", payload.Strategy)
-	}
-}
-
-// Also test that body strategy=rebase overrides a merge variable.
-func TestSubmitRebuild_BodyStrategyOverride_Rebase(t *testing.T) {
-	env := newRebuildTestEnvWithStrategy(t, "merge")
-
-	seedWorkspace(t, env.db, "ws-override2", "alice", "ready", "carry_patch", "integration")
-	seedPatch(t, env.db, "patch-o2", "ws-override2", "feature/foo", 1, PatchStatusActive)
-
-	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/ws-override2/rebuild",
-		`{"strategy":"rebase"}`, rebuildUserAuth("alice"))
-
-	if rec.Code != http.StatusAccepted {
-		t.Fatalf("POST /rebuild status = %d; want %d; body = %s",
-			rec.Code, http.StatusAccepted, rec.Body.String())
-	}
-
-	resp := parseRebuildJobResponse(t, rec)
-	var payload RebuildPayload
-	if err := json.Unmarshal(resp.Payload, &payload); err != nil {
-		t.Fatalf("failed to unmarshal payload: %v", err)
-	}
-	if payload.Strategy != "rebase" {
-		t.Errorf("expected payload.strategy='rebase' (body override), got %q", payload.Strategy)
-	}
-}
-
-// ===========================================================================
-// TS-NS-3: POST /rebuild with an invalid strategy value returns 400.
-// Requirement: NS-REQ-3
-// ===========================================================================
-
-func TestSubmitRebuild_InvalidBodyStrategy_Returns400(t *testing.T) {
-	env := newRebuildTestEnv(t)
-
-	seedWorkspace(t, env.db, "ws-invalid", "alice", "ready", "carry_patch", "integration")
-	seedPatch(t, env.db, "patch-i1", "ws-invalid", "feature/foo", 1, PatchStatusActive)
-
-	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/ws-invalid/rebuild",
-		`{"strategy":"squash"}`, rebuildUserAuth("alice"))
-
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("POST /rebuild (invalid strategy) status = %d; want %d; body = %s",
-			rec.Code, http.StatusBadRequest, rec.Body.String())
-	}
-
-	resp := parseErrorEnvelope(t, rec)
-	if resp.Error.Message == "" {
-		t.Error("expected non-empty error message for invalid strategy")
-	}
-}
-
-// ===========================================================================
-// TS-NS-1: GET /workspaces/:slug/rebuilds/:id returns
-// previous_integration_head_sha and integration_head_sha when the rebuild
-// result contains them.
-//
-// Requirement: NS-REQ-1
-// ===========================================================================
-
-func TestGetRebuild_IncludesPreviousIntegrationHeadSHA(t *testing.T) {
-	env := newFullTestEnv(t)
-
-	slug := "ws-prev-sha"
-	seedWorkspaceCarryPatch(t, env.db, slug, "alice",
-		"https://github.com/example/upstream", "upstream-sha", "integration", "")
-	seedPatch(t, env.db, "patch-1", slug, "feature/foo", 1, PatchStatusActive)
-
-	// Insert a completed rebuild job with a result containing both SHAs.
-	result := RebuildResult{
-		UpstreamHeadSHA:            "aaaa000000000000000000000000000000000001",
-		IntegrationHeadSHA:         "bbbb000000000000000000000000000000000001",
-		PreviousIntegrationHeadSHA: "cccc000000000000000000000000000000000001",
-		Strategy:                   "rebase",
-		PatchesApplied:             1,
-		PatchResults:               []PatchResult{{PatchID: "patch-1", Status: "success"}},
-	}
-	resultJSON, _ := json.Marshal(result)
-	seedRebuildJobWithResult(t, env.db, "job-prev-sha", "completed", slug, "rebase",
-		time.Now(), resultJSON)
-
-	rec := env.doRequest(t, http.MethodGet,
-		"/api/v1/workspaces/"+slug+"/rebuilds/job-prev-sha", "",
-		rebuildUserAuth("alice"))
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("GET /rebuilds/:id status = %d; want %d; body = %s",
-			rec.Code, http.StatusOK, rec.Body.String())
-	}
-
-	var body map[string]any
-	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
-		t.Fatalf("failed to decode response: %v", err)
-	}
-
-	prevSHA, ok := body["previous_integration_head_sha"].(string)
-	if !ok || prevSHA == "" {
-		t.Error("expected non-empty 'previous_integration_head_sha' in response")
-	}
-	if prevSHA != "cccc000000000000000000000000000000000001" {
-		t.Errorf("previous_integration_head_sha = %q, want %q",
-			prevSHA, "cccc000000000000000000000000000000000001")
-	}
-
-	intSHA, ok := body["integration_head_sha"].(string)
-	if !ok || intSHA == "" {
-		t.Error("expected non-empty 'integration_head_sha' in response")
-	}
-	if intSHA != "bbbb000000000000000000000000000000000001" {
-		t.Errorf("integration_head_sha = %q, want %q",
-			intSHA, "bbbb000000000000000000000000000000000001")
-	}
-
-	// The two SHAs must differ.
-	if prevSHA == intSHA {
-		t.Error("previous_integration_head_sha and integration_head_sha should differ")
-	}
-}
-
-// ===========================================================================
-// TS-NS-2: Rollback via POST /workspaces/:slug/rebuilds/:id/rollback
-// resets the integration branch to the previous HEAD.
-//
-// Requirement: NS-REQ-2
-// ===========================================================================
-
-func TestRollbackRebuild_Success_Returns200(t *testing.T) {
-	env := newFullTestEnv(t)
-
-	slug := "ws-rollback"
-	seedWorkspaceCarryPatch(t, env.db, slug, "alice",
-		"https://github.com/example/upstream", "upstream-sha", "integration", "")
-	seedPatch(t, env.db, "patch-rb1", slug, "feature/foo", 1, PatchStatusActive)
-
-	previousSHA := "prev000000000000000000000000000000000001"
-	result := RebuildResult{
-		UpstreamHeadSHA:            "aaaa000000000000000000000000000000000001",
-		IntegrationHeadSHA:         "bbbb000000000000000000000000000000000001",
-		PreviousIntegrationHeadSHA: previousSHA,
-		Strategy:                   "rebase",
-		PatchesApplied:             1,
-		PatchResults:               []PatchResult{{PatchID: "patch-rb1", Status: "success"}},
-	}
-	resultJSON, _ := json.Marshal(result)
-	seedRebuildJobWithResult(t, env.db, "job-rb1", "completed", slug, "rebase",
-		time.Now(), resultJSON)
-
-	rec := env.doRequest(t, http.MethodPost,
-		"/api/v1/workspaces/"+slug+"/rebuilds/job-rb1/rollback", "",
-		rebuildUserAuth("alice"))
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("POST /rollback status = %d; want %d; body = %s",
-			rec.Code, http.StatusOK, rec.Body.String())
-	}
-
-	var body map[string]any
-	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
-		t.Fatalf("failed to decode response: %v", err)
-	}
-
-	rolledBackTo, ok := body["rolled_back_to"].(string)
-	if !ok || rolledBackTo == "" {
-		t.Error("expected non-empty 'rolled_back_to' in response")
-	}
-	if rolledBackTo != previousSHA {
-		t.Errorf("rolled_back_to = %q, want %q", rolledBackTo, previousSHA)
-	}
-
-	// Verify git branch -f was called with the previous SHA.
-	found := false
-	for _, call := range env.gitRunner.RunCalls {
-		if len(call.Args) >= 4 &&
-			call.Args[0] == "branch" &&
-			call.Args[1] == "-f" &&
-			call.Args[2] == "deploy" &&
-			call.Args[3] == previousSHA {
-			found = true
-			break
+	for _, c := range cases {
+		msg, kind := e.wantErr(e.do(http.MethodPost, "/api/v1/workspaces/"+c.slug+"/rebuild", c.body, alice), c.status)
+		if msg != c.want || kind != c.kind {
+			t.Errorf("%s: %q/%q", c.name, msg, kind)
 		}
 	}
-	if !found {
-		t.Error("expected 'git branch -f deploy <previousSHA>' call")
+	if len(e.jobs("ws")) != 0 {
+		t.Error("a refused submission enqueued a job")
 	}
 }
 
-// ===========================================================================
-// TS-NS-3: Rollback is rejected when there is no previous SHA (first-ever
-// rebuild for the workspace).
-//
-// Requirement: NS-REQ-3
-// ===========================================================================
-
-func TestRollbackRebuild_NoPreviousSHA_Returns409(t *testing.T) {
-	env := newFullTestEnv(t)
-
-	slug := "ws-rollback-409"
-	seedWorkspaceCarryPatch(t, env.db, slug, "alice",
-		"https://github.com/example/upstream", "upstream-sha", "integration", "")
-	seedPatch(t, env.db, "patch-no-prev", slug, "feature/foo", 1, PatchStatusActive)
-
-	// Result with empty PreviousIntegrationHeadSHA (first rebuild).
-	result := RebuildResult{
-		UpstreamHeadSHA:    "aaaa000000000000000000000000000000000001",
-		IntegrationHeadSHA: "bbbb000000000000000000000000000000000001",
-		Strategy:           "rebase",
-		PatchesApplied:     1,
-		PatchResults:       []PatchResult{{PatchID: "patch-no-prev", Status: "success"}},
+// The rebuild routes refuse a PAT without the scope they need; rebuilds:write
+// also reads.
+func TestRebuildRoutes_ScopeMatrix(t *testing.T) {
+	e := rebuildEnv(t)
+	id := e.enqueueJob("ws", jobqueue.StatusQueued)
+	routes := []struct {
+		method, path, scope, ok string
+	}{
+		{http.MethodPost, "/rebuild", "rebuilds:write", "rebuilds:write"},
+		{http.MethodGet, "/rebuilds", "rebuilds:read", "rebuilds:write"},
+		{http.MethodGet, "/rebuilds/" + id, "rebuilds:read", "rebuilds:write"},
+		{http.MethodDelete, "/rebuilds/" + id, "rebuilds:write", "rebuilds:write"},
+		{http.MethodPost, "/rebuilds/" + id + "/requeue", "rebuilds:write", "rebuilds:write"},
+		{http.MethodPost, "/rebuilds/" + id + "/rollback", "rebuilds:write", "rebuilds:write"},
+		{http.MethodGet, "/rebuild-preview", "rebuilds:read", "rebuilds:read"},
+		{http.MethodGet, "/patch-status", "workspaces:read", "workspaces:read"},
+		{http.MethodGet, "/rerere", "workspaces:read", "workspaces:read"},
+		{http.MethodDelete, "/rerere/x", "workspaces:write", "workspaces:write"},
 	}
-	resultJSON, _ := json.Marshal(result)
-	seedRebuildJobWithResult(t, env.db, "job-no-prev", "completed", slug, "rebase",
-		time.Now(), resultJSON)
-
-	rec := env.doRequest(t, http.MethodPost,
-		"/api/v1/workspaces/"+slug+"/rebuilds/job-no-prev/rollback", "",
-		rebuildUserAuth("alice"))
-
-	if rec.Code != http.StatusConflict {
-		t.Fatalf("POST /rollback (no previous SHA) status = %d; want %d; body = %s",
-			rec.Code, http.StatusConflict, rec.Body.String())
-	}
-
-	resp := parseErrorEnvelope(t, rec)
-	if resp.Error.Message == "" {
-		t.Error("expected non-empty error message for no previous SHA")
-	}
-}
-
-// Test: rollback rejected when job has no result (not yet completed).
-func TestRollbackRebuild_NoResult_Returns409(t *testing.T) {
-	env := newFullTestEnv(t)
-
-	slug := "ws-rollback-noresult"
-	seedWorkspaceCarryPatch(t, env.db, slug, "alice",
-		"https://github.com/example/upstream", "upstream-sha", "integration", "")
-	seedPatch(t, env.db, "patch-nr", slug, "feature/foo", 1, PatchStatusActive)
-
-	// Insert a queued job (no result).
-	seedRebuildJob(t, env.db, "job-nr", "queued", slug, "rebase", "operator")
-
-	rec := env.doRequest(t, http.MethodPost,
-		"/api/v1/workspaces/"+slug+"/rebuilds/job-nr/rollback", "",
-		rebuildUserAuth("alice"))
-
-	if rec.Code != http.StatusConflict {
-		t.Fatalf("POST /rollback (no result) status = %d; want %d; body = %s",
-			rec.Code, http.StatusConflict, rec.Body.String())
-	}
-}
-
-// ===========================================================================
-// TS-NS-5: Rollback requires 'rebuilds:write' scope for PATs and is gated
-// to the owning workspace.
-//
-// Requirement: NS-REQ-5
-// ===========================================================================
-
-func TestRollbackRebuild_PATReadOnly_Returns403(t *testing.T) {
-	env := newFullTestEnv(t)
-
-	slug := "ws-rollback-auth"
-	seedWorkspaceCarryPatch(t, env.db, slug, "alice",
-		"https://github.com/example/upstream", "upstream-sha", "integration", "")
-	seedPatch(t, env.db, "patch-auth", slug, "feature/foo", 1, PatchStatusActive)
-
-	previousSHA := "prev000000000000000000000000000000000001"
-	result := RebuildResult{
-		UpstreamHeadSHA:            "aaaa000000000000000000000000000000000001",
-		IntegrationHeadSHA:         "bbbb000000000000000000000000000000000001",
-		PreviousIntegrationHeadSHA: previousSHA,
-		Strategy:                   "rebase",
-		PatchesApplied:             1,
-		PatchResults:               []PatchResult{{PatchID: "patch-auth", Status: "success"}},
-	}
-	resultJSON, _ := json.Marshal(result)
-	seedRebuildJobWithResult(t, env.db, "job-auth", "completed", slug, "rebase",
-		time.Now(), resultJSON)
-
-	// PAT with only rebuilds:read should be rejected.
-	rec := env.doRequest(t, http.MethodPost,
-		"/api/v1/workspaces/"+slug+"/rebuilds/job-auth/rollback", "",
-		rebuildPATAuth("alice", "rebuilds:read"))
-
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("POST /rollback (read-only PAT) status = %d; want %d; body = %s",
-			rec.Code, http.StatusForbidden, rec.Body.String())
-	}
-}
-
-func TestRollbackRebuild_PATWriteScope_Returns200(t *testing.T) {
-	env := newFullTestEnv(t)
-
-	slug := "ws-rollback-write"
-	seedWorkspaceCarryPatch(t, env.db, slug, "alice",
-		"https://github.com/example/upstream", "upstream-sha", "integration", "")
-	seedPatch(t, env.db, "patch-write", slug, "feature/foo", 1, PatchStatusActive)
-
-	previousSHA := "prev000000000000000000000000000000000001"
-	result := RebuildResult{
-		UpstreamHeadSHA:            "aaaa000000000000000000000000000000000001",
-		IntegrationHeadSHA:         "bbbb000000000000000000000000000000000001",
-		PreviousIntegrationHeadSHA: previousSHA,
-		Strategy:                   "rebase",
-		PatchesApplied:             1,
-		PatchResults:               []PatchResult{{PatchID: "patch-write", Status: "success"}},
-	}
-	resultJSON, _ := json.Marshal(result)
-	seedRebuildJobWithResult(t, env.db, "job-write", "completed", slug, "rebase",
-		time.Now(), resultJSON)
-
-	// PAT with rebuilds:write should succeed.
-	rec := env.doRequest(t, http.MethodPost,
-		"/api/v1/workspaces/"+slug+"/rebuilds/job-write/rollback", "",
-		rebuildPATAuth("alice", "rebuilds:write"))
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("POST /rollback (write PAT) status = %d; want %d; body = %s",
-			rec.Code, http.StatusOK, rec.Body.String())
-	}
-}
-
-func TestRollbackRebuild_CrossWorkspace_Returns404(t *testing.T) {
-	env := newFullTestEnv(t)
-
-	slug := "ws-rollback-cross"
-	seedWorkspaceCarryPatch(t, env.db, slug, "alice",
-		"https://github.com/example/upstream", "upstream-sha", "integration", "")
-	seedPatch(t, env.db, "patch-cross", slug, "feature/foo", 1, PatchStatusActive)
-
-	previousSHA := "prev000000000000000000000000000000000001"
-	result := RebuildResult{
-		UpstreamHeadSHA:            "aaaa000000000000000000000000000000000001",
-		IntegrationHeadSHA:         "bbbb000000000000000000000000000000000001",
-		PreviousIntegrationHeadSHA: previousSHA,
-		Strategy:                   "rebase",
-		PatchesApplied:             1,
-		PatchResults:               []PatchResult{{PatchID: "patch-cross", Status: "success"}},
-	}
-	resultJSON, _ := json.Marshal(result)
-	seedRebuildJobWithResult(t, env.db, "job-cross", "completed", slug, "rebase",
-		time.Now(), resultJSON)
-
-	// Create a second workspace and try to access the job from it.
-	seedWorkspaceCarryPatch(t, env.db, "ws-other", "bob",
-		"https://github.com/example/other", "other-sha", "integration", "")
-
-	rec := env.doRequest(t, http.MethodPost,
-		"/api/v1/workspaces/ws-other/rebuilds/job-cross/rollback", "",
-		rebuildUserAuth("bob"))
-
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("POST /rollback (cross-workspace) status = %d; want %d; body = %s",
-			rec.Code, http.StatusNotFound, rec.Body.String())
-	}
-}
-
-// ===========================================================================
-// TS-NS-5: POST /rebuild with {"fail_mode":"continue"} passes fail_mode
-// to the payload.
-//
-// Requirement: NS-REQ-5
-// ===========================================================================
-
-func TestSubmitRebuild_FailModeContinue_InPayload(t *testing.T) {
-	env := newRebuildTestEnv(t)
-
-	seedWorkspace(t, env.db, "ws-failmode", "alice", "ready", "carry_patch", "integration")
-	seedPatch(t, env.db, "patch-fm1", "ws-failmode", "feature/foo", 1, PatchStatusActive)
-
-	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/ws-failmode/rebuild",
-		`{"fail_mode":"continue"}`, rebuildUserAuth("alice"))
-
-	if rec.Code != http.StatusAccepted {
-		t.Fatalf("POST /rebuild status = %d; want %d; body = %s",
-			rec.Code, http.StatusAccepted, rec.Body.String())
-	}
-
-	resp := parseRebuildJobResponse(t, rec)
-	var payload RebuildPayload
-	if err := json.Unmarshal(resp.Payload, &payload); err != nil {
-		t.Fatalf("failed to unmarshal payload: %v", err)
-	}
-	if payload.FailMode != "continue" {
-		t.Errorf("expected payload.fail_mode='continue', got %q", payload.FailMode)
-	}
-}
-
-// TS-NS-5: POST /rebuild with no fail_mode omits it from payload.
-func TestSubmitRebuild_NoFailMode_OmittedFromPayload(t *testing.T) {
-	env := newRebuildTestEnv(t)
-
-	seedWorkspace(t, env.db, "ws-nofm", "alice", "ready", "carry_patch", "integration")
-	seedPatch(t, env.db, "patch-nofm", "ws-nofm", "feature/foo", 1, PatchStatusActive)
-
-	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/ws-nofm/rebuild",
-		"", rebuildUserAuth("alice"))
-
-	if rec.Code != http.StatusAccepted {
-		t.Fatalf("POST /rebuild status = %d; want %d; body = %s",
-			rec.Code, http.StatusAccepted, rec.Body.String())
-	}
-
-	resp := parseRebuildJobResponse(t, rec)
-	var payload RebuildPayload
-	if err := json.Unmarshal(resp.Payload, &payload); err != nil {
-		t.Fatalf("failed to unmarshal payload: %v", err)
-	}
-	// FailMode should be empty (omitted) when not supplied.
-	if payload.FailMode != "" {
-		t.Errorf("expected empty fail_mode when not supplied, got %q", payload.FailMode)
-	}
-}
-
-// TS-NS-5: Invalid fail_mode value returns 400.
-func TestSubmitRebuild_InvalidFailMode_Returns400(t *testing.T) {
-	env := newRebuildTestEnv(t)
-
-	seedWorkspace(t, env.db, "ws-badfm", "alice", "ready", "carry_patch", "integration")
-	seedPatch(t, env.db, "patch-badfm", "ws-badfm", "feature/foo", 1, PatchStatusActive)
-
-	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/ws-badfm/rebuild",
-		`{"fail_mode":"invalid"}`, rebuildUserAuth("alice"))
-
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("POST /rebuild (invalid fail_mode) status = %d; want %d; body = %s",
-			rec.Code, http.StatusBadRequest, rec.Body.String())
-	}
-
-	resp := parseErrorEnvelope(t, rec)
-	if resp.Error.Message == "" {
-		t.Error("expected non-empty error message for invalid fail_mode")
-	}
-}
-
-// ===========================================================================
-// TS-NS-4: REBUILD_FAIL_MODE workspace variable sets the default when no
-// body override is given.
-//
-// Requirement: NS-REQ-4
-// ===========================================================================
-
-func TestSubmitRebuild_FailModeFromWorkspaceVariable(t *testing.T) {
-	// Create env where GetVariable returns 'continue' for REBUILD_FAIL_MODE.
-	env := newFullTestEnvWithGetVariable(t, func(scope, slug, key string) (string, error) {
-		if key == "REBUILD_FAIL_MODE" {
-			return "continue", nil
+	for _, r := range routes {
+		if rec := e.do(r.method, wsPath+r.path, "", nil); rec.Code != http.StatusUnauthorized {
+			t.Errorf("%s %s anonymous = %d", r.method, r.path, rec.Code)
 		}
-		if key == "REBUILD_STRATEGY" {
-			return "rebase", nil
+		msg, _ := e.wantErr(e.do(r.method, wsPath+r.path, "", pat("alice", "patches:write")), http.StatusForbidden)
+		if msg != "missing required scope: "+r.scope {
+			t.Errorf("%s %s = %q", r.method, r.path, msg)
 		}
-		return "", nil
-	})
-
-	slug := "ws-fmvar"
-	seedWorkspaceCarryPatch(t, env.db, slug, "alice",
-		"https://github.com/example/upstream", "upstream-sha", "integration", "")
-	seedPatch(t, env.db, "patch-fmvar", slug, "feature/foo", 1, PatchStatusActive)
-
-	// Submit without body fail_mode.
-	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/"+slug+"/rebuild",
-		"", rebuildUserAuth("alice"))
-
-	if rec.Code != http.StatusAccepted {
-		t.Fatalf("POST /rebuild status = %d; want %d; body = %s",
-			rec.Code, http.StatusAccepted, rec.Body.String())
-	}
-
-	resp := parseRebuildJobResponse(t, rec)
-	var payload RebuildPayload
-	if err := json.Unmarshal(resp.Payload, &payload); err != nil {
-		t.Fatalf("failed to unmarshal payload: %v", err)
-	}
-	if payload.FailMode != "continue" {
-		t.Errorf("expected payload.fail_mode='continue' (from variable), got %q", payload.FailMode)
-	}
-}
-
-// Body fail_mode overrides workspace variable.
-func TestSubmitRebuild_BodyFailModeOverridesVariable(t *testing.T) {
-	env := newFullTestEnvWithGetVariable(t, func(scope, slug, key string) (string, error) {
-		if key == "REBUILD_FAIL_MODE" {
-			return "continue", nil // variable says continue
+		if rec := e.do(r.method, wsPath+r.path, "", pat("alice", r.ok)); rec.Code == http.StatusForbidden || rec.Code == http.StatusUnauthorized {
+			t.Errorf("%s %s with %s = %d", r.method, r.path, r.ok, rec.Code)
 		}
-		if key == "REBUILD_STRATEGY" {
-			return "rebase", nil
+	}
+}
+
+// completed stores a finished job with a result for the workspace.
+func completed(t *testing.T, e *env, slug string, result RebuildResult, createdAt time.Time) string {
+	t.Helper()
+	id := e.enqueueJob(slug, jobqueue.StatusCompleted)
+	raw, _ := json.Marshal(result)
+	mustExec(t, e.db, `UPDATE jobs SET result = ?, created_at = ?, updated_at = ? WHERE id = ?`, string(raw), apikit.FormatUTC(createdAt), apikit.FormatUTC(createdAt), id)
+	return id
+}
+
+// The list and detail routes render each job as a record: strategy from the
+// payload, completed_at for terminal states, patch results and the
+// integration SHAs from the result, and a running job's progress.
+func TestRebuildRecords_ListAndGet(t *testing.T) {
+	e := rebuildEnv(t)
+	seedWS(t, e.db, ws{slug: "other"})
+	now := time.Now()
+	old := completed(t, e, "ws", RebuildResult{IntegrationHeadSHA: "head1", PreviousIntegrationHeadSHA: "prev1",
+		PatchResults: []PatchResult{{PatchID: "p1", BranchName: "feature/a", Position: 1, Status: "success", SourceSHA: "s1"}}}, now.Add(-time.Hour))
+	failed := e.enqueueJob("ws", jobqueue.StatusFailed)
+	mustExec(t, e.db, `UPDATE jobs SET error = 'conflict in patch' WHERE id = ?`, failed)
+	running := e.enqueueJob("ws", jobqueue.StatusRunning)
+	if err := e.q.UpdateProgress(running, []PatchResult{{PatchID: "p1", Status: "success"}}); err != nil {
+		t.Fatal(err)
+	}
+	foreign := e.enqueueJob("other", jobqueue.StatusQueued)
+
+	list := e.want(e.do(http.MethodGet, wsPath+"/rebuilds", "", alice), http.StatusOK)
+	jobs := list["jobs"].([]any)
+	if len(jobs) != 3 {
+		t.Fatalf("jobs = %d, want 3", len(jobs))
+	}
+	first := jobs[0].(map[string]any)
+	if first["id"] != running || first["status"] != jobqueue.StatusRunning || first["completed_at"] != nil || first["patch_results"] == nil {
+		t.Errorf("running record = %v (newest first, progress as patch_results)", first)
+	}
+	second := jobs[1].(map[string]any)
+	if second["id"] != failed || second["error"] != "conflict in patch" || second["completed_at"] == nil {
+		t.Errorf("failed record = %v", second)
+	}
+	last := jobs[2].(map[string]any)
+	if last["id"] != old || last["strategy"] != StrategyRebase || last["integration_head_sha"] != "head1" || last["previous_integration_head_sha"] != "prev1" || last["completed_at"] == nil {
+		t.Errorf("completed record = %v", last)
+	}
+	if results, _ := last["patch_results"].([]any); len(results) != 1 || results[0].(map[string]any)["source_sha"] != "s1" {
+		t.Errorf("patch_results = %v", last["patch_results"])
+	}
+
+	got := e.want(e.do(http.MethodGet, wsPath+"/rebuilds/"+old, "", alice), http.StatusOK)
+	if got["id"] != old || got["integration_head_sha"] != "head1" {
+		t.Errorf("detail = %v", got)
+	}
+	if got := e.want(e.do(http.MethodGet, wsPath+"/rebuilds/"+running, "", alice), http.StatusOK); got["patch_results"] == nil {
+		t.Error("running detail lacks progress")
+	}
+	mustExec(t, e.db, `UPDATE jobs SET progress = NULL WHERE id = ?`, running)
+	if got := e.want(e.do(http.MethodGet, wsPath+"/rebuilds/"+running, "", alice), http.StatusOK); got["patch_results"] != nil {
+		t.Error("running job without progress reports patch_results")
+	}
+	for _, id := range []string{foreign, "missing"} {
+		if msg, _ := e.wantErr(e.do(http.MethodGet, wsPath+"/rebuilds/"+id, "", alice), http.StatusNotFound); msg != "rebuild job not found" {
+			t.Errorf("job %s: %q", id, msg)
 		}
-		return "", nil
-	})
-
-	slug := "ws-fmoverride"
-	seedWorkspaceCarryPatch(t, env.db, slug, "alice",
-		"https://github.com/example/upstream", "upstream-sha", "integration", "")
-	seedPatch(t, env.db, "patch-fmo", slug, "feature/foo", 1, PatchStatusActive)
-
-	// Body says fail_fast, overriding variable.
-	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/"+slug+"/rebuild",
-		`{"fail_mode":"fail_fast"}`, rebuildUserAuth("alice"))
-
-	if rec.Code != http.StatusAccepted {
-		t.Fatalf("POST /rebuild status = %d; want %d; body = %s",
-			rec.Code, http.StatusAccepted, rec.Body.String())
 	}
-
-	resp := parseRebuildJobResponse(t, rec)
-	var payload RebuildPayload
-	if err := json.Unmarshal(resp.Payload, &payload); err != nil {
-		t.Fatalf("failed to unmarshal payload: %v", err)
-	}
-	if payload.FailMode != "fail_fast" {
-		t.Errorf("expected payload.fail_mode='fail_fast' (body override), got %q", payload.FailMode)
+	mustExec(t, e.db, `DELETE FROM jobs`)
+	if body := e.do(http.MethodGet, wsPath+"/rebuilds", "", alice).Body.String(); !strings.Contains(body, `"jobs":[]`) {
+		t.Errorf("empty history = %s", body)
 	}
 }
 
-// ===========================================================================
-// TS-NS-2: POST /rebuild on a 'standard' mode workspace returns error_type
-// 'workspace_mode_mismatch' in the JSON error envelope.
-//
-// Requirement: NS-REQ-2 (issue #22)
-// ===========================================================================
-
-func TestSubmitRebuild_StandardMode_ErrorType(t *testing.T) {
-	env := newRebuildTestEnv(t)
-
-	seedWorkspace(t, env.db, "ws-errtype-std", "alice", "ready", "standard", "")
-
-	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/ws-errtype-std/rebuild", "", rebuildUserAuth("alice"))
-
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("POST /rebuild (standard mode) status = %d; want %d; body = %s",
-			rec.Code, http.StatusBadRequest, rec.Body.String())
+// Only a queued job can be cancelled; a job of another workspace or an
+// unknown id is 404.
+func TestCancelRebuild_OnlyQueuedJobs(t *testing.T) {
+	e := rebuildEnv(t)
+	seedWS(t, e.db, ws{slug: "other"})
+	queued := e.enqueueJob("ws", jobqueue.StatusQueued)
+	got := e.want(e.do(http.MethodDelete, wsPath+"/rebuilds/"+queued, "", alice), http.StatusOK)
+	if got["status"] != "cancelled" {
+		t.Errorf("cancel = %v", got)
 	}
-
-	resp := parseErrorEnvelope(t, rec)
-	if resp.Error.ErrorType != "workspace_mode_mismatch" {
-		t.Errorf("error_type = %q; want 'workspace_mode_mismatch'", resp.Error.ErrorType)
+	if j, _ := e.q.GetByID(queued); j.Status != jobqueue.StatusCancelled {
+		t.Errorf("job status = %s", j.Status)
 	}
-}
-
-// ===========================================================================
-// TS-NS-4: POST /rebuild with no active/conflict patches returns error_type
-// 'no_active_patches' in the JSON error envelope.
-//
-// Requirement: NS-REQ-4 (issue #22)
-// ===========================================================================
-
-func TestSubmitRebuild_NoActivePatches_ErrorType(t *testing.T) {
-	env := newRebuildTestEnv(t)
-
-	seedWorkspace(t, env.db, "ws-errtype-nopatch", "alice", "ready", "carry_patch", "integration")
-	// Seed only disabled patches — no active or conflict.
-	seedPatch(t, env.db, "patch-et-d1", "ws-errtype-nopatch", "feature/disabled", 1, PatchStatusDisabled)
-
-	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/ws-errtype-nopatch/rebuild", "", rebuildUserAuth("alice"))
-
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("POST /rebuild (no active patches) status = %d; want %d; body = %s",
-			rec.Code, http.StatusBadRequest, rec.Body.String())
+	for _, status := range []string{jobqueue.StatusRunning, jobqueue.StatusCompleted, jobqueue.StatusFailed, jobqueue.StatusDeadLetter, jobqueue.StatusCancelled} {
+		mustExec(t, e.db, `DELETE FROM jobs`)
+		id := e.enqueueJob("ws", status)
+		if msg, _ := e.wantErr(e.do(http.MethodDelete, wsPath+"/rebuilds/"+id, "", alice), http.StatusConflict); msg != "job cannot be cancelled in its current state" {
+			t.Errorf("%s: %q", status, msg)
+		}
 	}
-
-	resp := parseErrorEnvelope(t, rec)
-	if resp.Error.ErrorType != "no_active_patches" {
-		t.Errorf("error_type = %q; want 'no_active_patches'", resp.Error.ErrorType)
+	mustExec(t, e.db, `DELETE FROM jobs`)
+	foreign := e.enqueueJob("other", jobqueue.StatusQueued)
+	for _, id := range []string{foreign, "missing"} {
+		e.wantErr(e.do(http.MethodDelete, wsPath+"/rebuilds/"+id, "", alice), http.StatusNotFound)
 	}
 }
 
-// ===========================================================================
-// TS-NS-3: POST /rebuild when a rebuild is already queued returns error_type
-// 'concurrent_rebuild' in the JSON error envelope.
-//
-// Requirement: NS-REQ-3 (issue #22)
-// ===========================================================================
+// Only a dead-lettered job can be requeued, and only while no job of the
+// workspace is active.
+func TestRequeueRebuild_DeadLetterOnly(t *testing.T) {
+	e := rebuildEnv(t)
+	seedWS(t, e.db, ws{slug: "other"})
+	dead := e.enqueueJob("ws", jobqueue.StatusDeadLetter)
+	got := e.want(e.do(http.MethodPost, wsPath+"/rebuilds/"+dead+"/requeue", "", alice), http.StatusOK)
+	if got["id"] != dead || got["status"] != jobqueue.StatusQueued || got["completed_at"] != nil {
+		t.Errorf("requeued record = %v", got)
+	}
+	if msg, _ := e.wantErr(e.do(http.MethodPost, wsPath+"/rebuilds/"+dead+"/requeue", "", alice), http.StatusConflict); !strings.Contains(msg, "not in dead_letter status") {
+		t.Errorf("queued job requeue = %q", msg)
+	}
+	mustExec(t, e.db, `DELETE FROM jobs`)
+	dead = e.enqueueJob("ws", jobqueue.StatusDeadLetter)
+	e.enqueueJob("ws", jobqueue.StatusRunning)
+	if msg, _ := e.wantErr(e.do(http.MethodPost, wsPath+"/rebuilds/"+dead+"/requeue", "", alice), http.StatusConflict); !strings.Contains(msg, "active job") {
+		t.Errorf("requeue with an active job = %q", msg)
+	}
+	foreign := e.enqueueJob("other", jobqueue.StatusDeadLetter)
+	for _, id := range []string{foreign, "missing"} {
+		e.wantErr(e.do(http.MethodPost, wsPath+"/rebuilds/"+id+"/requeue", "", alice), http.StatusNotFound)
+	}
+}
 
-func TestSubmitRebuild_DuplicateJob_ErrorType(t *testing.T) {
-	env := newRebuildTestEnv(t)
+// Rollback resets the integration branch named in the job's payload to the
+// previous head recorded in its result, under the workspace lock.
+func TestRollbackRebuild_ResetsIntegrationBranch(t *testing.T) {
+	e := rebuildEnv(t)
+	seedWS(t, e.db, ws{slug: "other"})
+	id := completed(t, e, "ws", RebuildResult{IntegrationHeadSHA: "new", PreviousIntegrationHeadSHA: "prev"}, time.Now())
 
-	seedWorkspace(t, env.db, "ws-errtype-dup", "alice", "ready", "carry_patch", "integration")
-	seedPatch(t, env.db, "patch-et-dup1", "ws-errtype-dup", "feature/foo", 1, PatchStatusActive)
-
-	// First submission should succeed.
-	rec1 := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/ws-errtype-dup/rebuild", "", rebuildUserAuth("alice"))
-	if rec1.Code != http.StatusAccepted {
-		t.Fatalf("first POST /rebuild status = %d; want %d; body = %s",
-			rec1.Code, http.StatusAccepted, rec1.Body.String())
+	got := e.want(e.do(http.MethodPost, wsPath+"/rebuilds/"+id+"/rollback", "", alice), http.StatusOK)
+	if got["rolled_back_to"] != "prev" || !e.fake.has("branch", "-f", "integration", "prev") {
+		t.Errorf("rollback = %v, calls = %v", got, e.fake.calls)
+	}
+	// Without an integration branch in the payload the default is "deploy".
+	mustExec(t, e.db, `UPDATE jobs SET payload = '{"workspace_slug":"ws"}' WHERE id = ?`, id)
+	e.want(e.do(http.MethodPost, wsPath+"/rebuilds/"+id+"/rollback", "", alice), http.StatusOK)
+	if !e.fake.has("branch", "-f", "deploy", "prev") {
+		t.Error("default integration branch not used")
 	}
 
-	// Second submission should return 409 with error_type.
-	rec2 := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/ws-errtype-dup/rebuild", "", rebuildUserAuth("alice"))
-	if rec2.Code != http.StatusConflict {
-		t.Fatalf("duplicate POST /rebuild status = %d; want %d; body = %s",
-			rec2.Code, http.StatusConflict, rec2.Body.String())
+	release := holdLock(t, "ws")
+	_, kind := e.wantErr(e.do(http.MethodPost, wsPath+"/rebuilds/"+id+"/rollback", "", alice), http.StatusConflict)
+	release()
+	if kind != "workspace_busy" {
+		t.Errorf("busy error_type = %q", kind)
+	}
+	e.fake.run = func(args ...string) (string, error) { return "", errors.New("git failed") }
+	if msg, _ := e.wantErr(e.do(http.MethodPost, wsPath+"/rebuilds/"+id+"/rollback", "", alice), http.StatusInternalServerError); msg != "failed to roll back integration branch" {
+		t.Errorf("git failure = %q", msg)
+	}
+	e.gitErr = errors.New("no runner")
+	e.wantErr(e.do(http.MethodPost, wsPath+"/rebuilds/"+id+"/rollback", "", alice), http.StatusInternalServerError)
+	e.gitErr = nil
+
+	noPrev := completed(t, e, "ws", RebuildResult{IntegrationHeadSHA: "new"}, time.Now())
+	if msg, _ := e.wantErr(e.do(http.MethodPost, wsPath+"/rebuilds/"+noPrev+"/rollback", "", alice), http.StatusConflict); msg != "no previous integration head to roll back to" {
+		t.Errorf("first rebuild = %q", msg)
+	}
+	noResult := e.enqueueJob("ws", jobqueue.StatusFailed)
+	e.wantErr(e.do(http.MethodPost, wsPath+"/rebuilds/"+noResult+"/rollback", "", alice), http.StatusConflict)
+	foreign := completed(t, e, "other", RebuildResult{PreviousIntegrationHeadSHA: "prev"}, time.Now())
+	for _, j := range []string{foreign, "missing"} {
+		e.wantErr(e.do(http.MethodPost, wsPath+"/rebuilds/"+j+"/rollback", "", alice), http.StatusNotFound)
+	}
+}
+
+// The preview predicts each active patch against the upstream base with
+// merge-tree, cumulatively, without moving any ref.
+func TestRebuildPreview_PredictsWithoutMutation(t *testing.T) {
+	e := newEnv(t)
+	e.useRealGit = true
+	seedWS(t, e.db, ws{slug: "ws"})
+	seedWS(t, e.db, ws{slug: "std", mode: "standard"})
+	trunk, base := newRebuildRepo(t, e.root, "ws")
+	seedPatch(t, e.db, "ws", "p1", "feature/patch-a", 1, "active")
+	seedPatch(t, e.db, "ws", "p2", "feature/conflict", 2, "conflict")
+	seedPatch(t, e.db, "ws", "p3", "feature/patch-b", 3, "active")
+	seedPatch(t, e.db, "ws", "p4", "feature/disabled", 4, "disabled")
+	seedPatch(t, e.db, "ws", "p5", "feature/merged", 5, "merged_upstream")
+	seedPatch(t, e.db, "ws", "p6", "feature/missing", 6, "active")
+	refsBefore := runGit(t, trunk, "for-each-ref")
+
+	got := e.want(e.do(http.MethodGet, wsPath+"/rebuild-preview", "", alice), http.StatusOK)
+	results := got["patch_results"].([]any)
+	if len(results) != 4 {
+		t.Fatalf("results = %v", results)
+	}
+	want := []struct{ branch, status string }{{"feature/patch-a", "would_succeed"}, {"feature/conflict", "would_conflict"}, {"feature/patch-b", "would_succeed"}, {"feature/missing", "would_succeed"}}
+	for i, w := range want {
+		r := results[i].(map[string]any)
+		if r["branch_name"] != w.branch || r["status"] != w.status {
+			t.Errorf("result %d = %v", i, r)
+		}
+		if w.status == "would_succeed" && w.branch != "feature/missing" && r["tree_sha"] == "" {
+			t.Errorf("%s has no tree_sha", w.branch)
+		}
+	}
+	if files := results[1].(map[string]any)["conflict_files"].([]any); len(files) != 1 || files[0] != "base.txt" {
+		t.Errorf("conflict_files = %v", files)
+	}
+	if clean := results[0].(map[string]any)["conflict_files"].([]any); len(clean) != 0 {
+		t.Errorf("clean patch conflict_files = %v", clean)
+	}
+	if runGit(t, trunk, "for-each-ref") != refsBefore || refOf(trunk, "HEAD") != base {
+		t.Error("preview changed refs or HEAD")
 	}
 
-	resp := parseErrorEnvelope(t, rec2)
-	if resp.Error.ErrorType != "concurrent_rebuild" {
-		t.Errorf("error_type = %q; want 'concurrent_rebuild'", resp.Error.ErrorType)
+	mustExec(t, e.db, `DELETE FROM patches`)
+	if got := e.want(e.do(http.MethodGet, wsPath+"/rebuild-preview", "", alice), http.StatusOK); len(got["patch_results"].([]any)) != 0 {
+		t.Errorf("empty preview = %v", got)
+	}
+	if msg, _ := e.wantErr(e.do(http.MethodGet, "/api/v1/workspaces/std/rebuild-preview", "", alice), http.StatusBadRequest); msg != "rebuild-preview is only supported for carry_patch workspaces" {
+		t.Errorf("standard = %q", msg)
+	}
+	e.wantErr(e.do(http.MethodGet, "/api/v1/workspaces/none/rebuild-preview", "", alice), http.StatusNotFound)
+	runGit(t, trunk, "update-ref", "-d", UpstreamHeadRef)
+	if msg, _ := e.wantErr(e.do(http.MethodGet, wsPath+"/rebuild-preview", "", alice), http.StatusInternalServerError); !strings.Contains(msg, "sync the workspace first") {
+		t.Errorf("no upstream base = %q", msg)
+	}
+	e.gitErr = errors.New("no runner")
+	e.wantErr(e.do(http.MethodGet, wsPath+"/rebuild-preview", "", alice), http.StatusInternalServerError)
+}
+
+// The patch-status dashboard joins the workspace row, the latest rebuild, the
+// visible patches with their last result and origin state, the summary
+// counts and the rerere cache size.
+func TestPatchStatus_Dashboard(t *testing.T) {
+	e := rebuildEnv(t)
+	seedWS(t, e.db, ws{slug: "std", mode: "standard"})
+	seedPatch(t, e.db, "ws", "p2", "feature/b", 2, "conflict")
+	seedPatch(t, e.db, "ws", "p3", "feature/c", 3, "disabled")
+	seedPatch(t, e.db, "ws", "p4", "feature/d", 4, "merged_upstream")
+	seedPatch(t, e.db, "ws", "p5", "feature/gone", -5, "deleted")
+	mustExec(t, e.db, `UPDATE patches SET origin_sync_state = 'diverged', origin_sha = 'o1', origin_synced_at = 't1' WHERE id = 'p1'`)
+	mustExec(t, e.db, `UPDATE patches SET origin_sync_state = 'missing_on_origin' WHERE id = 'p2'`)
+	mustExec(t, e.db, `UPDATE workspaces SET head_sha = 'h', upstream_head_sha = 'u', last_sync_at = 'ls', clone_error = 'ce', sync_error = 'se' WHERE slug = 'ws'`)
+	completed(t, e, "ws", RebuildResult{IntegrationHeadSHA: "old"}, time.Now().Add(-time.Hour))
+	latest := completed(t, e, "ws", RebuildResult{IntegrationHeadSHA: "ih", PatchResults: []PatchResult{
+		{PatchID: "p1", Status: "success"}, {PatchID: "p2", Status: "conflict", ConflictFiles: []string{"x.go"}}}}, time.Now())
+	rr := filepath.Join(e.root, "ws", "trunk", ".git", "rr-cache")
+	writeFile(t, filepath.Join(rr, "e1", "preimage"), "<<<<<<<\n")
+	writeFile(t, filepath.Join(rr, "e1", "postimage"), "x\n")
+	writeFile(t, filepath.Join(rr, "e2", "preimage"), "<<<<<<<\n")
+	writeFile(t, filepath.Join(rr, "bad", "other"), "x\n")
+
+	got := e.want(e.do(http.MethodGet, wsPath+"/patch-status", "", alice), http.StatusOK)
+	if got["workspace_slug"] != "ws" || got["workspace_mode"] != "carry_patch" || got["head_sha"] != "h" || got["upstream_head_sha"] != "u" ||
+		got["last_sync_at"] != "ls" || got["clone_error"] != "ce" || got["sync_error"] != "se" || got["integration_branch"] != "integration" || got["integration_head_sha"] != "ih" {
+		t.Errorf("workspace fields = %v", got)
+	}
+	if lr := got["last_rebuild"].(map[string]any); lr["id"] != latest || lr["status"] != jobqueue.StatusCompleted {
+		t.Errorf("last_rebuild = %v", lr)
+	}
+	patches := got["patches"].([]any)
+	if len(patches) != 4 {
+		t.Fatalf("patches = %v", patches)
+	}
+	p1 := patches[0].(map[string]any)
+	if p1["last_rebuild_result"] != "success" || p1["origin_sync_state"] != "diverged" || p1["origin_sha"] != "o1" || p1["origin_synced_at"] != "t1" {
+		t.Errorf("p1 = %v", p1)
+	}
+	p2 := patches[1].(map[string]any)
+	if p2["last_rebuild_result"] != "conflict" || p2["conflict_files"].([]any)[0] != "x.go" {
+		t.Errorf("p2 = %v", p2)
+	}
+	if p3 := patches[2].(map[string]any); p3["last_rebuild_result"] != nil {
+		t.Errorf("p3 without a result = %v", p3)
+	}
+	summary := got["summary"].(map[string]any)
+	want := map[string]float64{"total_patches": 4, "active": 1, "conflict": 1, "disabled": 1, "merged_upstream": 1, "total_rerere_resolutions": 2, "patches_diverged": 1, "patches_missing_on_origin": 1}
+	for k, v := range want {
+		if summary[k] != v {
+			t.Errorf("summary[%s] = %v, want %v", k, summary[k], v)
+		}
+	}
+
+	mustExec(t, e.db, `DELETE FROM patches; DELETE FROM jobs`)
+	got = e.want(e.do(http.MethodGet, wsPath+"/patch-status", "", alice), http.StatusOK)
+	if got["last_rebuild"] != nil || got["integration_head_sha"] != "" || len(got["patches"].([]any)) != 0 || got["summary"].(map[string]any)["total_patches"] != 0.0 {
+		t.Errorf("empty dashboard = %v", got)
+	}
+	if msg, _ := e.wantErr(e.do(http.MethodGet, "/api/v1/workspaces/std/patch-status", "", alice), http.StatusBadRequest); msg != "patch-status is only available for carry_patch workspaces" {
+		t.Errorf("standard = %q", msg)
+	}
+	e.wantErr(e.do(http.MethodGet, "/api/v1/workspaces/none/patch-status", "", alice), http.StatusNotFound)
+}
+
+// CarryPatchSyncResponse serialises patches_synced and patches_diverged only
+// in origin mode (non-nil), as [] when empty, and rebuild_job_id only when set.
+func TestCarryPatchSyncResponse_MarshalJSON(t *testing.T) {
+	hub, _ := json.Marshal(CarryPatchSyncResponse{PatchesMerged: []string{}})
+	if s := string(hub); strings.Contains(s, "patches_synced") || strings.Contains(s, "rebuild_job_id") || !strings.Contains(s, `"origin_fetched":false`) {
+		t.Errorf("hub mode = %s", s)
+	}
+	id := "job-1"
+	origin, _ := json.Marshal(CarryPatchSyncResponse{PatchesMerged: []string{"a"}, RebuildJobID: &id, OriginFetched: true,
+		PatchesSynced: []PatchSyncedElement{}, PatchesDiverged: []string{}})
+	for _, want := range []string{`"patches_synced":[]`, `"patches_diverged":[]`, `"rebuild_job_id":"job-1"`, `"patches_merged":["a"]`} {
+		if !strings.Contains(string(origin), want) {
+			t.Errorf("origin mode %s lacks %s", origin, want)
+		}
+	}
+	extras := (&CarryPatchSyncResponse{PatchesMerged: []string{}, RebuildJobID: &id, PatchesDiverged: []string{"d"}}).asExtras()
+	if extras["rebuild_job_id"] != "job-1" || extras["patches_diverged"] == nil {
+		t.Errorf("extras = %v", extras)
+	}
+	if _, ok := extras["patches_synced"]; ok {
+		t.Error("nil patches_synced rendered")
 	}
 }

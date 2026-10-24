@@ -1,273 +1,152 @@
 package workspace
 
 import (
-	"database/sql"
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
-	_ "modernc.org/sqlite"
+	"github.com/agent-fox-dev/hub/internal/testutil"
 )
 
-// openTestDB opens an in-memory SQLite database for test isolation.
-// It limits the pool to a single connection because SQLite :memory: databases
-// are per-connection — without this, concurrent goroutines would get separate
-// in-memory databases each missing the schema.
-func openTestDB(t *testing.T) *sql.DB {
-	t.Helper()
-	db, err := sql.Open("sqlite", ":memory:")
+// TestStore_InsertAndRead: insertWorkspace fills the defaults and the
+// timestamps, a second insert of the slug is the unique constraint, a missing
+// slug reads as nil, and every field round-trips.
+func TestStore_InsertAndRead(t *testing.T) {
+	v := newEnv(t)
+	settings := DefaultSettings()
+	settings.RebuildStrategy, settings.SyncEnabled = "merge", false
+	full := &Workspace{Slug: "full", GitURL: "git@h:p", Branch: strPtr("dev"), OwnerID: owner, OrgID: strPtr("o"), Status: "ready",
+		DisplayName: "Full", Description: "d", HeadSHA: strPtr(headSHA), CloneError: strPtr("e"),
+		UpstreamHeadSHA: strPtr(upstreamSHA), LastSyncAt: strPtr("2026-01-01T00:00:00Z"), SyncError: strPtr("se"),
+		WorkspaceMode: "carry_patch", UpstreamURL: strPtr("https://u/p"), IntegrationBranch: strPtr("deploy"), Settings: settings}
+	if err := insertWorkspace(v.db, full); err != nil {
+		t.Fatal(err)
+	}
+	got, err := getWorkspaceBySlug(v.db, "full")
 	if err != nil {
-		t.Fatalf("failed to open in-memory database: %v", err)
+		t.Fatal(err)
 	}
-	// SQLite in-memory databases are per-connection. Restrict the pool to one
-	// connection so all goroutines share the same schema and data.
-	db.SetMaxOpenConns(1)
-	db.SetMaxIdleConns(1)
-	t.Cleanup(func() { db.Close() })
-
-	// Initialize the workspaces table schema.
-	if err := InitSchema(db); err != nil {
-		t.Fatalf("failed to initialize schema: %v", err)
+	if *got.Branch != "dev" || *got.OrgID != "o" || *got.HeadSHA != headSHA || *got.CloneError != "e" || got.Status != "ready" || got.Settings.SyncEnabled ||
+		*got.UpstreamHeadSHA != upstreamSHA || *got.LastSyncAt != "2026-01-01T00:00:00Z" || *got.SyncError != "se" || got.WorkspaceMode != "carry_patch" ||
+		*got.UpstreamURL != "https://u/p" || *got.IntegrationBranch != "deploy" || got.Settings.RebuildStrategy != "merge" || got.DisplayName != "Full" {
+		t.Errorf("round trip %+v", got)
+	}
+	if _, err := time.Parse(timestampFormat, got.CreatedAt); err != nil || got.CreatedAt != got.UpdatedAt || len(got.CreatedAt) != len("2006-01-02T15:04:05.000000Z") {
+		t.Errorf("timestamps %q %q: %v", got.CreatedAt, got.UpdatedAt, err)
 	}
 
-	// Create the apikit orgs and org_members tables so that org membership
-	// checks in handlers work correctly during integration tests.
-	// The orgs table includes owner_id (spec 04 addition) to support
-	// personal org lookup in handleCreateWorkspace.
-	orgSchemaSQL := []string{
-		`CREATE TABLE IF NOT EXISTS orgs (
-			id TEXT NOT NULL PRIMARY KEY,
-			name TEXT NOT NULL UNIQUE,
-			slug TEXT NOT NULL UNIQUE,
-			url TEXT,
-			owner_id TEXT,
-			status TEXT NOT NULL DEFAULT 'active',
-			created_at TEXT NOT NULL,
-			updated_at TEXT NOT NULL
-		)`,
-		`CREATE TABLE IF NOT EXISTS org_members (
-			org_id TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
-			user_id TEXT NOT NULL,
-			created_at TEXT NOT NULL,
-			PRIMARY KEY (org_id, user_id)
-		)`,
+	minimal := &Workspace{Slug: "min", GitURL: "https://h/p", OwnerID: owner}
+	if err := insertWorkspace(v.db, minimal); err != nil {
+		t.Fatal(err)
 	}
-	for _, stmt := range orgSchemaSQL {
-		if _, err := db.Exec(stmt); err != nil {
-			t.Fatalf("failed to create org schema: %v", err)
+	if got, _ := getWorkspaceBySlug(v.db, "min"); got.Status != "pending" || got.WorkspaceMode != "standard" || got.Settings != DefaultSettings() {
+		t.Errorf("defaults %+v", got)
+	}
+	err = insertWorkspace(v.db, minimal)
+	if !isUniqueConstraintError(err) || isUniqueConstraintError(errors.New("other")) || isUniqueConstraintError(nil) {
+		t.Errorf("duplicate insert: %v", err)
+	}
+	if got, err := getWorkspaceBySlug(v.db, "nope"); got != nil || err != nil {
+		t.Errorf("missing slug: %v %v", got, err)
+	}
+	testutil.Exec(t, v.db, `DROP TABLE workspaces`)
+	if _, err := getWorkspaceBySlug(v.db, "min"); err == nil {
+		t.Error("read without the table succeeded")
+	}
+	if _, err := listAllWorkspaces(v.db, true); err == nil {
+		t.Error("list without the table succeeded")
+	}
+	if _, err := listWorkspacesBySlugs(v.db, []string{"min"}, true); err == nil {
+		t.Error("list by slugs without the table succeeded")
+	}
+}
+
+// TestStore_Transitions: the row updates of the handlers write what they say
+// and refresh updated_at.
+func TestStore_Transitions(t *testing.T) {
+	v := newEnv(t)
+	v.seed(t, &Workspace{Slug: "ws", OwnerID: owner, Status: "failed", CloneError: strPtr("boom")})
+	before := v.column(t, "ws", "updated_at")
+	time.Sleep(time.Millisecond)
+
+	settings := DefaultSettings()
+	settings.SyncEnabled = false
+	ws, err := updateWorkspaceRow(v.db, "ws", "Name", "desc", strPtr("org"), settings)
+	if err != nil || ws.DisplayName != "Name" || ws.Description != "desc" || *ws.OrgID != "org" || ws.Settings.SyncEnabled || ws.UpdatedAt <= before {
+		t.Errorf("update: %+v %v", ws, err)
+	}
+	if err := setStatus(v.db, "ws", "ready", strPtr(headSHA), nil); err != nil {
+		t.Fatal(err)
+	}
+	if status, sha, e, _ := getCloneFields(v.db, "ws"); status != "ready" || *sha != headSHA || e != nil {
+		t.Errorf("clone fields %s %v %v", status, sha, e)
+	}
+	if err := setStatus(v.db, "ws", "active", nil, nil); err == nil {
+		t.Error("a status outside the list was stored")
+	}
+	ws, err = archiveWorkspaceDB(v.db, "ws", strPtr(upstreamSHA))
+	if err != nil || ws.Status != "archived" || *ws.HeadSHA != upstreamSHA || ws.CloneError != nil {
+		t.Errorf("archive: %+v %v", ws, err)
+	}
+	ws, err = reactivateWorkspaceDB(v.db, "ws")
+	if err != nil || ws.Status != "pending" || ws.CloneError != nil || *ws.HeadSHA != upstreamSHA {
+		t.Errorf("reactivate: %+v %v", ws, err)
+	}
+	// A failure records its reason and keeps the upstream HEAD it is not
+	// given; a success clears the reason, stamps the time and moves head_sha
+	// only when told to.
+	for i, set := range []func() error{
+		func() error { return recordSyncFailure(v.db, "ws", strPtr(upstreamSHA), "diverged") },
+		func() error { return recordSyncFailure(v.db, "ws", nil, "f") },
+	} {
+		if err := set(); err != nil {
+			t.Fatalf("set %d: %v", i, err)
 		}
 	}
-
-	// Create secrets and variables tables for cascade deletion (07-REQ-17).
-	// In production these are created by secrets.InitSchema at startup.
-	svSchemaSQL := []string{
-		`CREATE TABLE IF NOT EXISTS secrets (
-			owner_type TEXT NOT NULL CHECK(owner_type IN ('user', 'org', 'workspace')),
-			owner_id   TEXT NOT NULL,
-			key        TEXT NOT NULL,
-			value      TEXT NOT NULL,
-			created_at TEXT NOT NULL,
-			updated_at TEXT NOT NULL,
-			PRIMARY KEY (owner_type, owner_id, key)
-		)`,
-		`CREATE TABLE IF NOT EXISTS variables (
-			owner_type TEXT NOT NULL CHECK(owner_type IN ('user', 'org', 'workspace')),
-			owner_id   TEXT NOT NULL,
-			key        TEXT NOT NULL,
-			value      TEXT NOT NULL,
-			created_at TEXT NOT NULL,
-			updated_at TEXT NOT NULL,
-			PRIMARY KEY (owner_type, owner_id, key)
-		)`,
+	if got, _ := getWorkspaceBySlug(v.db, "ws"); *got.SyncError != "f" || *got.UpstreamHeadSHA != upstreamSHA || got.LastSyncAt != nil || *got.HeadSHA != upstreamSHA {
+		t.Errorf("after the failures %+v", got)
 	}
-	for _, stmt := range svSchemaSQL {
-		if _, err := db.Exec(stmt); err != nil {
-			t.Fatalf("failed to create secrets/variables schema: %v", err)
+	if err := recordSyncSuccess(v.db, "ws", nil, strPtr(headSHA)); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := getWorkspaceBySlug(v.db, "ws")
+	if got.SyncError != nil || *got.UpstreamHeadSHA != headSHA || got.LastSyncAt == nil || *got.HeadSHA != upstreamSHA {
+		t.Errorf("after the up-to-date write %+v", got)
+	}
+	if err := recordSyncSuccess(v.db, "ws", strPtr(headSHA), strPtr(headSHA)); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := getWorkspaceBySlug(v.db, "ws"); *got.HeadSHA != headSHA || got.SyncError != nil {
+		t.Errorf("after the fast-forward write %+v", got)
+	}
+	testutil.Exec(t, v.db, `DROP TABLE workspaces`)
+	for name, err := range map[string]error{
+		"update":       func() error { _, err := updateWorkspaceRow(v.db, "ws", "", "", nil, DefaultSettings()); return err }(),
+		"archive":      func() error { _, err := archiveWorkspaceDB(v.db, "ws", nil); return err }(),
+		"reactivate":   func() error { _, err := reactivateWorkspaceDB(v.db, "ws"); return err }(),
+		"status":       setStatus(v.db, "ws", "ready", nil, nil),
+		"fields":       func() error { _, _, _, err := getCloneFields(v.db, "ws"); return err }(),
+		"sync failure": recordSyncFailure(v.db, "ws", nil, "e"),
+		"sync success": recordSyncSuccess(v.db, "ws", nil, nil),
+		"delete":       deleteWorkspace(v.db, "ws"),
+	} {
+		if err == nil {
+			t.Errorf("%s without the table succeeded", name)
 		}
 	}
-
-	return db
 }
 
-// TS-01-1: Verify that a workspace record stores all required fields (slug,
-// git_url, branch, owner_id, org_id, status, created_at, updated_at).
-// Requirement: 01-REQ-1.1
-func TestWorkspaceStore_AllFields(t *testing.T) {
-	db := openTestDB(t)
-	branch := "main"
-
-	ws := &Workspace{
-		Slug:    "my-workspace",
-		GitURL:  "https://github.com/org/repo",
-		Branch:  &branch,
-		OwnerID: "user-uuid-1234",
-		OrgID:   nil,
-		Status:  "pending",
+// TestStore_DeleteUnknown: deleting a slug that is not there is an error, and
+// the transaction's work is rolled back.
+func TestStore_DeleteUnknown(t *testing.T) {
+	v := newEnv(t)
+	testutil.BindToken(t, v.db, "t", "ghost")
+	seedPAT(t, v.db, "t", "")
+	if err := deleteWorkspace(v.db, "ghost"); err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Errorf("delete of a missing slug: %v", err)
 	}
-
-	if err := insertWorkspace(db, ws); err != nil {
-		t.Fatalf("insertWorkspace() returned error: %v", err)
-	}
-
-	var (
-		slug, gitURL, ownerID, status, createdAt, updatedAt string
-		branchVal, orgID                                    *string
-	)
-	row := db.QueryRow(
-		"SELECT slug, git_url, branch, owner_id, org_id, status, created_at, updated_at FROM workspaces WHERE slug = ?",
-		"my-workspace",
-	)
-	if err := row.Scan(&slug, &gitURL, &branchVal, &ownerID, &orgID, &status, &createdAt, &updatedAt); err != nil {
-		t.Fatalf("querying workspace row: %v", err)
-	}
-
-	if slug != "my-workspace" {
-		t.Errorf("slug = %q; want %q", slug, "my-workspace")
-	}
-	if gitURL != "https://github.com/org/repo" {
-		t.Errorf("git_url = %q; want %q", gitURL, "https://github.com/org/repo")
-	}
-	if branchVal == nil || *branchVal != "main" {
-		t.Errorf("branch = %v; want %q", branchVal, "main")
-	}
-	if ownerID != "user-uuid-1234" {
-		t.Errorf("owner_id = %q; want %q", ownerID, "user-uuid-1234")
-	}
-	if orgID != nil {
-		t.Errorf("org_id = %v; want nil", orgID)
-	}
-	if status != "pending" {
-		t.Errorf("status = %q; want %q", status, "pending")
-	}
-	if _, err := time.Parse(time.RFC3339, createdAt); err != nil {
-		t.Errorf("created_at %q is not valid RFC 3339: %v", createdAt, err)
-	}
-	if _, err := time.Parse(time.RFC3339, updatedAt); err != nil {
-		t.Errorf("updated_at %q is not valid RFC 3339: %v", updatedAt, err)
-	}
-}
-
-// TS-01-8: Verify that the same git_url can appear in multiple workspaces
-// with different slugs.
-// Requirement: 01-REQ-1.8
-func TestWorkspaceStore_DuplicateGitURL(t *testing.T) {
-	db := openTestDB(t)
-	sharedURL := "https://github.com/org/repo"
-
-	wsA := &Workspace{
-		Slug:    "ws-alice",
-		GitURL:  sharedURL,
-		OwnerID: "user-1",
-		Status:  "pending",
-	}
-	wsB := &Workspace{
-		Slug:    "ws-bob",
-		GitURL:  sharedURL,
-		OwnerID: "user-1",
-		Status:  "pending",
-	}
-
-	if err := insertWorkspace(db, wsA); err != nil {
-		t.Fatalf("insertWorkspace(ws-alice) returned error: %v", err)
-	}
-	if err := insertWorkspace(db, wsB); err != nil {
-		t.Fatalf("insertWorkspace(ws-bob) returned error: %v", err)
-	}
-
-	rows, err := db.Query("SELECT slug FROM workspaces WHERE git_url = ?", sharedURL)
-	if err != nil {
-		t.Fatalf("query failed: %v", err)
-	}
-	defer rows.Close()
-
-	slugs := make(map[string]bool)
-	for rows.Next() {
-		var s string
-		if err := rows.Scan(&s); err != nil {
-			t.Fatalf("scan failed: %v", err)
-		}
-		slugs[s] = true
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("rows iteration error: %v", err)
-	}
-
-	if len(slugs) != 2 {
-		t.Errorf("got %d rows; want 2", len(slugs))
-	}
-	if !slugs["ws-alice"] {
-		t.Error("missing slug ws-alice")
-	}
-	if !slugs["ws-bob"] {
-		t.Error("missing slug ws-bob")
-	}
-}
-
-// TS-01-9: Verify that deleted workspaces are physically removed and the
-// value 'deleted' is never stored as status.
-// Requirement: 01-REQ-1.9
-func TestWorkspaceStore_DeletePhysicalRemoval(t *testing.T) {
-	db := openTestDB(t)
-
-	ws := &Workspace{
-		Slug:    "ws-to-delete",
-		GitURL:  "https://github.com/org/repo",
-		OwnerID: "user-1",
-		Status:  "archived",
-	}
-
-	if err := insertWorkspace(db, ws); err != nil {
-		t.Fatalf("insertWorkspace() returned error: %v", err)
-	}
-
-	if err := deleteWorkspace(db, "ws-to-delete"); err != nil {
-		t.Fatalf("deleteWorkspace() returned error: %v", err)
-	}
-
-	// Verify the row is physically gone.
-	var count int
-	if err := db.QueryRow("SELECT COUNT(*) FROM workspaces WHERE slug = ?", "ws-to-delete").Scan(&count); err != nil {
-		t.Fatalf("count query failed: %v", err)
-	}
-	if count != 0 {
-		t.Errorf("row with slug 'ws-to-delete' still exists; want 0 rows")
-	}
-
-	// Verify no row has status 'deleted' at any time.
-	if err := db.QueryRow("SELECT COUNT(*) FROM workspaces WHERE status = ?", "deleted").Scan(&count); err != nil {
-		t.Fatalf("deleted status query failed: %v", err)
-	}
-	if count != 0 {
-		t.Errorf("found %d rows with status='deleted'; want 0", count)
-	}
-}
-
-// TS-01-10: Verify that workspace records store created_at and updated_at as
-// valid RFC 3339 strings.
-// Requirement: 01-REQ-1.10
-func TestWorkspaceStore_RFC3339Timestamps(t *testing.T) {
-	db := openTestDB(t)
-
-	ws := &Workspace{
-		Slug:    "ts-ws",
-		GitURL:  "https://github.com/org/repo",
-		OwnerID: "user-1",
-		Status:  "pending",
-	}
-
-	if err := insertWorkspace(db, ws); err != nil {
-		t.Fatalf("insertWorkspace() returned error: %v", err)
-	}
-
-	var createdAt, updatedAt string
-	row := db.QueryRow("SELECT created_at, updated_at FROM workspaces WHERE slug = ?", "ts-ws")
-	if err := row.Scan(&createdAt, &updatedAt); err != nil {
-		t.Fatalf("query failed: %v", err)
-	}
-
-	if _, err := time.Parse(time.RFC3339, createdAt); err != nil {
-		t.Errorf("created_at %q is not valid RFC 3339: %v", createdAt, err)
-	}
-	if _, err := time.Parse(time.RFC3339, updatedAt); err != nil {
-		t.Errorf("updated_at %q is not valid RFC 3339: %v", updatedAt, err)
+	if testutil.Count(t, v.db, `SELECT COUNT(*) FROM token_workspace_bindings`) != 1 || revokedAt(t, v.db, "t").Valid {
+		t.Error("the rolled back deletion revoked or unbound the token")
 	}
 }

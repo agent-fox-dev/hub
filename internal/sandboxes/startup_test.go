@@ -1,95 +1,46 @@
 package sandboxes
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
-	"log/slog"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
+
+	"github.com/agent-fox-dev/agentkit-go/sandbox/gateway"
 )
 
-// logRecords parses what a JSON slog handler wrote into one map per record.
-func logRecords(t *testing.T, buf *bytes.Buffer) []map[string]any {
-	t.Helper()
-	var records []map[string]any
-	for _, line := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
-		if line == "" {
-			continue
-		}
-		var rec map[string]any
-		if err := json.Unmarshal([]byte(line), &rec); err != nil {
-			t.Fatalf("log line is not JSON: %v\n%s", err, line)
-		}
-		records = append(records, rec)
-	}
-	return records
-}
-
-// newCapturedLogger returns a logger that writes JSON records to the buffer.
-func newCapturedLogger() (*slog.Logger, *bytes.Buffer) {
-	var buf bytes.Buffer
-	return slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})), &buf
-}
-
-// attributeKeys returns the keys of a record other than slog's own.
-func attributeKeys(rec map[string]any) []string {
-	var keys []string
-	for k := range rec {
-		if k != "time" && k != "level" && k != "msg" {
-			keys = append(keys, k)
-		}
-	}
-	slices.Sort(keys)
-	return keys
-}
-
-// TS-25-2: A missing file or a file without [sandbox] starts nothing, returns
-// a nil service and a nil error, and logs exactly one info line that says
-// sandboxes are disabled.
-// Requirement: 25-REQ-1.2
-func TestInit_Disabled_TS_25_2(t *testing.T) {
+// Without a [sandbox] section Init starts nothing, returns (nil, nil) and logs
+// one info line saying sandboxes are disabled.
+func TestInit_DisabledWithoutASection(t *testing.T) {
 	dir := t.TempDir()
 	for name, path := range map[string]string{
-		"no file":          filepath.Join(dir, "missing.toml"),
-		"no [sandbox]":     writeConfigFile(t, dir, "[server]\nport = 9090\n"),
-		"only apikit keys": writeConfigFile(t, t.TempDir(), "[database]\npath = \"x.db\"\n\n[workspace]\nworkers = 2\n"),
+		"no file":      filepath.Join(dir, "missing.toml"),
+		"no [sandbox]": writeConfigFile(t, dir, "[server]\nport = 9090\nlease_timeout = \"abc\"\n"),
 	} {
 		t.Run(name, func(t *testing.T) {
 			logger, buf := newCapturedLogger()
 			factory := &recordingFactory{provider: newFakeProvider()}
-
 			svc, err := Init(logger, path, factory.build)
-			if svc != nil || err != nil {
-				t.Fatalf("Init = (%v, %v); want (nil, nil)", svc, err)
+			if svc != nil || err != nil || factory.calls != 0 {
+				t.Fatalf("Init = (%v, %v) with %d factory calls; want (nil, nil) and none", svc, err, factory.calls)
 			}
 			records := logRecords(t, buf)
-			if len(records) != 1 {
-				t.Fatalf("%d log records; want exactly one: %s", len(records), buf)
-			}
-			if records[0]["level"] != "INFO" || !strings.Contains(records[0]["msg"].(string), "disabled") {
-				t.Errorf("record = %v; want an info line saying sandboxes are disabled", records[0])
-			}
-			if factory.calls != 0 {
-				t.Errorf("the provider factory was called %d times; want none", factory.calls)
+			if len(records) != 1 || records[0]["level"] != "INFO" || !strings.Contains(records[0]["msg"].(string), "disabled") {
+				t.Errorf("log = %s; want one info line saying sandboxes are disabled", buf)
 			}
 		})
 	}
 }
 
-// TS-25-47: Enabling the feature logs one info line with only the provider and
-// the profile names.
-// Requirement: 25-REQ-8.2
-func TestInit_Enabled_TS_25_47(t *testing.T) {
+// A valid section starts the service and logs one info line holding only the
+// provider and the profile names, in file order.
+func TestInit_EnabledLogsProviderAndProfilesOnly(t *testing.T) {
 	path := writeConfigFile(t, t.TempDir(), `
 [sandbox]
-provider     = "podman"
+provider      = "podman"
 engine_binary = "/opt/engine-distinctive/podman"
-runtime      = "krun-distinctive"
-max_ttl      = "3h"
-network_modes = ["none"]
+max_ttl       = "3h"
 
 [[sandbox.profiles]]
 name    = "alpha"
@@ -107,65 +58,40 @@ ttl   = "2h"
 `)
 	logger, buf := newCapturedLogger()
 	fake := newFakeProvider()
-	factory := &recordingFactory{provider: fake}
-
-	svc, err := Init(logger, path, factory.build)
-	if err != nil || svc == nil {
-		t.Fatalf("Init = (%v, %v); want a service", svc, err)
+	svc, err := Init(logger, path, (&recordingFactory{provider: fake}).build)
+	if err != nil || svc == nil || svc.Provider() != fake {
+		t.Fatalf("Init = (%v, %v); want a service over the built provider", svc, err)
 	}
-	if svc.Provider() != fake {
-		t.Error("the service does not hold the provider the factory built")
-	}
-
 	records := logRecords(t, buf)
-	if len(records) != 1 {
-		t.Fatalf("%d log records; want exactly one: %s", len(records), buf)
+	// The record has slog's three attributes, the provider and the profiles.
+	if len(records) != 1 || records[0]["level"] != "INFO" || len(records[0]) != 5 || records[0]["provider"] != "podman" {
+		t.Fatalf("log = %s; want one info record with provider and profiles", buf)
 	}
-	rec := records[0]
-	if rec["level"] != "INFO" {
-		t.Errorf("level = %v; want INFO", rec["level"])
+	if got, _ := json.Marshal(records[0]["profiles"]); string(got) != `["alpha","beta"]` {
+		t.Errorf("profiles = %s; want [alpha beta]", got)
 	}
-	if got := attributeKeys(rec); !slices.Equal(got, []string{"profiles", "provider"}) {
-		t.Errorf("attributes = %v; want only provider and profiles", got)
-	}
-	if rec["provider"] != "podman" {
-		t.Errorf("provider = %v; want podman", rec["provider"])
-	}
-	if got, _ := json.Marshal(rec["profiles"]); string(got) != `["alpha","beta"]` {
-		t.Errorf("profiles = %s; want [\"alpha\",\"beta\"] in file order", got)
-	}
-	for _, hidden := range []string{"distinctive", "3h", "krun"} {
-		if strings.Contains(buf.String(), hidden) {
-			t.Errorf("the log line contains %q: %s", hidden, buf)
-		}
+	if strings.Contains(buf.String(), "distinctive") || strings.Contains(buf.String(), "3h") {
+		t.Errorf("the log line holds a setting or a value: %s", buf)
 	}
 }
 
-// An invalid section, an unreachable engine and an undecodable file refuse
-// start without logging an enabled line, and no error or log line carries an
-// env value.
-// Requirements: 25-REQ-1.4, 25-REQ-8.1
-func TestInit_Refusals(t *testing.T) {
+// An invalid section, an unknown key (reported with the other faults, without
+// a provider), an unreachable engine and an undecodable file refuse start with
+// a sandbox: error, log nothing and leak no env value.
+func TestInit_RefusalsNameTheFaultAndLogNothing(t *testing.T) {
 	const secretValue = "env-value-never-printed"
 	section := func(extra string) string {
-		return "[sandbox]\nprovider = \"podman\"\n" + extra + `
-[[sandbox.profiles]]
-name  = "dev"
-image = "registry.example/dev:1"
-ttl   = "1h"
-[sandbox.profiles.env]
-TOKEN = "` + secretValue + `"
-`
+		return "[sandbox]\nprovider = \"podman\"\n" + extra + "\n[[sandbox.profiles]]\nname = \"dev\"\nimage = \"registry.example/dev:1\"\nttl = \"1h\"\n[sandbox.profiles.env]\nTOKEN = \"" + secretValue + "\"\n"
 	}
 	for name, tc := range map[string]struct {
 		config string
-		fail   bool // the provider's probe fails
-		want   string
+		fail   bool
+		want   []string
 	}{
-		"unknown key":        {config: section("listenx = \":9\"\n"), want: "sandbox.listenx"},
-		"invalid ttl":        {config: strings.Replace(section(""), `"1h"`, `"never"`, 1), want: `profile "dev"`},
-		"engine unreachable": {config: section(""), fail: true, want: "sandbox.engine_binary"},
-		"invalid TOML":       {config: "[sandbox\n", want: "decoding"},
+		"unknown key and a fault": {config: strings.Replace(section("listenx = \":9\"\nmax_ttl = \"never\"\n"), `"1h"`, `"never"`, 1), want: []string{"sandbox.listenx", "sandbox.max_ttl", `profile "dev"`}},
+		"invalid ttl":             {config: strings.Replace(section(""), `"1h"`, `"never"`, 1), want: []string{`profile "dev"`}},
+		"engine unreachable":      {config: section(""), fail: true, want: []string{"sandbox.engine_binary", "engine down"}},
+		"invalid TOML":            {config: "[sandbox\n", want: []string{"decoding"}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			path := writeConfigFile(t, t.TempDir(), tc.config)
@@ -175,23 +101,67 @@ TOKEN = "` + secretValue + `"
 				fake.reapErr = errors.New("engine down")
 			}
 			factory := &recordingFactory{provider: fake}
-
 			svc, err := Init(logger, path, factory.build)
-			if svc != nil || err == nil {
-				t.Fatalf("Init = (%v, %v); want a refusal", svc, err)
+			if svc != nil || err == nil || !strings.HasPrefix(err.Error(), "sandbox:") {
+				t.Fatalf("Init = (%v, %v); want a sandbox: refusal", svc, err)
 			}
-			if !strings.Contains(err.Error(), tc.want) {
-				t.Errorf("error %q does not contain %q", err, tc.want)
+			for _, want := range tc.want {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error %q does not contain %q", err, want)
+				}
 			}
-			if !strings.HasPrefix(err.Error(), "sandbox:") {
-				t.Errorf("error %q does not start with sandbox:", err)
+			if !tc.fail && factory.calls != 0 {
+				t.Error("the provider was built for a static fault")
 			}
-			if strings.Contains(err.Error()+buf.String(), secretValue) {
-				t.Errorf("an env value leaked:\n%v\n%s", err, buf)
-			}
-			if buf.Len() != 0 {
-				t.Errorf("a refused start logged: %s", buf)
+			if strings.Contains(err.Error()+buf.String(), secretValue) || buf.String() != "" {
+				t.Errorf("a refused start logged or leaked:\n%v\n%s", err, buf)
 			}
 		})
+	}
+}
+
+// Init with provider gateway against a reachable remote returns a service
+// whose provider is the real client, with one List and no Create on the
+// remote, and logs one record for provider gateway without the token.
+func TestInit_GatewayProviderAgainstARemote(t *testing.T) {
+	prov := newRecordingProvider()
+	remote := startRemoteGateway(t, prov)
+	t.Setenv("AGENTKIT_GATEWAY_TOKEN", remoteToken)
+	path := writeConfigFile(t, t.TempDir(), "[sandbox]\nprovider = \"gateway\"\ngateway_url = \""+remote.url()+"\"\ngateway_token = \"${AGENTKIT_GATEWAY_TOKEN}\"\n\n[[sandbox.profiles]]\nname = \"dev\"\nimage = \"registry.example/dev:1\"\nttl = \"1h\"\n")
+	logger, logs := newCapturedLogger()
+	rpcs := remote.rpcs()
+
+	svc, err := Init(logger, path, noPodman(t), WithGatewayFactory(DialGateway))
+	if err != nil || svc == nil {
+		t.Fatalf("Init = (%v, %v); want a service", svc, err)
+	}
+	t.Cleanup(func() { _ = svc.Close() })
+	client, ok := svc.Provider().(*gateway.Provider)
+	if !ok || client.Gateway().URL != remote.url() {
+		t.Fatalf("Provider() is a %T for %v; want the gateway client of %s", svc.Provider(), svc.Provider(), remote.url())
+	}
+	if got := remote.rpcs() - rpcs; got != 2 || prov.creates() != 0 {
+		t.Errorf("start-up cost the remote %d RPCs and %d Creates; want 2 (capabilities and the List) and 0", got, prov.creates())
+	}
+	for _, token := range remote.tokens() {
+		if token != remoteToken {
+			t.Error("the remote was shown a token that is not hub's")
+		}
+	}
+	records := logRecords(t, logs)
+	if len(records) != 1 || records[0]["provider"] != "gateway" || len(records[0]) != 5 || strings.Contains(logs.String(), remoteToken) {
+		t.Errorf("start-up log = %s; want one record for provider gateway without the token", logs)
+	}
+
+	// A remote that refuses the token, and one that is gone, refuse start.
+	t.Setenv("AGENTKIT_GATEWAY_TOKEN", "other-hub-token-9876543210fedcba")
+	svc, err = Init(logger, path, noPodman(t))
+	if svc != nil || err == nil || !strings.Contains(err.Error(), "refused the token") {
+		t.Errorf("a refused token: Init = (%v, %v)", svc, err)
+	}
+	containsNone(t, "the error", err.Error(), remoteToken, "other-hub-token")
+	remote.stop()
+	if svc, err = Init(logger, path, noPodman(t)); svc != nil || err == nil || !strings.Contains(err.Error(), remote.url()) {
+		t.Errorf("a remote that is gone: Init = (%v, %v); want a refusal naming the address", svc, err)
 	}
 }

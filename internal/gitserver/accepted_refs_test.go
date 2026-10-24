@@ -1,159 +1,54 @@
 package gitserver
 
 import (
+	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/protocol/packp"
 )
 
-// TS-22-29: A ref is accepted when its report-status entry is ok, or,
-// with no report, unless the hook rejected it.
-// Verifies: 22-REQ-5.1
-func TestAcceptedCommands_TS22_29_ClassifiesAccepted(t *testing.T) {
-	cmdA := &packp.Command{
-		Name: plumbing.ReferenceName("refs/heads/a"),
-		Old:  plumbing.ZeroHash,
-		New:  plumbing.NewHash("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+// A command is accepted when its report-status entry is ok or, without a
+// report, when the pre-receive hook did not reject it; the branches to
+// rebuild are the accepted refs/heads/ updates that are not deletes.
+func TestAcceptedCommands(t *testing.T) {
+	hash := func(c string) plumbing.Hash { return plumbing.NewHash(strings.Repeat(c, 40)) }
+	cmds := []*packp.Command{
+		{Name: "refs/heads/a", New: hash("a")},
+		{Name: "refs/heads/b", New: hash("b")},
+		{Name: "refs/tags/v1", New: hash("c")},
+		{Name: "refs/heads/old", Old: hash("d"), New: plumbing.ZeroHash},
 	}
-	cmdB := &packp.Command{
-		Name: plumbing.ReferenceName("refs/heads/b"),
-		Old:  plumbing.ZeroHash,
-		New:  plumbing.NewHash("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+	report := func(statuses map[string]string) *packp.ReportStatus {
+		rs := &packp.ReportStatus{UnpackStatus: "ok"}
+		for _, c := range cmds {
+			rs.CommandStatuses = append(rs.CommandStatuses, &packp.CommandStatus{ReferenceName: c.Name, Status: statuses[string(c.Name)]})
+		}
+		return rs
 	}
-	cmdC := &packp.Command{
-		Name: plumbing.ReferenceName("refs/heads/c"),
-		Old:  plumbing.ZeroHash,
-		New:  plumbing.NewHash("cccccccccccccccccccccccccccccccccccccccc"),
-	}
-
-	allCmds := []*packp.Command{cmdA, cmdB, cmdC}
-
-	// --- Sub-test 1: With a ReportStatus, only "ok" entries are accepted ---
-	t.Run("with_report_status", func(t *testing.T) {
-		rs := &packp.ReportStatus{
-			UnpackStatus: "ok",
-			CommandStatuses: []*packp.CommandStatus{
-				{ReferenceName: plumbing.ReferenceName("refs/heads/a"), Status: "ok"},
-				{ReferenceName: plumbing.ReferenceName("refs/heads/b"), Status: "some error"},
-				{ReferenceName: plumbing.ReferenceName("refs/heads/c"), Status: "ok"},
-			},
+	for name, c := range map[string]struct {
+		rs       *packp.ReportStatus
+		rejected map[plumbing.ReferenceName]bool
+		accepted []string
+		branches []string
+	}{
+		"all ok":          {report(map[string]string{"refs/heads/a": "ok", "refs/heads/b": "ok", "refs/tags/v1": "ok", "refs/heads/old": "ok"}), nil, []string{"refs/heads/a", "refs/heads/b", "refs/tags/v1", "refs/heads/old"}, []string{"a", "b"}},
+		"some failed":     {report(map[string]string{"refs/heads/a": "ok", "refs/heads/b": "blocked", "refs/tags/v1": "failed", "refs/heads/old": "ok"}), nil, []string{"refs/heads/a", "refs/heads/old"}, []string{"a"}},
+		"none ok":         {report(nil), nil, nil, nil},
+		"no report":       {nil, nil, []string{"refs/heads/a", "refs/heads/b", "refs/tags/v1", "refs/heads/old"}, []string{"a", "b"}},
+		"no report, hook": {nil, map[plumbing.ReferenceName]bool{"refs/heads/b": true}, []string{"refs/heads/a", "refs/tags/v1", "refs/heads/old"}, []string{"a"}},
+	} {
+		accepted := acceptedCommands(cmds, c.rs, c.rejected)
+		var names []string
+		for _, cmd := range accepted {
+			names = append(names, string(cmd.Name))
 		}
-
-		accepted := acceptedCommands(allCmds, rs, nil)
-		names := cmdNames(accepted)
-
-		if len(names) != 2 {
-			t.Fatalf("expected 2 accepted commands, got %d: %v", len(names), names)
-		}
-		if !containsName(names, "refs/heads/a") {
-			t.Error("expected refs/heads/a to be accepted")
-		}
-		if containsName(names, "refs/heads/b") {
-			t.Error("expected refs/heads/b to NOT be accepted")
-		}
-		if !containsName(names, "refs/heads/c") {
-			t.Error("expected refs/heads/c to be accepted")
-		}
-	})
-
-	// --- Sub-test 2: Without a report, accepted unless hook-rejected ---
-	t.Run("without_report_hook_rejected", func(t *testing.T) {
-		hookRejected := map[plumbing.ReferenceName]bool{
-			plumbing.ReferenceName("refs/heads/c"): true,
-		}
-
-		accepted := acceptedCommands(allCmds, nil, hookRejected)
-		names := cmdNames(accepted)
-
-		if len(names) != 2 {
-			t.Fatalf("expected 2 accepted commands, got %d: %v", len(names), names)
-		}
-		if !containsName(names, "refs/heads/a") {
-			t.Error("expected refs/heads/a to be accepted")
-		}
-		if !containsName(names, "refs/heads/b") {
-			t.Error("expected refs/heads/b to be accepted")
-		}
-		if containsName(names, "refs/heads/c") {
-			t.Error("expected refs/heads/c to NOT be accepted")
-		}
-	})
-
-	// --- Sub-test 3: Without report and no hook rejections, all accepted ---
-	t.Run("without_report_no_rejections", func(t *testing.T) {
-		accepted := acceptedCommands(allCmds, nil, nil)
-		names := cmdNames(accepted)
-
-		if len(names) != 3 {
-			t.Fatalf("expected 3 accepted commands, got %d: %v", len(names), names)
-		}
-	})
-
-	// --- Sub-test 4: Report takes precedence over hookRejected ---
-	t.Run("report_takes_precedence", func(t *testing.T) {
-		rs := &packp.ReportStatus{
-			UnpackStatus: "ok",
-			CommandStatuses: []*packp.CommandStatus{
-				{ReferenceName: plumbing.ReferenceName("refs/heads/a"), Status: "ok"},
-				{ReferenceName: plumbing.ReferenceName("refs/heads/b"), Status: "error"},
-				{ReferenceName: plumbing.ReferenceName("refs/heads/c"), Status: "ok"},
-			},
-		}
-		hookRejected := map[plumbing.ReferenceName]bool{
-			plumbing.ReferenceName("refs/heads/a"): true,
-		}
-
-		// When report is available, hookRejected is ignored; report is the source of truth.
-		accepted := acceptedCommands(allCmds, rs, hookRejected)
-		names := cmdNames(accepted)
-
-		if len(names) != 2 {
-			t.Fatalf("expected 2 accepted commands, got %d: %v", len(names), names)
-		}
-		// a is ok in report, so accepted despite being in hookRejected
-		if !containsName(names, "refs/heads/a") {
-			t.Error("expected refs/heads/a to be accepted (report says ok)")
-		}
-	})
-
-	// --- Sub-test 5: Command not in report is not accepted ---
-	t.Run("command_missing_from_report", func(t *testing.T) {
-		rs := &packp.ReportStatus{
-			UnpackStatus: "ok",
-			CommandStatuses: []*packp.CommandStatus{
-				{ReferenceName: plumbing.ReferenceName("refs/heads/a"), Status: "ok"},
-				// b and c not in report
-			},
-		}
-
-		accepted := acceptedCommands(allCmds, rs, nil)
-		names := cmdNames(accepted)
-
-		if len(names) != 1 {
-			t.Fatalf("expected 1 accepted command, got %d: %v", len(names), names)
-		}
-		if !containsName(names, "refs/heads/a") {
-			t.Error("expected refs/heads/a to be accepted")
-		}
-	})
-}
-
-// cmdNames extracts ref names from a slice of commands.
-func cmdNames(cmds []*packp.Command) []string {
-	names := make([]string, len(cmds))
-	for i, c := range cmds {
-		names[i] = string(c.Name)
-	}
-	return names
-}
-
-// containsName checks if a name is in the list.
-func containsName(names []string, name string) bool {
-	for _, n := range names {
-		if n == name {
-			return true
+		if !reflect.DeepEqual(names, c.accepted) || !reflect.DeepEqual(extractPushedBranches(accepted), c.branches) {
+			t.Errorf("%s: accepted %v, branches %v; want %v, %v", name, names, extractPushedBranches(accepted), c.accepted, c.branches)
 		}
 	}
-	return false
+	if got := acceptedCommands(nil, report(map[string]string{"refs/heads/a": "ok"}), nil); got != nil {
+		t.Errorf("no commands: %v; want none", got)
+	}
 }

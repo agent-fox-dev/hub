@@ -2,1789 +2,612 @@ package carrypatch
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-git/go-git/v5/plumbing/transport"
 
 	"github.com/agent-fox-dev/aflib/jobqueue"
 )
 
-// ===========================================================================
-// TS-16-3: With REBUILD_STRATEGY='rebase', the executor identifies unique
-// commits via 'git log --reverse --format=%H <upstream_head>..<patch_branch>'
-// and cherry-picks each commit onto the temporary branch, preserving
-// original patch branch refs.
-//
-// Requirement: 16-REQ-1.3
-// ===========================================================================
+// rebuild drives the executor over a real rebuild repository with the SQL
+// patch store; hooks wrap the runners the executor builds.
+type rebuild struct {
+	t                 *testing.T
+	root, slug, trunk string
+	base              string
+	db                *sql.DB
+	h                 *RebuildHandler
+	logs              *logSink
+	audit             *recordingEmitter
 
-func TestRebuildExecutor_RebaseStrategy_CherryPicksCommits(t *testing.T) {
-	mock := newMockGitRunner()
+	trunkHook func(GitRunner) GitRunner
+	wtHook    func(GitRunner) GitRunner
+}
 
-	patches := newMockPatchStore([]Patch{
-		{ID: "p1", WorkspaceID: "ws1", BranchName: "feature/foo", Position: 1, Status: PatchStatusActive},
-	})
+func newRebuild(t *testing.T) *rebuild {
+	t.Helper()
+	r := &rebuild{t: t, root: t.TempDir(), slug: "ws", db: openDB(t), audit: &recordingEmitter{}}
+	r.trunk, r.base = newRebuildRepo(t, r.root, r.slug)
+	seedWS(t, r.db, ws{slug: r.slug})
+	logger, sink := newLogger()
+	r.logs = sink
+	r.h = &RebuildHandler{DB: r.db, WorkspaceRoot: r.root, Logger: logger, PatchStore: NewSQLPatchStore(r.db),
+		Fetch: noFetch, ResolveAuth: noAuth, Audit: r.audit, NewGitRunner: r.newRunner}
+	return r
+}
 
-	upstreamHead := "aaaa000000000000000000000000000000000001"
-	commit1 := "bbbb000000000000000000000000000000000001"
-	commit2 := "bbbb000000000000000000000000000000000002"
-	resultSHA := "cccc000000000000000000000000000000000001"
-
-	// Mock git log to return two commits for the patch branch.
-	mock.RunFunc = func(_ context.Context, args ...string) (string, error) {
-		for i, arg := range args {
-			if arg == "--reverse" {
-				// Verify the log command includes the expected range.
-				for _, a := range args[i:] {
-					if a == fmt.Sprintf("%s..feature/foo", upstreamHead) {
-						return commit1 + "\n" + commit2, nil
-					}
-				}
-				return commit1 + "\n" + commit2, nil
-			}
-		}
-		// rev-parse HEAD returns the result SHA.
-		return resultSHA, nil
-	}
-	mock.CherryPickFunc = func(_ context.Context, _ string) error { return nil }
-
-	h := &RebuildHandler{
-		PatchStore:   patches,
-		NewGitRunner: func(_ string) (GitRunner, error) { return mock, nil },
-		Fetch:        func(_ context.Context, _ string, _ transport.AuthMethod) error { return nil },
-		ResolveAuth:  func(_ string) (transport.AuthMethod, error) { return nil, nil },
-	}
-
-	payload := RebuildPayload{
-		WorkspaceSlug: "ws1",
-		Strategy:      StrategyRebase,
-		SubmittedBy:   "operator",
-	}
-	payloadJSON, _ := json.Marshal(payload)
-
-	result, _, err := h.HandleRebuildJob(context.Background(), payloadJSON)
+func (r *rebuild) newRunner(path string) (GitRunner, error) {
+	g, err := NewGitRunnerFactory()(path)
 	if err != nil {
-		t.Fatalf("HandleRebuildJob returned error: %v", err)
+		return nil, err
 	}
+	if path == r.trunk && r.trunkHook != nil {
+		return r.trunkHook(g), nil
+	}
+	if path != r.trunk && r.wtHook != nil {
+		return r.wtHook(g), nil
+	}
+	return g, nil
+}
 
-	rebuildResult, ok := result.(*RebuildResult)
-	if !ok {
-		t.Fatalf("expected result to be *RebuildResult, got %T", result)
-	}
-
-	// Verify cherry-pick was called twice (once per commit).
-	if len(mock.CherryPickCalls) != 2 {
-		t.Fatalf("expected 2 cherry-pick calls, got %d", len(mock.CherryPickCalls))
-	}
-	if mock.CherryPickCalls[0].CommitSHA != commit1 {
-		t.Errorf("expected first cherry-pick commit=%s, got %s", commit1, mock.CherryPickCalls[0].CommitSHA)
-	}
-	if mock.CherryPickCalls[1].CommitSHA != commit2 {
-		t.Errorf("expected second cherry-pick commit=%s, got %s", commit2, mock.CherryPickCalls[1].CommitSHA)
-	}
-
-	// Verify git log was called with --reverse.
-	foundLogCall := false
-	for _, call := range mock.RunCalls {
-		for _, arg := range call.Args {
-			if arg == "--reverse" {
-				foundLogCall = true
-				break
-			}
-		}
-	}
-	if !foundLogCall {
-		t.Error("expected git log call with --reverse flag")
-	}
-
-	// Verify patch result.
-	if len(rebuildResult.PatchResults) < 1 {
-		t.Fatal("expected at least 1 patch result")
-	}
-	pr := rebuildResult.PatchResults[0]
-	if pr.Status != "success" {
-		t.Errorf("expected patch status='success', got %q", pr.Status)
-	}
-	if pr.NewHeadSHA == nil {
-		t.Error("expected non-nil new_head_sha for successful patch")
+// patches seeds active patches p1..pn for the branches, in that order.
+func (r *rebuild) patches(branches ...string) {
+	for i, b := range branches {
+		seedPatch(r.t, r.db, r.slug, fmt.Sprintf("p%d", i+1), b, i+1, "active")
 	}
 }
 
-// ===========================================================================
-// TS-16-4: With REBUILD_STRATEGY='merge', the executor merges each patch
-// branch into the temporary branch with --no-ff, producing a merge commit,
-// and records the merge commit SHA in patch_results.
-//
-// Requirement: 16-REQ-1.4
-// ===========================================================================
-
-func TestRebuildExecutor_MergeStrategy_MergesWithNoFF(t *testing.T) {
-	mock := newMockGitRunner()
-
-	patches := newMockPatchStore([]Patch{
-		{ID: "p1", WorkspaceID: "ws1", BranchName: "feature/bar", Position: 1, Status: PatchStatusActive},
-	})
-
-	mergeSHA := "dddd000000000000000000000000000000000001"
-
-	mock.RunFunc = func(_ context.Context, _ ...string) (string, error) {
-		return mergeSHA, nil
+func (r *rebuild) run(ctx context.Context, strategy, failMode string) (*RebuildResult, bool, error) {
+	r.t.Helper()
+	raw, _ := json.Marshal(RebuildPayload{WorkspaceSlug: r.slug, Strategy: strategy, FailMode: failMode, SubmittedBy: "operator", IntegrationBranch: "integration"})
+	res, retryable, err := r.h.HandleRebuildJob(ctx, raw)
+	if res == nil {
+		return nil, retryable, err
 	}
-	mock.MergeNoFFFunc = func(_ context.Context, _ string) error { return nil }
+	return res.(*RebuildResult), retryable, err
+}
 
-	h := &RebuildHandler{
-		PatchStore:   patches,
-		NewGitRunner: func(_ string) (GitRunner, error) { return mock, nil },
-		Fetch:        func(_ context.Context, _ string, _ transport.AuthMethod) error { return nil },
-		ResolveAuth:  func(_ string) (transport.AuthMethod, error) { return nil, nil },
-	}
-
-	payload := RebuildPayload{
-		WorkspaceSlug: "ws1",
-		Strategy:      StrategyMerge,
-		SubmittedBy:   "operator",
-	}
-	payloadJSON, _ := json.Marshal(payload)
-
-	result, _, err := h.HandleRebuildJob(context.Background(), payloadJSON)
+// runningJob attaches a queue with one running rebuild job and returns the
+// job context the executor would get from the queue.
+func (r *rebuild) runningJob(serialKey string) (*jobqueue.Queue, context.Context, string) {
+	r.t.Helper()
+	q := newQueue(r.t, r.db, r.h)
+	r.h.Queue = q
+	raw, _ := json.Marshal(RebuildPayload{WorkspaceSlug: r.slug, Strategy: StrategyRebase, IntegrationBranch: "integration"})
+	id, _, err := q.Enqueue(jobqueue.EnqueueParams{Type: "rebuild", Key: r.slug, Nonce: "orig", Payload: raw, SubmittedBy: "operator", Group: serialKey})
 	if err != nil {
-		t.Fatalf("HandleRebuildJob returned error: %v", err)
+		r.t.Fatalf("enqueue: %v", err)
 	}
+	mustExec(r.t, r.db, `UPDATE jobs SET status = 'running' WHERE id = ?`, id)
+	return q, jobqueue.ContextWithJobID(context.Background(), id), id
+}
 
-	rebuildResult, ok := result.(*RebuildResult)
-	if !ok {
-		t.Fatalf("expected result to be *RebuildResult, got %T", result)
+// assertClean checks the per-run worktree is gone, the trunk has no linked
+// worktree registered, the lock is free and the rebuild guard ended.
+func (r *rebuild) assertClean() {
+	r.t.Helper()
+	if entries, err := os.ReadDir(filepath.Join(r.root, r.slug, "rebuild")); err == nil && len(entries) > 0 {
+		r.t.Errorf("rebuild directory still holds %d entries", len(entries))
 	}
-
-	// Verify MergeNoFF was called with the branch's snapshot SHA (01-REQ-6.1)
-	// and a message naming the branch (01-REQ-6.3).
-	if len(mock.MergeNoFFCalls) != 1 {
-		t.Fatalf("expected 1 MergeNoFF call, got %d", len(mock.MergeNoFFCalls))
+	if n := strings.Count(runGit(r.t, r.trunk, "worktree", "list", "--porcelain"), "worktree "); n != 1 {
+		r.t.Errorf("%d worktrees registered, want only the trunk", n)
 	}
-	if mock.MergeNoFFCalls[0].Branch != mergeSHA {
-		t.Errorf("expected MergeNoFF ref=%q (the snapshot SHA), got %q", mergeSHA, mock.MergeNoFFCalls[0].Branch)
-	}
-	if want := "Merge branch 'feature/bar'"; mock.MergeNoFFCalls[0].Message != want {
-		t.Errorf("expected MergeNoFF message=%q, got %q", want, mock.MergeNoFFCalls[0].Message)
-	}
-
-	// Verify no cherry-pick calls were made (merge strategy, not rebase).
-	if len(mock.CherryPickCalls) != 0 {
-		t.Errorf("expected 0 cherry-pick calls for merge strategy, got %d", len(mock.CherryPickCalls))
-	}
-
-	// Verify patch result.
-	if len(rebuildResult.PatchResults) < 1 {
-		t.Fatal("expected at least 1 patch result")
-	}
-	pr := rebuildResult.PatchResults[0]
-	if pr.Status != "success" {
-		t.Errorf("expected patch status='success', got %q", pr.Status)
-	}
-	if pr.NewHeadSHA == nil {
-		t.Error("expected non-nil new_head_sha for merge commit")
+	if lockHeld(r.slug) || testLocks.RebuildActive(r.slug) {
+		r.t.Error("lock or rebuild guard still held after the run")
 	}
 }
 
-// ===========================================================================
-// TS-16-5: When a cherry-pick produces a conflict that rerere cannot fully
-// resolve, the executor aborts, sets the patch status to 'conflict' in the
-// database, records conflict_files, deletes the temporary branch, and halts
-// the rebuild without updating the integration branch.
-//
-// Requirement: 16-REQ-1.5
-// ===========================================================================
+// files returns the files tracked at ref.
+func files(t *testing.T, dir, ref string) string {
+	t.Helper()
+	return runGit(t, dir, "ls-tree", "--name-only", "-r", ref)
+}
 
-func TestRebuildExecutor_Conflict_FailFast(t *testing.T) {
-	mock := newMockGitRunner()
+// A rebase rebuild cherry-picks each patch in position order onto the
+// upstream base inside a per-run worktree, then moves the integration ref;
+// the trunk checkout is never touched and the worktree is removed.
+func TestRebuild_RebaseAppliesPatchesInPositionOrder(t *testing.T) {
+	r := newRebuild(t)
+	r.patches("feature/patch-b", "feature/patch-a")
+	headBefore, statusBefore := refOf(r.trunk, "HEAD"), runGit(t, r.trunk, "status", "--porcelain")
 
-	patches := newMockPatchStore([]Patch{
-		{ID: "p-conflict", WorkspaceID: "ws1", BranchName: "feature/conflict", Position: 1, Status: PatchStatusActive},
-		{ID: "p-after", WorkspaceID: "ws1", BranchName: "feature/after", Position: 2, Status: PatchStatusActive},
-	})
-
-	upstreamHead := "aaaa000000000000000000000000000000000001"
-
-	mock.RunFunc = func(_ context.Context, args ...string) (string, error) {
-		for _, arg := range args {
-			if arg == "--reverse" {
-				return "bbbb000000000000000000000000000000000001", nil
-			}
-			// Simulate 'git diff --name-only --diff-filter=U' returning conflict files.
-			if arg == "--diff-filter=U" {
-				return "src/main.go", nil
-			}
-		}
-		return upstreamHead, nil
+	res, retryable, err := r.run(context.Background(), StrategyRebase, "")
+	if err != nil || retryable {
+		t.Fatalf("run: retryable=%v err=%v", retryable, err)
 	}
-
-	// Cherry-pick returns a conflict error.
-	mock.CherryPickFunc = func(_ context.Context, _ string) error {
-		return &CherryPickConflictError{Files: []string{"src/main.go"}}
+	if res.PatchesApplied != 2 || res.Strategy != StrategyRebase || res.FailMode != FailModeFailFast || res.UpstreamHeadSHA != r.base || res.PreviousIntegrationHeadSHA != r.base {
+		t.Errorf("result = %+v", res)
 	}
-
-	h := &RebuildHandler{
-		PatchStore:   patches,
-		NewGitRunner: func(_ string) (GitRunner, error) { return mock, nil },
-		Fetch:        func(_ context.Context, _ string, _ transport.AuthMethod) error { return nil },
-		ResolveAuth:  func(_ string) (transport.AuthMethod, error) { return nil, nil },
+	if res.IntegrationHeadSHA != refOf(r.trunk, "integration") {
+		t.Error("integration ref does not point at the result head")
 	}
-
-	payload := RebuildPayload{
-		WorkspaceSlug: "ws1",
-		Strategy:      StrategyRebase,
-		SubmittedBy:   "operator",
+	if len(res.PatchResults) != 2 || res.PatchResults[0].BranchName != "feature/patch-b" || res.PatchResults[0].SourceSHA != refOf(r.trunk, "feature/patch-b") || res.PatchResults[0].NewHeadSHA == nil || res.PatchResults[1].Status != "success" {
+		t.Errorf("patch results = %+v", res.PatchResults)
 	}
-	payloadJSON, _ := json.Marshal(payload)
-
-	result, retryable, err := h.HandleRebuildJob(context.Background(), payloadJSON)
-	// Conflict should produce a non-retryable error (permanent failure).
-	if err == nil {
-		t.Fatal("expected error for conflict, got nil")
+	if subjects := runGit(t, r.trunk, "log", "--format=%s", r.base+"..integration"); subjects != "patch-a change\npatch-b change" {
+		t.Errorf("integration history = %q", subjects)
 	}
-	if retryable {
-		t.Error("expected retryable=false for conflict (permanent failure)")
+	if refOf(r.trunk, "HEAD") != headBefore || runGit(t, r.trunk, "status", "--porcelain") != statusBefore || runGit(t, r.trunk, "symbolic-ref", "HEAD") != "refs/heads/main" {
+		t.Error("trunk checkout changed")
 	}
-
-	// The patch status should have been updated to 'conflict' in the store.
-	updated, exists := patches.UpdatedPatches["p-conflict"]
-	if !exists {
-		t.Fatal("expected patch 'p-conflict' to be updated in store")
+	if runGit(t, r.trunk, "config", "rerere.enabled") != "true" || runGit(t, r.trunk, "config", "rerere.autoupdate") != "true" {
+		t.Error("rerere not configured on the repository")
 	}
-	if updated.Status != PatchStatusConflict {
-		t.Errorf("expected patch status=%q, got %q", PatchStatusConflict, updated.Status)
+	r.assertClean()
+	if ev := r.audit.ofType("hub.rebuild.complete"); len(ev) != 1 || ev[0].Metadata["patches_applied"] != 2 || ev[0].ActorType != "system" || ev[0].Workspace != "ws" {
+		t.Errorf("complete event = %+v", ev)
 	}
-	if len(updated.ConflictFiles) == 0 {
-		t.Error("expected non-empty conflict_files for conflicted patch")
-	}
-
-	// Verify fail-fast: the second patch should NOT have been attempted.
-	// If result is non-nil, check patch_results.
-	if result != nil {
-		if rebuildResult, ok := result.(*RebuildResult); ok {
-			for _, pr := range rebuildResult.PatchResults {
-				if pr.BranchName == "feature/after" && pr.Status == "success" {
-					t.Error("expected second patch to NOT be applied (fail-fast)")
-				}
-			}
-		}
+	if !strings.Contains(r.logs.String(), "rebuild worktree created") || !strings.Contains(r.logs.String(), "rebuild worktree removed") {
+		t.Errorf("worktree lifecycle not logged: %s", r.logs.String())
 	}
 }
 
-// Test merge strategy conflict also triggers fail-fast.
-func TestRebuildExecutor_MergeConflict_FailFast(t *testing.T) {
-	mock := newMockGitRunner()
+func TestRebuild_MergeStrategyMergesNoFFNamingTheBranch(t *testing.T) {
+	r := newRebuild(t)
+	r.patches("feature/patch-a")
+	if _, _, err := r.run(context.Background(), StrategyMerge, ""); err != nil {
+		t.Fatal(err)
+	}
+	if subject := runGit(t, r.trunk, "log", "-1", "--format=%s", "integration"); subject != "Merge branch 'feature/patch-a'" {
+		t.Errorf("merge subject = %q", subject)
+	}
+	if parents := runGit(t, r.trunk, "log", "-1", "--format=%P", "integration"); len(strings.Fields(parents)) != 2 {
+		t.Errorf("merge parents = %q", parents)
+	}
+	r.assertClean()
+}
 
-	patches := newMockPatchStore([]Patch{
-		{ID: "p1", WorkspaceID: "ws1", BranchName: "feature/conflict", Position: 1, Status: PatchStatusActive},
-	})
+// In fail-fast mode an unresolved conflict marks the patch, stops the run
+// without touching the integration ref and is not retried.
+func TestRebuild_ConflictFailFastMarksPatchAndStops(t *testing.T) {
+	r := newRebuild(t)
+	r.patches("feature/patch-a", "feature/conflict", "feature/patch-b")
 
-	mock.RunFunc = func(_ context.Context, args ...string) (string, error) {
-		for _, arg := range args {
-			if arg == "--diff-filter=U" {
-				return "config.yaml", nil
-			}
+	res, retryable, err := r.run(context.Background(), StrategyRebase, "")
+	if res != nil || retryable || err == nil || err.Error() != `conflict in patch "feature/conflict": base.txt` {
+		t.Fatalf("run = %v, retryable=%v, err=%v", res, retryable, err)
+	}
+	patches, _ := r.h.PatchStore.ListPatches(context.Background(), r.slug)
+	if patches[1].Status != PatchStatusConflict || !equalStrings(patches[1].ConflictFiles, []string{"base.txt"}) || patches[2].Status != PatchStatusActive {
+		t.Errorf("patches after conflict = %+v", patches)
+	}
+	if refOf(r.trunk, "integration") != r.base {
+		t.Error("integration ref moved on a failed run")
+	}
+	if ev := r.audit.ofType("hub.rebuild.fail"); len(ev) != 1 || !strings.Contains(ev[0].Metadata["reason"].(string), "feature/conflict") {
+		t.Errorf("fail event = %+v", ev)
+	}
+	r.assertClean()
+
+	// Merge strategy reports the same conflict.
+	mustExec(t, r.db, `UPDATE patches SET status = 'active', conflict_files = NULL`)
+	if _, _, err := r.run(context.Background(), StrategyMerge, ""); err == nil || !strings.Contains(err.Error(), "feature/conflict") {
+		t.Errorf("merge conflict = %v", err)
+	}
+	r.assertClean()
+}
+
+// In continue mode a conflict is recorded, the worktree returns to the last
+// good state and the remaining patches are applied.
+func TestRebuild_ContinueModeRecordsConflictAndCarriesOn(t *testing.T) {
+	r := newRebuild(t)
+	r.patches("feature/conflict", "feature/patch-a")
+	for _, strategy := range []string{StrategyRebase, StrategyMerge} {
+		res, retryable, err := r.run(context.Background(), strategy, FailModeContinue)
+		if err != nil || retryable {
+			t.Fatalf("%s: retryable=%v err=%v", strategy, retryable, err)
 		}
-		return "aaaa000000000000000000000000000000000001", nil
-	}
-
-	mock.MergeNoFFFunc = func(_ context.Context, _ string) error {
-		return &MergeNoFFConflictError{Files: []string{"config.yaml"}}
-	}
-
-	h := &RebuildHandler{
-		PatchStore:   patches,
-		NewGitRunner: func(_ string) (GitRunner, error) { return mock, nil },
-		Fetch:        func(_ context.Context, _ string, _ transport.AuthMethod) error { return nil },
-		ResolveAuth:  func(_ string) (transport.AuthMethod, error) { return nil, nil },
-	}
-
-	payload := RebuildPayload{
-		WorkspaceSlug: "ws1",
-		Strategy:      StrategyMerge,
-		SubmittedBy:   "operator",
-	}
-	payloadJSON, _ := json.Marshal(payload)
-
-	_, retryable, err := h.HandleRebuildJob(context.Background(), payloadJSON)
-	if err == nil {
-		t.Fatal("expected error for merge conflict, got nil")
-	}
-	if retryable {
-		t.Error("expected retryable=false for merge conflict (permanent failure)")
-	}
-
-	// Verify patch status updated to conflict.
-	updated, exists := patches.UpdatedPatches["p1"]
-	if !exists {
-		t.Fatal("expected patch 'p1' to be updated")
-	}
-	if updated.Status != PatchStatusConflict {
-		t.Errorf("expected status=%q, got %q", PatchStatusConflict, updated.Status)
+		if res.PatchesConflicted != 1 || res.PatchesApplied != 1 || res.FailMode != FailModeContinue || res.PatchResults[0].Status != "conflict" || !equalStrings(res.PatchResults[0].ConflictFiles, []string{"base.txt"}) {
+			t.Errorf("%s: result = %+v", strategy, res)
+		}
+		if got := files(t, r.trunk, "integration"); !strings.Contains(got, "patch-a.txt") || runGit(t, r.trunk, "show", "integration:base.txt") != "upstream version" {
+			t.Errorf("%s: integration tree = %q", strategy, got)
+		}
+		if patchStatuses(t, r.db, r.slug)["feature/conflict"] != PatchStatusConflict {
+			t.Errorf("%s: conflicting patch not marked", strategy)
+		}
+		r.assertClean()
 	}
 }
 
-// ===========================================================================
-// TS-16-6: When a patch's branch does not exist in the repository during
-// rebuild, the executor skips it with status 'skipped' and null new_head_sha
-// in patch_results, and continues to the next patch without halting.
-//
-// Requirement: 16-REQ-1.6
-// ===========================================================================
+// Merged, disabled and unresolvable patches are skipped with their reason;
+// merged ones are soft-deleted after the run and positions compacted.
+func TestRebuild_SkipsByStatusAndSoftDeletesMerged(t *testing.T) {
+	r := newRebuild(t)
+	r.patches("feature/merged", "feature/off", "feature/nope", "feature/patch-a")
+	mustExec(t, r.db, `UPDATE patches SET status = 'merged_upstream' WHERE id = 'p1'`)
+	mustExec(t, r.db, `UPDATE patches SET status = 'disabled' WHERE id = 'p2'`)
 
-func TestRebuildExecutor_MissingBranch_Skipped(t *testing.T) {
-	mock := newMockGitRunner()
-
-	patches := newMockPatchStore([]Patch{
-		{ID: "p-exists", WorkspaceID: "ws1", BranchName: "feature/exists", Position: 1, Status: PatchStatusActive},
-		{ID: "p-missing", WorkspaceID: "ws1", BranchName: "feature/missing", Position: 2, Status: PatchStatusActive},
-	})
-
-	commitSHA := "bbbb000000000000000000000000000000000001"
-	resultSHA := "cccc000000000000000000000000000000000001"
-
-	// Mock: resolving feature/missing's tip fails (branch not found,
-	// 01-REQ-6.4); git log for feature/exists returns a commit.
-	mock.RunFunc = func(_ context.Context, args ...string) (string, error) {
-		if br, ok := snapshotArgs(args); ok && br == "feature/missing" {
-			return "", fmt.Errorf("fatal: Needed a single revision")
-		}
-		for _, arg := range args {
-			if arg == "--reverse" {
-				return commitSHA, nil
-			}
-		}
-		return resultSHA, nil
-	}
-	mock.CherryPickFunc = func(_ context.Context, _ string) error { return nil }
-
-	h := &RebuildHandler{
-		PatchStore:   patches,
-		NewGitRunner: func(_ string) (GitRunner, error) { return mock, nil },
-		Fetch:        func(_ context.Context, _ string, _ transport.AuthMethod) error { return nil },
-		ResolveAuth:  func(_ string) (transport.AuthMethod, error) { return nil, nil },
-	}
-
-	payload := RebuildPayload{
-		WorkspaceSlug: "ws1",
-		Strategy:      StrategyRebase,
-		SubmittedBy:   "operator",
-	}
-	payloadJSON, _ := json.Marshal(payload)
-
-	result, _, err := h.HandleRebuildJob(context.Background(), payloadJSON)
+	res, _, err := r.run(context.Background(), StrategyRebase, "")
 	if err != nil {
-		t.Fatalf("HandleRebuildJob returned error: %v", err)
+		t.Fatal(err)
 	}
-
-	rebuildResult, ok := result.(*RebuildResult)
-	if !ok {
-		t.Fatalf("expected result to be *RebuildResult, got %T", result)
+	reasons := map[string]string{}
+	for _, pr := range res.PatchResults {
+		reasons[pr.BranchName] = pr.SkippedReason
 	}
-
-	// Should have 2 patch results.
-	if len(rebuildResult.PatchResults) != 2 {
-		t.Fatalf("expected 2 patch results, got %d", len(rebuildResult.PatchResults))
+	want := map[string]string{"feature/merged": "merged_upstream", "feature/off": "disabled", "feature/nope": "branch_not_found", "feature/patch-a": ""}
+	for b, reason := range want {
+		if reasons[b] != reason {
+			t.Errorf("%s skipped_reason = %q, want %q", b, reasons[b], reason)
+		}
 	}
-
-	// First patch (exists) should succeed.
-	if rebuildResult.PatchResults[0].Status != "success" {
-		t.Errorf("expected first patch status='success', got %q", rebuildResult.PatchResults[0].Status)
+	if res.PatchesSkipped != 3 || res.PatchesApplied != 1 || res.PatchesRemoved != 1 {
+		t.Errorf("counts = %+v", res)
 	}
-
-	// Second patch (missing) should be skipped with skipped_reason='branch_not_found'.
-	if rebuildResult.PatchResults[1].Status != "skipped" {
-		t.Errorf("expected second patch status='skipped', got %q", rebuildResult.PatchResults[1].Status)
+	if got := patchStatuses(t, r.db, r.slug); got["feature/merged"] != "deleted" || got["feature/off"] != "disabled" {
+		t.Errorf("statuses = %v", got)
 	}
-	if rebuildResult.PatchResults[1].SkippedReason != "branch_not_found" {
-		t.Errorf("expected second patch skipped_reason='branch_not_found', got %q", rebuildResult.PatchResults[1].SkippedReason)
-	}
-	if rebuildResult.PatchResults[1].NewHeadSHA != nil {
-		t.Errorf("expected null new_head_sha for skipped patch, got %v", rebuildResult.PatchResults[1].NewHeadSHA)
-	}
-
-	// patches_skipped should be 1.
-	if rebuildResult.PatchesSkipped != 1 {
-		t.Errorf("expected patches_skipped=1, got %d", rebuildResult.PatchesSkipped)
+	if got := positions(t, r.db, r.slug); !equalStrings(got, []string{"feature/off", "feature/nope", "feature/patch-a"}) {
+		t.Errorf("positions after compaction = %v", got)
 	}
 }
 
-// ===========================================================================
-// TS-16-7: Patches with status 'merged_upstream' or 'disabled' are reported
-// as 'skipped' in patch_results without any attempt to apply them.
-//
-// Requirement: 16-REQ-1.7
-// ===========================================================================
-
-func TestRebuildExecutor_MergedAndDisabled_Skipped(t *testing.T) {
-	mock := newMockGitRunner()
-
-	patches := newMockPatchStore([]Patch{
-		{ID: "p-merged", WorkspaceID: "ws1", BranchName: "feature/merged", Position: 1, Status: PatchStatusMergedUpstream},
-		{ID: "p-disabled", WorkspaceID: "ws1", BranchName: "feature/disabled", Position: 2, Status: PatchStatusDisabled},
-	})
-
-	mock.RunFunc = func(_ context.Context, _ ...string) (string, error) {
-		return "aaaa000000000000000000000000000000000001", nil
-	}
-
-	h := &RebuildHandler{
-		PatchStore:   patches,
-		NewGitRunner: func(_ string) (GitRunner, error) { return mock, nil },
-		Fetch:        func(_ context.Context, _ string, _ transport.AuthMethod) error { return nil },
-		ResolveAuth:  func(_ string) (transport.AuthMethod, error) { return nil, nil },
-	}
-
-	payload := RebuildPayload{
-		WorkspaceSlug: "ws1",
-		Strategy:      StrategyRebase,
-		SubmittedBy:   "operator",
-	}
-	payloadJSON, _ := json.Marshal(payload)
-
-	result, _, err := h.HandleRebuildJob(context.Background(), payloadJSON)
+func TestRebuild_FirstRebuildCreatesIntegrationBranch(t *testing.T) {
+	r := newRebuild(t)
+	r.patches("feature/patch-a")
+	runGit(t, r.trunk, "branch", "-D", "integration")
+	res, _, err := r.run(context.Background(), StrategyRebase, "")
 	if err != nil {
-		t.Fatalf("HandleRebuildJob returned error: %v", err)
+		t.Fatal(err)
 	}
-
-	rebuildResult, ok := result.(*RebuildResult)
-	if !ok {
-		t.Fatalf("expected result to be *RebuildResult, got %T", result)
-	}
-
-	// Both patches should be 'skipped' with appropriate skipped_reason.
-	for _, pr := range rebuildResult.PatchResults {
-		if pr.Status != "skipped" {
-			t.Errorf("expected patch %q status='skipped', got %q", pr.BranchName, pr.Status)
-		}
-		if pr.NewHeadSHA != nil {
-			t.Errorf("expected null new_head_sha for skipped patch %q", pr.BranchName)
-		}
-	}
-
-	// Verify skipped_reason is set to the patch status (not 'branch_not_found').
-	if rebuildResult.PatchResults[0].SkippedReason != "merged_upstream" {
-		t.Errorf("expected merged patch skipped_reason='merged_upstream', got %q",
-			rebuildResult.PatchResults[0].SkippedReason)
-	}
-	if rebuildResult.PatchResults[1].SkippedReason != "disabled" {
-		t.Errorf("expected disabled patch skipped_reason='disabled', got %q",
-			rebuildResult.PatchResults[1].SkippedReason)
-	}
-
-	// No cherry-pick or merge calls should have been made.
-	if len(mock.CherryPickCalls) != 0 {
-		t.Errorf("expected 0 cherry-pick calls for skipped patches, got %d", len(mock.CherryPickCalls))
-	}
-	if len(mock.MergeNoFFCalls) != 0 {
-		t.Errorf("expected 0 MergeNoFF calls for skipped patches, got %d", len(mock.MergeNoFFCalls))
+	if res.PreviousIntegrationHeadSHA != "" || refOf(r.trunk, "integration") != res.IntegrationHeadSHA {
+		t.Errorf("result = %+v, integration = %s", res, refOf(r.trunk, "integration"))
 	}
 }
 
-// ===========================================================================
-// TS-NS-4 + TS-NS-5: Rebuild skipped_reason differentiates between
-// branch_not_found, disabled, and merged_upstream.
-// ===========================================================================
-
-func TestRebuildExecutor_SkippedReason_Differentiation(t *testing.T) {
-	mock := newMockGitRunner()
-
-	patches := newMockPatchStore([]Patch{
-		{ID: "p-merged", WorkspaceID: "ws1", BranchName: "feature/merged", Position: 1, Status: PatchStatusMergedUpstream},
-		{ID: "p-disabled", WorkspaceID: "ws1", BranchName: "feature/disabled", Position: 2, Status: PatchStatusDisabled},
-		{ID: "p-missing", WorkspaceID: "ws1", BranchName: "feature/missing", Position: 3, Status: PatchStatusActive},
-	})
-
-	upstreamHead := "aaaa000000000000000000000000000000000001"
-
-	// Mock: all git log calls for the missing branch fail.
-	mock.RunFunc = func(_ context.Context, args ...string) (string, error) {
-		for _, arg := range args {
-			if arg == "--reverse" {
-				return "", fmt.Errorf("unknown revision: feature/missing")
-			}
-		}
-		return upstreamHead, nil
-	}
-
-	h := &RebuildHandler{
-		PatchStore:   patches,
-		NewGitRunner: func(_ string) (GitRunner, error) { return mock, nil },
-		Fetch:        func(_ context.Context, _ string, _ transport.AuthMethod) error { return nil },
-		ResolveAuth:  func(_ string) (transport.AuthMethod, error) { return nil, nil },
-	}
-
-	payload := RebuildPayload{
-		WorkspaceSlug: "ws1",
-		Strategy:      StrategyRebase,
-		SubmittedBy:   "operator",
-	}
-	payloadJSON, _ := json.Marshal(payload)
-
-	result, _, err := h.HandleRebuildJob(context.Background(), payloadJSON)
+// When the trunk has the integration branch checked out, moving its ref
+// leaves the checkout behind, so the trunk is reset to the new tip; that is
+// the only case the trunk is reset.
+func TestRebuild_TrunkFollowsCheckedOutIntegrationBranch(t *testing.T) {
+	r := newRebuild(t)
+	r.patches("feature/patch-a")
+	runGit(t, r.trunk, "checkout", "-q", "integration")
+	res, _, err := r.run(context.Background(), StrategyRebase, "")
 	if err != nil {
-		t.Fatalf("HandleRebuildJob returned error: %v", err)
+		t.Fatal(err)
 	}
-
-	rebuildResult, ok := result.(*RebuildResult)
-	if !ok {
-		t.Fatalf("expected result to be *RebuildResult, got %T", result)
+	if refOf(r.trunk, "HEAD") != res.IntegrationHeadSHA {
+		t.Error("checkout not brought to the new integration tip")
 	}
-
-	if len(rebuildResult.PatchResults) != 3 {
-		t.Fatalf("expected 3 patch results, got %d", len(rebuildResult.PatchResults))
+	if _, err := os.Stat(filepath.Join(r.trunk, "patch-a.txt")); err != nil {
+		t.Error("working tree not reset to the new tip")
 	}
-
-	// Verify each patch has the correct skipped_reason.
-	tests := []struct {
-		patchID       string
-		wantStatus    string
-		wantReason    string
-		notWantReason string
-	}{
-		{"p-merged", "skipped", "merged_upstream", "branch_not_found"},
-		{"p-disabled", "skipped", "disabled", "branch_not_found"},
-		{"p-missing", "skipped", "branch_not_found", ""},
-	}
-
-	for i, tt := range tests {
-		pr := rebuildResult.PatchResults[i]
-		if pr.PatchID != tt.patchID {
-			t.Errorf("patch[%d]: expected id=%q, got %q", i, tt.patchID, pr.PatchID)
-		}
-		if pr.Status != tt.wantStatus {
-			t.Errorf("patch %q: expected status=%q, got %q", tt.patchID, tt.wantStatus, pr.Status)
-		}
-		if pr.SkippedReason != tt.wantReason {
-			t.Errorf("patch %q: expected skipped_reason=%q, got %q", tt.patchID, tt.wantReason, pr.SkippedReason)
-		}
-		if tt.notWantReason != "" && pr.SkippedReason == tt.notWantReason {
-			t.Errorf("patch %q: skipped_reason should NOT be %q", tt.patchID, tt.notWantReason)
-		}
+	if !strings.Contains(r.logs.String(), "reset trunk checkout to the new integration tip") {
+		t.Error("reset not logged")
 	}
 }
 
-// ===========================================================================
-// TS-16-8: The rebuild job is registered as type 'rebuild' in the
-// durable_job_queue, is marked as permanently failed (non-retryable) on
-// conflict, and is retryable on transient failures such as network errors.
-//
-// Requirement: 16-REQ-1.8
-// ===========================================================================
-
-func TestRebuildJobRegistration_TypeIsRebuild(t *testing.T) {
-	q, _ := newTestQueue(t)
-
-	h := &RebuildHandler{}
-	err := RegisterRebuildJob(q, h)
-	if err != nil {
-		t.Fatalf("RegisterRebuildJob returned error: %v", err)
+// A failing integration ref update ends the locked finishing step: no soft-deletion, no
+// compaction, no push; the run is retried.
+func TestRebuild_UpdateRefFailureStopsTheFinishingStep(t *testing.T) {
+	r := newRebuild(t)
+	r.patches("feature/merged", "feature/patch-a")
+	mustExec(t, r.db, `UPDATE patches SET status = 'merged_upstream' WHERE id = 'p1'`)
+	r.trunkHook = func(g GitRunner) GitRunner {
+		return &spyGit{GitRunner: g, onUpdateRef: func(ref, sha string) error { return errors.New("ref locked") }}
 	}
-
-	// Verify that the type is registered by trying to enqueue a rebuild job.
-	payload := RebuildPayload{
-		WorkspaceSlug: "test-ws",
-		Strategy:      StrategyRebase,
-		SubmittedBy:   "operator",
-	}
-	payloadJSON, _ := json.Marshal(payload)
-
-	jobID, _, err := q.Enqueue(jobqueue.EnqueueParams{
-		Type:    "rebuild",
-		Key:     "test-ws",
-		Nonce:   "test-nonce-1",
-		Payload: payloadJSON,
-	})
-	if err != nil {
-		t.Fatalf("Enqueue rebuild job failed: %v", err)
-	}
-	if jobID == "" {
-		t.Error("expected non-empty job ID after enqueue")
-	}
-}
-
-func TestRebuildJob_ConflictIsNonRetryable(t *testing.T) {
-	mock := newMockGitRunner()
-
-	patches := newMockPatchStore([]Patch{
-		{ID: "p1", WorkspaceID: "ws1", BranchName: "feature/conflict", Position: 1, Status: PatchStatusActive},
-	})
-
-	mock.RunFunc = func(_ context.Context, args ...string) (string, error) {
-		for _, arg := range args {
-			if arg == "--reverse" {
-				return "bbbb000000000000000000000000000000000001", nil
-			}
-		}
-		return "aaaa000000000000000000000000000000000001", nil
-	}
-	mock.CherryPickFunc = func(_ context.Context, _ string) error {
-		return &CherryPickConflictError{Files: []string{"conflict.go"}}
-	}
-
-	h := &RebuildHandler{
-		PatchStore:   patches,
-		NewGitRunner: func(_ string) (GitRunner, error) { return mock, nil },
-		Fetch:        func(_ context.Context, _ string, _ transport.AuthMethod) error { return nil },
-		ResolveAuth:  func(_ string) (transport.AuthMethod, error) { return nil, nil },
-	}
-
-	payload := RebuildPayload{
-		WorkspaceSlug: "ws1",
-		Strategy:      StrategyRebase,
-		SubmittedBy:   "operator",
-	}
-	payloadJSON, _ := json.Marshal(payload)
-
-	_, retryable, err := h.HandleRebuildJob(context.Background(), payloadJSON)
-	if err == nil {
-		t.Fatal("expected error for conflict")
-	}
-	if retryable {
-		t.Error("conflict errors should be non-retryable (permanent failure)")
-	}
-}
-
-func TestRebuildJob_TransientErrorIsRetryable(t *testing.T) {
-	mock := newMockGitRunner()
-
-	patches := newMockPatchStore([]Patch{
-		{ID: "p1", WorkspaceID: "ws1", BranchName: "feature/foo", Position: 1, Status: PatchStatusActive},
-	})
-
-	// Simulate a transient network error during fetch.
-	h := &RebuildHandler{
-		PatchStore:   patches,
-		NewGitRunner: func(_ string) (GitRunner, error) { return mock, nil },
-		Fetch: func(_ context.Context, _ string, _ transport.AuthMethod) error {
-			return &TransientError{Err: errors.New("network timeout")}
-		},
-		ResolveAuth: func(_ string) (transport.AuthMethod, error) { return nil, nil },
-	}
-
-	payload := RebuildPayload{
-		WorkspaceSlug: "ws1",
-		Strategy:      StrategyRebase,
-		SubmittedBy:   "operator",
-	}
-	payloadJSON, _ := json.Marshal(payload)
-
-	_, retryable, err := h.HandleRebuildJob(context.Background(), payloadJSON)
-	if err == nil {
-		t.Fatal("expected error for transient failure")
-	}
-	if !retryable {
-		t.Error("transient errors should be retryable")
-	}
-}
-
-// ===========================================================================
-// Additional executor tests
-// ===========================================================================
-
-// Test: rebuild result contains all required fields.
-func TestRebuildResult_ContainsRequiredFields(t *testing.T) {
-	mock := newMockGitRunner()
-	patches := newMockPatchStore([]Patch{
-		{ID: "p1", WorkspaceID: "ws1", BranchName: "feature/a", Position: 1, Status: PatchStatusActive},
-	})
-
-	mock.RunFunc = func(_ context.Context, args ...string) (string, error) {
-		for _, arg := range args {
-			if arg == "--reverse" {
-				return "bbbb000000000000000000000000000000000001", nil
-			}
-		}
-		return "aaaa000000000000000000000000000000000001", nil
-	}
-	mock.CherryPickFunc = func(_ context.Context, _ string) error { return nil }
-
-	h := &RebuildHandler{
-		PatchStore:   patches,
-		NewGitRunner: func(_ string) (GitRunner, error) { return mock, nil },
-		Fetch:        func(_ context.Context, _ string, _ transport.AuthMethod) error { return nil },
-		ResolveAuth:  func(_ string) (transport.AuthMethod, error) { return nil, nil },
-	}
-
-	payload := RebuildPayload{
-		WorkspaceSlug: "ws1",
-		Strategy:      StrategyRebase,
-		SubmittedBy:   "operator",
-	}
-	payloadJSON, _ := json.Marshal(payload)
-
-	result, _, err := h.HandleRebuildJob(context.Background(), payloadJSON)
-	if err != nil {
-		t.Fatalf("HandleRebuildJob returned error: %v", err)
-	}
-
-	rebuildResult, ok := result.(*RebuildResult)
-	if !ok {
-		t.Fatalf("expected result to be *RebuildResult, got %T", result)
-	}
-
-	// Validate all required fields are present.
-	if rebuildResult.UpstreamHeadSHA == "" {
-		t.Error("missing upstream_head_sha in result")
-	}
-	if rebuildResult.IntegrationHeadSHA == "" {
-		t.Error("missing integration_head_sha in result")
-	}
-	if rebuildResult.Strategy == "" {
-		t.Error("missing strategy in result")
-	}
-	if rebuildResult.PatchResults == nil {
-		t.Error("missing patch_results in result")
-	}
-
-	// Verify result is JSON-serializable with correct field names.
-	data, err := json.Marshal(rebuildResult)
-	if err != nil {
-		t.Fatalf("failed to marshal result: %v", err)
-	}
-	var raw map[string]any
-	if err := json.Unmarshal(data, &raw); err != nil {
-		t.Fatalf("failed to unmarshal result: %v", err)
-	}
-	requiredKeys := []string{"upstream_head_sha", "integration_head_sha", "strategy", "patches_applied", "patches_skipped", "patches_removed", "patch_results"}
-	for _, key := range requiredKeys {
-		if _, exists := raw[key]; !exists {
-			t.Errorf("missing required key %q in JSON result", key)
-		}
-	}
-}
-
-// Test: patches are applied in position order.
-func TestRebuildExecutor_PatchesAppliedInPositionOrder(t *testing.T) {
-	mock := newMockGitRunner()
-
-	// Patches in non-sequential positions to verify ordering.
-	patches := newMockPatchStore([]Patch{
-		{ID: "p3", WorkspaceID: "ws1", BranchName: "feature/third", Position: 3, Status: PatchStatusActive},
-		{ID: "p1", WorkspaceID: "ws1", BranchName: "feature/first", Position: 1, Status: PatchStatusActive},
-		{ID: "p2", WorkspaceID: "ws1", BranchName: "feature/second", Position: 2, Status: PatchStatusActive},
-	})
-
-	appliedOrder := []string{}
-	mock.RunFunc = func(_ context.Context, args ...string) (string, error) {
-		for _, arg := range args {
-			if arg == "--reverse" {
-				return "bbbb000000000000000000000000000000000001", nil
-			}
-		}
-		return "aaaa000000000000000000000000000000000001", nil
-	}
-	mock.CherryPickFunc = func(_ context.Context, sha string) error {
-		appliedOrder = append(appliedOrder, sha)
-		return nil
-	}
-
-	h := &RebuildHandler{
-		PatchStore:   patches,
-		NewGitRunner: func(_ string) (GitRunner, error) { return mock, nil },
-		Fetch:        func(_ context.Context, _ string, _ transport.AuthMethod) error { return nil },
-		ResolveAuth:  func(_ string) (transport.AuthMethod, error) { return nil, nil },
-	}
-
-	payload := RebuildPayload{
-		WorkspaceSlug: "ws1",
-		Strategy:      StrategyRebase,
-		SubmittedBy:   "operator",
-	}
-	payloadJSON, _ := json.Marshal(payload)
-
-	result, _, err := h.HandleRebuildJob(context.Background(), payloadJSON)
-	if err != nil {
-		t.Fatalf("HandleRebuildJob returned error: %v", err)
-	}
-
-	rebuildResult, ok := result.(*RebuildResult)
-	if !ok {
-		t.Fatalf("expected result to be *RebuildResult, got %T", result)
-	}
-
-	// Verify patches were processed in position order (1, 2, 3).
-	if len(rebuildResult.PatchResults) != 3 {
-		t.Fatalf("expected 3 patch results, got %d", len(rebuildResult.PatchResults))
-	}
-	expectedOrder := []string{"feature/first", "feature/second", "feature/third"}
-	for i, pr := range rebuildResult.PatchResults {
-		if pr.BranchName != expectedOrder[i] {
-			t.Errorf("patch result[%d] branch=%q, want %q", i, pr.BranchName, expectedOrder[i])
-		}
-	}
-}
-
-// Test: patches with status 'conflict' are included in rebuild attempt
-// (treated same as 'active' per spec 16-REQ-1.2).
-func TestRebuildExecutor_ConflictStatusIncluded(t *testing.T) {
-	mock := newMockGitRunner()
-
-	patches := newMockPatchStore([]Patch{
-		{ID: "p1", WorkspaceID: "ws1", BranchName: "feature/was-conflict", Position: 1, Status: PatchStatusConflict},
-	})
-
-	mock.RunFunc = func(_ context.Context, args ...string) (string, error) {
-		for _, arg := range args {
-			if arg == "--reverse" {
-				return "bbbb000000000000000000000000000000000001", nil
-			}
-		}
-		return "aaaa000000000000000000000000000000000001", nil
-	}
-	mock.CherryPickFunc = func(_ context.Context, _ string) error { return nil }
-
-	h := &RebuildHandler{
-		PatchStore:   patches,
-		NewGitRunner: func(_ string) (GitRunner, error) { return mock, nil },
-		Fetch:        func(_ context.Context, _ string, _ transport.AuthMethod) error { return nil },
-		ResolveAuth:  func(_ string) (transport.AuthMethod, error) { return nil, nil },
-	}
-
-	payload := RebuildPayload{
-		WorkspaceSlug: "ws1",
-		Strategy:      StrategyRebase,
-		SubmittedBy:   "operator",
-	}
-	payloadJSON, _ := json.Marshal(payload)
-
-	result, _, err := h.HandleRebuildJob(context.Background(), payloadJSON)
-	if err != nil {
-		t.Fatalf("HandleRebuildJob returned error: %v", err)
-	}
-
-	rebuildResult, ok := result.(*RebuildResult)
-	if !ok {
-		t.Fatalf("expected result to be *RebuildResult, got %T", result)
-	}
-
-	// The conflict-status patch should have been attempted (and succeed with mocks).
-	if rebuildResult.PatchesApplied != 1 {
-		t.Errorf("expected patches_applied=1 (conflict patches should be attempted), got %d", rebuildResult.PatchesApplied)
-	}
-	if len(rebuildResult.PatchResults) < 1 {
-		t.Fatal("expected at least 1 patch result")
-	}
-	if rebuildResult.PatchResults[0].Status != "success" {
-		t.Errorf("expected patch status='success', got %q", rebuildResult.PatchResults[0].Status)
-	}
-}
-
-// ===========================================================================
-// TS-NS-1: The rebuild executor resolves the upstream base from the upstream
-// default branch recorded by the fetch (refs/remotes/upstream/HEAD), not from
-// the trunk's local HEAD.
-//
-// Requirement: NS-REQ-1
-// ===========================================================================
-
-// upstreamBaseMock answers rev-parse for the upstream tracking ref with
-// upstreamSHA and every other rev-parse with localSHA.
-func upstreamBaseMock(upstreamSHA, localSHA, commitSHA string) func(context.Context, ...string) (string, error) {
-	return func(_ context.Context, args ...string) (string, error) {
-		if len(args) >= 2 && args[0] == "rev-parse" {
-			if len(args) >= 3 && args[1] == "--verify" && args[2] == "refs/remotes/upstream/HEAD^{commit}" {
-				return upstreamSHA, nil
-			}
-			if args[1] == "FETCH_HEAD" {
-				return "", fmt.Errorf("fatal: FETCH_HEAD should not be consulted when the tracking ref exists")
-			}
-			return localSHA, nil
-		}
-		for _, arg := range args {
-			if arg == "--reverse" {
-				return commitSHA, nil
-			}
-		}
-		return localSHA, nil
-	}
-}
-
-func TestRebuildExecutor_UsesUpstreamTrackingRefNotHead(t *testing.T) {
-	mock := newMockGitRunner()
-
-	patches := newMockPatchStore([]Patch{
-		{ID: "p1", WorkspaceID: "ws1", BranchName: "feature/foo", Position: 1, Status: PatchStatusActive},
-	})
-
-	upstreamSHA := "fetch000000000000000000000000000000000001"
-	localHeadSHA := "local000000000000000000000000000000000001"
-	commitSHA := "bbbb000000000000000000000000000000000001"
-
-	mock.RunFunc = upstreamBaseMock(upstreamSHA, localHeadSHA, commitSHA)
-	mock.CherryPickFunc = func(_ context.Context, _ string) error { return nil }
-
-	h := &RebuildHandler{
-		PatchStore:   patches,
-		NewGitRunner: func(_ string) (GitRunner, error) { return mock, nil },
-		Fetch:        func(_ context.Context, _ string, _ transport.AuthMethod) error { return nil },
-		ResolveAuth:  func(_ string) (transport.AuthMethod, error) { return nil, nil },
-	}
-
-	payload := RebuildPayload{
-		WorkspaceSlug: "ws1",
-		Strategy:      StrategyRebase,
-		SubmittedBy:   "operator",
-	}
-	payloadJSON, _ := json.Marshal(payload)
-
-	_, _, err := h.HandleRebuildJob(context.Background(), payloadJSON)
-	if err != nil {
-		t.Fatalf("HandleRebuildJob returned error: %v", err)
-	}
-
-	// Verify the worktree was created at the upstream SHA (not local HEAD).
-	if len(mock.WorktreeAddCalls) != 1 {
-		t.Fatalf("expected 1 WorktreeAdd call, got %d", len(mock.WorktreeAddCalls))
-	}
-	if got := mock.WorktreeAddCalls[0].Commit; got != upstreamSHA {
-		t.Errorf("worktree created at %q, want the upstream tracking ref SHA %q", got, upstreamSHA)
-	}
-
-	// The commits to replay are computed against the upstream base with
-	// merge commits and already-upstream content filtered out.
-	foundLog := false
-	for _, call := range mock.RunCalls {
-		if len(call.Args) > 0 && call.Args[0] == "log" {
-			foundLog = true
-			joined := strings.Join(call.Args, " ")
-			// The range ends at the branch's snapshot SHA (here the mock's
-			// answer to the tip resolution), never at the branch name.
-			for _, want := range []string{"--no-merges", "--right-only", "--cherry-pick", upstreamSHA + "..." + localHeadSHA} {
-				if !strings.Contains(joined, want) {
-					t.Errorf("log call %v missing %q", call.Args, want)
-				}
-			}
-		}
-	}
-	if !foundLog {
-		t.Error("expected a git log call to list patch commits")
-	}
-}
-
-// ===========================================================================
-// TS-NS-2: The UpstreamHeadSHA field in RebuildResult reflects the fetched
-// upstream tip, not the local HEAD.
-//
-// Requirement: NS-REQ-2
-// ===========================================================================
-
-func TestRebuildExecutor_UpstreamHeadSHA_ReflectsUpstreamTip(t *testing.T) {
-	mock := newMockGitRunner()
-
-	patches := newMockPatchStore([]Patch{
-		{ID: "p1", WorkspaceID: "ws1", BranchName: "feature/foo", Position: 1, Status: PatchStatusActive},
-	})
-
-	upstreamSHA := "fetch000000000000000000000000000000000001"
-	localHeadSHA := "local000000000000000000000000000000000001"
-	commitSHA := "bbbb000000000000000000000000000000000001"
-
-	mock.RunFunc = upstreamBaseMock(upstreamSHA, localHeadSHA, commitSHA)
-	mock.CherryPickFunc = func(_ context.Context, _ string) error { return nil }
-
-	h := &RebuildHandler{
-		PatchStore:   patches,
-		NewGitRunner: func(_ string) (GitRunner, error) { return mock, nil },
-		Fetch:        func(_ context.Context, _ string, _ transport.AuthMethod) error { return nil },
-		ResolveAuth:  func(_ string) (transport.AuthMethod, error) { return nil, nil },
-	}
-
-	payload := RebuildPayload{
-		WorkspaceSlug: "ws1",
-		Strategy:      StrategyRebase,
-		SubmittedBy:   "operator",
-	}
-	payloadJSON, _ := json.Marshal(payload)
-
-	result, _, err := h.HandleRebuildJob(context.Background(), payloadJSON)
-	if err != nil {
-		t.Fatalf("HandleRebuildJob returned error: %v", err)
-	}
-
-	rebuildResult, ok := result.(*RebuildResult)
-	if !ok {
-		t.Fatalf("expected result to be *RebuildResult, got %T", result)
-	}
-
-	if rebuildResult.UpstreamHeadSHA != upstreamSHA {
-		t.Errorf("UpstreamHeadSHA = %q, want %q (upstream tracking ref)", rebuildResult.UpstreamHeadSHA, upstreamSHA)
-	}
-}
-
-// ===========================================================================
-// TS-NS-4: When no upstream base can be resolved (no tracking ref and no
-// FETCH_HEAD), the executor returns a retryable transient error rather than
-// silently using HEAD.
-//
-// Requirement: NS-REQ-4
-// ===========================================================================
-
-func TestRebuildExecutor_UpstreamBaseUnavailable_ReturnsTransientError(t *testing.T) {
-	mock := newMockGitRunner()
-
-	patches := newMockPatchStore([]Patch{
-		{ID: "p1", WorkspaceID: "ws1", BranchName: "feature/foo", Position: 1, Status: PatchStatusActive},
-	})
-
-	mock.RunFunc = func(_ context.Context, args ...string) (string, error) {
-		if len(args) >= 2 && args[0] == "rev-parse" {
-			if args[1] == "FETCH_HEAD" {
-				return "", fmt.Errorf("fatal: FETCH_HEAD does not exist")
-			}
-			if len(args) >= 3 && args[1] == "--verify" && strings.HasPrefix(args[2], "refs/remotes/upstream/") {
-				return "", fmt.Errorf("fatal: Needed a single revision")
-			}
-		}
-		return "aaaa000000000000000000000000000000000001", nil
-	}
-
-	h := &RebuildHandler{
-		PatchStore:   patches,
-		NewGitRunner: func(_ string) (GitRunner, error) { return mock, nil },
-		Fetch:        func(_ context.Context, _ string, _ transport.AuthMethod) error { return nil },
-		ResolveAuth:  func(_ string) (transport.AuthMethod, error) { return nil, nil },
-	}
-
-	payload := RebuildPayload{
-		WorkspaceSlug: "ws1",
-		Strategy:      StrategyRebase,
-		SubmittedBy:   "operator",
-	}
-	payloadJSON, _ := json.Marshal(payload)
-
-	result, retryable, err := h.HandleRebuildJob(context.Background(), payloadJSON)
-
-	if err == nil {
-		t.Fatal("expected error when the upstream base is unavailable, got nil")
-	}
-	if !retryable {
-		t.Error("expected retryable=true for unavailable upstream base")
-	}
+	pushed := false
+	r.h.PushIntegration = func(context.Context, string, string, string) error { pushed = true; return nil }
+	r.h.GetVariable = varsOf(map[string]string{"REBUILD_PUSH_INTEGRATION_BRANCH": "true"}, nil)
+
+	res, retryable, err := r.run(context.Background(), StrategyRebase, "")
 	var te *TransientError
-	if !errors.As(err, &te) {
-		t.Errorf("expected *TransientError, got %T: %v", err, err)
+	if res != nil || !retryable || !errors.As(err, &te) || !strings.Contains(err.Error(), "refs/heads/integration") {
+		t.Fatalf("run = %v, retryable=%v, err=%v", res, retryable, err)
 	}
-	if result != nil {
-		t.Error("expected nil result when the upstream base is unavailable")
+	if patchStatuses(t, r.db, r.slug)["feature/merged"] != "merged_upstream" || pushed {
+		t.Error("the finishing step continued after the failed ref update")
 	}
-	if len(mock.WorktreeAddCalls) != 0 {
-		t.Error("should not create a worktree when upstream base resolution fails")
+	r.assertClean()
+}
+
+// Pushing the integration branch is opt-in by setting; a failed push is
+// audited and does not fail the run.
+func TestRebuild_PushIntegrationOptIn(t *testing.T) {
+	r := newRebuild(t)
+	r.patches("feature/patch-a")
+	var pushes []string
+	var pushErr error
+	r.h.PushIntegration = func(_ context.Context, slug, repoPath, branch string) error {
+		pushes = append(pushes, slug+"|"+repoPath+"|"+branch)
+		return pushErr
+	}
+	vars := map[string]string{}
+	r.h.GetVariable = varsOf(vars, nil)
+
+	if res, _, err := r.run(context.Background(), StrategyRebase, ""); err != nil || res.IntegrationBranchPushed || len(pushes) != 0 {
+		t.Errorf("unset variable: pushed=%v pushes=%v err=%v", res != nil && res.IntegrationBranchPushed, pushes, err)
+	}
+	vars["REBUILD_PUSH_INTEGRATION_BRANCH"] = "true"
+	res, _, err := r.run(context.Background(), StrategyRebase, "")
+	if err != nil || !res.IntegrationBranchPushed || !equalStrings(pushes, []string{"ws|" + r.trunk + "|integration"}) {
+		t.Errorf("opted in: result=%+v pushes=%v err=%v", res, pushes, err)
+	}
+	pushErr = errors.New("remote refused")
+	res, _, err = r.run(context.Background(), StrategyRebase, "")
+	if err != nil || res.IntegrationBranchPushed {
+		t.Errorf("failed push: result=%+v err=%v", res, err)
+	}
+	if ev := r.audit.ofType("hub.rebuild.push_failed"); len(ev) != 1 || ev[0].Metadata["reason"] != "remote refused" || ev[0].Metadata["integration_branch"] != "integration" {
+		t.Errorf("push_failed event = %+v", ev)
 	}
 }
 
-// ===========================================================================
-// TS-NS-1: A completed rebuild result includes the previous integration
-// branch HEAD SHA.
-//
-// Requirement: NS-REQ-1
-// ===========================================================================
-
-func TestRebuildExecutor_PreviousIntegrationHeadSHA_Set(t *testing.T) {
-	mock := newMockGitRunner()
-
-	patches := newMockPatchStore([]Patch{
-		{ID: "p1", WorkspaceID: "ws1", BranchName: "feature/foo", Position: 1, Status: PatchStatusActive},
-	})
-
-	fetchHeadSHA := "aaaa000000000000000000000000000000000001"
-	previousIntegrationSHA := "prev000000000000000000000000000000000001"
-	commitSHA := "bbbb000000000000000000000000000000000001"
-	finalSHA := "cccc000000000000000000000000000000000001"
-
-	mock.RunFunc = func(_ context.Context, args ...string) (string, error) {
-		if len(args) >= 2 && args[0] == "rev-parse" {
-			if args[1] == "FETCH_HEAD" {
-				return fetchHeadSHA, nil
-			}
-			// rev-parse --verify refs/heads/<integration> (to capture previous HEAD)
-			if len(args) >= 3 && args[1] == "--verify" && args[2] == "refs/heads/deploy" {
-				return previousIntegrationSHA, nil
-			}
-			// rev-parse HEAD (for final integration head and per-patch head)
-			return finalSHA, nil
-		}
-		for _, arg := range args {
-			if arg == "--reverse" {
-				return commitSHA, nil
-			}
-		}
-		return fetchHeadSHA, nil
+// A cancelled run is a retryable failure, never a skip or a conflict; the
+// worktree is still removed, with a context that outlives the cancellation,
+// and the failure is audited.
+func TestRebuild_CancellationIsTransientAndCleansUp(t *testing.T) {
+	r := newRebuild(t)
+	r.patches("feature/patch-a", "feature/patch-b")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	r.wtHook = func(g GitRunner) GitRunner {
+		return &spyGit{GitRunner: g, onCherryPick: func(string) error { cancel(); return ctx.Err() }}
 	}
-	mock.CherryPickFunc = func(_ context.Context, _ string) error { return nil }
-
-	h := &RebuildHandler{
-		PatchStore:   patches,
-		NewGitRunner: func(_ string) (GitRunner, error) { return mock, nil },
-		Fetch:        func(_ context.Context, _ string, _ transport.AuthMethod) error { return nil },
-		ResolveAuth:  func(_ string) (transport.AuthMethod, error) { return nil, nil },
+	res, retryable, err := r.run(ctx, StrategyRebase, "")
+	if res != nil || !retryable || err == nil {
+		t.Fatalf("run = %v, retryable=%v, err=%v", res, retryable, err)
 	}
-
-	payload := RebuildPayload{
-		WorkspaceSlug: "ws1",
-		Strategy:      StrategyRebase,
-		SubmittedBy:   "operator",
+	if got := patchStatuses(t, r.db, r.slug); got["feature/patch-a"] != "active" {
+		t.Errorf("cancellation changed a patch status: %v", got)
 	}
-	payloadJSON, _ := json.Marshal(payload)
-
-	result, _, err := h.HandleRebuildJob(context.Background(), payloadJSON)
-	if err != nil {
-		t.Fatalf("HandleRebuildJob returned error: %v", err)
+	if refOf(r.trunk, "integration") != r.base {
+		t.Error("integration ref moved on a cancelled run")
 	}
-
-	rebuildResult, ok := result.(*RebuildResult)
-	if !ok {
-		t.Fatalf("expected result to be *RebuildResult, got %T", result)
-	}
-
-	// Verify PreviousIntegrationHeadSHA is set.
-	if rebuildResult.PreviousIntegrationHeadSHA != previousIntegrationSHA {
-		t.Errorf("PreviousIntegrationHeadSHA = %q, want %q",
-			rebuildResult.PreviousIntegrationHeadSHA, previousIntegrationSHA)
-	}
-
-	// Verify IntegrationHeadSHA is set to a different value.
-	if rebuildResult.IntegrationHeadSHA == "" {
-		t.Error("IntegrationHeadSHA should not be empty")
-	}
-	if rebuildResult.IntegrationHeadSHA == rebuildResult.PreviousIntegrationHeadSHA {
-		t.Error("IntegrationHeadSHA and PreviousIntegrationHeadSHA should differ")
-	}
-
-	// Verify the field is present in JSON.
-	data, err := json.Marshal(rebuildResult)
-	if err != nil {
-		t.Fatalf("failed to marshal result: %v", err)
-	}
-	var raw map[string]any
-	if err := json.Unmarshal(data, &raw); err != nil {
-		t.Fatalf("failed to unmarshal result: %v", err)
-	}
-	if _, ok := raw["previous_integration_head_sha"]; !ok {
-		t.Error("missing 'previous_integration_head_sha' in JSON result")
+	r.assertClean()
+	if len(r.audit.ofType("hub.rebuild.fail")) != 1 {
+		t.Error("fail event not emitted after cancellation")
 	}
 }
 
-// Test: PreviousIntegrationHeadSHA is empty when integration branch does not
-// exist yet (first-ever rebuild).
-func TestRebuildExecutor_PreviousIntegrationHeadSHA_EmptyOnFirstRebuild(t *testing.T) {
-	mock := newMockGitRunner()
-
-	patches := newMockPatchStore([]Patch{
-		{ID: "p1", WorkspaceID: "ws1", BranchName: "feature/foo", Position: 1, Status: PatchStatusActive},
-	})
-
-	fetchHeadSHA := "aaaa000000000000000000000000000000000001"
-	commitSHA := "bbbb000000000000000000000000000000000001"
-	finalSHA := "cccc000000000000000000000000000000000001"
-
-	mock.RunFunc = func(_ context.Context, args ...string) (string, error) {
-		if len(args) >= 2 && args[0] == "rev-parse" {
-			if args[1] == "FETCH_HEAD" {
-				return fetchHeadSHA, nil
-			}
-			// rev-parse --verify refs/heads/deploy fails (branch doesn't exist)
-			if len(args) >= 3 && args[1] == "--verify" && args[2] == "refs/heads/deploy" {
-				return "", fmt.Errorf("fatal: Needed a single revision")
-			}
-			return finalSHA, nil
-		}
-		for _, arg := range args {
-			if arg == "--reverse" {
-				return commitSHA, nil
-			}
-		}
-		return fetchHeadSHA, nil
+// Before each run the leftovers of a crashed run under <slug>/rebuild are
+// removed and their worktree registrations pruned; a failing worktree add
+// leaves nothing behind and is retried.
+func TestRebuild_StaleDirectoriesAndFailedWorktreeAdd(t *testing.T) {
+	r := newRebuild(t)
+	r.patches("feature/patch-a")
+	stale := filepath.Join(r.root, r.slug, "rebuild", "old-job")
+	runGit(t, r.trunk, "worktree", "add", "-q", "--detach", stale, r.base)
+	if err := os.RemoveAll(stale); err != nil {
+		t.Fatal(err)
 	}
-	mock.CherryPickFunc = func(_ context.Context, _ string) error { return nil }
+	writeFile(t, filepath.Join(stale, "leftover"), "x")
+	if _, _, err := r.run(context.Background(), StrategyRebase, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Error("stale directory survived the run")
+	}
+	if !strings.Contains(r.logs.String(), "removed stale rebuild worktree directory") {
+		t.Error("stale removal not logged")
+	}
+	r.assertClean()
 
-	h := &RebuildHandler{
-		PatchStore:   patches,
-		NewGitRunner: func(_ string) (GitRunner, error) { return mock, nil },
-		Fetch:        func(_ context.Context, _ string, _ transport.AuthMethod) error { return nil },
-		ResolveAuth:  func(_ string) (transport.AuthMethod, error) { return nil, nil },
+	// A file where the rebuild directory should be makes `worktree add` fail.
+	rebuildDir := filepath.Join(r.root, r.slug, "rebuild")
+	if err := os.RemoveAll(rebuildDir); err != nil {
+		t.Fatal(err)
 	}
-
-	payload := RebuildPayload{
-		WorkspaceSlug: "ws1",
-		Strategy:      StrategyRebase,
-		SubmittedBy:   "operator",
+	writeFile(t, rebuildDir, "not a directory")
+	res, retryable, err := r.run(context.Background(), StrategyRebase, "")
+	if res != nil || !retryable || err == nil || !strings.Contains(err.Error(), "create rebuild worktree") {
+		t.Fatalf("run = %v, retryable=%v, err=%v", res, retryable, err)
 	}
-	payloadJSON, _ := json.Marshal(payload)
-
-	result, _, err := h.HandleRebuildJob(context.Background(), payloadJSON)
-	if err != nil {
-		t.Fatalf("HandleRebuildJob returned error: %v", err)
+	if !strings.Contains(r.logs.String(), "cannot list rebuild directory") {
+		t.Error("unreadable rebuild directory not logged")
 	}
-
-	rebuildResult, ok := result.(*RebuildResult)
-	if !ok {
-		t.Fatalf("expected result to be *RebuildResult, got %T", result)
-	}
-
-	// PreviousIntegrationHeadSHA should be empty on first rebuild.
-	if rebuildResult.PreviousIntegrationHeadSHA != "" {
-		t.Errorf("PreviousIntegrationHeadSHA = %q, want empty string (first rebuild)",
-			rebuildResult.PreviousIntegrationHeadSHA)
-	}
-
-	// Verify the field is omitted from JSON when empty.
-	data, err := json.Marshal(rebuildResult)
-	if err != nil {
-		t.Fatalf("failed to marshal result: %v", err)
-	}
-	var raw map[string]any
-	if err := json.Unmarshal(data, &raw); err != nil {
-		t.Fatalf("failed to unmarshal result: %v", err)
-	}
-	if _, ok := raw["previous_integration_head_sha"]; ok {
-		t.Error("'previous_integration_head_sha' should be omitted from JSON when empty")
+	if lockHeld(r.slug) || testLocks.RebuildActive(r.slug) {
+		t.Error("lock or guard held after the failed worktree add")
 	}
 }
 
-// ===========================================================================
-// TS-NS-1: In continue mode, a conflict at patch N does not stop processing
-// of patches N+1 through end.
-//
-// Requirement: NS-REQ-1
-// ===========================================================================
-
-func TestRebuildExecutor_ContinueMode_ConflictDoesNotStopProcessing(t *testing.T) {
-	mock := newMockGitRunner()
-
-	patches := newMockPatchStore([]Patch{
-		{ID: "p1", WorkspaceID: "ws1", BranchName: "feature/first", Position: 1, Status: PatchStatusActive},
-		{ID: "p2", WorkspaceID: "ws1", BranchName: "feature/conflict", Position: 2, Status: PatchStatusActive},
-		{ID: "p3", WorkspaceID: "ws1", BranchName: "feature/third", Position: 3, Status: PatchStatusActive},
-		{ID: "p4", WorkspaceID: "ws1", BranchName: "feature/fourth", Position: 4, Status: PatchStatusActive},
-		{ID: "p5", WorkspaceID: "ws1", BranchName: "feature/fifth", Position: 5, Status: PatchStatusActive},
-	})
-
-	commitSHA := "bbbb000000000000000000000000000000000001"
-	resultSHA := "cccc000000000000000000000000000000000001"
-
-	mock.RunFunc = func(_ context.Context, args ...string) (string, error) {
-		for _, arg := range args {
-			if arg == "--reverse" {
-				return commitSHA, nil
-			}
-			if arg == "--diff-filter=U" {
-				return "src/main.go", nil
-			}
-		}
-		return resultSHA, nil
+// The preparation runs under the lock and the rebuild guard; patch application
+// holds the guard but not the lock; both are released at the end. Failures
+// before the worktree exists are transient.
+func TestRebuild_LockingAndEarlyFailures(t *testing.T) {
+	r := newRebuild(t)
+	r.patches("feature/patch-a")
+	var lockedDuringApply, guardedDuringApply bool
+	r.wtHook = func(g GitRunner) GitRunner {
+		return &spyGit{GitRunner: g, onCherryPick: func(string) error {
+			lockedDuringApply, guardedDuringApply = lockHeld(r.slug), testLocks.RebuildActive(r.slug)
+			return nil
+		}}
 	}
+	if _, _, err := r.run(context.Background(), StrategyRebase, ""); err != nil {
+		t.Fatal(err)
+	}
+	if lockedDuringApply || !guardedDuringApply {
+		t.Errorf("during application: locked=%v guarded=%v, want free lock and active guard", lockedDuringApply, guardedDuringApply)
+	}
+	r.assertClean()
 
-	// Cherry-pick succeeds for all patches except feature/conflict.
-	mock.CherryPickFunc = func(_ context.Context, _ string) error {
-		// We need to check which branch is being processed.
-		// The commit SHA is always the same in this mock, so we track
-		// state via the call count.
-		callCount := len(mock.CherryPickCalls)
-		if callCount == 2 { // 0=first patch, 1=first patch done; 2=conflict patch
-			return &CherryPickConflictError{Files: []string{"src/main.go"}}
-		}
-		return nil
+	end, _ := testLocks.BeginRebuild(r.slug)
+	_, retryable, err := r.run(context.Background(), StrategyRebase, "")
+	end()
+	if !retryable || err == nil || !strings.Contains(err.Error(), "already active") {
+		t.Errorf("guard already set: retryable=%v err=%v", retryable, err)
 	}
+	r.h.ResolveAuth = func(string) (transport.AuthMethod, error) { return nil, errors.New("no creds") }
+	if _, retryable, err := r.run(context.Background(), StrategyRebase, ""); !retryable || err == nil {
+		t.Errorf("credential failure: retryable=%v err=%v", retryable, err)
+	}
+	r.h.ResolveAuth = noAuth
+	r.h.Fetch = func(context.Context, string, transport.AuthMethod) error { return errors.New("fetch down") }
+	if _, retryable, err := r.run(context.Background(), StrategyRebase, ""); !retryable || err == nil || !strings.Contains(err.Error(), "fetch down") {
+		t.Errorf("fetch failure: retryable=%v err=%v", retryable, err)
+	}
+	r.h.Fetch = noFetch
+	runGit(t, r.trunk, "update-ref", "-d", UpstreamHeadRef)
+	if _, retryable, err := r.run(context.Background(), StrategyRebase, ""); !retryable || err == nil {
+		t.Errorf("no upstream base: retryable=%v err=%v", retryable, err)
+	}
+	if _, retryable, err := r.h.HandleRebuildJob(context.Background(), json.RawMessage(`{bad`)); retryable || err == nil {
+		t.Errorf("invalid payload: retryable=%v err=%v", retryable, err)
+	}
+	r.assertClean()
+}
 
-	mock.HardResetFunc = func(_ context.Context, _ string) error {
-		return nil
+// With a queue the executor records the patch results so far after each patch.
+func TestRebuild_WritesProgressAfterEachPatch(t *testing.T) {
+	r := newRebuild(t)
+	r.patches("feature/off", "feature/patch-a")
+	mustExec(t, r.db, `UPDATE patches SET status = 'disabled' WHERE id = 'p1'`)
+	q, ctx, id := r.runningJob("g")
+	if _, _, err := r.run(ctx, StrategyRebase, ""); err != nil {
+		t.Fatal(err)
 	}
-
-	h := &RebuildHandler{
-		PatchStore:   patches,
-		NewGitRunner: func(_ string) (GitRunner, error) { return mock, nil },
-		Fetch:        func(_ context.Context, _ string, _ transport.AuthMethod) error { return nil },
-		ResolveAuth:  func(_ string) (transport.AuthMethod, error) { return nil, nil },
+	job, _ := q.GetByID(id)
+	var progress []PatchResult
+	if err := json.Unmarshal(job.Progress, &progress); err != nil || len(progress) != 2 || progress[0].SkippedReason != "disabled" || progress[1].Status != "success" {
+		t.Errorf("progress = %s (%v)", job.Progress, err)
 	}
-
-	payload := RebuildPayload{
-		WorkspaceSlug: "ws1",
-		Strategy:      StrategyRebase,
-		SubmittedBy:   "operator",
-		FailMode:      FailModeContinue,
-	}
-	payloadJSON, _ := json.Marshal(payload)
-
-	result, _, err := h.HandleRebuildJob(context.Background(), payloadJSON)
-	// In continue mode, conflict should NOT produce an error.
-	if err != nil {
-		t.Fatalf("HandleRebuildJob returned error in continue mode: %v", err)
-	}
-
-	rebuildResult, ok := result.(*RebuildResult)
-	if !ok {
-		t.Fatalf("expected result to be *RebuildResult, got %T", result)
-	}
-
-	// All 5 patches should have entries.
-	if len(rebuildResult.PatchResults) != 5 {
-		t.Fatalf("expected 5 patch results, got %d", len(rebuildResult.PatchResults))
-	}
-
-	// Patch 1: success.
-	if rebuildResult.PatchResults[0].Status != "success" {
-		t.Errorf("patch 1 status=%q, want 'success'", rebuildResult.PatchResults[0].Status)
-	}
-
-	// Patch 2: conflict.
-	if rebuildResult.PatchResults[1].Status != "conflict" {
-		t.Errorf("patch 2 status=%q, want 'conflict'", rebuildResult.PatchResults[1].Status)
-	}
-	if len(rebuildResult.PatchResults[1].ConflictFiles) == 0 {
-		t.Error("patch 2 should have non-empty conflict_files")
-	}
-
-	// Patches 3-5: should be success (they were still attempted).
-	for i := 2; i < 5; i++ {
-		if rebuildResult.PatchResults[i].Status != "success" {
-			t.Errorf("patch %d status=%q, want 'success'", i+1, rebuildResult.PatchResults[i].Status)
-		}
-	}
-
-	// Verify counters.
-	if rebuildResult.PatchesApplied != 4 {
-		t.Errorf("patches_applied=%d, want 4", rebuildResult.PatchesApplied)
-	}
-	if rebuildResult.PatchesConflicted != 1 {
-		t.Errorf("patches_conflicted=%d, want 1", rebuildResult.PatchesConflicted)
-	}
-
-	// Verify the conflicting patch's status was updated in the store.
-	updated, exists := patches.UpdatedPatches["p2"]
-	if !exists {
-		t.Fatal("expected patch 'p2' to be updated in store")
-	}
-	if updated.Status != PatchStatusConflict {
-		t.Errorf("expected patch status=%q, got %q", PatchStatusConflict, updated.Status)
+	if res, _, _ := r.run(context.Background(), StrategyRebase, ""); res == nil {
+		t.Error("run without a job id failed")
 	}
 }
 
-// ===========================================================================
-// TS-NS-2: Rebuild result exposes per-patch status including 'conflict'
-// entries so callers can identify all conflicts in one pass.
-//
-// Requirement: NS-REQ-2
-// ===========================================================================
-
-func TestRebuildExecutor_ContinueMode_PatchResultsDistinguishStatuses(t *testing.T) {
-	mock := newMockGitRunner()
-
-	patches := newMockPatchStore([]Patch{
-		{ID: "p-merged", WorkspaceID: "ws1", BranchName: "feature/merged", Position: 1, Status: PatchStatusMergedUpstream},
-		{ID: "p-active", WorkspaceID: "ws1", BranchName: "feature/active", Position: 2, Status: PatchStatusActive},
-		{ID: "p-conflict", WorkspaceID: "ws1", BranchName: "feature/conflict", Position: 3, Status: PatchStatusActive},
-		{ID: "p-after", WorkspaceID: "ws1", BranchName: "feature/after", Position: 4, Status: PatchStatusActive},
-	})
-
-	commitSHA := "bbbb000000000000000000000000000000000001"
-	resultSHA := "cccc000000000000000000000000000000000001"
-
-	cherryPickCallCount := 0
-	mock.RunFunc = func(_ context.Context, args ...string) (string, error) {
-		for _, arg := range args {
-			if arg == "--reverse" {
-				return commitSHA, nil
+// The patch tips are snapshotted before application: a branch that moves
+// during the run contributes its snapshot only, and the run enqueues one
+// follow-up rebuild with its own payload and serialisation key, which the auto
+// rebuild settings can suppress.
+func TestRebuild_StaleInputsEnqueueFollowup(t *testing.T) {
+	cases := []struct {
+		name         string
+		vars         map[string]string
+		moveUpstream bool
+		conflict     bool
+		wantFollowup bool
+		wantStale    []string
+	}{
+		{"moved patch tip", nil, false, false, true, []string{"feature/patch-a"}},
+		{"moved tip suppressed", map[string]string{"AUTO_REBUILD_AFTER_PUSH": "false"}, false, false, false, nil},
+		{"moved upstream", map[string]string{"AUTO_REBUILD_AFTER_PUSH": "false"}, true, false, true, []string{}},
+		{"moved upstream suppressed", map[string]string{"AUTO_REBUILD_AFTER_PUSH": "false", "AUTO_REBUILD_AFTER_SYNC": "false"}, true, false, false, nil},
+		{"fail-fast conflict still checks", nil, false, true, true, []string{"feature/patch-a"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			r := newRebuild(t)
+			branches := []string{"feature/patch-a"}
+			if c.conflict {
+				branches = append(branches, "feature/conflict")
 			}
-			if arg == "--diff-filter=U" {
-				return "config.yaml", nil
+			r.patches(branches...)
+			r.h.GetVariable = varsOf(c.vars, nil)
+			q, ctx, id := r.runningJob("group-1")
+			moved := false
+			r.wtHook = func(g GitRunner) GitRunner {
+				return &spyGit{GitRunner: g, onCherryPick: func(string) error {
+					if moved {
+						return nil
+					}
+					moved = true
+					runGit(t, r.trunk, "checkout", "-q", "feature/patch-a")
+					commitFile(t, r.trunk, "late.txt", "late\n", "pushed during the run")
+					runGit(t, r.trunk, "checkout", "-q", "main")
+					if c.moveUpstream {
+						runGit(t, r.trunk, "update-ref", UpstreamHeadRef, refOf(r.trunk, "feature/patch-b"))
+					}
+					return nil
+				}}
 			}
-		}
-		return resultSHA, nil
-	}
 
-	mock.CherryPickFunc = func(_ context.Context, _ string) error {
-		cherryPickCallCount++
-		// Third cherry-pick call is for the conflict patch.
-		if cherryPickCallCount == 2 {
-			return &CherryPickConflictError{Files: []string{"config.yaml"}}
-		}
-		return nil
-	}
-
-	mock.HardResetFunc = func(_ context.Context, _ string) error {
-		return nil
-	}
-
-	h := &RebuildHandler{
-		PatchStore:   patches,
-		NewGitRunner: func(_ string) (GitRunner, error) { return mock, nil },
-		Fetch:        func(_ context.Context, _ string, _ transport.AuthMethod) error { return nil },
-		ResolveAuth:  func(_ string) (transport.AuthMethod, error) { return nil, nil },
-	}
-
-	payload := RebuildPayload{
-		WorkspaceSlug: "ws1",
-		Strategy:      StrategyRebase,
-		SubmittedBy:   "operator",
-		FailMode:      FailModeContinue,
-	}
-	payloadJSON, _ := json.Marshal(payload)
-
-	result, _, err := h.HandleRebuildJob(context.Background(), payloadJSON)
-	if err != nil {
-		t.Fatalf("HandleRebuildJob returned error: %v", err)
-	}
-
-	rebuildResult, ok := result.(*RebuildResult)
-	if !ok {
-		t.Fatalf("expected result to be *RebuildResult, got %T", result)
-	}
-
-	// Should have 4 entries.
-	if len(rebuildResult.PatchResults) != 4 {
-		t.Fatalf("expected 4 patch results, got %d", len(rebuildResult.PatchResults))
-	}
-
-	// Verify each status is distinguishable.
-	statuses := map[string]string{}
-	for _, pr := range rebuildResult.PatchResults {
-		statuses[pr.PatchID] = pr.Status
-	}
-
-	if statuses["p-merged"] != "skipped" {
-		t.Errorf("merged patch status=%q, want 'skipped'", statuses["p-merged"])
-	}
-	if statuses["p-active"] != "success" {
-		t.Errorf("active patch status=%q, want 'success'", statuses["p-active"])
-	}
-	if statuses["p-conflict"] != "conflict" {
-		t.Errorf("conflict patch status=%q, want 'conflict'", statuses["p-conflict"])
-	}
-	if statuses["p-after"] != "success" {
-		t.Errorf("after-conflict patch status=%q, want 'success'", statuses["p-after"])
-	}
-
-	// Verify conflict patch has non-empty conflict_files.
-	for _, pr := range rebuildResult.PatchResults {
-		if pr.PatchID == "p-conflict" {
-			if len(pr.ConflictFiles) == 0 {
-				t.Error("conflict patch should have non-empty conflict_files")
+			res, _, err := r.run(ctx, StrategyRebase, "")
+			if c.conflict != (err != nil) {
+				t.Fatalf("run: res=%v err=%v", res, err)
 			}
-		}
-	}
-
-	// Verify JSON serialization includes all fields.
-	data, err := json.Marshal(rebuildResult)
-	if err != nil {
-		t.Fatalf("failed to marshal result: %v", err)
-	}
-	var raw map[string]any
-	if err := json.Unmarshal(data, &raw); err != nil {
-		t.Fatalf("failed to unmarshal result: %v", err)
-	}
-	if _, ok := raw["patches_conflicted"]; !ok {
-		t.Error("missing 'patches_conflicted' in JSON result")
-	}
-	if _, ok := raw["fail_mode"]; !ok {
-		t.Error("missing 'fail_mode' in JSON result")
-	}
-}
-
-// ===========================================================================
-// TS-NS-3: Default behavior (fail_fast) is unchanged when no fail_mode is
-// supplied.
-//
-// Requirement: NS-REQ-3
-// ===========================================================================
-
-func TestRebuildExecutor_DefaultFailFast_Unchanged(t *testing.T) {
-	mock := newMockGitRunner()
-
-	patches := newMockPatchStore([]Patch{
-		{ID: "p1", WorkspaceID: "ws1", BranchName: "feature/conflict", Position: 1, Status: PatchStatusActive},
-		{ID: "p2", WorkspaceID: "ws1", BranchName: "feature/after", Position: 2, Status: PatchStatusActive},
-		{ID: "p3", WorkspaceID: "ws1", BranchName: "feature/last", Position: 3, Status: PatchStatusActive},
-	})
-
-	upstreamHead := "aaaa000000000000000000000000000000000001"
-
-	mock.RunFunc = func(_ context.Context, args ...string) (string, error) {
-		for _, arg := range args {
-			if arg == "--reverse" {
-				return "bbbb000000000000000000000000000000000001", nil
+			if !c.conflict && strings.Contains(files(t, r.trunk, "integration"), "late.txt") {
+				t.Error("the commit pushed during the run was applied; only the snapshot may be")
 			}
-			if arg == "--diff-filter=U" {
-				return "src/main.go", nil
-			}
-		}
-		return upstreamHead, nil
-	}
-
-	mock.CherryPickFunc = func(_ context.Context, _ string) error {
-		return &CherryPickConflictError{Files: []string{"src/main.go"}}
-	}
-
-	h := &RebuildHandler{
-		PatchStore:   patches,
-		NewGitRunner: func(_ string) (GitRunner, error) { return mock, nil },
-		Fetch:        func(_ context.Context, _ string, _ transport.AuthMethod) error { return nil },
-		ResolveAuth:  func(_ string) (transport.AuthMethod, error) { return nil, nil },
-	}
-
-	// No FailMode set — should default to fail_fast.
-	payload := RebuildPayload{
-		WorkspaceSlug: "ws1",
-		Strategy:      StrategyRebase,
-		SubmittedBy:   "operator",
-	}
-	payloadJSON, _ := json.Marshal(payload)
-
-	result, retryable, err := h.HandleRebuildJob(context.Background(), payloadJSON)
-
-	// Should produce a non-retryable error (fail-fast).
-	if err == nil {
-		t.Fatal("expected error for conflict with default fail_fast mode, got nil")
-	}
-	if retryable {
-		t.Error("expected retryable=false for conflict (permanent failure)")
-	}
-
-	// The patch status should have been updated to 'conflict'.
-	updated, exists := patches.UpdatedPatches["p1"]
-	if !exists {
-		t.Fatal("expected patch 'p1' to be updated in store")
-	}
-	if updated.Status != PatchStatusConflict {
-		t.Errorf("expected patch status=%q, got %q", PatchStatusConflict, updated.Status)
-	}
-
-	// Patches 2 and 3 should NOT have been attempted.
-	if result != nil {
-		if rebuildResult, ok := result.(*RebuildResult); ok {
-			for _, pr := range rebuildResult.PatchResults {
-				if pr.PatchID == "p2" || pr.PatchID == "p3" {
-					t.Error("patches after conflict should NOT have entries in fail_fast mode")
+			jobs, _ := q.ListByKey("rebuild", r.slug)
+			var followups []*jobqueue.Job
+			for _, j := range jobs {
+				if j.ID != id {
+					followups = append(followups, j)
 				}
 			}
-		}
+			if (len(followups) == 1) != c.wantFollowup {
+				t.Fatalf("follow-ups = %d, want one=%v", len(followups), c.wantFollowup)
+			}
+			events := r.audit.ofType(EventRebuildFollowup)
+			if !c.wantFollowup {
+				if len(events) != 0 {
+					t.Error("follow-up event without a follow-up")
+				}
+				return
+			}
+			f := followups[0]
+			var payload RebuildPayload
+			_ = json.Unmarshal(f.Payload, &payload)
+			if f.Status != jobqueue.StatusQueued || f.GroupKey != "group-1" || f.SubmittedBy != followupSubmitter || payload.SubmittedBy != followupSubmitter || payload.IntegrationBranch != "integration" {
+				t.Errorf("follow-up = %+v payload=%+v", f, payload)
+			}
+			if len(events) != 1 || events[0].Metadata["follow_up_job_id"] != f.ID || events[0].Metadata["upstream_stale"] != c.moveUpstream {
+				t.Errorf("follow-up event = %+v", events)
+			}
+			if got, _ := events[0].Metadata["stale_patches"].([]string); !equalStrings(got, c.wantStale) {
+				t.Errorf("stale_patches = %v, want %v", got, c.wantStale)
+			}
+		})
 	}
 }
 
-// Also verify that explicit fail_mode=fail_fast behaves identically.
-func TestRebuildExecutor_ExplicitFailFast_BehavesLikeDefault(t *testing.T) {
-	mock := newMockGitRunner()
-
-	patches := newMockPatchStore([]Patch{
-		{ID: "p1", WorkspaceID: "ws1", BranchName: "feature/conflict", Position: 1, Status: PatchStatusActive},
-		{ID: "p2", WorkspaceID: "ws1", BranchName: "feature/after", Position: 2, Status: PatchStatusActive},
-	})
-
-	mock.RunFunc = func(_ context.Context, args ...string) (string, error) {
-		for _, arg := range args {
-			if arg == "--reverse" {
-				return "bbbb000000000000000000000000000000000001", nil
-			}
-			if arg == "--diff-filter=U" {
-				return "src/main.go", nil
-			}
+// Without a queue a stale input is only logged; a follow-up that would
+// duplicate a queued rebuild is skipped.
+func TestRebuild_FollowupWithoutQueueOrWithDuplicate(t *testing.T) {
+	r := newRebuild(t)
+	r.patches("feature/patch-a")
+	move := func(string) error {
+		if refOf(r.trunk, "feature/patch-a") == refOf(r.trunk, "feature/patch-b") {
+			return nil
 		}
-		return "aaaa000000000000000000000000000000000001", nil
-	}
-
-	mock.CherryPickFunc = func(_ context.Context, _ string) error {
-		return &CherryPickConflictError{Files: []string{"src/main.go"}}
-	}
-
-	h := &RebuildHandler{
-		PatchStore:   patches,
-		NewGitRunner: func(_ string) (GitRunner, error) { return mock, nil },
-		Fetch:        func(_ context.Context, _ string, _ transport.AuthMethod) error { return nil },
-		ResolveAuth:  func(_ string) (transport.AuthMethod, error) { return nil, nil },
-	}
-
-	// Explicit fail_fast.
-	payload := RebuildPayload{
-		WorkspaceSlug: "ws1",
-		Strategy:      StrategyRebase,
-		SubmittedBy:   "operator",
-		FailMode:      FailModeFailFast,
-	}
-	payloadJSON, _ := json.Marshal(payload)
-
-	_, retryable, err := h.HandleRebuildJob(context.Background(), payloadJSON)
-	if err == nil {
-		t.Fatal("expected error for conflict with explicit fail_fast mode, got nil")
-	}
-	if retryable {
-		t.Error("expected retryable=false for conflict")
-	}
-}
-
-// ===========================================================================
-// TS-NS-4: Continue mode with merge strategy also works correctly.
-//
-// Requirement: NS-REQ-1
-// ===========================================================================
-
-func TestRebuildExecutor_ContinueMode_MergeStrategy(t *testing.T) {
-	mock := newMockGitRunner()
-
-	patches := newMockPatchStore([]Patch{
-		{ID: "p1", WorkspaceID: "ws1", BranchName: "feature/ok", Position: 1, Status: PatchStatusActive},
-		{ID: "p2", WorkspaceID: "ws1", BranchName: "feature/conflict", Position: 2, Status: PatchStatusActive},
-		{ID: "p3", WorkspaceID: "ws1", BranchName: "feature/after", Position: 3, Status: PatchStatusActive},
-	})
-
-	resultSHA := "cccc000000000000000000000000000000000001"
-	// The merge is given the snapshot SHA of the branch tip (01-REQ-6.1).
-	conflictSHA := "eeee000000000000000000000000000000000001"
-
-	mergeCallCount := 0
-	mock.RunFunc = func(_ context.Context, args ...string) (string, error) {
-		if br, ok := snapshotArgs(args); ok && br == "feature/conflict" {
-			return conflictSHA, nil
-		}
-		for _, arg := range args {
-			if arg == "--diff-filter=U" {
-				return "base.txt", nil
-			}
-		}
-		return resultSHA, nil
-	}
-
-	mock.MergeNoFFFunc = func(_ context.Context, ref string) error {
-		mergeCallCount++
-		if ref == conflictSHA {
-			return &MergeNoFFConflictError{Files: []string{"base.txt"}}
-		}
+		runGit(t, r.trunk, "update-ref", "refs/heads/feature/patch-a", refOf(r.trunk, "feature/patch-b"))
 		return nil
 	}
-
-	mock.HardResetFunc = func(_ context.Context, _ string) error {
-		return nil
+	r.wtHook = func(g GitRunner) GitRunner { return &spyGit{GitRunner: g, onCherryPick: move} }
+	if _, _, err := r.run(context.Background(), StrategyRebase, ""); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(r.logs.String(), "no job queue") || len(r.audit.ofType(EventRebuildFollowup)) != 0 {
+		t.Error("stale input without a queue must be logged only")
 	}
 
-	h := &RebuildHandler{
-		PatchStore:   patches,
-		NewGitRunner: func(_ string) (GitRunner, error) { return mock, nil },
-		Fetch:        func(_ context.Context, _ string, _ transport.AuthMethod) error { return nil },
-		ResolveAuth:  func(_ string) (transport.AuthMethod, error) { return nil, nil },
+	runGit(t, r.trunk, "update-ref", "refs/heads/feature/patch-a", r.base)
+	runGit(t, r.trunk, "checkout", "-q", "feature/patch-a")
+	commitFile(t, r.trunk, "again.txt", "again\n", "another tip")
+	runGit(t, r.trunk, "checkout", "-q", "main")
+	_, ctx, _ := r.runningJob("g")
+	now := time.Now().UTC().Format(time.RFC3339)
+	mustExec(t, r.db, `INSERT INTO jobs (id, type, key, group_key, nonce, status, payload, retry_count, available_at, submitted_by, created_at, updated_at)
+		VALUES ('queued-already', 'rebuild', 'ws', 'g', 'queued-already', 'queued', '{}', 0, ?, 'x', ?, ?)`, now, now, now)
+	if _, _, err := r.run(ctx, StrategyRebase, ""); err != nil {
+		t.Fatal(err)
 	}
-
-	payload := RebuildPayload{
-		WorkspaceSlug: "ws1",
-		Strategy:      StrategyMerge,
-		SubmittedBy:   "operator",
-		FailMode:      FailModeContinue,
-	}
-	payloadJSON, _ := json.Marshal(payload)
-
-	result, _, err := h.HandleRebuildJob(context.Background(), payloadJSON)
-	if err != nil {
-		t.Fatalf("HandleRebuildJob returned error: %v", err)
-	}
-
-	rebuildResult, ok := result.(*RebuildResult)
-	if !ok {
-		t.Fatalf("expected result to be *RebuildResult, got %T", result)
-	}
-
-	if len(rebuildResult.PatchResults) != 3 {
-		t.Fatalf("expected 3 patch results, got %d", len(rebuildResult.PatchResults))
-	}
-
-	if rebuildResult.PatchResults[0].Status != "success" {
-		t.Errorf("patch 1 status=%q, want 'success'", rebuildResult.PatchResults[0].Status)
-	}
-	if rebuildResult.PatchResults[1].Status != "conflict" {
-		t.Errorf("patch 2 status=%q, want 'conflict'", rebuildResult.PatchResults[1].Status)
-	}
-	if rebuildResult.PatchResults[2].Status != "success" {
-		t.Errorf("patch 3 status=%q, want 'success'", rebuildResult.PatchResults[2].Status)
+	if !strings.Contains(r.logs.String(), "follow-up rebuild skipped: a rebuild is already queued") {
+		t.Errorf("duplicate follow-up not skipped: %s", r.logs.String())
 	}
 }
 
-// ===========================================================================
-// TS-NS-5: Continue mode with HardReset failure returns partial result.
-// ===========================================================================
-
-func TestRebuildExecutor_ContinueMode_HardResetFailReturnsPartialResult(t *testing.T) {
-	mock := newMockGitRunner()
-
-	patches := newMockPatchStore([]Patch{
-		{ID: "p1", WorkspaceID: "ws1", BranchName: "feature/ok", Position: 1, Status: PatchStatusActive},
-		{ID: "p2", WorkspaceID: "ws1", BranchName: "feature/conflict", Position: 2, Status: PatchStatusActive},
-	})
-
-	mock.RunFunc = func(_ context.Context, args ...string) (string, error) {
-		for _, arg := range args {
-			if arg == "--reverse" {
-				return "bbbb000000000000000000000000000000000001", nil
-			}
-			if arg == "--diff-filter=U" {
-				return "src/main.go", nil
-			}
-		}
-		return "aaaa000000000000000000000000000000000001", nil
+// A nil audit emitter and a nil logger are accepted.
+func TestRebuild_NilAuditAndLogger(t *testing.T) {
+	r := newRebuild(t)
+	r.patches("feature/patch-a")
+	r.h.Audit, r.h.Logger = nil, nil
+	if _, _, err := r.run(context.Background(), StrategyRebase, ""); err != nil {
+		t.Fatal(err)
 	}
-
-	mock.CherryPickFunc = func(_ context.Context, _ string) error {
-		if len(mock.CherryPickCalls) == 2 {
-			return &CherryPickConflictError{Files: []string{"src/main.go"}}
-		}
-		return nil
+	r.h.logf("ignored %d", 1)
+	if got := splitNonEmpty(" a \n\nb\n"); !equalStrings(got, []string{"a", "b"}) || splitNonEmpty("") != nil {
+		t.Errorf("splitNonEmpty = %v", got)
 	}
-
-	mock.HardResetFunc = func(_ context.Context, _ string) error {
-		return fmt.Errorf("hard reset failed")
-	}
-
-	h := &RebuildHandler{
-		PatchStore:   patches,
-		NewGitRunner: func(_ string) (GitRunner, error) { return mock, nil },
-		Fetch:        func(_ context.Context, _ string, _ transport.AuthMethod) error { return nil },
-		ResolveAuth:  func(_ string) (transport.AuthMethod, error) { return nil, nil },
-	}
-
-	payload := RebuildPayload{
-		WorkspaceSlug: "ws1",
-		Strategy:      StrategyRebase,
-		SubmittedBy:   "operator",
-		FailMode:      FailModeContinue,
-	}
-	payloadJSON, _ := json.Marshal(payload)
-
-	result, retryable, err := h.HandleRebuildJob(context.Background(), payloadJSON)
-
-	// Should return an error (hard reset failed is transient).
-	if err == nil {
-		t.Fatal("expected error when HardReset fails")
-	}
-	if !retryable {
-		t.Error("HardReset failure should be retryable")
-	}
-
-	// Should still return a partial result.
-	if result == nil {
-		t.Fatal("expected partial result even on HardReset failure")
-	}
-
-	rebuildResult, ok := result.(*RebuildResult)
-	if !ok {
-		t.Fatalf("expected result to be *RebuildResult, got %T", result)
-	}
-
-	// Should have 2 entries (success + conflict).
-	if len(rebuildResult.PatchResults) != 2 {
-		t.Fatalf("expected 2 patch results, got %d", len(rebuildResult.PatchResults))
-	}
-}
-
-// ===========================================================================
-// Helpers
-// ===========================================================================
-
-// containsString checks if a string slice contains a given string.
-func containsString(slice []string, s string) bool {
-	for _, v := range slice {
-		if v == s || (len(v) > len(s) && v[len(v)-len(s):] == s) {
-			return true
-		}
-	}
-	return false
 }

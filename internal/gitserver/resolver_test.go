@@ -4,366 +4,99 @@ import (
 	"net/http"
 	"strings"
 	"testing"
-	"time"
+
+	"github.com/agent-fox-dev/hub/internal/testutil"
 )
 
-// TS-06-12: Repository resolver extracts org and slug from the URL, verifies
-// org_id, verifies status=ready, opens the repository via PlainOpen,
-// and returns the storer to the transport.
-// Requirement: 06-REQ-4.1
-func TestResolver_HappyPath_ReadyWorkspace_ReturnsOK(t *testing.T) {
-	env := newGitTestEnv(t)
-
-	// Seed org and workspace with matching org_id and status='ready'.
-	env.seedOrg(t, "org-1", "My Org", "myorg")
-	env.seedOrgMember(t, "org-1", "user-1")
-	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "ready")
-	// status defaults to 'ready' from schema.
-
-	// Create a real git repository at the expected filesystem path.
-	env.initWorkspaceRepo(t, "myws")
-
-	rec := env.doRequest(t, http.MethodGet,
-		"/git/myorg/myws.git/info/refs?service=git-upload-pack", "",
-		withBasicAuth("x-token-auth", "af_key_user1"))
-
-	if rec.Code != http.StatusOK {
-		t.Errorf("GET info/refs for ready workspace: status = %d; want %d",
-			rec.Code, http.StatusOK)
+// The resolver serves a ready workspace of the URL's org and refuses, with
+// the git server's pkt-line answers, a slug it does not know, a slug under
+// the wrong or an unknown org, a workspace outside every org, a clone that
+// is not ready, and a URL without the .git suffix; a repository missing on
+// disk and a failed lookup are plain 500s.
+func TestResolver_Answers(t *testing.T) {
+	v := newEnv(t)
+	owner := v.key(t, "owner")
+	testutil.SeedOrg(t, v.db, "org-2", "otherorg", "owner")
+	v.workspace(t, "noorg", "owner", "", "ready")
+	v.workspace(t, "nodisk", "owner", orgID, "ready")
+	for _, status := range []string{"cloning", "failed", "archived"} {
+		v.workspace(t, status, "owner", orgID, status)
 	}
-
-	// The response should have the correct Content-Type for upload-pack advertisement.
-	ct := rec.Header().Get("Content-Type")
-	expected := "application/x-git-upload-pack-advertisement"
-	if ct != expected {
-		t.Errorf("Content-Type = %q; want %q", ct, expected)
-	}
-}
-
-// TS-06-12 (continued): Verify that org and slug are correctly extracted
-// from the URL path and used for the database lookup.
-// Requirement: 06-REQ-4.1
-func TestResolver_CorrectOrgAndSlugExtraction(t *testing.T) {
-	env := newGitTestEnv(t)
-
-	// Seed two orgs with workspaces — verify the correct one is resolved.
-	env.seedOrg(t, "org-1", "Org One", "orgone")
-	env.seedOrg(t, "org-2", "Org Two", "orgtwo")
-	env.seedOrgMember(t, "org-1", "user-1")
-	env.seedOrgMember(t, "org-2", "user-2")
-	env.seedWorkspace(t, "ws-alpha", "https://github.com/org/alpha", "user-1", "org-1", "ready")
-	env.seedWorkspace(t, "ws-beta", "https://github.com/org/beta", "user-2", "org-2", "ready")
-
-	env.initWorkspaceRepo(t, "ws-alpha")
-
-	// Request ws-alpha under orgone — should resolve to the correct workspace.
-	rec := env.doRequest(t, http.MethodGet,
-		"/git/orgone/ws-alpha.git/info/refs?service=git-upload-pack", "",
-		withBasicAuth("x-token-auth", "af_key_user1"))
-
-	if rec.Code != http.StatusOK {
-		t.Errorf("GET info/refs for ws-alpha under orgone: status = %d; want %d",
-			rec.Code, http.StatusOK)
-	}
-}
-
-// TS-06-13: Repository resolver returns transport.ErrRepositoryNotFound and
-// HTTP 404 when no workspace with the given slug exists.
-// Requirement: 06-REQ-4.2
-func TestResolver_WorkspaceNotFound_Returns404(t *testing.T) {
-	env := newGitTestEnv(t)
-
-	env.seedOrg(t, "org-1", "My Org", "myorg")
-	env.seedOrgMember(t, "org-1", "user-1")
-	// No workspace seeded — 'nonexistent' does not exist.
-
-	rec := env.doRequest(t, http.MethodGet,
-		"/git/myorg/nonexistent.git/info/refs?service=git-upload-pack", "",
-		withBasicAuth("x-token-auth", "af_key_user1"))
-
-	if rec.Code != http.StatusNotFound {
-		t.Errorf("GET info/refs for nonexistent workspace: status = %d; want %d",
-			rec.Code, http.StatusNotFound)
-	}
-
-	// Per the spec, the body should contain a pkt-line error.
-	body := rec.Body.String()
-	if !strings.Contains(body, "ERR") && !strings.Contains(body, "not found") {
-		t.Errorf("response body should contain a pkt-line error; got %q", truncate(body, 200))
-	}
-}
-
-// TS-06-14: Repository resolver returns transport.ErrRepositoryNotFound and
-// HTTP 404 when the org slug does not match the workspace's org_id.
-// Requirement: 06-REQ-4.3
-func TestResolver_OrgMismatch_Returns404(t *testing.T) {
-	env := newGitTestEnv(t)
-
-	// Workspace 'myws' belongs to org-1 (slug 'myorg'), but we request
-	// it under org-2 (slug 'wrongorg').
-	env.seedOrg(t, "org-1", "My Org", "myorg")
-	env.seedOrg(t, "org-2", "Wrong Org", "wrongorg")
-	env.seedOrgMember(t, "org-1", "user-1")
-	env.seedOrgMember(t, "org-2", "user-1")
-	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "ready")
-
-	env.initWorkspaceRepo(t, "myws")
-
-	rec := env.doRequest(t, http.MethodGet,
-		"/git/wrongorg/myws.git/info/refs?service=git-upload-pack", "",
-		withBasicAuth("x-token-auth", "af_key_user1"))
-
-	if rec.Code != http.StatusNotFound {
-		t.Errorf("GET info/refs with org mismatch: status = %d; want %d",
-			rec.Code, http.StatusNotFound)
-	}
-
-	// The response must be a git pkt-line error, not Echo's default JSON 404.
-	body := rec.Body.String()
-	assertPktLineErrorBody(t, body, "org mismatch response")
-
-	// Anti-enumeration: the error should NOT reveal whether the workspace
-	// exists under a different org.
-	if strings.Contains(body, "org mismatch") || strings.Contains(body, "wrong org") {
-		t.Errorf("response body should not leak org mismatch details; got %q",
-			truncate(body, 200))
-	}
-}
-
-// TS-06-15: Repository resolver returns transport.ErrRepositoryNotFound and
-// HTTP 404 when the workspace status is not 'ready'.
-// Requirement: 06-REQ-4.4
-func TestResolver_StatusNotReady_Returns404(t *testing.T) {
-	env := newGitTestEnv(t)
-
-	env.seedOrg(t, "org-1", "My Org", "myorg")
-	env.seedOrgMember(t, "org-1", "user-1")
-	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "ready")
-
-	// Override status to 'cloning' (not ready).
-	env.setStatus(t, "myws", "cloning")
-
-	env.initWorkspaceRepo(t, "myws")
-
-	rec := env.doRequest(t, http.MethodGet,
-		"/git/myorg/myws.git/info/refs?service=git-upload-pack", "",
-		withBasicAuth("x-token-auth", "af_key_user1"))
-
-	if rec.Code != http.StatusNotFound {
-		t.Errorf("GET info/refs with status='cloning': status = %d; want %d",
-			rec.Code, http.StatusNotFound)
-	}
-
-	// The response should indicate the workspace is not servable.
-	body := rec.Body.String()
-	if !strings.Contains(body, "ERR") && !strings.Contains(body, "not") {
-		t.Errorf("response body should contain a pkt-line error for non-ready clone; got %q",
-			truncate(body, 200))
-	}
-}
-
-// TestResolver_StatusFailed_Returns404 verifies that a workspace with
-// status='failed' is also rejected with HTTP 404.
-// Requirement: 06-REQ-4.4
-func TestResolver_StatusFailed_Returns404(t *testing.T) {
-	env := newGitTestEnv(t)
-
-	env.seedOrg(t, "org-1", "My Org", "myorg")
-	env.seedOrgMember(t, "org-1", "user-1")
-	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "ready")
-	env.setStatus(t, "myws", "failed")
-
-	rec := env.doRequest(t, http.MethodGet,
-		"/git/myorg/myws.git/info/refs?service=git-upload-pack", "",
-		withBasicAuth("x-token-auth", "af_key_user1"))
-
-	if rec.Code != http.StatusNotFound {
-		t.Errorf("GET info/refs with status='failed': status = %d; want %d",
-			rec.Code, http.StatusNotFound)
-	}
-
-	assertPktLineErrorBody(t, rec.Body.String(), "status=failed response")
-}
-
-// TestResolver_StatusArchived_Returns404 verifies that a workspace with
-// status='archived' is rejected with HTTP 404.
-// Requirement: 06-REQ-4.4
-func TestResolver_StatusArchived_Returns404(t *testing.T) {
-	env := newGitTestEnv(t)
-
-	env.seedOrg(t, "org-1", "My Org", "myorg")
-	env.seedOrgMember(t, "org-1", "user-1")
-	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "ready")
-	env.setStatus(t, "myws", "archived")
-
-	rec := env.doRequest(t, http.MethodGet,
-		"/git/myorg/myws.git/info/refs?service=git-upload-pack", "",
-		withBasicAuth("x-token-auth", "af_key_user1"))
-
-	if rec.Code != http.StatusNotFound {
-		t.Errorf("GET info/refs with status='archived': status = %d; want %d",
-			rec.Code, http.StatusNotFound)
-	}
-
-	assertPktLineErrorBody(t, rec.Body.String(), "status=archived response")
-}
-
-// TestResolver_PlainOpenFails_Returns500 verifies that when the repository
-// filesystem path is missing or corrupted, the resolver returns HTTP 500.
-// Requirement: 06-REQ-4.E1
-func TestResolver_PlainOpenFails_Returns500(t *testing.T) {
-	env := newGitTestEnv(t)
-
-	env.seedOrg(t, "org-1", "My Org", "myorg")
-	env.seedOrgMember(t, "org-1", "user-1")
-	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "ready")
-	// Deliberately do NOT create a git repo at the expected path.
-	// The resolver should call PlainOpen and get an error.
-
-	rec := env.doRequest(t, http.MethodGet,
-		"/git/myorg/myws.git/info/refs?service=git-upload-pack", "",
-		withBasicAuth("x-token-auth", "af_key_user1"))
-
-	if rec.Code != http.StatusInternalServerError {
-		t.Errorf("GET info/refs with missing repo dir: status = %d; want %d",
-			rec.Code, http.StatusInternalServerError)
-	}
-}
-
-// TestResolver_NonOwnerNonAdmin_Returns404 verifies that a valid credential
-// belonging to a user who is not the workspace owner and not an admin
-// receives HTTP 404 to prevent workspace enumeration.
-// Requirement: 06-REQ-4.E2
-func TestResolver_NonOwnerNonAdmin_Returns404(t *testing.T) {
-	env := newGitTestEnv(t)
-
-	env.seedOrg(t, "org-1", "My Org", "myorg")
-	env.seedOrgMember(t, "org-1", "user-1")
-	// Workspace owned by user-1, not user-2.
-	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "ready")
-
-	env.initWorkspaceRepo(t, "myws")
-
-	// user-2's API key should get 404, not 403.
-	rec := env.doRequest(t, http.MethodGet,
-		"/git/myorg/myws.git/info/refs?service=git-upload-pack", "",
-		withBasicAuth("x-token-auth", "af_key_user2"))
-
-	if rec.Code != http.StatusNotFound {
-		t.Errorf("GET info/refs as non-owner: status = %d; want %d (anti-enumeration)",
-			rec.Code, http.StatusNotFound)
-	}
-
-	// Must NOT return 403 — that would reveal the workspace exists.
-	if rec.Code == http.StatusForbidden {
-		t.Error("non-owner access should return 404, not 403 (anti-enumeration)")
-	}
-
-	// The 404 must be a git pkt-line error, not Echo's default JSON.
-	assertPktLineErrorBody(t, rec.Body.String(), "non-owner response")
-}
-
-// TestResolver_ReceivePack_HappyPath verifies the resolver works for
-// git-receive-pack (push) requests with a ready workspace.
-// Requirement: 06-REQ-4.1
-func TestResolver_ReceivePack_HappyPath(t *testing.T) {
-	env := newGitTestEnv(t)
-
-	env.seedOrg(t, "org-1", "My Org", "myorg")
-	env.seedOrgMember(t, "org-1", "user-1")
-	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "ready")
-
-	env.initWorkspaceRepo(t, "myws")
-
-	rec := env.doRequest(t, http.MethodGet,
-		"/git/myorg/myws.git/info/refs?service=git-receive-pack", "",
-		withBasicAuth("x-token-auth", "af_key_user1"))
-
-	if rec.Code != http.StatusOK {
-		t.Errorf("GET info/refs?service=git-receive-pack for ready workspace: status = %d; want %d",
-			rec.Code, http.StatusOK)
-	}
-
-	ct := rec.Header().Get("Content-Type")
-	expected := "application/x-git-receive-pack-advertisement"
-	if ct != expected {
-		t.Errorf("Content-Type = %q; want %q", ct, expected)
-	}
-}
-
-// TestResolver_NotReady_AllEndpoints_Return404 verifies that ALL git endpoints
-// reject requests for non-ready workspaces (correctness property 06-PROP-1).
-// Requirement: 06-REQ-4.4
-func TestResolver_NotReady_AllEndpoints_Return404(t *testing.T) {
-	env := newGitTestEnv(t)
-
-	env.seedOrg(t, "org-1", "My Org", "myorg")
-	env.seedOrgMember(t, "org-1", "user-1")
-	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "ready")
-	env.setStatus(t, "myws", "cloning")
-
-	endpoints := []struct {
-		method string
+	for _, c := range []struct {
 		path   string
+		status int
+		body   string
 	}{
-		{http.MethodGet, "/git/myorg/myws.git/info/refs?service=git-upload-pack"},
-		{http.MethodGet, "/git/myorg/myws.git/info/refs?service=git-receive-pack"},
-		{http.MethodPost, "/git/myorg/myws.git/git-upload-pack"},
-		{http.MethodPost, "/git/myorg/myws.git/git-receive-pack"},
-	}
-
-	for _, ep := range endpoints {
-		t.Run(ep.method+" "+ep.path, func(t *testing.T) {
-			rec := env.doRequest(t, ep.method, ep.path, "",
-				withBasicAuth("x-token-auth", "af_key_user1"))
-
-			if rec.Code != http.StatusNotFound {
-				t.Errorf("%s %s with status='cloning': status = %d; want %d",
-					ep.method, ep.path, rec.Code, http.StatusNotFound)
-			}
-
-			// Must be a pkt-line error, not Echo's default JSON 404.
-			assertPktLineErrorBody(t, rec.Body.String(),
-				ep.method+" "+ep.path+" non-ready response")
-		})
-	}
-}
-
-// seedNoOrgWorkspace inserts workspace slug owned by ownerID with a NULL
-// org_id, and a repository for it.
-func (env *gitTestEnv) seedNoOrgWorkspace(t *testing.T, slug, ownerID string) {
-	t.Helper()
-	now := time.Now().UTC().Format(time.RFC3339)
-	if _, err := env.db.Exec(
-		`INSERT INTO workspaces (slug, git_url, owner_id, org_id, status, created_at, updated_at) VALUES (?, ?, ?, NULL, 'ready', ?, ?)`,
-		slug, "https://github.com/org/"+slug, ownerID, now, now,
-	); err != nil {
-		t.Fatalf("seedNoOrgWorkspace(%q): %v", slug, err)
-	}
-	env.initWorkspaceRepo(t, slug)
-}
-
-// TS-37-32: a workspace with a NULL org_id is a 404 "repository not found"
-// for every caller, never a 500. Requirement: 37-REQ-9.1
-func TestResolver_NullOrg_Returns404_TS_37_32(t *testing.T) {
-	env := newGitTestEnv(t)
-	env.seedOrg(t, "org-1", "My Org", "myorg")
-	env.seedOrgMember(t, "org-1", "user-a")
-	env.seedOrgMember(t, "org-1", "user-b")
-	env.seedNoOrgWorkspace(t, "noorg", "user-a")
-
-	want := string(encodePktLine("ERR repository not found\n"))
-	for name, password := range map[string]string{
-		"owner":    "af_key_userA",
-		"admin":    "af_admin_test789",
-		"stranger": "af_key_user2",
-		"member":   "af_key_userB",
+		{wsPath, http.StatusOK, ""},
+		{"/git/myorg/unknown.git", http.StatusNotFound, notFoundBody},
+		{"/git/otherorg/ws.git", http.StatusNotFound, notFoundBody},
+		{"/git/nowhere/ws.git", http.StatusNotFound, notFoundBody},
+		{"/git/myorg/noorg.git", http.StatusNotFound, notFoundBody},
+		{"/git/myorg/cloning.git", http.StatusNotFound, notAvailableBody},
+		{"/git/myorg/failed.git", http.StatusNotFound, notAvailableBody},
+		{"/git/myorg/archived.git", http.StatusNotFound, notAvailableBody},
+		{"/git/myorg/nodisk.git", http.StatusInternalServerError, ""},
+		{"/git/myorg/ws", http.StatusNotFound, `{"message":"Not Found"}`},
 	} {
-		for _, org := range []string{"myorg", "other"} {
-			rec := env.doRequest(t, http.MethodGet, "/git/"+org+"/noorg.git/info/refs?service=git-upload-pack", "", withBasicAuth("user", password))
-			if rec.Code != http.StatusNotFound || rec.Body.String() != want {
-				t.Errorf("%s via /git/%s: (%d, %q); want 404 %q", name, org, rec.Code, rec.Body, want)
+		rec := v.do(t, http.MethodGet, c.path+"/info/refs?service=git-upload-pack", "", owner)
+		body := rec.Body.String()
+		if rec.Code != c.status || (c.body != "" && !strings.Contains(body, c.body)) || (c.body == "" && c.status != http.StatusOK && body != "") {
+			t.Errorf("%s: (%d, %q); want %d %q", c.path, rec.Code, body, c.status, c.body)
+		}
+		if c.body != "" && strings.HasPrefix(c.body, "0") && rec.Header().Get("Content-Type") != "text/plain" {
+			t.Errorf("%s: Content-Type %q; want text/plain", c.path, rec.Header().Get("Content-Type"))
+		}
+	}
+	testutil.Exec(t, v.db, `DROP TABLE orgs`)
+	if rec := v.do(t, http.MethodGet, infoRefs+"git-upload-pack", "", owner); rec.Code != http.StatusInternalServerError || rec.Body.Len() != 0 {
+		t.Errorf("lookup failure: (%d, %q); want a bodiless 500", rec.Code, rec.Body)
+	}
+}
+
+// A clone that is not ready and a URL naming the wrong org are refused before
+// the access decision: every caller gets the resolver's answer and no bound
+// refusal is reported.
+func TestResolver_RefusesBeforeAccessDecision(t *testing.T) {
+	reports := recordRefusals(t)
+	v := newEnv(t)
+	testutil.SeedOrg(t, v.db, "org-2", "otherorg", "owner")
+	v.workspace(t, "notready", "owner", orgID, "cloning")
+	v.workspace(t, "other", "owner", orgID, "ready")
+	bound := v.pat(t, "owner", "git:read", "git:write")
+	testutil.BindToken(t, v.db, strings.TrimPrefix(bound, "af_pat_"), "other")
+	for _, cred := range []string{bound, v.key(t, "stranger"), v.key(t, "member"), v.key(t, "owner")} {
+		for _, r := range gitRoutes {
+			path := strings.Replace(r.path, "/ws.git", "/notready.git", 1)
+			if rec := v.do(t, r.method, path, "", cred); rec.Code != http.StatusNotFound || rec.Body.String() != notAvailableBody {
+				t.Errorf("%s %s as %s: (%d, %q); want 404 %q", r.method, path, cred, rec.Code, rec.Body, notAvailableBody)
 			}
+		}
+		path := "/git/otherorg/ws.git/info/refs?service=git-upload-pack"
+		if rec := v.do(t, http.MethodGet, path, "", cred); rec.Code != http.StatusNotFound || rec.Body.String() != notFoundBody {
+			t.Errorf("%s as %s: (%d, %q); want 404 %q", path, cred, rec.Code, rec.Body, notFoundBody)
+		}
+	}
+	if len(*reports) != 0 {
+		t.Errorf("refusal reports %+v; want none", *reports)
+	}
+}
+
+// parseEndpointPath reads the org and slug of both endpoint path forms and
+// rejects paths without them.
+func TestParseEndpointPath(t *testing.T) {
+	for path, want := range map[string][2]string{
+		"/git/myorg/ws.git": {"myorg", "ws"},
+		"/myorg/ws.git":     {"myorg", "ws"},
+		"myorg/ws":          {"myorg", "ws"},
+		"/git/myorg/ws":     {"myorg", "ws"},
+		"":                  {},
+		"/":                 {},
+		"/ws.git":           {},
+		"/myorg/.git":       {},
+	} {
+		org, slug, err := parseEndpointPath(path)
+		if (err != nil) != (want[0] == "") || org != want[0] || slug != want[1] {
+			t.Errorf("parseEndpointPath(%q) = %q, %q, %v; want %q, %q", path, org, slug, err, want[0], want[1])
 		}
 	}
 }

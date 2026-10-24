@@ -3,326 +3,69 @@ package gitcmd
 import (
 	"context"
 	"errors"
-	"os"
-	"path/filepath"
+	"reflect"
+	"slices"
 	"testing"
 )
 
-// ========================================================================
-// Spec 14 Task 4.1: MergeNoFF success test
-// (TS-14-18)
-// Requirements: 14-REQ-9.1
-// ========================================================================
-
-// TestMergeNoFF_Success verifies that MergeNoFF with a cleanly mergeable
-// branch returns the merge commit SHA and nil error.
-//
-// Preconditions:
-// - A real git repository with 'main' and 'feature' branches that merge cleanly
-// - Current HEAD is on 'main'
-// - GitRunner is constructed with workDir pointing to the temp repo
-// - git user.email and user.name are configured in the repo
-//
-// TS-14-18
-// Requirement: 14-REQ-9.1
-func TestMergeNoFF_Success(t *testing.T) {
-	requireGitMinVersion(t, 2, 38)
-
-	// Set up a repo with diverged but non-conflicting 'main' and 'feature' branches.
-	dir, _, _ := setupMergeableRepo(t)
-
-	runner, err := New(dir, nil)
-	if err != nil {
-		t.Fatalf("New failed: %v", err)
+// MergeNoFF always records a merge commit with both parents, with the given
+// message or git's default.
+func TestMergeNoFF_CreatesMergeCommit(t *testing.T) {
+	tests := []struct{ message, wantSubject string }{
+		{"merge feature", "merge feature"},
+		{"", "Merge branch 'feature'"},
 	}
-
-	ctx := context.Background()
-	sha, err := runner.MergeNoFF(ctx, "feature", "")
-	if err != nil {
-		t.Fatalf("MergeNoFF returned unexpected error: %v", err)
-	}
-
-	// sha must be a valid 40-char hex SHA.
-	if len(sha) != 40 {
-		t.Errorf("SHA length = %d, want 40: %q", len(sha), sha)
-	}
-	if !shaHexRegexp.MatchString(sha) {
-		t.Errorf("SHA %q does not match /^[0-9a-f]{40}$/", sha)
-	}
-
-	// The returned SHA must match git rev-parse HEAD.
-	headSHA := runGit(t, dir, "rev-parse", "HEAD")
-	if headSHA != sha {
-		t.Errorf("HEAD SHA %q != returned SHA %q", headSHA, sha)
-	}
-
-	// git log --oneline -1 should show a merge commit (contains "Merge branch").
-	logOut := runGit(t, dir, "log", "--oneline", "-1")
-	if len(logOut) == 0 {
-		t.Fatal("git log --oneline -1 returned empty output")
-	}
-	// Verify it's actually a merge commit by checking for two parents.
-	parentCount := runGit(t, dir, "rev-list", "--parents", "-1", "HEAD")
-	// A merge commit has 3 fields: <commit> <parent1> <parent2>
-	// A regular commit has 2 fields: <commit> <parent>
-	fields := len(splitFields(parentCount))
-	if fields < 3 {
-		t.Errorf("expected merge commit with >= 2 parents (3 fields), got %d fields: %q",
-			fields, parentCount)
-	}
-}
-
-// splitFields splits a string by whitespace (helper for parent counting).
-func splitFields(s string) []string {
-	var fields []string
-	for _, f := range splitByWhitespace(s) {
-		if f != "" {
-			fields = append(fields, f)
+	for _, tt := range tests {
+		dir, mainSHA, featureSHA := divergedRepo(t, false)
+		sha, err := newRunner(t, dir).MergeNoFF(context.Background(), "feature", tt.message)
+		if err != nil {
+			t.Fatalf("MergeNoFF(%q): %v", tt.message, err)
+		}
+		if got := runGit(t, dir, "rev-list", "--parents", "-n", "1", "HEAD"); got != sha+" "+mainSHA+" "+featureSHA {
+			t.Errorf("HEAD with parents = %q, want %s %s %s", got, sha, mainSHA, featureSHA)
+		}
+		if got := runGit(t, dir, "log", "-1", "--format=%s"); got != tt.wantSubject {
+			t.Errorf("merge subject = %q, want %q", got, tt.wantSubject)
 		}
 	}
-	return fields
 }
 
-// splitByWhitespace splits a string by any whitespace character.
-func splitByWhitespace(s string) []string {
-	result := make([]string, 0)
-	current := ""
-	for _, r := range s {
-		if r == ' ' || r == '\t' || r == '\n' || r == '\r' {
-			if current != "" {
-				result = append(result, current)
-				current = ""
-			}
-		} else {
-			current += string(r)
-		}
+// A conflicting merge is aborted before returning: the error names the files
+// and the repository is clean at the old HEAD.
+func TestMergeNoFF_ConflictAbortsAndListsFiles(t *testing.T) {
+	dir, mainSHA, _ := divergedRepo(t, true)
+	sha, err := newRunner(t, dir).MergeNoFF(context.Background(), "feature", "")
+	var ce *MergeNoFFConflictError
+	if sha != "" || !errors.As(err, &ce) {
+		t.Fatalf("MergeNoFF = %q, %v; want \"\", *MergeNoFFConflictError", sha, err)
 	}
-	if current != "" {
-		result = append(result, current)
+	if got := slices.Sorted(slices.Values(ce.ConflictingFiles)); !reflect.DeepEqual(got, []string{"base.txt", "second.txt"}) {
+		t.Errorf("ConflictingFiles = %v, want base.txt and second.txt", got)
 	}
-	return result
-}
-
-// ========================================================================
-// Spec 14 Task 4.2: MergeNoFF conflict test
-// (TS-14-19)
-// Requirements: 14-REQ-9.2, 14-REQ-13.2
-// Correctness property: 14-PROP-2
-// ========================================================================
-
-// TestMergeNoFF_Conflict verifies that MergeNoFF auto-aborts on conflict
-// and returns a *MergeNoFFConflictError with non-empty ConflictingFiles.
-// After the call, the repository must be in a clean state (no merge in
-// progress).
-//
-// Preconditions:
-//   - A real git repository with 'main' and 'feature' branches that have
-//     conflicting changes to the same file
-//   - Current HEAD is on 'main'
-//
-// TS-14-19
-// Requirements: 14-REQ-9.2, 14-REQ-13.2
-// Correctness property: 14-PROP-2
-func TestMergeNoFF_Conflict(t *testing.T) {
-	requireGitMinVersion(t, 2, 38)
-
-	// Set up a repo with conflicting 'main' and 'feature' branches.
-	dir, _, _ := setupConflictingRepo(t)
-
-	runner, err := New(dir, nil)
-	if err != nil {
-		t.Fatalf("New failed: %v", err)
+	if _, err := tryGit(dir, "rev-parse", "--verify", "MERGE_HEAD"); err == nil {
+		t.Error("MERGE_HEAD still exists")
 	}
-
-	ctx := context.Background()
-	sha, err := runner.MergeNoFF(ctx, "feature", "")
-
-	// Must return empty SHA.
-	if sha != "" {
-		t.Errorf("MergeNoFF should return empty string on conflict, got %q", sha)
-	}
-
-	// Must return non-nil error.
-	if err == nil {
-		t.Fatal("MergeNoFF should return non-nil error on conflict")
-	}
-
-	// Must be *MergeNoFFConflictError.
-	var mergeErr *MergeNoFFConflictError
-	if !errors.As(err, &mergeErr) {
-		t.Fatalf("error should be *MergeNoFFConflictError, got %T: %v", err, err)
-	}
-
-	// ConflictingFiles must be non-empty.
-	if len(mergeErr.ConflictingFiles) == 0 {
-		t.Fatal("MergeNoFFConflictError.ConflictingFiles should be non-empty")
-	}
-
-	// 14-PROP-2: Repository must not be in merge state (auto-abort ran).
-	mergeHead := filepath.Join(dir, ".git", "MERGE_HEAD")
-	if _, statErr := os.Stat(mergeHead); statErr == nil {
-		t.Error("MERGE_HEAD should not exist after MergeNoFF conflict auto-abort")
+	if runGit(t, dir, "rev-parse", "HEAD") != mainSHA || runGit(t, dir, "status", "--porcelain") != "" {
+		t.Error("repository not restored to a clean main after the conflict")
 	}
 }
 
-// ========================================================================
-// Spec 14 Task 4.2 (additional): MergeNoFF conflict with multiple files
-// (TS-14-29 — also validates via MergeNoFF path)
-// Requirements: 14-REQ-13.2
-// Correctness property: 14-PROP-6
-// ========================================================================
-
-// TestMergeNoFF_ConflictMultipleFiles verifies that MergeNoFFConflictError
-// contains exactly the conflicting file paths when a merge --no-ff conflicts
-// on multiple files.
-//
-// TS-14-29 (validated via MergeNoFF in addition to CherryPick)
-// Requirement: 14-REQ-13.2
-// Correctness property: 14-PROP-6
-func TestMergeNoFF_ConflictMultipleFiles(t *testing.T) {
-	requireGitMinVersion(t, 2, 38)
-
-	// Create repo with base commit containing two files.
-	dir := t.TempDir()
-	runGit(t, "", "init", "-b", "main", dir)
-	configGitUser(t, dir)
-	writeTestFile(t, filepath.Join(dir, "file_a.txt"), "base a")
-	writeTestFile(t, filepath.Join(dir, "file_b.txt"), "base b")
-	runGit(t, dir, "add", ".")
-	runGit(t, dir, "commit", "-m", "base commit")
-
-	// Feature branch: modify both files differently.
-	runGit(t, dir, "checkout", "-b", "feature")
-	writeTestFile(t, filepath.Join(dir, "file_a.txt"), "feature a")
-	writeTestFile(t, filepath.Join(dir, "file_b.txt"), "feature b")
-	runGit(t, dir, "add", ".")
-	runGit(t, dir, "commit", "-m", "feature changes both files")
-
-	// Back to main: modify both files with different content.
-	runGit(t, dir, "checkout", "main")
-	writeTestFile(t, filepath.Join(dir, "file_a.txt"), "main a")
-	writeTestFile(t, filepath.Join(dir, "file_b.txt"), "main b")
-	runGit(t, dir, "add", ".")
-	runGit(t, dir, "commit", "-m", "main changes both files")
-
-	runner, err := New(dir, nil)
-	if err != nil {
-		t.Fatalf("New failed: %v", err)
-	}
-
-	ctx := context.Background()
-	_, mergeErr := runner.MergeNoFF(ctx, "feature", "")
-	if mergeErr == nil {
-		t.Fatal("MergeNoFF should return non-nil error on two-file conflict")
-	}
-
-	var me *MergeNoFFConflictError
-	if !errors.As(mergeErr, &me) {
-		t.Fatalf("error should be *MergeNoFFConflictError, got %T: %v", mergeErr, mergeErr)
-	}
-
-	if len(me.ConflictingFiles) != 2 {
-		t.Fatalf("ConflictingFiles should have 2 entries, got %d: %v",
-			len(me.ConflictingFiles), me.ConflictingFiles)
-	}
-
-	// Check that both file paths are present (order may vary).
-	foundA, foundB := false, false
-	for _, f := range me.ConflictingFiles {
-		switch f {
-		case "file_a.txt":
-			foundA = true
-		case "file_b.txt":
-			foundB = true
-		}
-	}
-	if !foundA {
-		t.Error("ConflictingFiles should contain 'file_a.txt'")
-	}
-	if !foundB {
-		t.Error("ConflictingFiles should contain 'file_b.txt'")
-	}
-}
-
-// ========================================================================
-// Spec 14 Task 4.3: MergeNoFF context cancellation test
-// (TS-14-20)
-// Requirements: 14-REQ-9.3
-// ========================================================================
-
-// TestMergeNoFF_ContextCancelled verifies that MergeNoFF returns ctx.Err()
-// (context.Canceled) without running git merge --abort when the context is
-// already cancelled.
-//
-// Preconditions:
-// - A real git repository initialised in a temp directory
-// - GitRunner is constructed with workDir pointing to the temp repo
-// - A context that is already cancelled is prepared
-//
-// TS-14-20
-// Requirement: 14-REQ-9.3
-func TestMergeNoFF_ContextCancelled(t *testing.T) {
-	requireGitMinVersion(t, 2, 38)
-
-	// Create a repo with at least one commit and a feature branch.
-	dir, _, _ := setupMergeableRepo(t)
-
-	runner, err := New(dir, nil)
-	if err != nil {
-		t.Fatalf("New failed: %v", err)
-	}
-
-	// Create an already-cancelled context.
+// A cancelled context is returned as is; no abort runs on the caller's behalf.
+func TestMergeNoFF_CancelledContextIsReturned(t *testing.T) {
+	dir, _, _ := divergedRepo(t, false)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-
-	sha, err := runner.MergeNoFF(ctx, "feature", "")
-
-	// Must return empty SHA.
-	if sha != "" {
-		t.Errorf("MergeNoFF should return empty string with cancelled context, got %q", sha)
-	}
-
-	// Must return context.Canceled error.
-	if err == nil {
-		t.Fatal("MergeNoFF should return non-nil error with cancelled context")
-	}
-	if !errors.Is(err, context.Canceled) {
-		t.Errorf("error should be context.Canceled, got %T: %v", err, err)
+	sha, err := newRunner(t, dir).MergeNoFF(ctx, "feature", "")
+	if sha != "" || !errors.Is(err, context.Canceled) {
+		t.Fatalf("MergeNoFF = %q, %v; want \"\", context.Canceled", sha, err)
 	}
 }
 
-// ========================================================================
-// Spec 14 Task 4.3 (edge case): MergeNoFF with empty branch name
-// (14-REQ-9.E1)
-// ========================================================================
-
-// TestMergeNoFF_EmptyBranch verifies that MergeNoFF returns a *GitError
-// without invoking the git subprocess when the branch argument is empty.
-//
-// Edge case: 14-REQ-9.E1
-func TestMergeNoFF_EmptyBranch(t *testing.T) {
-	requireGitMinVersion(t, 2, 38)
-
-	dir := initTestRepoWithCommit(t)
-
-	runner, err := New(dir, nil)
-	if err != nil {
-		t.Fatalf("New failed: %v", err)
-	}
-
-	ctx := context.Background()
-	sha, err := runner.MergeNoFF(ctx, "", "")
-
-	if sha != "" {
-		t.Errorf("MergeNoFF should return empty string for empty branch, got %q", sha)
-	}
-	if err == nil {
-		t.Fatal("MergeNoFF should return non-nil error for empty branch")
-	}
-
-	var ge *GitError
-	if !errors.As(err, &ge) {
-		t.Fatalf("error should be *GitError, got %T: %v", err, err)
+// An empty or unknown branch is a GitError, not a conflict.
+func TestMergeNoFF_BadBranchIsGitError(t *testing.T) {
+	r := newRunner(t, initRepo(t))
+	for _, branch := range []string{"", "no-such-branch"} {
+		_, err := r.MergeNoFF(context.Background(), branch, "")
+		asGitError(t, err)
 	}
 }
