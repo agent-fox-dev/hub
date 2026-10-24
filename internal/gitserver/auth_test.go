@@ -37,17 +37,15 @@ func authenticate(t *testing.T, v *env, header string) (*apikit.AuthInfo, *httpt
 func TestGitAuth_ResolvesCredentialFormats(t *testing.T) {
 	v := newEnv(t)
 	seedPAT(t, v.db, "split", "s3cret", "owner", "git:write")
-	testutil.Exec(t, v.db, `INSERT INTO api_keys (key_id, user_id, secret_hash, expires_days, created_at) VALUES ('k1', 'member', ?, 365, ?)`,
-		hashCredential("k1"), apikit.NowUTC())
-	testutil.Exec(t, v.db, `INSERT INTO api_keys (key_id, user_id, secret_hash, expires_days, created_at) VALUES ('k2', 'member', ?, 365, ?)`,
-		hashCredential("ksecret"), apikit.NowUTC())
+	seedKey(t, v.db, "k2", "ksecret", "member")
+	seedKey(t, v.db, "lk", "lsecret", "stranger")
 	simple := v.pat(t, "owner", "git:read")
 	for name, c := range map[string]struct{ cred, user, typ, role string }{
 		"simple PAT":     {simple, "owner", "pat", "user"},
 		"apikit PAT":     {"af_pat_split_s3cret", "owner", "pat", "user"},
-		"simple key":     {"af_key_k1", "member", "api_key", "user"},
+		"simple key":     {v.key(t, "member"), "member", "api_key", "user"},
 		"split key":      {"af_key_k2_ksecret", "member", "api_key", "user"},
-		"login key":      {v.key(t, "stranger"), "stranger", "api_key", "user"},
+		"login key":      {"af_lk_lsecret", "stranger", "api_key", "user"},
 		"admin token":    {v.admin(t), "", "admin_token", "admin"},
 		"empty username": {"", "owner", "pat", "user"},
 	} {

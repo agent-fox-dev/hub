@@ -99,10 +99,21 @@ func (v *env) workspace(t *testing.T, slug, owner, org, cloneStatus string) {
 	testutil.Exec(t, v.db, `UPDATE workspaces SET clone_status = ? WHERE slug = ?`, cloneStatus, slug)
 }
 
-// key is a fresh API key of user, in the format apikit issues.
+// key is an API key of user in the simple af_key_<id> format: the id is the
+// key id and its hash the secret hash. It returns the credential.
 func (v *env) key(t *testing.T, user string) string {
 	t.Helper()
-	return testutil.APIKey(t, v.db, user)
+	v.pats++
+	id := fmt.Sprintf("key%d%s", v.pats, user)
+	seedKey(t, v.db, id, id, user)
+	return "af_key_" + id
+}
+
+// seedKey inserts an API key row with the hash of secret.
+func seedKey(t *testing.T, db *sql.DB, keyID, secret, user string) {
+	t.Helper()
+	testutil.Exec(t, db, `INSERT INTO api_keys (key_id, user_id, secret_hash, expires_days, created_at) VALUES (?, ?, ?, 365, ?)`,
+		keyID, user, hashCredential(secret), apikit.NowUTC())
 }
 
 // pat is a PAT of user with scopes, in the simple af_pat_<id> format: the id

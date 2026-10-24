@@ -145,13 +145,12 @@ func TestPush_PreReceiveHookSeesEachRefUpdate(t *testing.T) {
 		refBefore   string
 	}
 	var calls []call
-	var trunk string
-	v, _, trunk, local, _ := pushSetup(t, func(_ context.Context, db *sql.DB, slug string, actor *apikit.AuthInfo, upd RefUpdate) error {
+	var trunk, local string
+	_, _, trunk, local, _ = pushSetup(t, func(_ context.Context, _ *sql.DB, slug string, actor *apikit.AuthInfo, upd RefUpdate) error {
 		_, err := gitTry(trunk, "cat-file", "-e", upd.New.String())
 		calls = append(calls, call{slug, actor.CredentialType + ":" + actor.UserID, upd, err == nil, refValue(trunk, string(upd.Name))})
 		return nil
 	})
-	_ = v
 	gitRun(t, local, "checkout", "-q", "-b", "b")
 	oldB := addCommit(t, local, "b1.txt", "b1")
 	gitRun(t, local, "push", "-q", "origin", "b")
