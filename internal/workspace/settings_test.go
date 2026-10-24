@@ -31,15 +31,15 @@ func TestSettings_Apply(t *testing.T) {
 		t.Errorf("null = %+v, %v", reset, err)
 	}
 	for body, want := range map[string]string{
-		`[]`:                                      "settings must be an object",
-		`{"colour": "blue"}`:                      `unknown setting "colour"`,
-		`{"push_patches_to_origin": "yes"}`:       "setting push_patches_to_origin must be true or false",
-		`{"patch_branch_source": "github"}`:       `setting patch_branch_source must be one of "hub", "origin"`,
-		`{"forge_api_url": "http://insecure"}`:    "setting forge_api_url must be an absolute https:// URL",
-		`{"forge_api_url": "https://u@h/p"}`:      "without userinfo",
-		`{"upstream_forge_api_url": "https://"}`:  "with a host",
-		`{"forge_api_url": "https://h/p?q=1"}`:    "query",
-		`{"forge_api_url": 7}`:                    "setting forge_api_url must be a string",
+		`[]`:                                     "settings must be an object",
+		`{"colour": "blue"}`:                     `unknown setting "colour"`,
+		`{"push_patches_to_origin": "yes"}`:      "setting push_patches_to_origin must be true or false",
+		`{"patch_branch_source": "github"}`:      `setting patch_branch_source must be one of "hub", "origin"`,
+		`{"forge_api_url": "http://insecure"}`:   "setting forge_api_url must be an absolute https:// URL",
+		`{"forge_api_url": "https://u@h/p"}`:     "without userinfo",
+		`{"upstream_forge_api_url": "https://"}`: "with a host",
+		`{"forge_api_url": "https://h/p?q=1"}`:   "query",
+		`{"forge_api_url": 7}`:                   "setting forge_api_url must be a string",
 	} {
 		if _, err := applySettings(d, json.RawMessage(body)); err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("applySettings(%s) error = %v; want %q", body, err, want)

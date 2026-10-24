@@ -1,11 +1,13 @@
 package workspace
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"strings"
 	"testing"
 
+	"github.com/go-git/go-git/v5/plumbing/transport"
 	"github.com/labstack/echo/v4"
 	"github.com/txsvc/apikit"
 
@@ -49,7 +51,7 @@ func TestAccess_Scopes(t *testing.T) {
 func TestAccess_Matrix(t *testing.T) {
 	v := newEnv(t)
 	stubSync(t, upstreamSHA, "up_to_date", nil, nil)
-	stubPush(t, func(context_ctx, _ transport_auth) error { return nil })
+	stubPush(t, func(context.Context, transport.AuthMethod) error { return nil })
 	testutil.SeedOrg(t, v.db, "org-acme", "acme", "")
 	testutil.SeedOrgMember(t, v.db, "org-acme", owner)
 	testutil.SeedOrgMember(t, v.db, "org-acme", member)

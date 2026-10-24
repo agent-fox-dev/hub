@@ -111,6 +111,8 @@ func mount(t *testing.T, sqlite *sql.DB) *env {
 	duck := openAuditDB(t)
 	store := NewStore(duck)
 	m := NewMetrics()
+	SetMetrics(m)
+	t.Cleanup(func() { SetMetrics(nil) })
 	mgr := NewSSEManager(3)
 	done := make(chan struct{})
 	t.Cleanup(func() { close(done) })
@@ -270,8 +272,9 @@ func (env *env) seedHubEvent(t *testing.T, row HubEventRow) string {
 // columns.
 func (env *env) seedRow(t *testing.T, table, id, ts string, cols map[string]any) {
 	t.Helper()
+	ts = or(ts, now())
 	names := []string{"id", "run_id", "workspace", "timestamp", "ingested_at"}
-	args := []any{id, runID, "w", or(ts, now()), now()}
+	args := []any{id, runID, "w", ts, ts}
 	for k, v := range cols {
 		names = append(names, k)
 		args = append(args, v)

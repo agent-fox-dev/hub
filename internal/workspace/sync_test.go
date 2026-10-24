@@ -203,7 +203,10 @@ func TestSync_CancelledRequest(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	rec := httptest.NewRecorder()
 	done := make(chan struct{})
-	go func() { v.e.ServeHTTP(rec, request(ctx, http.MethodPost, "/api/v1/workspaces/ws/sync", testutil.User(owner))); close(done) }()
+	go func() {
+		v.e.ServeHTTP(rec, request(ctx, http.MethodPost, "/api/v1/workspaces/ws/sync", testutil.User(owner)))
+		close(done)
+	}()
 	<-started
 	cancel()
 	<-done
@@ -279,7 +282,10 @@ func TestSync_CarryPatchExtension(t *testing.T) {
 	}
 	// A standard workspace never sees the extension.
 	v.ready(t, "std", owner)
-	RegisterSyncExtension(func(echo.Context, string, string) (map[string]any, bool, error) { t.Error("called"); return nil, true, nil })
+	RegisterSyncExtension(func(echo.Context, string, string) (map[string]any, bool, error) {
+		t.Error("called")
+		return nil, true, nil
+	})
 	expectStatus(t, syncReq(t, v, "std", "", testutil.User(owner)), http.StatusOK)
 }
 

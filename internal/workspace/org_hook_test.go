@@ -28,17 +28,23 @@ func TestSanitizeSlug(t *testing.T) {
 	}
 }
 
-// orgTx begins a transaction on a database with apikit's schema and the user.
-func orgTx(t *testing.T) (*sql.DB, *sql.Tx) {
+// orgDB is a database with apikit's schema and user-1; begin opens the
+// transaction the hook runs on.
+func orgDB(t *testing.T) *sql.DB {
 	t.Helper()
 	db := testutil.OpenDB(t)
 	testutil.SeedUser(t, db, "user-1")
+	return db
+}
+
+func begin(t *testing.T, db *sql.DB) *sql.Tx {
+	t.Helper()
 	tx, err := db.Begin()
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { tx.Rollback() })
-	return db, tx
+	return tx
 }
 
 // seedOrgSlug inserts an org holding slug.
@@ -52,9 +58,10 @@ func seedOrgSlug(t *testing.T, db *sql.DB, slug string) {
 // user, and the user's membership; a taken slug gets the first free numeric
 // suffix.
 func TestCreatePersonalOrg(t *testing.T) {
-	db, tx := orgTx(t)
+	db := orgDB(t)
 	seedOrgSlug(t, db, "alice")
 	seedOrgSlug(t, db, "alice-1")
+	tx := begin(t, db)
 	if err := CreatePersonalOrg(context.Background(), tx, "user-1", "Alice", "a@example.com"); err != nil {
 		t.Fatal(err)
 	}
@@ -81,11 +88,12 @@ func TestCreatePersonalOrg(t *testing.T) {
 // failing UUID generator and a failing insert each fail the hook, which
 // inserts nothing then.
 func TestCreatePersonalOrg_Failures(t *testing.T) {
-	db, tx := orgTx(t)
+	db := orgDB(t)
 	seedOrgSlug(t, db, "bob")
 	for i := 1; i <= maxSlugCollisionAttempts; i++ {
 		seedOrgSlug(t, db, fmt.Sprintf("bob-%d", i))
 	}
+	tx := begin(t, db)
 	calls := 0
 	swap(t, &slugCheckFn, func(ctx context.Context, tx txExecutor, slug string) (bool, error) {
 		calls++
@@ -119,13 +127,12 @@ func TestCreatePersonalOrg_Failures(t *testing.T) {
 	if testutil.Count(t, db, `SELECT COUNT(*) FROM orgs WHERE owner_id IN ('user-1', 'ghost')`) != 0 {
 		t.Error("a failed hook left an org")
 	}
-	tx2, _ := db.Begin()
-	defer tx2.Rollback()
+	tx2 := begin(t, db)
 	if err := createPersonalOrg(context.Background(), tx2, "user-1", "erin", ""); err != nil {
 		t.Errorf("the unexported entry point: %v", err)
 	}
-	db.Close()
+	tx2.Rollback()
 	if err := CreatePersonalOrg(context.Background(), tx2, "user-1", "frank", ""); err == nil || !strings.Contains(err.Error(), "checking base slug uniqueness") {
-		t.Errorf("closed database: %v", err)
+		t.Errorf("finished transaction: %v", err)
 	}
 }

@@ -78,9 +78,10 @@ func TestSchema_MigratesOldTable(t *testing.T) {
 		slug TEXT PRIMARY KEY, git_url TEXT NOT NULL, branch TEXT, owner_id TEXT NOT NULL, org_id TEXT,
 		status TEXT NOT NULL DEFAULT 'active', display_name TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '',
 		clone_status TEXT NOT NULL DEFAULT 'pending', head_sha TEXT, clone_error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`)
-	// Two columns a hand-run migration added without NOT NULL.
+	// Columns a hand-run migration added without NOT NULL.
 	testutil.Exec(t, db, `ALTER TABLE workspaces ADD COLUMN sync_mode TEXT`)
 	testutil.Exec(t, db, `ALTER TABLE workspaces ADD COLUMN workspace_mode TEXT`)
+	testutil.Exec(t, db, `ALTER TABLE workspaces ADD COLUMN settings TEXT`)
 	testutil.Exec(t, db, `INSERT INTO workspaces (slug, git_url, owner_id, created_at, updated_at) VALUES ('old', 'https://h/p', 'o', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`)
 	testutil.Exec(t, db, `CREATE TABLE patches (id TEXT PRIMARY KEY, workspace_slug TEXT NOT NULL, branch_name TEXT NOT NULL, position INTEGER NOT NULL,
 		status TEXT NOT NULL DEFAULT 'active', upstream_pr_url TEXT, description TEXT, added_at TEXT NOT NULL, updated_at TEXT NOT NULL)`)
