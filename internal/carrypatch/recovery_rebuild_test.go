@@ -12,6 +12,7 @@ import (
 	"github.com/txsvc/apikit"
 
 	"github.com/agent-fox-dev/aflib/jobqueue"
+	"github.com/agent-fox-dev/hub/internal/workspace"
 )
 
 // ===========================================================================
@@ -116,7 +117,7 @@ func TestRecovery_OriginModeRecordsInSyncState_TS2325(t *testing.T) {
 			svc := newTestRecoveryServiceWithStore(workspaceRoot, getVar, nil, sf.fetch, patchStore, nil)
 
 			ctx := context.Background()
-			patchInfo := ResetPatchInfo{
+			patchInfo := workspace.ResetPatchInfo{
 				ID:                patchID,
 				BranchName:        branch,
 				Status:            PatchStatusActive,
@@ -209,7 +210,7 @@ func TestRecovery_HubModeNoOriginState_TS2326(t *testing.T) {
 	svc := newTestRecoveryServiceWithStore(workspaceRoot, getVar, nil, sf.fetch, mockStore, nil)
 
 	ctx := context.Background()
-	patchInfo := ResetPatchInfo{
+	patchInfo := workspace.ResetPatchInfo{
 		ID:                patchID,
 		BranchName:        branch,
 		Status:            PatchStatusActive,
@@ -327,7 +328,7 @@ func TestRecovery_RebuildEnqueuedForActiveConflict_TS2327(t *testing.T) {
 				svc := newTestRecoveryServiceWithStore(workspaceRoot, getVar, nil, sf.fetch, nil, q)
 
 				ctx := context.Background()
-				patchInfo := ResetPatchInfo{
+				patchInfo := workspace.ResetPatchInfo{
 					ID:                "p-rebuild",
 					BranchName:        branch,
 					Status:            status,
@@ -406,7 +407,7 @@ func TestRecovery_AutoRebuildFalseSuppressesRebuild_TS2328(t *testing.T) {
 	svc := newTestRecoveryServiceWithStore(workspaceRoot, getVar, nil, sf.fetch, nil, q)
 
 	ctx := context.Background()
-	patchInfo := ResetPatchInfo{
+	patchInfo := workspace.ResetPatchInfo{
 		ID:                "p-no-rebuild",
 		BranchName:        branch,
 		Status:            PatchStatusActive,
@@ -477,7 +478,7 @@ func TestRecovery_DisabledPatchNoRebuild_TS2329(t *testing.T) {
 	svc := newTestRecoveryServiceWithStore(workspaceRoot, getVar, nil, sf.fetch, nil, q)
 
 	ctx := context.Background()
-	patchInfo := ResetPatchInfo{
+	patchInfo := workspace.ResetPatchInfo{
 		ID:                "p-disabled",
 		BranchName:        branch,
 		Status:            PatchStatusDisabled,
@@ -545,7 +546,7 @@ func TestRecovery_ActionNoneNoRebuild_TS2330(t *testing.T) {
 	svc := newTestRecoveryServiceWithStore(workspaceRoot, getVar, nil, sf.fetch, nil, q)
 
 	ctx := context.Background()
-	patchInfo := ResetPatchInfo{
+	patchInfo := workspace.ResetPatchInfo{
 		ID:                "p-none",
 		BranchName:        branch,
 		Status:            PatchStatusActive,
@@ -623,7 +624,7 @@ func TestRecovery_DeduplicatedRebuild_TS2331(t *testing.T) {
 	svc := newTestRecoveryServiceWithStore(workspaceRoot, getVar, nil, sf.fetch, nil, q)
 
 	ctx := context.Background()
-	patchInfo := ResetPatchInfo{
+	patchInfo := workspace.ResetPatchInfo{
 		ID:                "p-dedup",
 		BranchName:        branch,
 		Status:            PatchStatusActive,
@@ -679,7 +680,7 @@ func TestRecovery_RebuildEnqueueErrorLogged_TS2332(t *testing.T) {
 	svc := newTestRecoveryServiceWithStore(workspaceRoot, getVar, nil, sf.fetch, nil, failingQueue)
 
 	ctx := context.Background()
-	patchInfo := ResetPatchInfo{
+	patchInfo := workspace.ResetPatchInfo{
 		ID:                "p-enqueue-err",
 		BranchName:        branch,
 		Status:            PatchStatusActive,

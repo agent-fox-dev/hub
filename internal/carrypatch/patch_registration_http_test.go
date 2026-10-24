@@ -1,4 +1,4 @@
-package workspace
+package carrypatch
 
 import (
 	"bytes"
@@ -16,11 +16,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/agent-fox-dev/hub/internal/workspace"
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	"github.com/labstack/echo/v4"
 	"github.com/txsvc/apikit"
-
-	"github.com/agent-fox-dev/hub/internal/carrypatch"
 )
 
 // ===========================================================================
@@ -136,8 +135,8 @@ type httpResolverTestEnv struct {
 	fetchCalls    int
 	credCalls     int
 	credErr       error
-	fetchFunc     carrypatch.SingleBranchFetchFunc
-	getVar        carrypatch.GetVariableFunc
+	fetchFunc     SingleBranchFetchFunc
+	getVar        GetVariableFunc
 	logBuf        *bytes.Buffer
 }
 
@@ -147,7 +146,7 @@ func newHTTPResolverTestEnv(t *testing.T, slug, mode string) *httpResolverTestEn
 	workspaceRoot := t.TempDir()
 	forkDir, trunkDir, initialSHA := setupHTTPForkAndTrunk(t, workspaceRoot, slug)
 
-	db := openTestDB(t)
+	db := workspaceTestDB(t)
 	ensureCarryPatchColumns(t, db)
 	seedCarryPatchWorkspaceRaw(t, db, slug,
 		forkDir, // use the fork dir as git_url
@@ -172,7 +171,7 @@ func newHTTPResolverTestEnv(t *testing.T, slug, mode string) *httpResolverTestEn
 	}
 
 	// Default fetch: use the real single-branch fetch.
-	realFetch := carrypatch.DefaultSingleBranchFetch()
+	realFetch := DefaultSingleBranchFetch()
 	env.fetchFunc = func(ctx context.Context, repoPath, branch string, auth transport.AuthMethod) error {
 		env.fetchCalls++
 		return realFetch(ctx, repoPath, branch, auth)
@@ -196,14 +195,14 @@ func newHTTPResolverTestEnv(t *testing.T, slug, mode string) *httpResolverTestEn
 	// Build the echo server with the resolver hook.
 	e := echo.New()
 	api := e.Group("/api/v1")
-	api.Use(testAuthMiddleware())
-	if err := RegisterRoutes(api, db); err != nil {
+	api.Use(rebuildTestAuthMiddleware())
+	if err := workspace.RegisterRoutes(api, db); err != nil {
 		t.Fatalf("RegisterRoutes: %v", err)
 	}
 
 	// Register the carrypatch resolver hook.
-	hook := carrypatch.NewBranchResolverHook(
-		carrypatch.NewGitRunnerFactory(),
+	hook := NewBranchResolverHook(
+		NewGitRunnerFactory(),
 		workspaceRoot,
 		env.getVar,
 		credResolver,
@@ -211,8 +210,8 @@ func newHTTPResolverTestEnv(t *testing.T, slug, mode string) *httpResolverTestEn
 			return env.fetchFunc(ctx, repoPath, branch, auth)
 		},
 	)
-	RegisterBranchCheckHook(hook)
-	t.Cleanup(func() { RegisterBranchCheckHook(nil) })
+	workspace.RegisterBranchCheckHook(hook)
+	t.Cleanup(func() { workspace.RegisterBranchCheckHook(nil) })
 
 	env.echo = e
 	return env
@@ -346,7 +345,7 @@ func TestTS21_11_RefWriteFailureAnswers500(t *testing.T) {
 	httpTestCreateBranchOnBare(t, forkDir, "feat", "feat.txt", "feat content", "add feat")
 	httpTestGit(t, trunkDir, "fetch", "origin")
 
-	db := openTestDB(t)
+	db := workspaceTestDB(t)
 	ensureCarryPatchColumns(t, db)
 	seedCarryPatchWorkspaceRaw(t, db, slug, forkDir,
 		"https://github.com/upstream/repo.git", "deploy")
@@ -358,8 +357,8 @@ func TestTS21_11_RefWriteFailureAnswers500(t *testing.T) {
 
 	// Create a runner factory that wraps the real runner but makes update-ref
 	// fail with a non-exists error (simulating a read-only refs directory).
-	failingFactory := func(repoPath string) (carrypatch.GitRunner, error) {
-		real, err := carrypatch.NewGitRunnerFactory()(repoPath)
+	failingFactory := func(repoPath string) (GitRunner, error) {
+		real, err := NewGitRunnerFactory()(repoPath)
 		if err != nil {
 			return nil, err
 		}
@@ -373,7 +372,7 @@ func TestTS21_11_RefWriteFailureAnswers500(t *testing.T) {
 		return "", fmt.Errorf("not found")
 	}
 
-	hook := carrypatch.NewBranchResolverHook(
+	hook := NewBranchResolverHook(
 		failingFactory,
 		workspaceRoot,
 		getVar,
@@ -383,12 +382,12 @@ func TestTS21_11_RefWriteFailureAnswers500(t *testing.T) {
 
 	e := echo.New()
 	api := e.Group("/api/v1")
-	api.Use(testAuthMiddleware())
-	if err := RegisterRoutes(api, db); err != nil {
+	api.Use(rebuildTestAuthMiddleware())
+	if err := workspace.RegisterRoutes(api, db); err != nil {
 		t.Fatalf("RegisterRoutes: %v", err)
 	}
-	RegisterBranchCheckHook(hook)
-	t.Cleanup(func() { RegisterBranchCheckHook(nil) })
+	workspace.RegisterBranchCheckHook(hook)
+	t.Cleanup(func() { workspace.RegisterBranchCheckHook(nil) })
 
 	auth := userAuth("user-1")
 	body := `{"branch_name": "feat"}`
@@ -431,7 +430,7 @@ func TestTS21_11_RefWriteFailureAnswers500(t *testing.T) {
 // updateRefFailRunner wraps a GitRunner and makes update-ref fail with a
 // non-exists error (simulating a read-only refs directory).
 type updateRefFailRunner struct {
-	inner carrypatch.GitRunner
+	inner GitRunner
 }
 
 func (r *updateRefFailRunner) Run(ctx context.Context, args ...string) (string, error) {
@@ -472,7 +471,7 @@ func (r *updateRefFailRunner) UpdateRef(ctx context.Context, ref, sha string) er
 	return r.inner.UpdateRef(ctx, ref, sha)
 }
 
-var _ carrypatch.GitRunner = (*updateRefFailRunner)(nil)
+var _ GitRunner = (*updateRefFailRunner)(nil)
 
 // ===========================================================================
 // TS-21-14 (integration): A real fork that lacks the branch gives 400
@@ -517,9 +516,9 @@ func TestTS21_14_RealForkMissingBranchGives400(t *testing.T) {
 	// test's control, and the classification is read back the way the handler
 	// reads it.
 	t.Run("classification_by_type", func(t *testing.T) {
-		newHook := func(fetchErr error) BranchResolverFunc {
-			return carrypatch.NewBranchResolverHook(
-				carrypatch.NewGitRunnerFactory(),
+		newHook := func(fetchErr error) workspace.BranchResolverFunc {
+			return NewBranchResolverHook(
+				NewGitRunnerFactory(),
 				env.workspaceRoot,
 				env.getVar,
 				func(_ string) (transport.AuthMethod, error) { return nil, nil },
@@ -538,8 +537,8 @@ func TestTS21_14_RealForkMissingBranchGives400(t *testing.T) {
 				// A wrapped ErrBranchNotOnOrigin is recognised by type, whatever
 				// text wraps it.
 				name:       "wrapped_sentinel",
-				fetchErr:   fmt.Errorf("xyz: %w", carrypatch.ErrBranchNotOnOrigin),
-				wantKind:   BranchResolveKindNotFound,
+				fetchErr:   fmt.Errorf("xyz: %w", ErrBranchNotOnOrigin),
+				wantKind:   workspace.BranchResolveKindNotFound,
 				wantStatus: http.StatusBadRequest,
 				wantMsg:    "branch does not exist in repository or on origin",
 			},
@@ -548,7 +547,7 @@ func TestTS21_14_RealForkMissingBranchGives400(t *testing.T) {
 				// matched: without the sentinel it is an origin fetch failure.
 				name:       "plain_text_lookalike",
 				fetchErr:   errors.New("couldn't find remote ref"),
-				wantKind:   BranchResolveKindOriginFetchFailed,
+				wantKind:   workspace.BranchResolveKindOriginFetchFailed,
 				wantStatus: http.StatusBadGateway,
 				wantMsg:    "origin fetch failed",
 			},
@@ -563,14 +562,14 @@ func TestTS21_14_RealForkMissingBranchGives400(t *testing.T) {
 				if err == nil {
 					t.Fatal("hook returned nil error for a failing fetch")
 				}
-				kind, classified := classifyBranchResolveError(err)
+				kind, classified := workspace.BranchResolveKindOf(err)
 				if !classified || kind != tc.wantKind {
 					t.Errorf("classification = (%q, %v); want (%q, true); err: %v",
 						kind, classified, tc.wantKind, err)
 				}
 
 				// The HTTP answer the handler derives from it.
-				RegisterBranchCheckHook(hook)
+				workspace.RegisterBranchCheckHook(hook)
 				rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/"+slug+"/patches",
 					fmt.Sprintf(`{"branch_name": %q}`, "classify-"+tc.name), auth)
 				if rec.Code != tc.wantStatus {
@@ -599,7 +598,7 @@ func TestTS21_15_UnreachableForkAnswers502(t *testing.T) {
 	// Point the trunk's origin URL at a nonexistent path.
 	httpTestGit(t, trunkDir, "remote", "set-url", "origin", "/nonexistent/path/to/repo.git")
 
-	db := openTestDB(t)
+	db := workspaceTestDB(t)
 	ensureCarryPatchColumns(t, db)
 	seedCarryPatchWorkspaceRaw(t, db, slug, "/nonexistent/path/to/repo.git",
 		"https://github.com/upstream/repo.git", "deploy")
@@ -615,22 +614,22 @@ func TestTS21_15_UnreachableForkAnswers502(t *testing.T) {
 		return "", fmt.Errorf("not found")
 	}
 
-	hook := carrypatch.NewBranchResolverHook(
-		carrypatch.NewGitRunnerFactory(),
+	hook := NewBranchResolverHook(
+		NewGitRunnerFactory(),
 		workspaceRoot,
 		getVar,
 		func(_ string) (transport.AuthMethod, error) { return nil, nil },
-		carrypatch.DefaultSingleBranchFetch(),
+		DefaultSingleBranchFetch(),
 	)
 
 	e := echo.New()
 	api := e.Group("/api/v1")
-	api.Use(testAuthMiddleware())
-	if err := RegisterRoutes(api, db); err != nil {
+	api.Use(rebuildTestAuthMiddleware())
+	if err := workspace.RegisterRoutes(api, db); err != nil {
 		t.Fatalf("RegisterRoutes: %v", err)
 	}
-	RegisterBranchCheckHook(hook)
-	t.Cleanup(func() { RegisterBranchCheckHook(nil) })
+	workspace.RegisterBranchCheckHook(hook)
+	t.Cleanup(func() { workspace.RegisterBranchCheckHook(nil) })
 
 	auth := userAuth("user-1")
 	body := `{"branch_name": "somebranch"}`
@@ -692,7 +691,7 @@ func TestTS21_16_CredentialFailureAnswers502(t *testing.T) {
 	workspaceRoot := t.TempDir()
 	_, _, _ = setupHTTPForkAndTrunk(t, workspaceRoot, slug)
 
-	db := openTestDB(t)
+	db := workspaceTestDB(t)
 	ensureCarryPatchColumns(t, db)
 	seedCarryPatchWorkspaceRaw(t, db, slug,
 		"https://github.com/fork/repo.git",
@@ -715,8 +714,8 @@ func TestTS21_16_CredentialFailureAnswers502(t *testing.T) {
 		return nil, errors.New("credential store unavailable")
 	}
 
-	hook := carrypatch.NewBranchResolverHook(
-		carrypatch.NewGitRunnerFactory(),
+	hook := NewBranchResolverHook(
+		NewGitRunnerFactory(),
 		workspaceRoot,
 		getVar,
 		credResolver,
@@ -725,12 +724,12 @@ func TestTS21_16_CredentialFailureAnswers502(t *testing.T) {
 
 	e := echo.New()
 	api := e.Group("/api/v1")
-	api.Use(testAuthMiddleware())
-	if err := RegisterRoutes(api, db); err != nil {
+	api.Use(rebuildTestAuthMiddleware())
+	if err := workspace.RegisterRoutes(api, db); err != nil {
 		t.Fatalf("RegisterRoutes: %v", err)
 	}
-	RegisterBranchCheckHook(hook)
-	t.Cleanup(func() { RegisterBranchCheckHook(nil) })
+	workspace.RegisterBranchCheckHook(hook)
+	t.Cleanup(func() { workspace.RegisterBranchCheckHook(nil) })
 
 	auth := userAuth("user-1")
 	body := `{"branch_name": "nonexistent"}`
@@ -907,11 +906,11 @@ func TestTS21_35_ResolverConstructedFromInjectedDeps(t *testing.T) {
 		var fetchCalls int
 		fetchStub := func(_ context.Context, _, _ string, _ transport.AuthMethod) error {
 			fetchCalls++
-			return carrypatch.ErrBranchNotOnOrigin
+			return ErrBranchNotOnOrigin
 		}
 
-		hook := carrypatch.NewBranchResolverHook(
-			carrypatch.NewGitRunnerFactory(),
+		hook := NewBranchResolverHook(
+			NewGitRunnerFactory(),
 			workspaceRoot,
 			getVar,
 			credResolver,
@@ -947,8 +946,8 @@ func TestTS21_35_ResolverConstructedFromInjectedDeps(t *testing.T) {
 		srcStr := string(src)
 
 		// Must contain the carrypatch resolver registration.
-		if !strings.Contains(srcStr, "RegisterBranchCheckHook(carrypatch.") {
-			t.Error("main.go should contain RegisterBranchCheckHook(carrypatch.)")
+		if !strings.Contains(srcStr, "workspace.RegisterBranchCheckHook(") {
+			t.Error("main.go should contain workspace.RegisterBranchCheckHook()")
 		}
 
 		// Must NOT contain the inline rev-parse --verify closure for branch checking.

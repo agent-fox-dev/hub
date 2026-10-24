@@ -24,8 +24,8 @@ func TestWorkspaceSchema_Spec05_CloneColumns(t *testing.T) {
 	}
 	defer db.Close()
 
-	if err := initSchema(db); err != nil {
-		t.Fatalf("initSchema() returned error: %v", err)
+	if err := InitSchema(db); err != nil {
+		t.Fatalf("InitSchema() returned error: %v", err)
 	}
 
 	// Query table structure using PRAGMA table_info.
@@ -233,8 +233,8 @@ func TestWorkspaceSchema_Spec05_CloneStatusConstraint(t *testing.T) {
 	}
 	defer db.Close()
 
-	if err := initSchema(db); err != nil {
-		t.Fatalf("initSchema() returned error: %v", err)
+	if err := InitSchema(db); err != nil {
+		t.Fatalf("InitSchema() returned error: %v", err)
 	}
 
 	// Valid clone_status values should insert without error.

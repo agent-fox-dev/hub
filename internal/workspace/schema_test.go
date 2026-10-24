@@ -17,8 +17,8 @@ func TestWorkspaceSchema_CreatesTable(t *testing.T) {
 	}
 	defer db.Close()
 
-	if err := initSchema(db); err != nil {
-		t.Fatalf("initSchema() returned error: %v", err)
+	if err := InitSchema(db); err != nil {
+		t.Fatalf("InitSchema() returned error: %v", err)
 	}
 
 	// Query table structure using PRAGMA table_info.
@@ -119,7 +119,7 @@ func TestWorkspaceSchema_CreatesTable(t *testing.T) {
 	}
 }
 
-// TS-01-12: Verify that calling initSchema twice on the same database
+// TS-01-12: Verify that calling InitSchema twice on the same database
 // succeeds without error (IF NOT EXISTS semantics).
 // Requirement: 01-REQ-2.2
 func TestWorkspaceSchema_IdempotentCreation(t *testing.T) {
@@ -129,16 +129,16 @@ func TestWorkspaceSchema_IdempotentCreation(t *testing.T) {
 	}
 	defer db.Close()
 
-	if err := initSchema(db); err != nil {
-		t.Fatalf("first initSchema() returned error: %v", err)
+	if err := InitSchema(db); err != nil {
+		t.Fatalf("first InitSchema() returned error: %v", err)
 	}
 
-	if err := initSchema(db); err != nil {
-		t.Errorf("second initSchema() returned error: %v; want nil", err)
+	if err := InitSchema(db); err != nil {
+		t.Errorf("second InitSchema() returned error: %v; want nil", err)
 	}
 }
 
-// TS-01-E5: Verify that if the database is unavailable, initSchema returns a
+// TS-01-E5: Verify that if the database is unavailable, InitSchema returns a
 // non-nil error.
 // Requirement: 01-REQ-2.E1
 func TestWorkspaceSchema_UnavailableDB(t *testing.T) {
@@ -149,8 +149,8 @@ func TestWorkspaceSchema_UnavailableDB(t *testing.T) {
 	}
 	db.Close() // Close immediately to make it unavailable.
 
-	if err := initSchema(db); err == nil {
-		t.Error("initSchema(closed DB) returned nil; want non-nil error")
+	if err := InitSchema(db); err == nil {
+		t.Error("InitSchema(closed DB) returned nil; want non-nil error")
 	}
 }
 
@@ -164,8 +164,8 @@ func TestPatchesSchema_FreshDB_HasConflictFilesColumn(t *testing.T) {
 	defer db.Close()
 	db.SetMaxOpenConns(1)
 
-	if err := initSchema(db); err != nil {
-		t.Fatalf("initSchema() returned error: %v", err)
+	if err := InitSchema(db); err != nil {
+		t.Fatalf("InitSchema() returned error: %v", err)
 	}
 
 	cols, err := existingColumns(db, "patches")
@@ -179,7 +179,7 @@ func TestPatchesSchema_FreshDB_HasConflictFilesColumn(t *testing.T) {
 }
 
 // TS-NS-2: Existing database without conflict_files: idempotent migration adds
-// the column on boot. A second call to initSchema does not error.
+// the column on boot. A second call to InitSchema does not error.
 // Requirement: NS-REQ-2
 func TestPatchesSchema_Migration_AddsConflictFilesColumn(t *testing.T) {
 	db, err := sql.Open("sqlite", ":memory:")
@@ -245,9 +245,9 @@ func TestPatchesSchema_Migration_AddsConflictFilesColumn(t *testing.T) {
 		t.Fatal("conflict_files should not exist before migration")
 	}
 
-	// Run initSchema — should add conflict_files via ALTER TABLE.
-	if err := initSchema(db); err != nil {
-		t.Fatalf("first initSchema() returned error: %v", err)
+	// Run InitSchema — should add conflict_files via ALTER TABLE.
+	if err := InitSchema(db); err != nil {
+		t.Fatalf("first InitSchema() returned error: %v", err)
 	}
 
 	cols, err = existingColumns(db, "patches")
@@ -258,8 +258,8 @@ func TestPatchesSchema_Migration_AddsConflictFilesColumn(t *testing.T) {
 		t.Error("conflict_files column not added by migration")
 	}
 
-	// Second call to initSchema should succeed (idempotent).
-	if err := initSchema(db); err != nil {
-		t.Errorf("second initSchema() returned error: %v; want nil", err)
+	// Second call to InitSchema should succeed (idempotent).
+	if err := InitSchema(db); err != nil {
+		t.Errorf("second InitSchema() returned error: %v; want nil", err)
 	}
 }

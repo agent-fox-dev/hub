@@ -26,8 +26,8 @@ func TestSyncSchema_SyncColumns(t *testing.T) {
 	}
 	defer db.Close()
 
-	if err := initSchema(db); err != nil {
-		t.Fatalf("initSchema() returned error: %v", err)
+	if err := InitSchema(db); err != nil {
+		t.Fatalf("InitSchema() returned error: %v", err)
 	}
 
 	// Query table structure using PRAGMA table_info.
@@ -154,7 +154,7 @@ func TestSyncSchema_SyncColumns(t *testing.T) {
 }
 
 // 13-REQ-1.E1: Verifies that the sync DDL migration is idempotent — calling
-// initSchema twice succeeds without error and all sync columns are present.
+// InitSchema twice succeeds without error and all sync columns are present.
 func TestSyncSchema_DDLIdempotent(t *testing.T) {
 	db, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
@@ -162,11 +162,11 @@ func TestSyncSchema_DDLIdempotent(t *testing.T) {
 	}
 	defer db.Close()
 
-	if err := initSchema(db); err != nil {
-		t.Fatalf("first initSchema() returned error: %v", err)
+	if err := InitSchema(db); err != nil {
+		t.Fatalf("first InitSchema() returned error: %v", err)
 	}
-	if err := initSchema(db); err != nil {
-		t.Fatalf("second initSchema() returned error: %v", err)
+	if err := InitSchema(db); err != nil {
+		t.Fatalf("second InitSchema() returned error: %v", err)
 	}
 
 	// Verify sync columns exist after the second (idempotent) call.
@@ -193,7 +193,7 @@ func TestSyncSchema_DDLIdempotent(t *testing.T) {
 
 	for _, col := range syncCols {
 		if !found[col] {
-			t.Errorf("column %q not found after idempotent initSchema", col)
+			t.Errorf("column %q not found after idempotent InitSchema", col)
 		}
 	}
 }

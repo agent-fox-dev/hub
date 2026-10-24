@@ -1,4 +1,4 @@
-package workspace
+package carrypatch
 
 import (
 	"bytes"
@@ -21,7 +21,7 @@ import (
 	"github.com/txsvc/apikit"
 
 	"github.com/agent-fox-dev/hub/internal/audit"
-	"github.com/agent-fox-dev/hub/internal/carrypatch"
+	"github.com/agent-fox-dev/hub/internal/workspace"
 	"github.com/agent-fox-dev/hub/internal/wslock"
 )
 
@@ -56,7 +56,9 @@ type batchEnv struct {
 
 	// wrapRunner, when set, wraps every GitRunner the resolver opens. It lets
 	// a test inject git failures (for example a failing update-ref).
-	wrapRunner func(carrypatch.GitRunner) carrypatch.GitRunner
+	wrapRunner func(GitRunner) GitRunner
+	// hook is the resolver newBatchEnv registered with the workspace package.
+	hook workspace.BranchResolverFunc
 }
 
 func newBatchEnv(t *testing.T, slug, mode string) *batchEnv {
@@ -65,7 +67,7 @@ func newBatchEnv(t *testing.T, slug, mode string) *batchEnv {
 	workspaceRoot := t.TempDir()
 	forkDir, trunkDir, initialSHA := setupHTTPForkAndTrunk(t, workspaceRoot, slug)
 
-	db := openTestDB(t)
+	db := workspaceTestDB(t)
 	ensureCarryPatchColumns(t, db)
 	seedCarryPatchWorkspaceRaw(t, db, slug,
 		forkDir,
@@ -92,7 +94,7 @@ func newBatchEnv(t *testing.T, slug, mode string) *batchEnv {
 	env.emitter = emitter
 
 	// Counting stubs.
-	realFetch := carrypatch.DefaultSingleBranchFetch()
+	realFetch := DefaultSingleBranchFetch()
 	fetchFunc := func(ctx context.Context, repoPath, branch string, auth transport.AuthMethod) error {
 		env.mu.Lock()
 		env.fetchCalls++
@@ -124,17 +126,17 @@ func newBatchEnv(t *testing.T, slug, mode string) *batchEnv {
 	// Build the echo server with audit.
 	e := echo.New()
 	api := e.Group("/api/v1")
-	api.Use(testAuthMiddleware())
+	api.Use(rebuildTestAuthMiddleware())
 
-	SetAuditDependencies(nil, emitter, nil)
-	t.Cleanup(func() { SetAuditDependencies(nil, nil, nil) })
-	if err := RegisterRoutes(api, db); err != nil {
+	workspace.SetAuditDependencies(nil, emitter, nil)
+	t.Cleanup(func() { workspace.SetAuditDependencies(nil, nil, nil) })
+	if err := workspace.RegisterRoutes(api, db); err != nil {
 		t.Fatalf("RegisterRoutes: %v", err)
 	}
 
 	// Runner factory: the real one, optionally wrapped by the test.
-	realRunners := carrypatch.NewGitRunnerFactory()
-	runnerFactory := func(repoPath string) (carrypatch.GitRunner, error) {
+	realRunners := NewGitRunnerFactory()
+	runnerFactory := func(repoPath string) (GitRunner, error) {
 		r, err := realRunners(repoPath)
 		if err != nil {
 			return nil, err
@@ -149,15 +151,16 @@ func newBatchEnv(t *testing.T, slug, mode string) *batchEnv {
 	}
 
 	// Register the carrypatch resolver hook.
-	hook := carrypatch.NewBranchResolverHook(
+	hook := NewBranchResolverHook(
 		runnerFactory,
 		workspaceRoot,
 		getVar,
 		credResolver,
 		fetchFunc,
 	)
-	RegisterBranchCheckHook(hook)
-	t.Cleanup(func() { RegisterBranchCheckHook(nil) })
+	env.hook = hook
+	workspace.RegisterBranchCheckHook(hook)
+	t.Cleanup(func() { workspace.RegisterBranchCheckHook(nil) })
 
 	env.echo = e
 	return env
@@ -470,7 +473,7 @@ func TestTS21_10_CASRaceReportsLocalLeavesRef(t *testing.T) {
 		t.Fatal("tracking ref should point to trackingSHA")
 	}
 
-	db := openTestDB(t)
+	db := workspaceTestDB(t)
 	ensureCarryPatchColumns(t, db)
 	seedCarryPatchWorkspaceRaw(t, db, slug, forkDir,
 		"https://github.com/upstream/repo.git", "deploy")
@@ -483,8 +486,8 @@ func TestTS21_10_CASRaceReportsLocalLeavesRef(t *testing.T) {
 
 	// Create a runner factory that intercepts update-ref to simulate a race:
 	// just before the resolver's update-ref, create refs/heads/feat at otherSHA.
-	raceFactory := func(repoPath string) (carrypatch.GitRunner, error) {
-		real, err := carrypatch.NewGitRunnerFactory()(repoPath)
+	raceFactory := func(repoPath string) (GitRunner, error) {
+		real, err := NewGitRunnerFactory()(repoPath)
 		if err != nil {
 			return nil, err
 		}
@@ -498,7 +501,7 @@ func TestTS21_10_CASRaceReportsLocalLeavesRef(t *testing.T) {
 		return "", fmt.Errorf("not found")
 	}
 
-	hook := carrypatch.NewBranchResolverHook(
+	hook := NewBranchResolverHook(
 		raceFactory,
 		workspaceRoot,
 		getVar,
@@ -508,14 +511,14 @@ func TestTS21_10_CASRaceReportsLocalLeavesRef(t *testing.T) {
 
 	e := echo.New()
 	api := e.Group("/api/v1")
-	api.Use(testAuthMiddleware())
-	SetAuditDependencies(nil, emitter, nil)
-	t.Cleanup(func() { SetAuditDependencies(nil, nil, nil) })
-	if err := RegisterRoutes(api, db); err != nil {
+	api.Use(rebuildTestAuthMiddleware())
+	workspace.SetAuditDependencies(nil, emitter, nil)
+	t.Cleanup(func() { workspace.SetAuditDependencies(nil, nil, nil) })
+	if err := workspace.RegisterRoutes(api, db); err != nil {
 		t.Fatalf("RegisterRoutes: %v", err)
 	}
-	RegisterBranchCheckHook(hook)
-	t.Cleanup(func() { RegisterBranchCheckHook(nil) })
+	workspace.RegisterBranchCheckHook(hook)
+	t.Cleanup(func() { workspace.RegisterBranchCheckHook(nil) })
 
 	auth := userAuth("user-1")
 	body := `{"branch_name": "feat"}`
@@ -555,7 +558,7 @@ func TestTS21_10_CASRaceReportsLocalLeavesRef(t *testing.T) {
 
 // raceRunner intercepts update-ref to simulate a concurrent hub push.
 type raceRunner struct {
-	inner    carrypatch.GitRunner
+	inner    GitRunner
 	trunkDir string
 	otherSHA string
 	t        *testing.T
@@ -602,7 +605,7 @@ func (r *raceRunner) UpdateRef(ctx context.Context, ref, sha string) error {
 	return r.inner.UpdateRef(ctx, ref, sha)
 }
 
-var _ carrypatch.GitRunner = (*raceRunner)(nil)
+var _ GitRunner = (*raceRunner)(nil)
 
 // ===========================================================================
 // TS-21-20 (integration): A skipped single registration performs no lookup,
@@ -1003,7 +1006,7 @@ func TestTS21_28_LockReleasedAfterResolution(t *testing.T) {
 				batchCreateBranchOnBare(t, env.forkDir, "lock28-write", "w.txt", "w", "w")
 				batchGit(t, env.trunkDir, "fetch", "origin", "lock28-write")
 				env.mu.Lock()
-				env.wrapRunner = func(inner carrypatch.GitRunner) carrypatch.GitRunner {
+				env.wrapRunner = func(inner GitRunner) GitRunner {
 					return &updateRefFailRunner{inner: inner}
 				}
 				env.mu.Unlock()
@@ -1025,12 +1028,9 @@ func TestTS21_28_LockReleasedAfterResolution(t *testing.T) {
 			// inserts the row (when it inserts at all) after the hook returns,
 			// on the same goroutine, so a lock that is free here is not held
 			// at insert time.
-			inner := branchCheckHook
-			if inner == nil {
-				t.Fatal("expected the resolver hook to be registered")
-			}
+			inner := env.hook
 			var probes []bool
-			RegisterBranchCheckHook(func(ctx context.Context, s, b string) (string, error) {
+			workspace.RegisterBranchCheckHook(func(ctx context.Context, s, b string) (string, error) {
 				method, err := inner(ctx, s, b)
 				unlock, free := wslock.TryLock(s)
 				if free {

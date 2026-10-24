@@ -40,7 +40,7 @@ func openAutoOrgTestDB(t *testing.T) *sql.DB {
 	t.Cleanup(func() { db.Close() })
 
 	// Initialize the workspaces table schema.
-	if err := initSchema(db); err != nil {
+	if err := InitSchema(db); err != nil {
 		t.Fatalf("failed to initialize schema: %v", err)
 	}
 

@@ -6,8 +6,6 @@ import (
 	"errors"
 
 	"github.com/go-git/go-git/v5/plumbing/transport"
-
-	"github.com/agent-fox-dev/hub/internal/upstream"
 )
 
 // ErrAlreadyUpToDate is a sentinel error matching go-git's
@@ -56,7 +54,7 @@ var defaultQueue *JobQueue
 // Called during server boot after EnsureWorkspaceRoot.
 func InitCloneQueue(ctx context.Context, db *sql.DB, workspaceRoot string, workers int) {
 	cloneFn = defaultCloneFn
-	upstreamFetchFn = upstream.Fetch
+	upstreamFetchFn = FetchUpstream
 	archiveOpenAndPushFn = defaultArchiveOpenAndPushFn
 	archiveHeadFn = defaultArchiveHeadFn
 	validateCredentialsFn = defaultValidateCredentialsFn

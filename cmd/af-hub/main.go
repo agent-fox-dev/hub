@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"flag"
 	"log"
 	"log/slog"
@@ -419,17 +418,15 @@ func main() {
 	// replaced_sha, DELETE /patches/:id can clean up backup refs, and
 	// POST /patches/:id/reset-to-origin can move a patch branch to the
 	// fork's current tip (23-REQ-9.3).
-	workspace.RegisterRecoveryHook(&recoveryHookAdapter{
-		svc: &carrypatch.RecoveryService{
-			NewGitRunner:  cpGitRunnerFactory,
-			WorkspaceRoot: cfg.Workspace.Path,
-			GetVariable:   store.GetVariableValue,
-			ResolveAuth:   resolveOriginAuth,
-			Fetch:         carrypatch.DefaultSingleBranchFetch(),
-			LockFunc:      wslock.TryLock,
-			PatchStore:    cpPatchStore,
-			Queue:         mergeQueue,
-		},
+	workspace.RegisterRecoveryHook(&carrypatch.RecoveryService{
+		NewGitRunner:  cpGitRunnerFactory,
+		WorkspaceRoot: cfg.Workspace.Path,
+		GetVariable:   store.GetVariableValue,
+		ResolveAuth:   resolveOriginAuth,
+		Fetch:         carrypatch.DefaultSingleBranchFetch(),
+		LockFunc:      wslock.TryLock,
+		PatchStore:    cpPatchStore,
+		Queue:         mergeQueue,
 	})
 
 	// Register the branch-check hook so that POST /patches validates and
@@ -553,74 +550,4 @@ func runServer(start func() error, shutdown func()) error {
 	err := start()
 	shutdown()
 	return err
-}
-
-// ===========================================================================
-// recoveryHookAdapter: bridges carrypatch.RecoveryService → workspace.RecoveryHook
-// ===========================================================================
-
-// recoveryHookAdapter adapts a carrypatch.RecoveryService to the
-// workspace.RecoveryHook interface. It converts between the carrypatch-local
-// types and the workspace-local types, keeping the two packages independent.
-type recoveryHookAdapter struct {
-	svc *carrypatch.RecoveryService
-}
-
-func (a *recoveryHookAdapter) ReadReplacedSHA(ctx context.Context, slug, branch string) (string, bool, error) {
-	return a.svc.ReadReplacedSHA(ctx, slug, branch)
-}
-
-func (a *recoveryHookAdapter) RemoveBackup(ctx context.Context, slug, branch string) error {
-	return a.svc.RemoveBackup(ctx, slug, branch)
-}
-
-func (a *recoveryHookAdapter) RunReset(ctx context.Context, slug string, patch workspace.ResetPatchInfo, auth *apikit.AuthInfo) (workspace.ResetResult, error) {
-	// Convert workspace.ResetPatchInfo → carrypatch.ResetPatchInfo.
-	cpPatch := carrypatch.ResetPatchInfo{
-		ID:                patch.ID,
-		BranchName:        patch.BranchName,
-		Status:            patch.Status,
-		IntegrationBranch: patch.IntegrationBranch,
-	}
-
-	cpResult, err := a.svc.RunReset(ctx, slug, cpPatch, auth)
-	if err != nil {
-		// Convert carrypatch.RecoveryError → workspace.ResetError.
-		var cpErr *carrypatch.RecoveryError
-		if errors.As(err, &cpErr) {
-			kindMap := map[carrypatch.RecoveryErrorKind]workspace.ResetErrorKind{
-				carrypatch.RecoveryErrBusy:             workspace.ResetErrBusy,
-				carrypatch.RecoveryErrMissingOnOrigin:  workspace.ResetErrMissingOnOrigin,
-				carrypatch.RecoveryErrFetchFailed:      workspace.ResetErrFetchFailed,
-				carrypatch.RecoveryErrCredentialFailed: workspace.ResetErrCredentialFailed,
-				carrypatch.RecoveryErrRefChanged:       workspace.ResetErrRefChanged,
-				carrypatch.RecoveryErrOther:            workspace.ResetErrOther,
-			}
-			wsKind, ok := kindMap[cpErr.Kind]
-			if !ok {
-				wsKind = workspace.ResetErrOther
-			}
-			return workspace.ResetResult{}, &workspace.ResetError{
-				Kind:    wsKind,
-				Message: cpErr.Message,
-				Cause:   cpErr.Cause,
-			}
-		}
-		// Unclassified error.
-		return workspace.ResetResult{}, &workspace.ResetError{
-			Kind:    workspace.ResetErrOther,
-			Message: err.Error(),
-			Cause:   err,
-		}
-	}
-
-	// Convert carrypatch.ResetResult → workspace.ResetResult.
-	return workspace.ResetResult{
-		Action:           workspace.ResetAction(cpResult.Action),
-		LocalSHA:         cpResult.LocalSHA,
-		OriginSHA:        cpResult.OriginSHA,
-		ReplacedSHA:      cpResult.ReplacedSHA,
-		RebuildTriggered: cpResult.RebuildTriggered,
-		RebuildJobID:     cpResult.RebuildJobID,
-	}, nil
 }

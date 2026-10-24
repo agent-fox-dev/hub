@@ -85,7 +85,7 @@ var patchFieldDDL = []string{
 	`ALTER TABLE patches ADD COLUMN origin_synced_at TEXT`,
 }
 
-// initSchema creates the workspaces table using CREATE TABLE IF NOT EXISTS
+// InitSchema creates the workspaces table using CREATE TABLE IF NOT EXISTS
 // and applies any pending ALTER TABLE migrations for sync-related columns.
 // It is called during server boot to ensure the schema exists.
 //
@@ -93,7 +93,7 @@ var patchFieldDDL = []string{
 // (e.g., because the table was freshly created with the column, or the
 // migration was previously applied), the DDL error is logged and startup
 // continues (13-REQ-1.E1).
-func initSchema(db *sql.DB) error {
+func InitSchema(db *sql.DB) error {
 	if db == nil {
 		return fmt.Errorf("database is nil")
 	}

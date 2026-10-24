@@ -1,4 +1,4 @@
-package workspace
+package carrypatch
 
 import (
 	"bytes"
@@ -19,8 +19,8 @@ import (
 	"github.com/txsvc/apikit"
 
 	"github.com/agent-fox-dev/hub/internal/audit"
-	"github.com/agent-fox-dev/hub/internal/carrypatch"
 	"github.com/agent-fox-dev/hub/internal/secrets"
+	"github.com/agent-fox-dev/hub/internal/workspace"
 	"github.com/agent-fox-dev/hub/internal/wslock"
 )
 
@@ -29,9 +29,9 @@ import (
 // runner, real wslock, real SQLite database, real audit sink.
 // ===========================================================================
 
-// smokeEnv holds a fully-wired test HTTP server with real git repos and the
+// patchSmokeEnv holds a fully-wired test HTTP server with real git repos and the
 // carrypatch resolver built exactly as cmd/af-hub/main.go builds it.
-type smokeEnv struct {
+type patchSmokeEnv struct {
 	echo          *echo.Echo
 	db            *sql.DB
 	workspaceRoot string
@@ -43,20 +43,20 @@ type smokeEnv struct {
 	logBuf        *bytes.Buffer
 }
 
-// newSmokeEnv creates a fully-wired test environment with:
+// newPatchSmokeEnv creates a fully-wired test environment with:
 //   - a real bare fork repo and a clone as trunk
 //   - a real carrypatch resolver (NewBranchResolverHook) with real git runner,
 //     real wslock, real DefaultSingleBranchFetch, and real credential resolver
 //   - a real SQLite database with workspace and patches tables
 //   - a real audit emitter (mockAuditEmitter captures events)
 //   - no stubs for fetch or locks
-func newSmokeEnv(t *testing.T, slug, mode string) *smokeEnv {
+func newPatchSmokeEnv(t *testing.T, slug, mode string) *patchSmokeEnv {
 	t.Helper()
 
 	workspaceRoot := t.TempDir()
 	forkDir, trunkDir, initialSHA := setupHTTPForkAndTrunk(t, workspaceRoot, slug)
 
-	db := openTestDB(t)
+	db := workspaceTestDB(t)
 	ensureCarryPatchColumns(t, db)
 	seedCarryPatchWorkspaceRaw(t, db, slug,
 		forkDir, // use the fork dir as git_url (file:// protocol)
@@ -85,35 +85,35 @@ func newSmokeEnv(t *testing.T, slug, mode string) *smokeEnv {
 	// fork needs.
 	store := secrets.NewStore(db)
 	credResolver := func(s string) (transport.AuthMethod, error) {
-		return ResolveCloneAuth(store, s)
+		return workspace.ResolveCloneAuth(store, s)
 	}
 
 	// Real single-branch fetch.
-	realFetch := carrypatch.DefaultSingleBranchFetch()
+	realFetch := DefaultSingleBranchFetch()
 
 	// Build the echo server with audit.
 	e := echo.New()
 	api := e.Group("/api/v1")
-	api.Use(testAuthMiddleware())
+	api.Use(rebuildTestAuthMiddleware())
 
-	SetAuditDependencies(nil, emitter, nil)
-	t.Cleanup(func() { SetAuditDependencies(nil, nil, nil) })
-	if err := RegisterRoutes(api, db); err != nil {
+	workspace.SetAuditDependencies(nil, emitter, nil)
+	t.Cleanup(func() { workspace.SetAuditDependencies(nil, nil, nil) })
+	if err := workspace.RegisterRoutes(api, db); err != nil {
 		t.Fatalf("RegisterRoutes: %v", err)
 	}
 
 	// Register the carrypatch resolver hook — built exactly as main.go does.
-	hook := carrypatch.NewBranchResolverHook(
-		carrypatch.NewGitRunnerFactory(),
+	hook := NewBranchResolverHook(
+		NewGitRunnerFactory(),
 		workspaceRoot,
 		getVar,
 		credResolver,
 		realFetch,
 	)
-	RegisterBranchCheckHook(hook)
-	t.Cleanup(func() { RegisterBranchCheckHook(nil) })
+	workspace.RegisterBranchCheckHook(hook)
+	t.Cleanup(func() { workspace.RegisterBranchCheckHook(nil) })
 
-	return &smokeEnv{
+	return &patchSmokeEnv{
 		echo:          e,
 		db:            db,
 		workspaceRoot: workspaceRoot,
@@ -126,7 +126,7 @@ func newSmokeEnv(t *testing.T, slug, mode string) *smokeEnv {
 	}
 }
 
-func (env *smokeEnv) doReq(t *testing.T, method, path, body string, auth *apikit.AuthInfo) *httptest.ResponseRecorder {
+func (env *patchSmokeEnv) doReq(t *testing.T, method, path, body string, auth *apikit.AuthInfo) *httptest.ResponseRecorder {
 	t.Helper()
 	var bodyReader *strings.Reader
 	if body != "" {
@@ -151,7 +151,7 @@ func (env *smokeEnv) doReq(t *testing.T, method, path, body string, auth *apikit
 	return rec
 }
 
-func (env *smokeEnv) countPatches(t *testing.T) int {
+func (env *patchSmokeEnv) countPatches(t *testing.T) int {
 	t.Helper()
 	var count int
 	if err := env.db.QueryRow(
@@ -162,7 +162,7 @@ func (env *smokeEnv) countPatches(t *testing.T) int {
 	return count
 }
 
-func (env *smokeEnv) lastAuditEvent(t *testing.T, eventType string) *audit.HubEvent {
+func (env *patchSmokeEnv) lastAuditEvent(t *testing.T, eventType string) *audit.HubEvent {
 	t.Helper()
 	events := env.emitter.Events()
 	for i := len(events) - 1; i >= 0; i-- {
@@ -173,7 +173,7 @@ func (env *smokeEnv) lastAuditEvent(t *testing.T, eventType string) *audit.HubEv
 	return nil
 }
 
-func (env *smokeEnv) clearAudit() {
+func (env *patchSmokeEnv) clearAudit() {
 	env.emitter.mu.Lock()
 	env.emitter.events = nil
 	env.emitter.mu.Unlock()
@@ -248,7 +248,7 @@ func smokeCreateBranchOnBare(t *testing.T, bareDir, branchName, filename, conten
 
 func TestTS21_43_TrackingOnlyBranchHubModeOriginTracking(t *testing.T) {
 	slug := "ts21-43-smoke"
-	env := newSmokeEnv(t, slug, "") // PATCH_BRANCH_SOURCE unset → hub mode
+	env := newPatchSmokeEnv(t, slug, "") // PATCH_BRANCH_SOURCE unset → hub mode
 
 	auth := userAuth("user-1")
 
@@ -321,7 +321,7 @@ func TestTS21_43_TrackingOnlyBranchHubModeOriginTracking(t *testing.T) {
 
 func TestTS21_44_ForkOnlyBranchOriginModeOriginFetch(t *testing.T) {
 	slug := "ts21-44-smoke"
-	env := newSmokeEnv(t, slug, "origin")
+	env := newPatchSmokeEnv(t, slug, "origin")
 
 	auth := userAuth("user-1")
 
@@ -392,7 +392,7 @@ func TestTS21_44_ForkOnlyBranchOriginModeOriginFetch(t *testing.T) {
 
 func TestTS21_45_BatchMissingSecondBranchRejectedFirstResolvesLocal(t *testing.T) {
 	slug := "ts21-45-smoke"
-	env := newSmokeEnv(t, slug, "") // hub mode
+	env := newPatchSmokeEnv(t, slug, "") // hub mode
 
 	auth := userAuth("user-1")
 
@@ -465,7 +465,7 @@ func TestTS21_46_UnreachableForkOriginModeAnswers502(t *testing.T) {
 	slug := "ts21-46-smoke"
 
 	// Create the environment in origin mode.
-	env := newSmokeEnv(t, slug, "origin")
+	env := newPatchSmokeEnv(t, slug, "origin")
 
 	// Point the trunk's origin URL at a nonexistent path to simulate
 	// an unreachable fork.
@@ -536,7 +536,7 @@ func TestTS21_46_UnreachableForkOriginModeAnswers502(t *testing.T) {
 
 func TestTS21_47_SyncLock409SkippedAccepted(t *testing.T) {
 	slug := "ts21-47-smoke"
-	env := newSmokeEnv(t, slug, "") // hub mode
+	env := newPatchSmokeEnv(t, slug, "") // hub mode
 
 	auth := userAuth("user-1")
 

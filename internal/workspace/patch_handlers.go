@@ -30,7 +30,7 @@ var validPatchStatuses = map[string]bool{
 // requests it is the zero-based index of the failing element (only the 400
 // message gets the "patch[i]: " prefix).
 func mapBranchResolveError(c echo.Context, err error, slug, branch string, batchIndex int) error {
-	kind, classified := classifyBranchResolveError(err)
+	kind, classified := BranchResolveKindOf(err)
 	switch {
 	case classified && kind == BranchResolveKindNotFound:
 		msg := "branch does not exist in repository or on origin"

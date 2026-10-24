@@ -9,6 +9,7 @@ import (
 	"github.com/txsvc/apikit"
 
 	"github.com/agent-fox-dev/hub/internal/audit"
+	"github.com/agent-fox-dev/hub/internal/workspace"
 )
 
 // ===========================================================================
@@ -103,7 +104,7 @@ func TestRecoveryAudit_ReplacedResetInfoLog_TS2370(t *testing.T) {
 	svc := newTestRecoveryServiceWithStore(workspaceRoot, nil, nil, sf.fetch, nil, nil)
 
 	ctx := context.Background()
-	patchInfo := ResetPatchInfo{
+	patchInfo := workspace.ResetPatchInfo{
 		ID:                "p-audit-log",
 		BranchName:        branch,
 		Status:            PatchStatusActive,

@@ -66,7 +66,7 @@ func openSmokeDB(t *testing.T) *sql.DB {
 	}
 
 	// Initialize workspace schema.
-	if err := initSchema(db); err != nil {
+	if err := InitSchema(db); err != nil {
 		t.Fatalf("init workspace schema: %v", err)
 	}
 

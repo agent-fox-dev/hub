@@ -603,8 +603,10 @@ A `RecoveryHook` is registered via `workspace.RegisterRecoveryHook(fn)`,
 following the same nil-default pattern. It carries three operations: reading
 the replaced SHA for a slug and branch, removing the backup ref for a slug
 and branch, and running a reset-to-origin for a patch. The workspace package
-defines the hook type; `carrypatch` implements it; `cmd/af-hub/main.go` wires
-them together. Neither package imports the other.
+defines the interface and its result and error types;
+`carrypatch.RecoveryService` implements it directly, and `cmd/af-hub/main.go`
+registers it. `carrypatch` imports `workspace`; `workspace` never imports
+`carrypatch`, so the core keeps no knowledge of the extension.
 
 ### Carry-Patch Push Control
 
@@ -686,21 +688,22 @@ The resolver follows the same nil-default hook pattern as the recovery hook:
 
 - `workspace.RegisterBranchCheckHook(fn)` registers a `BranchResolverFunc`,
   `func(ctx, slug, branchName) (method, error)`. The workspace package owns
-  the type, the HTTP error mapping (`400` not found, `409` workspace busy,
-  `502` origin fetch or credentials, `500` anything unclassified) and the
-  `branch_resolution` audit metadata. With no hook registered a branch is
-  accepted without resolution.
+  the type, the classified error (`NewBranchResolveError`,
+  `BranchResolveKindOf`), the HTTP error mapping (`400` not found, `409`
+  workspace busy, `502` origin fetch or credentials, `500` anything
+  unclassified) and the `branch_resolution` audit metadata. With no hook
+  registered a branch is accepted without resolution.
 - `carrypatch.NewBranchResolverHook(...)` implements it: ref checks through
   the git runner, a single-branch fetch from the fork, and
   `wslock.TryLock` before anything is written. The hook releases the lock
   before it returns, so the database insert never runs under it.
 - `cmd/af-hub/main.go` wires the two together.
 
-`internal/workspace` and `internal/carrypatch` do not import each other.
-Classified resolver errors cross the boundary structurally: the carrypatch
-error type has a `BranchResolveKind() string` method, which the workspace
-handler reads with `errors.As` against its own `BranchResolveError`
-interface.
+`internal/carrypatch` imports `internal/workspace` for the hook types, the
+upstream fetch (`FetchUpstream`, `UpstreamHeadRef`) and the credential
+resolvers; `internal/workspace` never imports `internal/carrypatch`. The
+tests that drive the patch routes with the real resolver therefore live in
+`internal/carrypatch`.
 
 ### Shared leaf package: `internal/wsaccess`
 
@@ -709,8 +712,8 @@ it. It holds:
 
 - The workspace access rule (spec 35, see below): `AuthorizeWorkspace`,
   `AuthorizeWorkspaceAt`, `ReadableSlugs` and `WriteRefusal`.
-  `workspace.AuthorizeWorkspace` delegates to it, and `carrypatch`, which
-  cannot import `workspace`, calls it directly.
+  `workspace.AuthorizeWorkspace` delegates to it, and `carrypatch` calls it
+  directly.
 - A per-request scope, `WithRequestScope` and `RequestScoped`: a small
   memo carried in the `context.Context`. It lets the handler pass
   request-scoped state to the hook through the hook's fixed signature.

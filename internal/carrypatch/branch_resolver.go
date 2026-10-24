@@ -11,6 +11,7 @@ import (
 	git "github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing/transport"
 
+	"github.com/agent-fox-dev/hub/internal/workspace"
 	"github.com/agent-fox-dev/hub/internal/wsaccess"
 	"github.com/agent-fox-dev/hub/internal/wslock"
 )
@@ -22,44 +23,6 @@ const (
 	resolutionOriginTracking = "origin_tracking"
 	resolutionOriginFetch    = "origin_fetch"
 )
-
-// Branch resolve error kind constants. These mirror the workspace package
-// constants so that errors returned by the resolver satisfy the workspace
-// BranchResolveError interface (matched structurally via errors.As).
-const (
-	branchResolveKindNotFound          = "not_found"
-	branchResolveKindOriginFetchFailed = "origin_fetch_failed"
-	branchResolveKindOriginCredentials = "origin_credentials"
-	branchResolveKindWorkspaceBusy     = "workspace_busy"
-)
-
-// branchResolveError is a classified error returned by the branch resolver.
-// It implements the BranchResolveKind() string method so that the workspace
-// package's handler can extract the kind via errors.As with its own
-// BranchResolveError interface (Go structural typing).
-type branchResolveError struct {
-	kind  string
-	cause error
-}
-
-func (e *branchResolveError) Error() string {
-	if e.cause != nil {
-		return fmt.Sprintf("%s: %v", e.kind, e.cause)
-	}
-	return e.kind
-}
-
-func (e *branchResolveError) BranchResolveKind() string {
-	return e.kind
-}
-
-func (e *branchResolveError) Unwrap() error {
-	return e.cause
-}
-
-func newResolveError(kind string, cause error) error {
-	return &branchResolveError{kind: kind, cause: cause}
-}
 
 // SingleBranchFetchFunc fetches a single branch from the fork's origin remote
 // into the trunk repository. Used by the branch resolver when
@@ -84,8 +47,8 @@ func ParsePatchBranchSource(getVariable GetVariableFunc, slug string) string {
 	return "hub"
 }
 
-// NewBranchResolverHook returns a BranchResolverFunc (matching the workspace
-// package's hook type) that resolves a branch name in a workspace trunk.
+// NewBranchResolverHook returns the workspace.BranchResolverFunc that resolves
+// a branch name in a workspace trunk.
 //
 // PATCH_BRANCH_SOURCE is read once per request (21-REQ-1.5): when the context
 // carries a wsaccess request scope, the first resolution in that request reads
@@ -105,7 +68,7 @@ func NewBranchResolverHook(
 	getVariable GetVariableFunc,
 	resolveAuth ResolveAuthFunc,
 	fetch SingleBranchFetchFunc,
-) func(ctx context.Context, slug, branch string) (string, error) {
+) workspace.BranchResolverFunc {
 	return newBranchResolverHookWithLockFunc(
 		newRunner, workspaceRoot, getVariable, resolveAuth, fetch,
 		wslock.TryLock,
@@ -146,7 +109,7 @@ func newBranchResolverHookWithLockFunc(
 		// 21-REQ-7.1: Take wslock.TryLock before writing anything.
 		unlock, ok := lockFunc(slug)
 		if !ok {
-			return "", newResolveError(branchResolveKindWorkspaceBusy,
+			return "", workspace.NewBranchResolveError(workspace.BranchResolveKindWorkspaceBusy,
 				fmt.Errorf("workspace %s is locked", slug))
 		}
 		defer unlock()
@@ -170,7 +133,7 @@ func newBranchResolverHookWithLockFunc(
 		}
 
 		// Neither local nor tracking ref found, and hub mode — not found.
-		return "", newResolveError(branchResolveKindNotFound,
+		return "", workspace.NewBranchResolveError(workspace.BranchResolveKindNotFound,
 			fmt.Errorf("branch %q not found in workspace %s", branch, slug))
 	}
 }
@@ -242,7 +205,7 @@ func resolveOriginFetch(ctx context.Context, runner GitRunner, slug, branch, rep
 			"branch", branch,
 			"error", err.Error(),
 		)
-		return "", newResolveError(branchResolveKindOriginCredentials, err)
+		return "", workspace.NewBranchResolveError(workspace.BranchResolveKindOriginCredentials, err)
 	}
 
 	// 21-REQ-3.1: Fetch the single branch from the fork.
@@ -255,7 +218,7 @@ func resolveOriginFetch(ctx context.Context, runner GitRunner, slug, branch, rep
 		// 21-REQ-3.3 / 21-REQ-3.6: Classify "branch not found on origin"
 		// from the sentinel error, never from error text.
 		if errors.Is(err, ErrBranchNotOnOrigin) {
-			return "", newResolveError(branchResolveKindNotFound,
+			return "", workspace.NewBranchResolveError(workspace.BranchResolveKindNotFound,
 				fmt.Errorf("branch %q not found on origin for workspace %s", branch, slug))
 		}
 		// 21-REQ-3.4: Any other fetch failure is an origin fetch failure.
@@ -264,7 +227,7 @@ func resolveOriginFetch(ctx context.Context, runner GitRunner, slug, branch, rep
 			"branch", branch,
 			"error", err.Error(),
 		)
-		return "", newResolveError(branchResolveKindOriginFetchFailed, err)
+		return "", workspace.NewBranchResolveError(workspace.BranchResolveKindOriginFetchFailed, err)
 	}
 
 	// 21-REQ-3.2: Fetch succeeded (including NoErrAlreadyUpToDate).
@@ -272,7 +235,7 @@ func resolveOriginFetch(ctx context.Context, runner GitRunner, slug, branch, rep
 	trackingSHA, err := revParseRef(ctx, runner, "refs/remotes/origin/"+branch)
 	if err != nil {
 		// Tracking ref still absent after a successful fetch → not found.
-		return "", newResolveError(branchResolveKindNotFound,
+		return "", workspace.NewBranchResolveError(workspace.BranchResolveKindNotFound,
 			fmt.Errorf("branch %q not found after fetch for workspace %s", branch, slug))
 	}
 

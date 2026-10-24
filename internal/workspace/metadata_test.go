@@ -24,8 +24,8 @@ func TestSpec03_SchemaDisplayNameColumn(t *testing.T) {
 	}
 	defer db.Close()
 
-	if err := initSchema(db); err != nil {
-		t.Fatalf("initSchema() returned error: %v", err)
+	if err := InitSchema(db); err != nil {
+		t.Fatalf("InitSchema() returned error: %v", err)
 	}
 
 	type columnInfo struct {
@@ -94,8 +94,8 @@ func TestSpec03_SchemaDescriptionColumn(t *testing.T) {
 	}
 	defer db.Close()
 
-	if err := initSchema(db); err != nil {
-		t.Fatalf("initSchema() returned error: %v", err)
+	if err := InitSchema(db); err != nil {
+		t.Fatalf("InitSchema() returned error: %v", err)
 	}
 
 	type columnInfo struct {
