@@ -11,7 +11,16 @@ import (
 	"github.com/agent-fox-dev/hub/internal/wsaccess"
 )
 
-// --- Auth helpers using apikit.AuthInfo directly ---
+// The secrets and variables API is four operations (create, list, update,
+// delete) on two resources (secrets, variables) at three owner tiers (user,
+// org, workspace). One handler, built from a resource, a tier and an
+// operation, serves all 24 routes; the resolved variables of a workspace have
+// a handler of their own. Every handler checks in the same order: a credential
+// (401), the resource's scope for a PAT (403), the tier's owner (403 for an
+// admin token on the user tier, 404 for an org the caller is not a member of,
+// the workspace access rule), then the operation.
+
+// --- Scope helpers ---
 
 func canSecretsRead(auth *apikit.AuthInfo) bool {
 	return wsaccess.HasScope(auth, "secrets:read", "secrets:write")
@@ -147,34 +156,145 @@ func resolveOrgScope(db *sql.DB, auth *apikit.AuthInfo, slug string) (string, in
 	return checkOrgMembership(db, auth.UserID, slug)
 }
 
-// --- Core secret CRUD operations ---
+// --- Resources, tiers and operations ---
 
-func doCreateSecrets(c echo.Context, store *Store, ownerType, ownerID string) error {
+// resource is secrets or variables: the scopes that read and write it, the
+// access a workspace-tier request needs, its store operations and its audit
+// events.
+type resource struct {
+	name     string
+	canRead  func(*apikit.AuthInfo) bool
+	canWrite func(*apikit.AuthInfo) bool
+	// workspaceNeed is the access a workspace-tier request needs: secrets
+	// are private to the owner; variables are read by members of the
+	// workspace's org and written by the owner.
+	workspaceNeed func(write bool) wsaccess.Need
+	create        func(s *Store, ownerType, ownerID string, entries []EntryInput) (any, error)
+	list          func(s *Store, ownerType, ownerID string) (any, error)
+	update        func(s *Store, ownerType, ownerID, key, value string) (any, error)
+	remove        func(s *Store, ownerType, ownerID, key string) error
+	// event is the audit event prefix, "hub.secret" or "hub.variable"; emit
+	// records one event of it.
+	event string
+	emit  func(c echo.Context, eventType, scope, key string)
+}
+
+var secretsResource = resource{
+	name:          "secrets",
+	canRead:       canSecretsRead,
+	canWrite:      canSecretsWrite,
+	workspaceNeed: func(bool) wsaccess.Need { return wsaccess.NeedPrivate },
+	create: func(s *Store, ownerType, ownerID string, entries []EntryInput) (any, error) {
+		return s.CreateSecrets(ownerType, ownerID, entries)
+	},
+	list: func(s *Store, ownerType, ownerID string) (any, error) { return s.ListSecrets(ownerType, ownerID) },
+	update: func(s *Store, ownerType, ownerID, key, value string) (any, error) {
+		return s.UpdateSecret(ownerType, ownerID, key, value)
+	},
+	remove: func(s *Store, ownerType, ownerID, key string) error { return s.DeleteSecret(ownerType, ownerID, key) },
+	event:  "hub.secret",
+	emit:   emitSecretAudit,
+}
+
+var varsResource = resource{
+	name:     "vars",
+	canRead:  canVarsRead,
+	canWrite: canVarsWrite,
+	workspaceNeed: func(write bool) wsaccess.Need {
+		if write {
+			return wsaccess.NeedWrite
+		}
+		return wsaccess.NeedRead
+	},
+	create: func(s *Store, ownerType, ownerID string, entries []EntryInput) (any, error) {
+		return s.CreateVariables(ownerType, ownerID, entries)
+	},
+	list: func(s *Store, ownerType, ownerID string) (any, error) { return s.ListVariables(ownerType, ownerID) },
+	update: func(s *Store, ownerType, ownerID, key, value string) (any, error) {
+		return s.UpdateVariable(ownerType, ownerID, key, value)
+	},
+	remove: func(s *Store, ownerType, ownerID, key string) error { return s.DeleteVariable(ownerType, ownerID, key) },
+	event:  "hub.variable",
+	emit:   emitVarAudit,
+}
+
+// tier is who owns the entries a route addresses: the authenticated user, an
+// org named by its slug, or a workspace named by its slug. owner answers the
+// owner id of the request, or writes the refusal and returns false.
+type tier struct {
+	ownerType string
+	path      string // the route prefix, with the slug parameter where the tier has one
+	owner     func(c echo.Context, db *sql.DB, auth *apikit.AuthInfo, r resource, write bool) (string, bool)
+}
+
+var userTier = tier{
+	ownerType: "user",
+	path:      "/user",
+	owner: func(c echo.Context, _ *sql.DB, auth *apikit.AuthInfo, _ resource, _ bool) (string, bool) {
+		if !requireUserIdentity(c, auth) {
+			return "", false
+		}
+		return auth.UserID, true
+	},
+}
+
+var orgTier = tier{
+	ownerType: "org",
+	path:      "/orgs/:slug",
+	owner: func(c echo.Context, db *sql.DB, auth *apikit.AuthInfo, _ resource, _ bool) (string, bool) {
+		orgID, code, msg := resolveOrgScope(db, auth, c.Param("slug"))
+		if code != 0 {
+			_ = respondError(c, code, msg)
+			return "", false
+		}
+		return orgID, true
+	},
+}
+
+var workspaceTier = tier{
+	ownerType: "workspace",
+	path:      "/workspaces/:slug",
+	owner: func(c echo.Context, db *sql.DB, auth *apikit.AuthInfo, r resource, write bool) (string, bool) {
+		slug := c.Param("slug")
+		if authorizeWorkspace(c, db, auth, slug, r.workspaceNeed(write)) == nil {
+			return "", false
+		}
+		return slug, true
+	},
+}
+
+// operation is one of create, list, update and delete; write says which
+// scope and workspace access it needs.
+type operation struct {
+	write bool
+	run   func(c echo.Context, store *Store, r resource, ownerType, ownerID string) error
+}
+
+var opCreate = operation{write: true, run: func(c echo.Context, store *Store, r resource, ownerType, ownerID string) error {
 	var req createRequest
 	if err := c.Bind(&req); err != nil {
 		return respondError(c, http.StatusBadRequest, "invalid request body")
 	}
-	entries, err := store.CreateSecrets(ownerType, ownerID, req.Entries)
+	entries, err := r.create(store, ownerType, ownerID, req.Entries)
 	if err != nil {
 		code := classifyStoreError(err)
 		return respondError(c, code, storeErrorMessage(err, code))
 	}
-	// 18-REQ-4.1: Emit hub.secret.create for each created entry.
 	for _, entry := range req.Entries {
-		emitSecretAudit(c, "hub.secret.create", ownerType, entry.Key)
+		r.emit(c, r.event+".create", ownerType, entry.Key)
 	}
 	return c.JSON(http.StatusCreated, entries)
-}
+}}
 
-func doListSecrets(c echo.Context, store *Store, ownerType, ownerID string) error {
-	entries, err := store.ListSecrets(ownerType, ownerID)
+var opList = operation{write: false, run: func(c echo.Context, store *Store, r resource, ownerType, ownerID string) error {
+	entries, err := r.list(store, ownerType, ownerID)
 	if err != nil {
 		return respondError(c, http.StatusInternalServerError, "internal server error")
 	}
 	return c.JSON(http.StatusOK, entries)
-}
+}}
 
-func doUpdateSecret(c echo.Context, store *Store, ownerType, ownerID string) error {
+var opUpdate = operation{write: true, run: func(c echo.Context, store *Store, r resource, ownerType, ownerID string) error {
 	key := c.Param("key")
 	var req updateSecretRequest
 	if err := c.Bind(&req); err != nil {
@@ -183,495 +303,44 @@ func doUpdateSecret(c echo.Context, store *Store, ownerType, ownerID string) err
 	if req.Value == nil {
 		return respondError(c, http.StatusBadRequest, "value field is required")
 	}
-	entry, err := store.UpdateSecret(ownerType, ownerID, key, *req.Value)
+	entry, err := r.update(store, ownerType, ownerID, key, *req.Value)
 	if err != nil {
 		code := classifyStoreError(err)
 		return respondError(c, code, storeErrorMessage(err, code))
 	}
-	// 18-REQ-4.2: Emit hub.secret.update after successful update.
-	emitSecretAudit(c, "hub.secret.update", ownerType, key)
+	r.emit(c, r.event+".update", ownerType, key)
 	return c.JSON(http.StatusOK, entry)
-}
+}}
 
-func doDeleteSecret(c echo.Context, store *Store, ownerType, ownerID string) error {
+var opDelete = operation{write: true, run: func(c echo.Context, store *Store, r resource, ownerType, ownerID string) error {
 	key := c.Param("key")
-	err := store.DeleteSecret(ownerType, ownerID, key)
-	if err != nil {
+	if err := r.remove(store, ownerType, ownerID, key); err != nil {
 		code := classifyStoreError(err)
 		return respondError(c, code, storeErrorMessage(err, code))
 	}
-	// 18-REQ-4.3: Emit hub.secret.delete after successful deletion.
-	emitSecretAudit(c, "hub.secret.delete", ownerType, key)
+	r.emit(c, r.event+".delete", ownerType, key)
 	return c.NoContent(http.StatusNoContent)
-}
+}}
 
-// --- User-scoped secret handlers ---
-
-func handleCreateUserSecrets(store *Store) echo.HandlerFunc {
+// handle is the handler of one operation on one resource at one tier.
+func handle(store *Store, db *sql.DB, t tier, r resource, op operation) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		auth := apikit.GetAuthInfo(c)
 		if auth == nil {
 			return respondError(c, http.StatusUnauthorized, "authentication required")
 		}
-		if wsaccess.IsPAT(auth) && !canSecretsWrite(auth) {
+		allowed := r.canRead
+		if op.write {
+			allowed = r.canWrite
+		}
+		if wsaccess.IsPAT(auth) && !allowed(auth) {
 			return respondError(c, http.StatusForbidden, "insufficient permission scope")
 		}
-		if !requireUserIdentity(c, auth) {
+		ownerID, ok := t.owner(c, db, auth, r, op.write)
+		if !ok {
 			return nil
 		}
-		return doCreateSecrets(c, store, "user", auth.UserID)
-	}
-}
-
-func handleListUserSecrets(store *Store) echo.HandlerFunc {
-	return func(c echo.Context) error {
-		auth := apikit.GetAuthInfo(c)
-		if auth == nil {
-			return respondError(c, http.StatusUnauthorized, "authentication required")
-		}
-		if wsaccess.IsPAT(auth) && !canSecretsRead(auth) {
-			return respondError(c, http.StatusForbidden, "insufficient permission scope")
-		}
-		if !requireUserIdentity(c, auth) {
-			return nil
-		}
-		return doListSecrets(c, store, "user", auth.UserID)
-	}
-}
-
-func handleUpdateUserSecret(store *Store) echo.HandlerFunc {
-	return func(c echo.Context) error {
-		auth := apikit.GetAuthInfo(c)
-		if auth == nil {
-			return respondError(c, http.StatusUnauthorized, "authentication required")
-		}
-		if wsaccess.IsPAT(auth) && !canSecretsWrite(auth) {
-			return respondError(c, http.StatusForbidden, "insufficient permission scope")
-		}
-		if !requireUserIdentity(c, auth) {
-			return nil
-		}
-		return doUpdateSecret(c, store, "user", auth.UserID)
-	}
-}
-
-func handleDeleteUserSecret(store *Store) echo.HandlerFunc {
-	return func(c echo.Context) error {
-		auth := apikit.GetAuthInfo(c)
-		if auth == nil {
-			return respondError(c, http.StatusUnauthorized, "authentication required")
-		}
-		if wsaccess.IsPAT(auth) && !canSecretsWrite(auth) {
-			return respondError(c, http.StatusForbidden, "insufficient permission scope")
-		}
-		if !requireUserIdentity(c, auth) {
-			return nil
-		}
-		return doDeleteSecret(c, store, "user", auth.UserID)
-	}
-}
-
-// --- Org-scoped secret handlers ---
-
-func handleCreateOrgSecrets(store *Store, db *sql.DB) echo.HandlerFunc {
-	return func(c echo.Context) error {
-		auth := apikit.GetAuthInfo(c)
-		if auth == nil {
-			return respondError(c, http.StatusUnauthorized, "authentication required")
-		}
-		if wsaccess.IsPAT(auth) && !canSecretsWrite(auth) {
-			return respondError(c, http.StatusForbidden, "insufficient permission scope")
-		}
-		orgID, code, msg := resolveOrgScope(db, auth, c.Param("slug"))
-		if code != 0 {
-			return respondError(c, code, msg)
-		}
-		return doCreateSecrets(c, store, "org", orgID)
-	}
-}
-
-func handleListOrgSecrets(store *Store, db *sql.DB) echo.HandlerFunc {
-	return func(c echo.Context) error {
-		auth := apikit.GetAuthInfo(c)
-		if auth == nil {
-			return respondError(c, http.StatusUnauthorized, "authentication required")
-		}
-		if wsaccess.IsPAT(auth) && !canSecretsRead(auth) {
-			return respondError(c, http.StatusForbidden, "insufficient permission scope")
-		}
-		orgID, code, msg := resolveOrgScope(db, auth, c.Param("slug"))
-		if code != 0 {
-			return respondError(c, code, msg)
-		}
-		return doListSecrets(c, store, "org", orgID)
-	}
-}
-
-func handleUpdateOrgSecret(store *Store, db *sql.DB) echo.HandlerFunc {
-	return func(c echo.Context) error {
-		auth := apikit.GetAuthInfo(c)
-		if auth == nil {
-			return respondError(c, http.StatusUnauthorized, "authentication required")
-		}
-		if wsaccess.IsPAT(auth) && !canSecretsWrite(auth) {
-			return respondError(c, http.StatusForbidden, "insufficient permission scope")
-		}
-		orgID, code, msg := resolveOrgScope(db, auth, c.Param("slug"))
-		if code != 0 {
-			return respondError(c, code, msg)
-		}
-		return doUpdateSecret(c, store, "org", orgID)
-	}
-}
-
-func handleDeleteOrgSecret(store *Store, db *sql.DB) echo.HandlerFunc {
-	return func(c echo.Context) error {
-		auth := apikit.GetAuthInfo(c)
-		if auth == nil {
-			return respondError(c, http.StatusUnauthorized, "authentication required")
-		}
-		if wsaccess.IsPAT(auth) && !canSecretsWrite(auth) {
-			return respondError(c, http.StatusForbidden, "insufficient permission scope")
-		}
-		orgID, code, msg := resolveOrgScope(db, auth, c.Param("slug"))
-		if code != 0 {
-			return respondError(c, code, msg)
-		}
-		return doDeleteSecret(c, store, "org", orgID)
-	}
-}
-
-// --- Workspace-scoped secret handlers ---
-
-func handleCreateWorkspaceSecrets(store *Store, db *sql.DB) echo.HandlerFunc {
-	return func(c echo.Context) error {
-		auth := apikit.GetAuthInfo(c)
-		if auth == nil {
-			return respondError(c, http.StatusUnauthorized, "authentication required")
-		}
-		if wsaccess.IsPAT(auth) && !canSecretsWrite(auth) {
-			return respondError(c, http.StatusForbidden, "insufficient permission scope")
-		}
-		slug := c.Param("slug")
-		if authorizeWorkspace(c, db, auth, slug, wsaccess.NeedPrivate) == nil {
-			return nil
-		}
-		return doCreateSecrets(c, store, "workspace", slug)
-	}
-}
-
-func handleListWorkspaceSecrets(store *Store, db *sql.DB) echo.HandlerFunc {
-	return func(c echo.Context) error {
-		auth := apikit.GetAuthInfo(c)
-		if auth == nil {
-			return respondError(c, http.StatusUnauthorized, "authentication required")
-		}
-		if wsaccess.IsPAT(auth) && !canSecretsRead(auth) {
-			return respondError(c, http.StatusForbidden, "insufficient permission scope")
-		}
-		slug := c.Param("slug")
-		if authorizeWorkspace(c, db, auth, slug, wsaccess.NeedPrivate) == nil {
-			return nil
-		}
-		return doListSecrets(c, store, "workspace", slug)
-	}
-}
-
-func handleUpdateWorkspaceSecret(store *Store, db *sql.DB) echo.HandlerFunc {
-	return func(c echo.Context) error {
-		auth := apikit.GetAuthInfo(c)
-		if auth == nil {
-			return respondError(c, http.StatusUnauthorized, "authentication required")
-		}
-		if wsaccess.IsPAT(auth) && !canSecretsWrite(auth) {
-			return respondError(c, http.StatusForbidden, "insufficient permission scope")
-		}
-		slug := c.Param("slug")
-		if authorizeWorkspace(c, db, auth, slug, wsaccess.NeedPrivate) == nil {
-			return nil
-		}
-		return doUpdateSecret(c, store, "workspace", slug)
-	}
-}
-
-func handleDeleteWorkspaceSecret(store *Store, db *sql.DB) echo.HandlerFunc {
-	return func(c echo.Context) error {
-		auth := apikit.GetAuthInfo(c)
-		if auth == nil {
-			return respondError(c, http.StatusUnauthorized, "authentication required")
-		}
-		if wsaccess.IsPAT(auth) && !canSecretsWrite(auth) {
-			return respondError(c, http.StatusForbidden, "insufficient permission scope")
-		}
-		slug := c.Param("slug")
-		if authorizeWorkspace(c, db, auth, slug, wsaccess.NeedPrivate) == nil {
-			return nil
-		}
-		return doDeleteSecret(c, store, "workspace", slug)
-	}
-}
-
-// --- Core variable CRUD operations ---
-
-func doCreateVars(c echo.Context, store *Store, ownerType, ownerID string) error {
-	var req createRequest
-	if err := c.Bind(&req); err != nil {
-		return respondError(c, http.StatusBadRequest, "invalid request body")
-	}
-	entries, err := store.CreateVariables(ownerType, ownerID, req.Entries)
-	if err != nil {
-		code := classifyStoreError(err)
-		return respondError(c, code, storeErrorMessage(err, code))
-	}
-	// 18-REQ-4.4: Emit hub.variable.create for each created entry.
-	for _, entry := range req.Entries {
-		emitVarAudit(c, "hub.variable.create", ownerType, entry.Key)
-	}
-	return c.JSON(http.StatusCreated, entries)
-}
-
-func doListVars(c echo.Context, store *Store, ownerType, ownerID string) error {
-	entries, err := store.ListVariables(ownerType, ownerID)
-	if err != nil {
-		return respondError(c, http.StatusInternalServerError, "internal server error")
-	}
-	return c.JSON(http.StatusOK, entries)
-}
-
-func doUpdateVar(c echo.Context, store *Store, ownerType, ownerID string) error {
-	key := c.Param("key")
-	var req updateSecretRequest
-	if err := c.Bind(&req); err != nil {
-		return respondError(c, http.StatusBadRequest, "invalid request body")
-	}
-	if req.Value == nil {
-		return respondError(c, http.StatusBadRequest, "value field is required")
-	}
-	entry, err := store.UpdateVariable(ownerType, ownerID, key, *req.Value)
-	if err != nil {
-		code := classifyStoreError(err)
-		return respondError(c, code, storeErrorMessage(err, code))
-	}
-	// 18-REQ-4.5: Emit hub.variable.update after successful update.
-	emitVarAudit(c, "hub.variable.update", ownerType, key)
-	return c.JSON(http.StatusOK, entry)
-}
-
-func doDeleteVar(c echo.Context, store *Store, ownerType, ownerID string) error {
-	key := c.Param("key")
-	err := store.DeleteVariable(ownerType, ownerID, key)
-	if err != nil {
-		code := classifyStoreError(err)
-		return respondError(c, code, storeErrorMessage(err, code))
-	}
-	// 18-REQ-4.6: Emit hub.variable.delete after successful deletion.
-	emitVarAudit(c, "hub.variable.delete", ownerType, key)
-	return c.NoContent(http.StatusNoContent)
-}
-
-// --- User-scoped variable handlers ---
-
-func handleCreateUserVars(store *Store) echo.HandlerFunc {
-	return func(c echo.Context) error {
-		auth := apikit.GetAuthInfo(c)
-		if auth == nil {
-			return respondError(c, http.StatusUnauthorized, "authentication required")
-		}
-		if wsaccess.IsPAT(auth) && !canVarsWrite(auth) {
-			return respondError(c, http.StatusForbidden, "insufficient permission scope")
-		}
-		if !requireUserIdentity(c, auth) {
-			return nil
-		}
-		return doCreateVars(c, store, "user", auth.UserID)
-	}
-}
-
-func handleListUserVars(store *Store) echo.HandlerFunc {
-	return func(c echo.Context) error {
-		auth := apikit.GetAuthInfo(c)
-		if auth == nil {
-			return respondError(c, http.StatusUnauthorized, "authentication required")
-		}
-		if wsaccess.IsPAT(auth) && !canVarsRead(auth) {
-			return respondError(c, http.StatusForbidden, "insufficient permission scope")
-		}
-		if !requireUserIdentity(c, auth) {
-			return nil
-		}
-		return doListVars(c, store, "user", auth.UserID)
-	}
-}
-
-func handleUpdateUserVar(store *Store) echo.HandlerFunc {
-	return func(c echo.Context) error {
-		auth := apikit.GetAuthInfo(c)
-		if auth == nil {
-			return respondError(c, http.StatusUnauthorized, "authentication required")
-		}
-		if wsaccess.IsPAT(auth) && !canVarsWrite(auth) {
-			return respondError(c, http.StatusForbidden, "insufficient permission scope")
-		}
-		if !requireUserIdentity(c, auth) {
-			return nil
-		}
-		return doUpdateVar(c, store, "user", auth.UserID)
-	}
-}
-
-func handleDeleteUserVar(store *Store) echo.HandlerFunc {
-	return func(c echo.Context) error {
-		auth := apikit.GetAuthInfo(c)
-		if auth == nil {
-			return respondError(c, http.StatusUnauthorized, "authentication required")
-		}
-		if wsaccess.IsPAT(auth) && !canVarsWrite(auth) {
-			return respondError(c, http.StatusForbidden, "insufficient permission scope")
-		}
-		if !requireUserIdentity(c, auth) {
-			return nil
-		}
-		return doDeleteVar(c, store, "user", auth.UserID)
-	}
-}
-
-// --- Org-scoped variable handlers ---
-
-func handleCreateOrgVars(store *Store, db *sql.DB) echo.HandlerFunc {
-	return func(c echo.Context) error {
-		auth := apikit.GetAuthInfo(c)
-		if auth == nil {
-			return respondError(c, http.StatusUnauthorized, "authentication required")
-		}
-		if wsaccess.IsPAT(auth) && !canVarsWrite(auth) {
-			return respondError(c, http.StatusForbidden, "insufficient permission scope")
-		}
-		orgID, code, msg := resolveOrgScope(db, auth, c.Param("slug"))
-		if code != 0 {
-			return respondError(c, code, msg)
-		}
-		return doCreateVars(c, store, "org", orgID)
-	}
-}
-
-func handleListOrgVars(store *Store, db *sql.DB) echo.HandlerFunc {
-	return func(c echo.Context) error {
-		auth := apikit.GetAuthInfo(c)
-		if auth == nil {
-			return respondError(c, http.StatusUnauthorized, "authentication required")
-		}
-		if wsaccess.IsPAT(auth) && !canVarsRead(auth) {
-			return respondError(c, http.StatusForbidden, "insufficient permission scope")
-		}
-		orgID, code, msg := resolveOrgScope(db, auth, c.Param("slug"))
-		if code != 0 {
-			return respondError(c, code, msg)
-		}
-		return doListVars(c, store, "org", orgID)
-	}
-}
-
-func handleUpdateOrgVar(store *Store, db *sql.DB) echo.HandlerFunc {
-	return func(c echo.Context) error {
-		auth := apikit.GetAuthInfo(c)
-		if auth == nil {
-			return respondError(c, http.StatusUnauthorized, "authentication required")
-		}
-		if wsaccess.IsPAT(auth) && !canVarsWrite(auth) {
-			return respondError(c, http.StatusForbidden, "insufficient permission scope")
-		}
-		orgID, code, msg := resolveOrgScope(db, auth, c.Param("slug"))
-		if code != 0 {
-			return respondError(c, code, msg)
-		}
-		return doUpdateVar(c, store, "org", orgID)
-	}
-}
-
-func handleDeleteOrgVar(store *Store, db *sql.DB) echo.HandlerFunc {
-	return func(c echo.Context) error {
-		auth := apikit.GetAuthInfo(c)
-		if auth == nil {
-			return respondError(c, http.StatusUnauthorized, "authentication required")
-		}
-		if wsaccess.IsPAT(auth) && !canVarsWrite(auth) {
-			return respondError(c, http.StatusForbidden, "insufficient permission scope")
-		}
-		orgID, code, msg := resolveOrgScope(db, auth, c.Param("slug"))
-		if code != 0 {
-			return respondError(c, code, msg)
-		}
-		return doDeleteVar(c, store, "org", orgID)
-	}
-}
-
-// --- Workspace-scoped variable handlers ---
-
-func handleCreateWorkspaceVars(store *Store, db *sql.DB) echo.HandlerFunc {
-	return func(c echo.Context) error {
-		auth := apikit.GetAuthInfo(c)
-		if auth == nil {
-			return respondError(c, http.StatusUnauthorized, "authentication required")
-		}
-		if wsaccess.IsPAT(auth) && !canVarsWrite(auth) {
-			return respondError(c, http.StatusForbidden, "insufficient permission scope")
-		}
-		slug := c.Param("slug")
-		if authorizeWorkspace(c, db, auth, slug, wsaccess.NeedWrite) == nil {
-			return nil
-		}
-		return doCreateVars(c, store, "workspace", slug)
-	}
-}
-
-func handleListWorkspaceVars(store *Store, db *sql.DB) echo.HandlerFunc {
-	return func(c echo.Context) error {
-		auth := apikit.GetAuthInfo(c)
-		if auth == nil {
-			return respondError(c, http.StatusUnauthorized, "authentication required")
-		}
-		if wsaccess.IsPAT(auth) && !canVarsRead(auth) {
-			return respondError(c, http.StatusForbidden, "insufficient permission scope")
-		}
-		slug := c.Param("slug")
-		if authorizeWorkspace(c, db, auth, slug, wsaccess.NeedRead) == nil {
-			return nil
-		}
-		return doListVars(c, store, "workspace", slug)
-	}
-}
-
-func handleUpdateWorkspaceVar(store *Store, db *sql.DB) echo.HandlerFunc {
-	return func(c echo.Context) error {
-		auth := apikit.GetAuthInfo(c)
-		if auth == nil {
-			return respondError(c, http.StatusUnauthorized, "authentication required")
-		}
-		if wsaccess.IsPAT(auth) && !canVarsWrite(auth) {
-			return respondError(c, http.StatusForbidden, "insufficient permission scope")
-		}
-		slug := c.Param("slug")
-		if authorizeWorkspace(c, db, auth, slug, wsaccess.NeedWrite) == nil {
-			return nil
-		}
-		return doUpdateVar(c, store, "workspace", slug)
-	}
-}
-
-func handleDeleteWorkspaceVar(store *Store, db *sql.DB) echo.HandlerFunc {
-	return func(c echo.Context) error {
-		auth := apikit.GetAuthInfo(c)
-		if auth == nil {
-			return respondError(c, http.StatusUnauthorized, "authentication required")
-		}
-		if wsaccess.IsPAT(auth) && !canVarsWrite(auth) {
-			return respondError(c, http.StatusForbidden, "insufficient permission scope")
-		}
-		slug := c.Param("slug")
-		if authorizeWorkspace(c, db, auth, slug, wsaccess.NeedWrite) == nil {
-			return nil
-		}
-		return doDeleteVar(c, store, "workspace", slug)
+		return op.run(c, store, r, t.ownerType, ownerID)
 	}
 }
 

@@ -6,44 +6,24 @@ import (
 	"github.com/labstack/echo/v4"
 )
 
-// RegisterRoutes mounts secrets API handlers on the given echo group.
-// This is also used by tests which set up their own echo instance and
-// auth middleware instead of using the full apikit server stack.
+// RegisterRoutes mounts the secrets and variables routes on the API group:
+// create, list, update and delete of each resource at each owner tier, and
+// the resolved variables of a workspace. Tests mount them on their own echo
+// instance behind their own auth middleware.
 func RegisterRoutes(api *echo.Group, db *sql.DB) error {
 	store := NewStore(db)
-
-	api.POST("/user/secrets", handleCreateUserSecrets(store))
-	api.GET("/user/secrets", handleListUserSecrets(store))
-	api.PATCH("/user/secrets/:key", handleUpdateUserSecret(store))
-	api.DELETE("/user/secrets/:key", handleDeleteUserSecret(store))
-
-	api.POST("/orgs/:slug/secrets", handleCreateOrgSecrets(store, db))
-	api.GET("/orgs/:slug/secrets", handleListOrgSecrets(store, db))
-	api.PATCH("/orgs/:slug/secrets/:key", handleUpdateOrgSecret(store, db))
-	api.DELETE("/orgs/:slug/secrets/:key", handleDeleteOrgSecret(store, db))
-
-	api.POST("/workspaces/:slug/secrets", handleCreateWorkspaceSecrets(store, db))
-	api.GET("/workspaces/:slug/secrets", handleListWorkspaceSecrets(store, db))
-	api.PATCH("/workspaces/:slug/secrets/:key", handleUpdateWorkspaceSecret(store, db))
-	api.DELETE("/workspaces/:slug/secrets/:key", handleDeleteWorkspaceSecret(store, db))
-
-	// Variable routes.
-	api.POST("/user/vars", handleCreateUserVars(store))
-	api.GET("/user/vars", handleListUserVars(store))
-	api.PATCH("/user/vars/:key", handleUpdateUserVar(store))
-	api.DELETE("/user/vars/:key", handleDeleteUserVar(store))
-
-	api.POST("/orgs/:slug/vars", handleCreateOrgVars(store, db))
-	api.GET("/orgs/:slug/vars", handleListOrgVars(store, db))
-	api.PATCH("/orgs/:slug/vars/:key", handleUpdateOrgVar(store, db))
-	api.DELETE("/orgs/:slug/vars/:key", handleDeleteOrgVar(store, db))
-
-	api.POST("/workspaces/:slug/vars", handleCreateWorkspaceVars(store, db))
-	api.GET("/workspaces/:slug/vars", handleListWorkspaceVars(store, db))
-	// Register resolved route before parameterized :key route.
-	api.GET("/workspaces/:slug/vars/resolved", handleResolvedWorkspaceVars(store, db))
-	api.PATCH("/workspaces/:slug/vars/:key", handleUpdateWorkspaceVar(store, db))
-	api.DELETE("/workspaces/:slug/vars/:key", handleDeleteWorkspaceVar(store, db))
-
+	for _, t := range []tier{userTier, orgTier, workspaceTier} {
+		for _, r := range []resource{secretsResource, varsResource} {
+			base := t.path + "/" + r.name
+			api.POST(base, handle(store, db, t, r, opCreate))
+			api.GET(base, handle(store, db, t, r, opList))
+			if t.ownerType == "workspace" && r.name == "vars" {
+				// Before the :key routes, so that "resolved" is not a key.
+				api.GET(base+"/resolved", handleResolvedWorkspaceVars(store, db))
+			}
+			api.PATCH(base+"/:key", handle(store, db, t, r, opUpdate))
+			api.DELETE(base+"/:key", handle(store, db, t, r, opDelete))
+		}
+	}
 	return nil
 }
