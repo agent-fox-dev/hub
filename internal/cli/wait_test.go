@@ -247,10 +247,9 @@ func TestWorkspaceCLI_Create_Wait_Success(t *testing.T) {
 		if r.Method == http.MethodPost && r.URL.Path == "/api/v1/workspaces" {
 			w.WriteHeader(http.StatusCreated)
 			json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
-				"slug":         "new-ws",
-				"git_url":      "https://github.com/org/repo",
-				"status":       "active",
-				"clone_status": "cloning",
+				"slug":    "new-ws",
+				"git_url": "https://github.com/org/repo",
+				"status":  "cloning",
 			})
 			return
 		}
@@ -259,15 +258,14 @@ func TestWorkspaceCLI_Create_Wait_Success(t *testing.T) {
 		if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/workspaces/new-ws") {
 			count := pollCount.Add(1)
 			w.WriteHeader(http.StatusOK)
-			cloneStatus := "cloning"
+			status := "cloning"
 			if count >= 2 {
-				cloneStatus = "ready"
+				status = "ready"
 			}
 			json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
-				"slug":         "new-ws",
-				"git_url":      "https://github.com/org/repo",
-				"status":       "active",
-				"clone_status": cloneStatus,
+				"slug":    "new-ws",
+				"git_url": "https://github.com/org/repo",
+				"status":  status,
 			})
 			return
 		}
@@ -284,9 +282,9 @@ func TestWorkspaceCLI_Create_Wait_Success(t *testing.T) {
 		t.Fatalf("expected exit 0; got error: %v", err)
 	}
 
-	// Verify stdout includes the final workspace with clone_status: ready.
+	// Verify stdout includes the final workspace with status: ready.
 	if !strings.Contains(stdout, "ready") {
-		t.Errorf("stdout should contain clone_status 'ready'; got: %s", stdout)
+		t.Errorf("stdout should contain status 'ready'; got: %s", stdout)
 	}
 
 	if pollCount.Load() < 1 {

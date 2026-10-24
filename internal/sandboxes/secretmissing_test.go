@@ -47,7 +47,7 @@ func TestIssue_MissingSecrets_TS_26_27(t *testing.T) {
 	}
 
 	// A workspace whose owner belongs to its org also searches the org scope.
-	env.addWorkspace("teamed", leaseOwner, "org-77", "active")
+	env.addWorkspace("teamed", leaseOwner, "org-77", "ready")
 	if _, err := env.db.Exec(`INSERT INTO org_members (org_id, user_id) VALUES ('org-77', ?)`, leaseOwner); err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +84,7 @@ func TestIssue_LookupErrors_TS_26_28(t *testing.T) {
 	}
 
 	env = newLeaseEnv(t, leaseEnvOptions{})
-	env.addWorkspace("teamed", leaseOwner, "org-77", "active")
+	env.addWorkspace("teamed", leaseOwner, "org-77", "ready")
 	if _, err := env.db.Exec(`DROP TABLE org_members`); err != nil {
 		t.Fatal(err)
 	}

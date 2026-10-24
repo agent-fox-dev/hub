@@ -302,14 +302,11 @@ schema:
   "org_id": "uuid-string-or-null",
   "org_slug": "org-slug-or-null",
   "access": "owner",
-  "status": "active",
+  "status": "ready",
   "display_name": "My Project",
   "description": "A description of the workspace",
-  "clone_status": "ready",
   "head_sha": "abc123def456...",
   "clone_error": null,
-  "sync_mode": "pull_only",
-  "sync_status": "idle",
   "upstream_head_sha": null,
   "last_sync_at": null,
   "sync_error": null,
@@ -331,17 +328,14 @@ schema:
 | `org_id` | string (UUID) or null | Organization the workspace is associated with; nullable |
 | `org_slug` | string or null | Slug of the workspace's organization; null when `org_id` is null or no org has that id |
 | `access` | string | The caller's access to the workspace: `"admin"` (admin token), `"owner"` or `"member"` (member of the workspace's org). It describes the caller, not a PAT's scopes; the create response always says `"owner"`. A member sees every other field as the owner does |
-| `status` | string | Lifecycle state: `"active"` or `"archived"` |
+| `status` | string | Lifecycle state: `"pending"` (clone queued), `"cloning"`, `"ready"` (the clone is usable), `"failed"` (the clone failed; see `clone_error`) or `"archived"`. A sync in progress does not change it; see [Sync Workspace](#sync-workspace) |
 | `display_name` | string | Human-readable label; defaults to slug value when not set; never null or empty |
 | `description` | string | Free-form text describing the workspace; defaults to empty string; never null |
-| `clone_status` | string | Clone lifecycle state: `"pending"`, `"cloning"`, `"ready"`, `"failed"`, or `"archived"` |
-| `head_sha` | string or null | 40-character hex SHA of the HEAD commit. Set when clone_status is `"ready"` or `"archived"`. Null otherwise. |
-| `clone_error` | string or null | Error message when clone_status is `"failed"`. Null otherwise. |
-| `sync_mode` | string | Upstream sync mode: `"pull_only"` (default) or `"disabled"` |
-| `sync_status` | string | Current sync state: `"idle"` (default), `"syncing"`, or `"error"` |
+| `head_sha` | string or null | 40-character hex SHA of the HEAD commit. Set when status is `"ready"` or `"archived"`. Null otherwise. |
+| `clone_error` | string or null | Error message when status is `"failed"`. Null otherwise. |
 | `upstream_head_sha` | string or null | HEAD SHA of the upstream tracking branch at last fetch. Null until first sync. |
 | `last_sync_at` | string (RFC 3339) or null | Timestamp of the last successful sync. Null until first sync. |
-| `sync_error` | string or null | Error message from the most recent failed sync. Null when no error. |
+| `sync_error` | string or null | The last sync's error. Null when the last sync succeeded, or none ran. |
 | `workspace_mode` | string | Workspace operating mode: `"standard"` (default, single-remote) or `"carry_patch"` (dual-remote with patch list); immutable after creation |
 | `upstream_url` | string or null | URL of the upstream repository for carry-patch workspaces. Null for standard workspaces; immutable after creation. |
 | `integration_branch` | string or null | Name of the mechanically rebuilt branch that combines the upstream base with all carried patches. Defaults to `"deploy"` for carry-patch workspaces. Null for standard workspaces; immutable after creation. |
@@ -371,7 +365,6 @@ workspace requires a real user as owner.
   "org_id": "uuid-string",
   "display_name": "My Project",
   "description": "A description of the workspace",
-  "sync_mode": "pull_only",
   "workspace_mode": "standard",
   "upstream_url": "https://github.com/upstream/repo.git",
   "integration_branch": "deploy",
@@ -390,7 +383,6 @@ workspace requires a real user as owner.
 | `org_id` | no | string | Organization UUID or slug. Must reference an org the owner is a member of; when omitted or empty, the server auto-assigns the user's personal organization |
 | `display_name` | no | string | Max 128 characters; defaults to slug value if omitted or empty |
 | `description` | no | string | Max 1024 characters; defaults to empty string if omitted |
-| `sync_mode` | no | string | Upstream sync mode: `"pull_only"` (default) or `"disabled"`; invalid values are rejected with HTTP 400 |
 | `workspace_mode` | no | string | `"standard"` (default) or `"carry_patch"`; when `"carry_patch"`, `upstream_url` is required and `integration_branch` defaults to `"deploy"` |
 | `upstream_url` | conditional | string | Required when `workspace_mode` is `"carry_patch"`; must be a valid HTTPS or SSH git URL; rejected for standard workspaces |
 | `integration_branch` | no | string | Name of the integration branch; defaults to `"deploy"` for carry-patch workspaces; rejected for standard workspaces |
@@ -504,8 +496,7 @@ mutable fields. At least one field must be provided.
   "display_name": "New Display Name",
   "description": "Updated description",
   "org_id": "uuid-string",
-  "sync_mode": "disabled",
-  "settings": {"rebuild_strategy": "merge", "auto_rebuild_after_push": null}
+  "settings": {"rebuild_strategy": "merge", "sync_enabled": false, "auto_rebuild_after_push": null}
 }
 ```
 
@@ -514,7 +505,6 @@ mutable fields. At least one field must be provided.
 | `display_name` | string or null | Max 128 characters | Setting to `null` clears the display name back to the workspace slug |
 | `description` | string or null | Max 1024 characters | Setting to `null` clears the description to an empty string |
 | `org_id` | string or null | Organization UUID or slug. Must reference an org the owner is a member of | Setting to `null` removes the organization association |
-| `sync_mode` | string | Must be `"pull_only"` or `"disabled"` | Setting to `null` is rejected with HTTP 400 |
 | `settings` | object | Keys of the [Workspace Settings Reference](#workspace-settings-reference) with values the settings take; keys not given are kept | A key given as `null` returns to its default; the whole object given as `null` resets every setting |
 
 **Partial Update Behavior:**
@@ -532,7 +522,7 @@ mutable fields. At least one field must be provided.
 
 | Status | Condition |
 |--------|-----------|
-| 400 | Empty body (no fields provided); workspace is archived (must reactivate first); `display_name` exceeds 128 characters; `description` exceeds 1024 characters; request includes immutable fields; `sync_mode` value is invalid or null; `settings` names an unknown key or a value a setting cannot take |
+| 400 | Empty body (no fields provided); workspace is archived (must reactivate first); `display_name` exceeds 128 characters; `description` exceeds 1024 characters; request includes immutable fields; request includes `sync_mode` (now the `sync_enabled` setting); `settings` names an unknown key or a value a setting cannot take |
 | 401 | Unauthenticated request |
 | 403 | Workspace owner is not a member of the organization specified in `org_id`; the caller is a member of the workspace's org: `org members have read-only access to this workspace` (`error_type: forbidden`) |
 | 404 | Workspace not found; PAT lacks `workspaces:write` scope; the caller may not see the workspace (anti-enumeration) |
@@ -594,9 +584,9 @@ tokens can reactivate any workspace.
 |-----------|-------------|
 | `:slug` | The workspace slug to reactivate |
 
-**Response:** HTTP 200 OK with the updated workspace JSON (status = `"active"`).
+**Response:** HTTP 200 OK with the updated workspace JSON (status = `"pending"`).
 
-On reactivation, `clone_status` is reset to `"pending"` and a reclone job is
+On reactivation, `status` is reset to `"pending"` and a reclone job is
 enqueued.
 
 **Error Codes:**
@@ -661,10 +651,9 @@ workspaces answer 404.
 
 The sync operation requires all of the following:
 
-- Workspace status is `"active"` (not archived)
-- Clone status is `"ready"` (clone complete)
-- Sync mode is not `"disabled"`
-- Sync status is not `"syncing"` (no concurrent syncs)
+- Workspace status is `"ready"` (cloned and not archived)
+- The `sync_enabled` setting is `true`
+- No other operation holds the workspace lock (a sync in progress included)
 
 **Sync Outcomes:**
 
@@ -673,31 +662,27 @@ The sync operation requires all of the following:
 | Up to date | Upstream HEAD equals local HEAD; `last_sync_at` is updated | 200 |
 | Fast-forward | Upstream HEAD is a descendant of local HEAD; `head_sha` is advanced to upstream HEAD | 200 |
 | Reset to upstream | `reset_to_upstream=true`: fetches upstream, force-updates local ref to upstream HEAD regardless of ancestry, sets `head_sha` and `upstream_head_sha` to upstream HEAD | 200 |
-| Diverged | Upstream HEAD is not a descendant of local HEAD (force-push detected); `sync_status` set to `"error"` | 409 |
-| Fetch failure | Network error, auth failure, or repo open failure; `sync_status` set to `"error"` | 502 |
-| Context cancelled | Request cancelled mid-sync (timeout or client disconnect); `sync_status` set to `"error"` | 504 |
+| Diverged | Upstream HEAD is not a descendant of local HEAD (force-push detected); `sync_error` is set | 409 |
+| Fetch failure | Network error, auth failure, or repo open failure; `sync_error` is set | 502 |
+| Context cancelled | Request cancelled mid-sync (timeout or client disconnect); `sync_error` is set | 504 |
 
 **Response (success):** HTTP 200 OK with updated workspace JSON. The response
-includes updated `sync_status`, `head_sha`, `upstream_head_sha`, and
-`last_sync_at` fields.
+includes updated `head_sha`, `upstream_head_sha` and `last_sync_at` fields and
+a null `sync_error`.
 
-**State Machine:**
+**Sync state:**
 
-The `sync_status` field follows a strict state machine:
-
-- `idle` -> `syncing` -> `idle` (successful sync)
-- `idle` -> `syncing` -> `error` (failed sync)
-- `error` -> `syncing` -> `idle` (recovery after operator resolution)
-
-The handler guarantees that `sync_status` never remains stuck in `"syncing"`:
-a deferred cleanup function transitions to `"error"` on context cancellation
-or unexpected failures.
+A sync in progress is not a stored state: the handler holds the workspace lock
+for its duration, and a second sync meanwhile is refused with `409`
+`workspace_busy`. A failed sync records its error in `sync_error`, which the
+next successful sync clears; a hub restart during a sync records
+`"sync interrupted by server restart"`.
 
 **Error Codes:**
 
 | Status | Condition |
 |--------|-----------|
-| 400 | Workspace is not active; clone is not ready; sync is disabled |
+| 400 | Workspace is not ready (not cloned, clone failed or archived); sync is disabled (`sync_enabled` setting) |
 | 401 | Unauthenticated request |
 | 403 | PAT lacks `workspaces:write` scope; the caller is a member of the workspace's org: `org members have read-only access to this workspace` (`error_type: forbidden`) |
 | 404 | Workspace not found or the caller may not see it |
@@ -722,7 +707,7 @@ Differences from the standard path:
   duration (`409` `workspace_busy` while a merge or other sync runs, or
   while a rebuild is in its fetch phase or final phase; a rebuild applying
   patches in its worktree does not block it).
-- `sync_status` is not moved to `syncing`/`error`; failures are reported by
+- `sync_error` is not set; failures are reported by
   the HTTP status only (`502` when upstream credentials cannot be resolved or
   the upstream fetch fails, or when origin credentials cannot be resolved or
   the origin fetch fails; no workspace or patch state is modified).
@@ -743,9 +728,7 @@ reflect it:
 ```json
 {
   "slug": "my-workspace",
-  "status": "active",
-  "clone_status": "ready",
-  "sync_status": "idle",
+  "status": "ready",
   "workspace_mode": "carry_patch",
   "upstream_url": "https://github.com/upstream/repo.git",
   "integration_branch": "deploy",
@@ -872,8 +855,8 @@ sync path and the response is the plain workspace JSON, with none of
 
 Nuclear recovery operation that archives the workspace (pushing local commits
 to upstream first), deletes the local clone directory, and re-clones from
-upstream. The workspace status remains `"active"` throughout the entire reclone
-lifecycle.
+upstream. The workspace status goes back to `"pending"` and follows the clone
+again.
 
 **Authentication:** API Key, or PAT with `workspaces:write` scope. The
 workspace must be owned by the caller (admin tokens bypass); other
@@ -900,20 +883,17 @@ the rebuild worktree lives in.
    fails (no credentials, remote rejection, or network error), a warning is
    logged and the reclone continues.
 2. Delete the local clone directory at `<WORKSPACE_ROOT>/<slug>/`.
-3. Atomically update database: `clone_status='pending'`, `sync_status='idle'`,
-   clear `sync_error` and `upstream_head_sha`. Workspace `status` remains
-   `'active'`.
+3. Atomically update database: `status='pending'`, clear `sync_error` and
+   `upstream_head_sha`.
 4. Enqueue a clone job via the in-memory job queue. The clone lifecycle
-   transitions `clone_status` from `'pending'` -> `'cloning'` -> `'ready'`.
+   transitions `status` from `'pending'` -> `'cloning'` -> `'ready'`.
 
 **Response (success):** HTTP 200 OK with workspace JSON:
 
 ```json
 {
   "slug": "my-workspace",
-  "status": "active",
-  "clone_status": "pending",
-  "sync_status": "idle",
+  "status": "pending",
   "sync_error": null,
   "upstream_head_sha": null
 }
@@ -926,7 +906,8 @@ the rebuild worktree lives in.
 | 401 | Unauthenticated request |
 | 403 | PAT lacks `workspaces:write` scope; the caller is a member of the workspace's org: `org members have read-only access to this workspace` (`error_type: forbidden`) |
 | 404 | Workspace not found |
-| 409 | Clone operation already in progress (`clone_status` is `"pending"` or `"cloning"`) |
+| 400 | Workspace is archived (reactivate it instead) |
+| 409 | Clone operation already in progress (`status` is `"pending"` or `"cloning"`) |
 | 500 | Failed to delete workspace directory; database update failed |
 
 ---
@@ -974,7 +955,7 @@ a JSON object, or a `force` that is not a boolean, is 400.
 1. No credential: 401. A PAT without `workspaces:write`: 403 `PAT requires workspaces:write scope to push branches` (no `error_type`), before the workspace is looked up.
 2. The workspace, with write access: 404 `workspace not found`, 403 `forbidden`, or 500.
 3. The body (400), then the name: one that breaks git's branch-name rules or starts with `-` is 404 `branch_not_found` naming the rule, for example `branch_not_found: "-x" is not a valid branch name: ref name must not start with '-'`.
-4. `status` must be `active` (400 `workspace is not active; push requires an active workspace`) and `clone_status` `ready` (400 `workspace clone is not ready; clone_status must be 'ready' to push`).
+4. `status` must be `ready` (400 `workspace is not ready; push requires a ready workspace`).
 5. Branches this route does not push, decided before the lock and so the same whether the workspace is busy or not: on a `carry_patch` workspace the integration branch (`integration_branch`, or `deploy` when empty) is 400 `integration_branch`, and a patch whose status is not `deleted` is 400 `patch_branch`; with `force`, the `branch` column is 400 `protected_branch`.
 6. The workspace lock, without waiting: 409 `workspace_busy`. A rebuild between its fetch and final phases does not hold it and does not block the push.
 7. Under the lock: with `force` and no `branch` column, the branch the trunk's `HEAD` points to is 400 `protected_branch` (500 when `HEAD` cannot be read); a branch the trunk lacks is 404 `branch_not_found: branch "<name>" does not exist in the workspace`; the credential is resolved (a secrets store failure is 500 `internal server error`).
@@ -1008,7 +989,7 @@ removed; an scp-style address (`git@host:path`) comes back unchanged.
 
 | Status | Condition |
 |--------|-----------|
-| 400 | Invalid body; workspace not active or clone not ready; `integration_branch`, `patch_branch`, `protected_branch` |
+| 400 | Invalid body; workspace not ready; `integration_branch`, `patch_branch`, `protected_branch` |
 | 401 | Unauthenticated request |
 | 403 | PAT lacks `workspaces:write`; the caller is a member of the workspace's org (`forbidden`) |
 | 404 | Workspace not found; `branch_not_found`; `forge_not_found` |
@@ -1112,7 +1093,7 @@ that carries the token:
 | 500 | `internal server error`: the binding lookup failed |
 | 403 | `admin tokens cannot mint bound tokens; a real user is required as the token's owner` |
 | 404 | `workspace not found`: the workspace does not exist or the caller may not see it (a member of its org included: the route is private) |
-| 400 | `workspace is not active` |
+| 400 | `workspace is archived` |
 
 Then apikit answers. Any status other than 201 (a bad body, an unknown scope, a
 missing `tokens:manage`, a PAT asking for scopes it does not hold, a bad
@@ -1667,7 +1648,7 @@ branch-check hook is registered. Batch registration does not emit
 | 400 | `branch_name` is absent or empty |
 | 400 | `branch_name` equals the workspace's `integration_branch` |
 | 400 | Workspace is in `standard` mode (not `carry_patch`) |
-| 400 | Workspace is not active |
+| 400 | Workspace is archived |
 | 400 | `position` is less than 1 |
 | 400 | Branch does not exist in repository or on origin (when `skip_branch_check` is `false`). In a batch the message is prefixed `patch[i]: `. |
 | 401 | Unauthenticated request |
@@ -1879,7 +1860,7 @@ Restore a soft-deleted patch back to active status.
 
 | Status | Condition |
 |--------|-----------|
-| 400 | Workspace does not exist or is not active; workspace is not in `carry_patch` mode; patch is not in `"deleted"` status |
+| 400 | Workspace is archived; workspace is not in `carry_patch` mode; patch is not in `"deleted"` status |
 | 401 | Unauthenticated request |
 | 403 | PAT lacks `patches:write` scope; the caller is a member of the workspace's org: `org members have read-only access to this workspace` (`error_type: forbidden`) |
 | 404 | Patch ID does not exist for the given workspace |
@@ -1924,8 +1905,8 @@ git fetch <hub_url> refs/hub/replaced/<branch>
 
 **Preconditions (checked in order):**
 
-1. Workspace must be active and in `carry_patch` mode.
-2. Workspace `clone_status` must be `ready`.
+1. Workspace must not be archived and must be in `carry_patch` mode.
+2. Workspace `status` must be `ready`.
 3. Patch must exist.
 4. Patch branch must not be the integration branch.
 5. Patch status must be `active`, `conflict` or `disabled`.
@@ -1959,7 +1940,7 @@ response.
 
 | Status | Condition |
 |--------|----------|
-| 400 | Workspace is not active; workspace is not in `carry_patch` mode; patch branch is the integration branch |
+| 400 | Workspace is archived; workspace is not in `carry_patch` mode; patch branch is the integration branch |
 | 403 | the caller is a member of the workspace's org: `org members have read-only access to this workspace` (`error_type: forbidden`) |
 | 404 | Workspace not found or the caller may not see it; patch not found |
 | 409 | Workspace clone is not ready; patch status cannot be reset (`merged_upstream` or `deleted`); branch does not exist on origin (`error_type: missing_on_origin`); patch branch changed during reset (`error_type: ref_changed`); another operation holds the workspace lock (`error_type: workspace_busy`) |
@@ -2200,7 +2181,7 @@ Submit a new rebuild job for the workspace.
 **Preconditions:**
 
 - Workspace must be in `carry_patch` mode
-- Workspace status must be `active` with clone_status `ready`
+- Workspace status must be `ready`
 - At least one patch must have status `active` or `conflict`
 - No existing rebuild job may be queued or running for this workspace
 
@@ -2245,7 +2226,7 @@ and the executor applies `"fail_fast"` as the runtime default.
 | Status | Condition |
 |--------|-----------|
 | 202 | Job enqueued successfully |
-| 400 | Workspace not in carry_patch mode (`error_type: workspace_mode_mismatch`), not active, clone not ready, or no active patches (`error_type: no_active_patches`); invalid `strategy` or `fail_mode` value |
+| 400 | Workspace not in carry_patch mode (`error_type: workspace_mode_mismatch`), not ready, or no active patches (`error_type: no_active_patches`); invalid `strategy` or `fail_mode` value |
 | 401 | Unauthenticated request |
 | 403 | Missing required scope `rebuilds:write`; the caller is a member of the workspace's org: `org members have read-only access to this workspace` (`error_type: forbidden`) |
 | 404 | Workspace not found |
@@ -2489,12 +2470,9 @@ Return a full status dashboard for the carry-patch stack.
 {
   "workspace_slug": "my-workspace",
   "workspace_mode": "carry_patch",
-  "status": "active",
-  "clone_status": "ready",
+  "status": "ready",
   "clone_error": "",
-  "sync_status": "idle",
   "sync_error": "",
-  "sync_mode": "pull_only",
   "head_sha": "fedcba987654...",
   "git_url": "https://github.com/example/repo.git",
   "upstream_url": "https://github.com/upstream/repo.git",
@@ -2538,12 +2516,9 @@ Return a full status dashboard for the carry-patch stack.
 |-------|------|-------------|
 | `workspace_slug` | string | The workspace slug |
 | `workspace_mode` | string | Always `"carry_patch"` |
-| `status` | string | Workspace status (`active`, `archived`, etc.) |
-| `clone_status` | string | Clone status (`pending`, `cloning`, `ready`, `failed`, `archived`) |
+| `status` | string | Workspace status (`pending`, `cloning`, `ready`, `failed`, `archived`) |
 | `clone_error` | string | Clone error message; empty string if no error (omitted from JSON when empty) |
-| `sync_status` | string | Sync status (`idle`, `syncing`, etc.) |
-| `sync_error` | string | Sync error message; empty string if no error (omitted from JSON when empty) |
-| `sync_mode` | string | Sync mode (`pull_only`, etc.) |
+| `sync_error` | string | The last sync's error; empty string if it succeeded (omitted from JSON when empty) |
 | `head_sha` | string | SHA of the workspace HEAD; empty string if not yet cloned |
 | `git_url` | string | The workspace git repository URL |
 | `upstream_url` | string | The upstream repository URL |
@@ -2679,7 +2654,7 @@ Submit a merge request to integrate a source branch into a target branch.
 
 | Status | Condition |
 |--------|-----------|
-| 400 | Missing `target_branch` or `source_ref`; malformed JSON; workspace is not active; clone is not ready; source or target branch does not exist |
+| 400 | Missing `target_branch` or `source_ref`; malformed JSON; workspace is not ready; source or target branch does not exist |
 | 401 | Unauthenticated request |
 | 403 | PAT lacks `merges:write` scope; the caller is a member of the workspace's org: `org members have read-only access to this workspace` (`error_type: forbidden`) |
 | 404 | Workspace not found or the caller may not see it |
@@ -2855,7 +2830,7 @@ All branches in the list are processed sequentially.
 
 | Status | Condition |
 |--------|-----------|
-| 400 | Missing `target_ref`; empty `branches` list; workspace is not active; clone is not ready |
+| 400 | Missing `target_ref`; empty `branches` list; workspace is not ready |
 | 401 | Unauthenticated request |
 | 403 | PAT lacks `merges:write` scope; the caller is a member of the workspace's org: `org members have read-only access to this workspace` (`error_type: forbidden`) |
 | 404 | Workspace not found |
@@ -3848,6 +3823,7 @@ creation has its default.
 | `squash_merge_detection` | `"ancestry_only"`, `"content_based"`, `"both"` | `"both"` | Which strategies detect upstream merges during a carry-patch sync. `"ancestry_only"` uses `git merge-base --is-ancestor`; `"content_based"` uses `git cherry` and PR-number scanning; `"both"` uses all of them. |
 | `forge_api_url` | string | `""` | The API URL of the forge behind the workspace's `git_url`, for the [forge routes](#forge-endpoints): an absolute `https://` URL with a host, without userinfo, query or fragment, or empty to find the API from the host (`api.github.com` for `github.com`, `<host>/api/v3` or `<host>/api/v4` for another). A value that contains exactly one of `github` and `gitlab` also tells which forge it is, and a GitLab value gets `/api/v4` appended when it does not end with it. |
 | `upstream_forge_api_url` | string | `""` | The same for the `upstream_url` of a `carry_patch` workspace (`?target=upstream`). It does not fall back to `forge_api_url`: an upstream on another host must not inherit the fork's API URL. |
+| `sync_enabled` | boolean | `true` | Whether [`POST .../sync`](#sync-workspace) may fetch the workspace's origin. `false` refuses every sync with 400. |
 
 Before they were settings, these switches were workspace variables of the same
 name in upper case (`PATCH_BRANCH_SOURCE`, ...). A hub that starts on a database
@@ -3976,7 +3952,7 @@ answers:
    workspace. A member of the workspace's org may list and get its leases (with
    the owner's bodies, `secrets` and `optional_secrets` included) and gets 403
    `forbidden` on `POST` and `DELETE`.
-5. `POST` only: a workspace that is not active: 400 `workspace is not active`.
+5. `POST` only: an archived workspace: 400 `workspace is archived`.
 
 ### The lease representation
 
@@ -4080,7 +4056,7 @@ requests never exceed the limit.
 
 | Status | Condition |
 |--------|-----------|
-| 400 | Malformed JSON, a body that cannot be read, or a body that is not an object; an unknown field (the message names it); an unknown profile, or no profile when none is the default (the message lists the profiles in configuration order); a `ttl` that does not parse, is under `1m` or is over the profile's TTL (the message names that TTL); a bad `purpose`; bad `labels` (the message names the label key); a workspace that is not active |
+| 400 | Malformed JSON, a body that cannot be read, or a body that is not an object; an unknown field (the message names it); an unknown profile, or no profile when none is the default (the message lists the profiles in configuration order); a `ttl` that does not parse, is under `1m` or is over the profile's TTL (the message names that TTL); a bad `purpose`; bad `labels` (the message names the label key); an archived workspace |
 | 401 | Unauthenticated request |
 | 403 | PAT lacks `sandboxes:write` scope; the caller is a member of the workspace's org: `org members have read-only access to this workspace` (`error_type: forbidden`) |
 | 404 | Sandboxes are not enabled (`error_type: sandboxes_disabled`); the workspace does not exist or the caller may not see it |
@@ -4265,16 +4241,16 @@ the fields of its body (a title, a comment, labels) and nothing else. Neither th
 request's `Authorization` header nor the body as it came reaches the forge, and no
 response shows the credential, only its kind.
 
-The ten read endpoints need `forge:read`. They work on `active` and `archived`
-workspaces alike, take no workspace lock, need no clone (`clone_status` does not
-matter) and emit no audit event. The nine write endpoints
-([The write routes](#the-write-routes)) need `forge:write`, work on `active`
-workspaces only, take no lock and need no clone either, and record every write that
+The ten read endpoints need `forge:read`. They work on workspaces of every
+status, archived included, take no workspace lock, need no clone and emit no
+audit event. The nine write endpoints
+([The write routes](#the-write-routes)) need `forge:write`, work on
+workspaces that are not archived only, take no lock and need no clone either, and record every write that
 reaches the forge as a `hub.forge.*` audit event. Everything below that is not
 about the write routes holds for both. The webhook routes
 ([The webhook routes](#the-webhook-routes)) are of their own kind: the list of
 deliveries is a read (`forge:read`, a workspace of any status), `PUT .../forge/webhook`
-a write (`forge:write`, an `active` workspace) and `DELETE .../forge/webhook` needs
+a write (`forge:write`, a workspace that is not archived) and `DELETE .../forge/webhook` needs
 `forge:write` and works on a workspace of any status.
 
 A forge can also tell the hub what happened on the repository, so that a consumer
@@ -4356,7 +4332,7 @@ A write route checks, in this order, and answers with the first that fails:
    too. This comes before the workspace is looked up.
 3. A workspace that does not exist or that the caller may not see: 404
    `workspace not found`. A member of the workspace's org: 403 `forbidden`.
-4. A workspace whose status is not `active`: 400 `workspace is not active`.
+4. An archived workspace: 400 `workspace is archived`.
 5. The request itself: 400. This is the `target` (a bad one, and `upstream` on a
    workspace that is not a `carry_patch` fork with an `upstream_url`, which is
    `workspace_mode_mismatch`), a number in the path that is not a positive integer,
@@ -4667,7 +4643,7 @@ fails answers:
 2. A PAT without `forge:write`: 403, `PAT requires forge:write scope`.
 3. A workspace that does not exist or that the caller may not see: 404
    `workspace not found`. A member of the workspace's org: 403 `forbidden`.
-4. A workspace that is not `active`: 400 `workspace is not active`.
+4. An archived workspace: 400 `workspace is archived`.
 5. The body.
 
 The body is an optional JSON object. With no body, `{}` or `{"secret": null}` the hub
@@ -4867,7 +4843,7 @@ Every failure of a call to the forge is answered by one of these, whatever the r
 |---|---|---|
 | `target=upstream` on a workspace that is not a `carry_patch` fork with an `upstream_url` | 400 | `workspace_mode_mismatch` |
 | an invalid `target`, `:n` or query parameter, or a write body that breaks a rule of its route | 400 | |
-| a write on a workspace that is not `active` | 400 | |
+| a write on an archived workspace | 400 | |
 | a body-like field over the forge's limit (writes) | 413 | `body_too_large` |
 | `forge_api_url` / `upstream_forge_api_url` invalid | 422 | `forge_api_url_invalid` |
 | the forge cannot be told from the host, or the remote URL names no repository | 422 | `forge_unknown` |

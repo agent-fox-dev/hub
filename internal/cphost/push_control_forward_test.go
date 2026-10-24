@@ -252,7 +252,7 @@ func TestForwardMode_TS22_23_PushOptionsAndDeadline(t *testing.T) {
 	runGitCmdR(t, trunkPath, "remote", "add", "origin", bareOrigin)
 	runGitCmdR(t, trunkPath, "push", "origin", "main")
 
-	seedWorkspaceWithGitURL(t, db, "myws", "user-1", "active", "ready",
+	seedWorkspaceWithGitURL(t, db, "myws", "user-1", "ready",
 		"carry_patch", "main-int", bareOrigin)
 	seedPatch(t, db, "p1", "myws", "feature/a", 1, "active")
 
@@ -378,7 +378,7 @@ func TestForwardMode_TS22_24_CredentialFailureRejects(t *testing.T) {
 	runGitCmdR(t, trunkPath, "remote", "add", "origin", bareOrigin)
 	runGitCmdR(t, trunkPath, "push", "origin", "main")
 
-	seedWorkspaceWithGitURL(t, db, "myws", "user-1", "active", "ready",
+	seedWorkspaceWithGitURL(t, db, "myws", "user-1", "ready",
 		"carry_patch", "main-int", bareOrigin)
 	seedPatch(t, db, "p1", "myws", "feature/a", 1, "active")
 
@@ -521,7 +521,7 @@ func TestForwardMode_TS22_26_UnreachableOriginRejectsAndLogs(t *testing.T) {
 	newHash := plumbing.NewHash(fwdRefSHA(t, trunkPath, "HEAD"))
 	runGitCmdR(t, trunkPath, "checkout", "main")
 
-	seedWorkspaceWithGitURL(t, db, "myws", "user-1", "active", "ready",
+	seedWorkspaceWithGitURL(t, db, "myws", "user-1", "ready",
 		"carry_patch", "main-int", "https://user:pw@example.com/fork.git")
 	seedPatch(t, db, "p1", "myws", "feature/a", 1, "active")
 
@@ -630,7 +630,7 @@ func TestForwardMode_ForwardErrorTextSanitised(t *testing.T) {
 			runGitCmdR(t, trunkPath, "commit", "-m", "init")
 			newHash := plumbing.NewHash(fwdRefSHA(t, trunkPath, "HEAD"))
 
-			seedWorkspaceWithGitURL(t, db, "myws", "user-1", "active", "ready",
+			seedWorkspaceWithGitURL(t, db, "myws", "user-1", "ready",
 				"carry_patch", "main-int", "https://example.com/fork.git")
 			seedPatch(t, db, "p1", "myws", "feature/a", 1, "active")
 

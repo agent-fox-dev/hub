@@ -66,8 +66,8 @@ func startSmokeHub(t *testing.T) (*httptest.Server, *apikit.DB, string) {
 		t.Fatal(err)
 	}
 	for _, slug := range []string{"s", "x"} {
-		if _, err := database.SqlDB.Exec(`INSERT INTO workspaces (slug, git_url, owner_id, status, clone_status, created_at, updated_at)
-			VALUES (?, ?, 'u1', 'active', 'ready', ?, ?)`, slug, "https://github.com/org/"+slug, now, now); err != nil {
+		if _, err := database.SqlDB.Exec(`INSERT INTO workspaces (slug, git_url, owner_id, status, created_at, updated_at)
+			VALUES (?, ?, 'u1', 'ready', ?, ?)`, slug, "https://github.com/org/"+slug, now, now); err != nil {
 			t.Fatal(err)
 		}
 		if err := emitter.Emit(context.Background(), audit.HubEvent{EventType: "hub.workspace.updated", ActorID: "u1", ActorType: "api_key",

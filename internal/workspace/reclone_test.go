@@ -18,12 +18,10 @@ import (
 // ========================================================================
 
 // TS-13-21: Verifies that POST /api/v1/workspaces/:slug/reclone executes
-// the archive flow, deletes the clone, atomically sets clone_status='pending',
-// sync_status='idle', clears sync_error and upstream_head_sha, enqueues a
-// clone job, and returns workspace with clone_status='pending' and
-// status='active'.
+// the archive flow, deletes the clone, atomically sets status='pending',
+// clears sync_error and upstream_head_sha, enqueues a clone job, and returns
+// the workspace with status='pending'.
 // Requirement: 13-REQ-7.1
-// Property: 13-PROP-5 (reclone workspace status remains 'active')
 func TestReclone_SuccessfulReclone(t *testing.T) {
 	env := newTestEnv(t)
 	wsRoot := t.TempDir()
@@ -34,17 +32,15 @@ func TestReclone_SuccessfulReclone(t *testing.T) {
 	defer func() { defaultWorkspaceRoot = oldRoot }()
 
 	env.seedWorkspace(t, &Workspace{
-		Slug:        "reclone-ws",
-		GitURL:      "https://github.com/example/repo.git",
-		OwnerID:     "alice-id",
-		Status:      "active",
-		CloneStatus: "ready",
+		Slug:    "reclone-ws",
+		GitURL:  "https://github.com/example/repo.git",
+		OwnerID: "alice-id",
+		Status:  "ready",
 	})
 
 	// Set sync fields to simulate a workspace with sync state.
 	_, err := env.db.Exec(
-		`UPDATE workspaces SET sync_mode = 'pull_only', sync_status = 'idle',
-		 upstream_head_sha = 'abc123', sync_error = NULL
+		`UPDATE workspaces SET upstream_head_sha = 'abc123', sync_error = 'stale'
 		 WHERE slug = ?`,
 		"reclone-ws",
 	)
@@ -85,19 +81,9 @@ func TestReclone_SuccessfulReclone(t *testing.T) {
 		t.Fatalf("failed to decode response: %v", err)
 	}
 
-	// clone_status must be 'pending' after reclone.
-	if resp["clone_status"] != "pending" {
-		t.Errorf("clone_status = %v; want %q", resp["clone_status"], "pending")
-	}
-
-	// status must remain 'active' throughout (13-PROP-5).
-	if resp["status"] != "active" {
-		t.Errorf("status = %v; want %q (must remain active during reclone)", resp["status"], "active")
-	}
-
-	// sync_status must be 'idle' after reclone.
-	if resp["sync_status"] != "idle" {
-		t.Errorf("sync_status = %v; want %q", resp["sync_status"], "idle")
+	// status must be 'pending' after reclone.
+	if resp["status"] != "pending" {
+		t.Errorf("status = %v; want %q", resp["status"], "pending")
 	}
 
 	// sync_error must be null/cleared.
@@ -111,80 +97,49 @@ func TestReclone_SuccessfulReclone(t *testing.T) {
 	}
 }
 
-// TS-13-22: Verifies that workspace status remains 'active' throughout the
-// entire reclone operation and is never set to any other value.
+// TS-13-22: Verifies that an archived workspace cannot be recloned: it has
+// no clone to replace, so the request is refused with HTTP 400 and the
+// workspace stays archived.
 // Requirement: 13-REQ-7.2
-// Property: 13-PROP-5 (workspace status remains active)
-func TestReclone_StatusRemainsActive(t *testing.T) {
+func TestReclone_ArchivedRejected(t *testing.T) {
 	env := newTestEnv(t)
-	wsRoot := t.TempDir()
-
-	oldRoot := defaultWorkspaceRoot
-	defaultWorkspaceRoot = wsRoot
-	defer func() { defaultWorkspaceRoot = oldRoot }()
 
 	env.seedWorkspace(t, &Workspace{
-		Slug:        "reclone-active-ws",
-		GitURL:      "https://github.com/example/repo.git",
-		OwnerID:     "alice-id",
-		Status:      "active",
-		CloneStatus: "ready",
+		Slug:    "reclone-archived-ws",
+		GitURL:  "https://github.com/example/repo.git",
+		OwnerID: "alice-id",
+		Status:  "archived",
 	})
-
-	_, err := env.db.Exec(
-		`UPDATE workspaces SET sync_mode = 'pull_only', sync_status = 'idle' WHERE slug = ?`,
-		"reclone-active-ws",
-	)
-	if err != nil {
-		t.Fatalf("failed to set sync fields: %v", err)
-	}
-
-	trunkDir := filepath.Join(wsRoot, "reclone-active-ws", "trunk")
-	if err := os.MkdirAll(trunkDir, 0o755); err != nil {
-		t.Fatalf("create trunk dir: %v", err)
-	}
-
-	oldPush := archiveOpenAndPushFn
-	archiveOpenAndPushFn = func(repoPath, gitURL string, _ transport.AuthMethod) error { return nil }
-	defer func() { archiveOpenAndPushFn = oldPush }()
-
-	oldHead := archiveHeadFn
-	archiveHeadFn = func(repoPath string) (string, error) {
-		return "abcdef1234567890abcdef1234567890abcdef12", nil
-	}
-	defer func() { archiveHeadFn = oldHead }()
 
 	auth := adminAuth()
 	rec := env.doRequest(t, http.MethodPost,
-		"/api/v1/workspaces/reclone-active-ws/reclone", "", auth)
+		"/api/v1/workspaces/reclone-archived-ws/reclone", "", auth)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("POST /reclone returned %d; want %d", rec.Code, http.StatusOK)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("POST /reclone on archived workspace returned %d; want %d; body: %s",
+			rec.Code, http.StatusBadRequest, rec.Body.String())
 	}
 
-	var resp map[string]any
-	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("failed to decode response: %v", err)
-	}
-
-	if resp["status"] != "active" {
-		t.Errorf("response status = %v; want %q", resp["status"], "active")
+	envelope := parseErrorEnvelope(t, rec)
+	want := "workspace is archived and must be reactivated before recloning"
+	if envelope.Error.Message != want {
+		t.Errorf("error.message = %q; want %q", envelope.Error.Message, want)
 	}
 
 	var dbStatus string
-	err = env.db.QueryRow(
-		`SELECT status FROM workspaces WHERE slug = ?`, "reclone-active-ws",
+	err := env.db.QueryRow(
+		`SELECT status FROM workspaces WHERE slug = ?`, "reclone-archived-ws",
 	).Scan(&dbStatus)
 	if err != nil {
 		t.Fatalf("failed to query status: %v", err)
 	}
-	if dbStatus != "active" {
-		t.Errorf("DB status = %q; want %q", dbStatus, "active")
+	if dbStatus != "archived" {
+		t.Errorf("DB status = %q; want %q", dbStatus, "archived")
 	}
 }
 
 // TS-13-23: Verifies that 'afc workspace reclone <slug> --confirm' calls
-// POST /reclone and prints the workspace with clone_status='pending'.
+// POST /reclone and prints the workspace with status='pending'.
 // Tested at the API level since CLI code lives outside the workspace package.
 // Requirement: 13-REQ-7.3
 func TestReclone_CLIRecloneWithConfirm(t *testing.T) {
@@ -196,20 +151,11 @@ func TestReclone_CLIRecloneWithConfirm(t *testing.T) {
 	defer func() { defaultWorkspaceRoot = oldRoot }()
 
 	env.seedWorkspace(t, &Workspace{
-		Slug:        "cli-reclone-ws",
-		GitURL:      "https://github.com/example/repo.git",
-		OwnerID:     "alice-id",
-		Status:      "active",
-		CloneStatus: "ready",
+		Slug:    "cli-reclone-ws",
+		GitURL:  "https://github.com/example/repo.git",
+		OwnerID: "alice-id",
+		Status:  "ready",
 	})
-
-	_, err := env.db.Exec(
-		`UPDATE workspaces SET sync_mode = 'pull_only', sync_status = 'idle' WHERE slug = ?`,
-		"cli-reclone-ws",
-	)
-	if err != nil {
-		t.Fatalf("failed to set sync fields: %v", err)
-	}
 
 	trunkDir := filepath.Join(wsRoot, "cli-reclone-ws", "trunk")
 	if err := os.MkdirAll(trunkDir, 0o755); err != nil {
@@ -239,13 +185,13 @@ func TestReclone_CLIRecloneWithConfirm(t *testing.T) {
 		t.Fatalf("failed to decode response: %v", err)
 	}
 
-	if resp["clone_status"] != "pending" {
-		t.Errorf("clone_status = %v; want %q", resp["clone_status"], "pending")
+	if resp["status"] != "pending" {
+		t.Errorf("status = %v; want %q", resp["status"], "pending")
 	}
 }
 
 // TS-13-24: Verifies that after reclone enqueues a clone job,
-// clone_status is set to 'pending' (the clone lifecycle takes over).
+// status is set to 'pending' (the clone lifecycle takes over).
 // Requirement: 13-REQ-7.4
 func TestReclone_CloneJobEnqueued(t *testing.T) {
 	env := newTestEnv(t)
@@ -256,20 +202,11 @@ func TestReclone_CloneJobEnqueued(t *testing.T) {
 	defer func() { defaultWorkspaceRoot = oldRoot }()
 
 	env.seedWorkspace(t, &Workspace{
-		Slug:        "reclone-lifecycle-ws",
-		GitURL:      "https://github.com/example/repo.git",
-		OwnerID:     "alice-id",
-		Status:      "active",
-		CloneStatus: "ready",
+		Slug:    "reclone-lifecycle-ws",
+		GitURL:  "https://github.com/example/repo.git",
+		OwnerID: "alice-id",
+		Status:  "ready",
 	})
-
-	_, err := env.db.Exec(
-		`UPDATE workspaces SET sync_mode = 'pull_only', sync_status = 'idle' WHERE slug = ?`,
-		"reclone-lifecycle-ws",
-	)
-	if err != nil {
-		t.Fatalf("failed to set sync fields: %v", err)
-	}
 
 	trunkDir := filepath.Join(wsRoot, "reclone-lifecycle-ws", "trunk")
 	if err := os.MkdirAll(trunkDir, 0o755); err != nil {
@@ -298,20 +235,20 @@ func TestReclone_CloneJobEnqueued(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("failed to decode response: %v", err)
 	}
-	if resp["clone_status"] != "pending" {
-		t.Errorf("clone_status = %v; want %q", resp["clone_status"], "pending")
+	if resp["status"] != "pending" {
+		t.Errorf("status = %v; want %q", resp["status"], "pending")
 	}
 
 	// Verify DB state matches response.
-	var cloneStatus string
-	err = env.db.QueryRow(
-		`SELECT clone_status FROM workspaces WHERE slug = ?`, "reclone-lifecycle-ws",
-	).Scan(&cloneStatus)
+	var status string
+	err := env.db.QueryRow(
+		`SELECT status FROM workspaces WHERE slug = ?`, "reclone-lifecycle-ws",
+	).Scan(&status)
 	if err != nil {
-		t.Fatalf("failed to query clone_status: %v", err)
+		t.Fatalf("failed to query status: %v", err)
 	}
-	if cloneStatus != "pending" {
-		t.Errorf("DB clone_status = %q; want %q", cloneStatus, "pending")
+	if status != "pending" {
+		t.Errorf("DB status = %q; want %q", status, "pending")
 	}
 }
 
@@ -325,20 +262,11 @@ func TestReclone_ArchivePushFailureContinues(t *testing.T) {
 	defer func() { defaultWorkspaceRoot = oldRoot }()
 
 	env.seedWorkspace(t, &Workspace{
-		Slug:        "reclone-pushfail-ws",
-		GitURL:      "https://github.com/example/repo.git",
-		OwnerID:     "alice-id",
-		Status:      "active",
-		CloneStatus: "ready",
+		Slug:    "reclone-pushfail-ws",
+		GitURL:  "https://github.com/example/repo.git",
+		OwnerID: "alice-id",
+		Status:  "ready",
 	})
-
-	_, err := env.db.Exec(
-		`UPDATE workspaces SET sync_mode = 'pull_only', sync_status = 'idle' WHERE slug = ?`,
-		"reclone-pushfail-ws",
-	)
-	if err != nil {
-		t.Fatalf("failed to set sync fields: %v", err)
-	}
 
 	trunkDir := filepath.Join(wsRoot, "reclone-pushfail-ws", "trunk")
 	if err := os.MkdirAll(trunkDir, 0o755); err != nil {
@@ -371,8 +299,8 @@ func TestReclone_ArchivePushFailureContinues(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("failed to decode response: %v", err)
 	}
-	if resp["clone_status"] != "pending" {
-		t.Errorf("clone_status = %v; want %q", resp["clone_status"], "pending")
+	if resp["status"] != "pending" {
+		t.Errorf("status = %v; want %q", resp["status"], "pending")
 	}
 }
 
@@ -382,11 +310,10 @@ func TestReclone_MissingSyncScopeRejected(t *testing.T) {
 	env := newTestEnv(t)
 
 	env.seedWorkspace(t, &Workspace{
-		Slug:        "reclone-noscope-ws",
-		GitURL:      "https://github.com/example/repo.git",
-		OwnerID:     "alice-id",
-		Status:      "active",
-		CloneStatus: "ready",
+		Slug:    "reclone-noscope-ws",
+		GitURL:  "https://github.com/example/repo.git",
+		OwnerID: "alice-id",
+		Status:  "ready",
 	})
 
 	auth := patAuth("alice-id", "workspaces:read")
@@ -423,19 +350,18 @@ func TestReclone_NonexistentWorkspace(t *testing.T) {
 	}
 }
 
-// 13-REQ-7.E7: Verifies that reclone is rejected when clone_status is
-// 'pending' or 'cloning' to prevent concurrent reclone operations.
+// 13-REQ-7.E7: Verifies that reclone is rejected when status is 'pending' or
+// 'cloning' to prevent concurrent reclone operations.
 func TestReclone_RejectedWhilePendingOrCloning(t *testing.T) {
-	for _, cloneStatus := range []string{"pending", "cloning"} {
-		t.Run(cloneStatus, func(t *testing.T) {
+	for _, status := range []string{"pending", "cloning"} {
+		t.Run(status, func(t *testing.T) {
 			env := newTestEnv(t)
 
 			env.seedWorkspace(t, &Workspace{
-				Slug:        "reclone-busy-ws",
-				GitURL:      "https://github.com/example/repo.git",
-				OwnerID:     "alice-id",
-				Status:      "active",
-				CloneStatus: cloneStatus,
+				Slug:    "reclone-busy-ws",
+				GitURL:  "https://github.com/example/repo.git",
+				OwnerID: "alice-id",
+				Status:  status,
 			})
 
 			auth := adminAuth()
@@ -443,8 +369,8 @@ func TestReclone_RejectedWhilePendingOrCloning(t *testing.T) {
 				"/api/v1/workspaces/reclone-busy-ws/reclone", "", auth)
 
 			if rec.Code != http.StatusConflict {
-				t.Errorf("POST /reclone with clone_status=%q returned %d; want %d",
-					cloneStatus, rec.Code, http.StatusConflict)
+				t.Errorf("POST /reclone with status=%q returned %d; want %d",
+					status, rec.Code, http.StatusConflict)
 			}
 
 			envelope := parseErrorEnvelope(t, rec)
@@ -461,11 +387,10 @@ func TestReclone_UnauthenticatedRejected(t *testing.T) {
 	env := newTestEnv(t)
 
 	env.seedWorkspace(t, &Workspace{
-		Slug:        "reclone-noauth-ws",
-		GitURL:      "https://github.com/example/repo.git",
-		OwnerID:     "alice-id",
-		Status:      "active",
-		CloneStatus: "ready",
+		Slug:    "reclone-noauth-ws",
+		GitURL:  "https://github.com/example/repo.git",
+		OwnerID: "alice-id",
+		Status:  "ready",
 	})
 
 	rec := env.doRequest(t, http.MethodPost,

@@ -3,147 +3,136 @@ package workspace
 import (
 	"encoding/json"
 	"net/http"
-	"strings"
 	"testing"
 )
 
 // ========================================================================
-// Spec 13 Task 1.2: Sync mode configuration
+// Spec 13 Task 1.2: Sync mode configuration, now the sync_enabled setting
 // (TS-13-4, TS-13-5, TS-13-6, 13-REQ-2.E1)
 // Requirements: 13-REQ-2
 // ========================================================================
 
-// TS-13-4: Verifies that workspace creation with an explicit sync_mode field
-// stores and returns the specified value.
+// syncEnabledOf returns settings.sync_enabled of a workspace JSON response.
+func syncEnabledOf(t *testing.T, body []byte) any {
+	t.Helper()
+	var resp map[string]any
+	if err := json.Unmarshal(body, &resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	settings, ok := resp["settings"].(map[string]any)
+	if !ok {
+		t.Fatalf("response settings = %v; want an object", resp["settings"])
+	}
+	val, ok := settings["sync_enabled"]
+	if !ok {
+		t.Fatal("response missing 'settings.sync_enabled' field")
+	}
+	return val
+}
+
+// TS-13-4: Verifies that workspace creation with an explicit sync_enabled
+// setting stores and returns the specified value.
 // Requirement: 13-REQ-2.1
-func TestSyncMode_CreateWithExplicitMode(t *testing.T) {
+func TestSyncEnabled_CreateDisabled(t *testing.T) {
 	env := newTestEnv(t)
 	auth := userAuth("alice-id")
 
-	body := `{"slug":"disabled-ws","git_url":"https://github.com/example/repo.git","sync_mode":"disabled"}`
+	body := `{"slug":"disabled-ws","git_url":"https://github.com/example/repo.git","settings":{"sync_enabled":false}}`
 	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces", body, auth)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("create returned %d, want %d; body: %s",
 			rec.Code, http.StatusCreated, rec.Body.String())
 	}
 
-	var resp map[string]any
-	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("failed to decode response: %v", err)
-	}
-
-	if val, ok := resp["sync_mode"]; !ok {
-		t.Error("response missing 'sync_mode' field")
-	} else if val != "disabled" {
-		t.Errorf("sync_mode = %v; want %q", val, "disabled")
+	if val := syncEnabledOf(t, rec.Body.Bytes()); val != false {
+		t.Errorf("settings.sync_enabled = %v; want false", val)
 	}
 }
 
-// TS-13-5: Verifies that PATCH /workspaces/:slug with sync_mode updates the
-// field and returns the new value.
+// TS-13-5: Verifies that PATCH /workspaces/:slug with the sync_enabled
+// setting updates it and returns the new value.
 // Requirement: 13-REQ-2.2
-func TestSyncMode_PatchSyncMode(t *testing.T) {
+func TestSyncEnabled_PatchDisables(t *testing.T) {
 	env := newTestEnv(t)
 	auth := userAuth("u1-id")
 
-	// Create workspace with default sync_mode='pull_only'.
+	// Create workspace with the default sync_enabled=true.
 	createBody := `{"slug":"patch-mode-ws","git_url":"https://github.com/example/repo.git"}`
 	createRec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces", createBody, auth)
 	if createRec.Code != http.StatusCreated {
 		t.Fatalf("create returned %d, want %d", createRec.Code, http.StatusCreated)
 	}
+	if val := syncEnabledOf(t, createRec.Body.Bytes()); val != true {
+		t.Errorf("create settings.sync_enabled = %v; want true (default)", val)
+	}
 
-	// PATCH sync_mode to 'disabled'.
-	patchBody := `{"sync_mode":"disabled"}`
+	// PATCH sync_enabled to false.
+	patchBody := `{"settings":{"sync_enabled":false}}`
 	rec := env.doRequest(t, http.MethodPatch, "/api/v1/workspaces/patch-mode-ws", patchBody, auth)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("PATCH returned %d, want %d; body: %s",
 			rec.Code, http.StatusOK, rec.Body.String())
 	}
-
-	var resp map[string]any
-	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("failed to decode PATCH response: %v", err)
+	if val := syncEnabledOf(t, rec.Body.Bytes()); val != false {
+		t.Errorf("PATCH settings.sync_enabled = %v; want false", val)
 	}
 
-	if val, ok := resp["sync_mode"]; !ok {
-		t.Error("PATCH response missing 'sync_mode' field")
-	} else if val != "disabled" {
-		t.Errorf("sync_mode = %v; want %q", val, "disabled")
-	}
-
-	// Verify persistence: GET should also return the updated sync_mode.
+	// Verify persistence: GET should also return the updated setting.
 	getRec := env.doRequest(t, http.MethodGet, "/api/v1/workspaces/patch-mode-ws", "", auth)
 	if getRec.Code != http.StatusOK {
 		t.Fatalf("GET returned %d, want %d", getRec.Code, http.StatusOK)
 	}
-
-	var getResp map[string]any
-	if err := json.Unmarshal(getRec.Body.Bytes(), &getResp); err != nil {
-		t.Fatalf("failed to decode GET response: %v", err)
-	}
-
-	if val := getResp["sync_mode"]; val != "disabled" {
-		t.Errorf("GET sync_mode = %v; want %q (persisted)", val, "disabled")
+	if val := syncEnabledOf(t, getRec.Body.Bytes()); val != false {
+		t.Errorf("GET settings.sync_enabled = %v; want false (persisted)", val)
 	}
 }
 
-// TS-13-6: Verifies that creating a workspace with sync_mode='disabled'
+// TS-13-6: Verifies that creating a workspace with sync_enabled=false
 // persists the value and it can be read back via GET. This covers the
-// API-level equivalent of the CLI 'afc workspace create --sync-mode disabled'
-// integration path.
+// API-level equivalent of the CLI 'afc workspace create --setting
+// sync_enabled=false' integration path.
 // Requirement: 13-REQ-2.3
-func TestSyncMode_CreatePersistsSyncMode(t *testing.T) {
+func TestSyncEnabled_CreatePersists(t *testing.T) {
 	env := newTestEnv(t)
 	auth := userAuth("u2-id")
 
-	// Create workspace with explicit sync_mode.
-	body := `{"slug":"cli-equiv-ws","git_url":"https://github.com/example/repo.git","sync_mode":"disabled"}`
+	// Create workspace with sync disabled.
+	body := `{"slug":"cli-equiv-ws","git_url":"https://github.com/example/repo.git","settings":{"sync_enabled":false}}`
 	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces", body, auth)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("create returned %d, want %d; body: %s",
 			rec.Code, http.StatusCreated, rec.Body.String())
 	}
-
-	// Verify the sync_mode is in the create response.
-	var createResp map[string]any
-	if err := json.Unmarshal(rec.Body.Bytes(), &createResp); err != nil {
-		t.Fatalf("failed to decode create response: %v", err)
-	}
-	if val := createResp["sync_mode"]; val != "disabled" {
-		t.Errorf("create sync_mode = %v; want %q", val, "disabled")
+	if val := syncEnabledOf(t, rec.Body.Bytes()); val != false {
+		t.Errorf("create settings.sync_enabled = %v; want false", val)
 	}
 
-	// Verify the sync_mode persisted correctly via GET.
+	// Verify the setting persisted correctly via GET.
 	getRec := env.doRequest(t, http.MethodGet, "/api/v1/workspaces/cli-equiv-ws", "", auth)
 	if getRec.Code != http.StatusOK {
 		t.Fatalf("GET returned %d, want %d", getRec.Code, http.StatusOK)
 	}
-
-	var getResp map[string]any
-	if err := json.Unmarshal(getRec.Body.Bytes(), &getResp); err != nil {
-		t.Fatalf("failed to decode GET response: %v", err)
-	}
-	if val := getResp["sync_mode"]; val != "disabled" {
-		t.Errorf("GET sync_mode = %v; want %q (persisted from create)", val, "disabled")
+	if val := syncEnabledOf(t, getRec.Body.Bytes()); val != false {
+		t.Errorf("GET settings.sync_enabled = %v; want false (persisted from create)", val)
 	}
 
-	// Verify it also persisted in the database.
-	var dbSyncMode string
+	// Verify it also persisted in the settings document.
+	var dbSyncEnabled int
 	err := env.db.QueryRow(
-		`SELECT sync_mode FROM workspaces WHERE slug = ?`, "cli-equiv-ws",
-	).Scan(&dbSyncMode)
+		`SELECT json_extract(settings, '$.sync_enabled') FROM workspaces WHERE slug = ?`, "cli-equiv-ws",
+	).Scan(&dbSyncEnabled)
 	if err != nil {
-		t.Fatalf("failed to query sync_mode from DB: %v", err)
+		t.Fatalf("failed to query sync_enabled from DB: %v", err)
 	}
-	if dbSyncMode != "disabled" {
-		t.Errorf("DB sync_mode = %q; want %q", dbSyncMode, "disabled")
+	if dbSyncEnabled != 0 {
+		t.Errorf("DB settings.sync_enabled = %d; want 0 (false)", dbSyncEnabled)
 	}
 }
 
-// 13-REQ-2.E1: Verifies that PATCH /workspaces/:slug with an unrecognized
-// sync_mode value is rejected with HTTP 400 and a descriptive error.
-func TestSyncMode_InvalidSyncModeRejected(t *testing.T) {
+// 13-REQ-2.E1: Verifies that PATCH /workspaces/:slug with the removed
+// sync_mode field is rejected with HTTP 400 and an error naming the setting
+// to use instead.
+func TestSyncEnabled_SyncModeFieldRejected(t *testing.T) {
 	env := newTestEnv(t)
 	auth := userAuth("alice-id")
 
@@ -154,41 +143,42 @@ func TestSyncMode_InvalidSyncModeRejected(t *testing.T) {
 		t.Fatalf("create returned %d, want %d", createRec.Code, http.StatusCreated)
 	}
 
-	// PATCH with an invalid sync_mode value.
-	patchBody := `{"sync_mode":"invalid_value"}`
+	// PATCH with the old sync_mode field.
+	patchBody := `{"sync_mode":"disabled"}`
 	rec := env.doRequest(t, http.MethodPatch, "/api/v1/workspaces/invalid-mode-ws", patchBody, auth)
 	if rec.Code != http.StatusBadRequest {
-		t.Errorf("PATCH with invalid sync_mode returned %d; want %d",
+		t.Errorf("PATCH with sync_mode returned %d; want %d",
 			rec.Code, http.StatusBadRequest)
 	}
 
 	envelope := parseErrorEnvelope(t, rec)
-	if envelope.Error.Message == "" {
-		t.Error("error.message is empty; want non-empty descriptive message about invalid sync_mode")
+	want := "sync_mode is no longer a field; set the sync_enabled setting instead"
+	if envelope.Error.Message != want {
+		t.Errorf("error.message = %q; want %q", envelope.Error.Message, want)
 	}
-	// The error message should be about the invalid sync_mode value specifically,
-	// not a generic "no updatable field" error.
-	if strings.Contains(envelope.Error.Message, "at least one updatable field") {
-		t.Errorf("error message %q is a generic 'no updatable field' error; want sync_mode-specific validation error",
-			envelope.Error.Message)
+
+	// The workspace keeps its setting.
+	getRec := env.doRequest(t, http.MethodGet, "/api/v1/workspaces/invalid-mode-ws", "", auth)
+	if val := syncEnabledOf(t, getRec.Body.Bytes()); val != true {
+		t.Errorf("GET settings.sync_enabled = %v; want true (unchanged)", val)
 	}
 }
 
-// 13-REQ-2.E1 (create path): Verifies that POST /api/v1/workspaces with an
-// unrecognized sync_mode value is rejected with HTTP 400.
-func TestSyncMode_CreateInvalidSyncModeRejected(t *testing.T) {
+// 13-REQ-2.E1 (create path): Verifies that POST /api/v1/workspaces ignores
+// the removed sync_mode field: the workspace is created with the sync_enabled
+// setting at its default.
+func TestSyncEnabled_CreateIgnoresSyncMode(t *testing.T) {
 	env := newTestEnv(t)
 	auth := userAuth("u1-id")
 
-	body := `{"slug":"bad-mode-ws","git_url":"https://github.com/example/repo.git","sync_mode":"full_sync"}`
+	body := `{"slug":"bad-mode-ws","git_url":"https://github.com/example/repo.git","sync_mode":"disabled"}`
 	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces", body, auth)
-	if rec.Code != http.StatusBadRequest {
-		t.Errorf("create with invalid sync_mode returned %d; want %d",
-			rec.Code, http.StatusBadRequest)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create with sync_mode returned %d; want %d; body: %s",
+			rec.Code, http.StatusCreated, rec.Body.String())
 	}
 
-	envelope := parseErrorEnvelope(t, rec)
-	if envelope.Error.Message == "" {
-		t.Error("error.message is empty; want non-empty descriptive message about invalid sync_mode")
+	if val := syncEnabledOf(t, rec.Body.Bytes()); val != true {
+		t.Errorf("settings.sync_enabled = %v; want true (sync_mode ignored)", val)
 	}
 }

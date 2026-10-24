@@ -124,8 +124,8 @@ func (h *realHub) do(method, path, credential, body string) *httptest.ResponseRe
 func (h *realHub) seed(t *testing.T, slug, status string) {
 	t.Helper()
 	now := apikit.NowUTC()
-	if _, err := h.db.Exec(`INSERT INTO workspaces (slug, git_url, owner_id, status, clone_status, created_at, updated_at)
-		VALUES (?, ?, 'u1', ?, 'ready', ?, ?)`, slug, "https://github.com/org/"+slug, status, now, now); err != nil {
+	if _, err := h.db.Exec(`INSERT INTO workspaces (slug, git_url, owner_id, status, created_at, updated_at)
+		VALUES (?, ?, 'u1', ?, ?, ?)`, slug, "https://github.com/org/"+slug, status, now, now); err != nil {
 		t.Fatal(err)
 	}
 }

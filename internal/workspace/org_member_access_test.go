@@ -42,7 +42,7 @@ func newMemberEnv(t *testing.T) *testEnv {
 	env.seedOrgMember(t, specOrg, specMember)
 	env.seedWorkspace(t, &Workspace{
 		Slug: "w", GitURL: "https://github.com/fork/repo.git", OwnerID: specOwner, OrgID: strp(specOrg),
-		Status: "active", CloneStatus: "ready", WorkspaceMode: "carry_patch",
+		Status: "ready", WorkspaceMode: "carry_patch",
 		UpstreamURL: strp("https://github.com/upstream/repo.git"), IntegrationBranch: strp("deploy"),
 	})
 	seedPatchRaw(t, env.db, "p1", "w", "feature/a", 1)
@@ -199,8 +199,8 @@ func TestWorkspaceAccess_DescribesCaller_TS_35_29(t *testing.T) {
 // Requirement: 35-REQ-5.3
 func TestWorkspaceOrgSlug_TS_35_30(t *testing.T) {
 	env := newMemberEnv(t)
-	env.seedWorkspace(t, &Workspace{Slug: "w2", GitURL: "https://github.com/a/b", OwnerID: specOwner, Status: "active"})
-	env.seedWorkspace(t, &Workspace{Slug: "w3", GitURL: "https://github.com/a/c", OwnerID: specOwner, OrgID: strp("no-such-org"), Status: "active"})
+	env.seedWorkspace(t, &Workspace{Slug: "w2", GitURL: "https://github.com/a/b", OwnerID: specOwner, Status: "pending"})
+	env.seedWorkspace(t, &Workspace{Slug: "w3", GitURL: "https://github.com/a/c", OwnerID: specOwner, OrgID: strp("no-such-org"), Status: "pending"})
 	for slug, want := range map[string]any{"w": "acme", "w2": nil, "w3": nil} {
 		rec := env.doRequest(t, http.MethodGet, "/api/v1/workspaces/"+slug, "", userAuth(specOwner))
 		if rec.Code != http.StatusOK {
@@ -232,7 +232,7 @@ func TestWorkspaceObject_MemberSeesOwnersView_TS_35_31(t *testing.T) {
 		`{"slug":"var-one","git_url":"https://github.com/acme/v1","org_id":"org-o","git_pat":"` + secret + `"}`,
 		`{"slug":"var-two","git_url":"https://github.com/acme/v2","org_id":"org-o","git_username":"bot","git_password":"` + secret + `"}`,
 		`{"slug":"var-three","git_url":"https://github.com/acme/v3","org_id":"org-o","workspace_mode":"carry_patch","upstream_url":"https://github.com/up/v3"}`,
-		`{"slug":"var-four","git_url":"https://github.com/acme/v4","org_id":"org-o","sync_mode":"disabled","description":"d"}`,
+		`{"slug":"var-four","git_url":"https://github.com/acme/v4","org_id":"org-o","settings":{"sync_enabled":false},"description":"d"}`,
 	} {
 		rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces", body, userAuth(specOwner))
 		if rec.Code != http.StatusCreated {
@@ -380,7 +380,7 @@ func TestBoundMemberRefused_TS_35_35(t *testing.T) {
 
 	// lookupWorkspaceForAuth, without the guard.
 	env := newMemberEnv(t)
-	env.seedWorkspace(t, &Workspace{Slug: "a", GitURL: "https://github.com/a/a", OwnerID: specMember, Status: "active"})
+	env.seedWorkspace(t, &Workspace{Slug: "a", GitURL: "https://github.com/a/a", OwnerID: specMember, Status: "pending"})
 	bindToken(t, env.db, "tokA", "a")
 	bound := &apikit.AuthInfo{CredentialType: "pat", UserID: specMember, TokenID: "tokA", Permissions: []string{"workspaces:read"}}
 	rec := httptest.NewRecorder()
@@ -410,10 +410,10 @@ func TestBoundMemberRefused_TS_35_35(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := insertWorkspace(db, &Workspace{Slug: "b", GitURL: "https://github.com/a/b", OwnerID: "u1", OrgID: strp("ob"), Status: "active"}); err != nil {
+	if err := insertWorkspace(db, &Workspace{Slug: "b", GitURL: "https://github.com/a/b", OwnerID: "u1", OrgID: strp("ob"), Status: "pending"}); err != nil {
 		t.Fatal(err)
 	}
-	h.seed(t, "a2", "u2", "active")
+	h.seed(t, "a2", "u2", "pending")
 	key, err := apikit.GenerateAPIKey(db, "u2", 0, echo.New().Logger)
 	if err != nil {
 		t.Fatal(err)

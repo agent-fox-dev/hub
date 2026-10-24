@@ -145,7 +145,7 @@ func TestMergeSubmitAuditEmission(t *testing.T) {
 	}
 
 	e, mock, base := newMergeAuditTestEnv(t, branches)
-	seedTestWorkspace(t, base.db, "ws-1", "user-1", "active", "ready")
+	seedTestWorkspace(t, base.db, "ws-1", "user-1", "ready")
 
 	body := `{"target_branch":"main","source_ref":"feature-x"}`
 	auth := mergeUserAuth("user-1")
@@ -307,7 +307,7 @@ func TestMergeSubmitNilAuditDoesNotPanic(t *testing.T) {
 
 	// Use the standard test env (no Audit field set).
 	env := newMergeTestEnv(t, branches)
-	seedTestWorkspace(t, env.db, "ws-1", "user-1", "active", "ready")
+	seedTestWorkspace(t, env.db, "ws-1", "user-1", "ready")
 
 	body := `{"target_branch":"main","source_ref":"feature-x"}`
 	auth := mergeUserAuth("user-1")
@@ -365,7 +365,7 @@ func TestMergeAuditEmitErrorDoesNotAffectResponse(t *testing.T) {
 		},
 	}
 	RegisterMergeRoutes(api, cfg)
-	seedTestWorkspace(t, db, "ws-1", "user-1", "active", "ready")
+	seedTestWorkspace(t, db, "ws-1", "user-1", "ready")
 
 	body := `{"target_branch":"main","source_ref":"feature-x"}`
 	auth := mergeUserAuth("user-1")

@@ -168,7 +168,7 @@ func TestWorkerCredential_ProcessCloneJob_PassesAuth(t *testing.T) {
 		Slug:    "auth-ws",
 		GitURL:  "https://github.com/acme/private",
 		OwnerID: "clone-user-001",
-		Status:  "active",
+		Status:  "pending",
 	}
 	if err := insertWorkspace(db, ws); err != nil {
 		t.Fatalf("seed workspace: %v", err)
@@ -277,11 +277,10 @@ func TestWorkerCredential_Reclone_UsesCredentials(t *testing.T) {
 
 	// Seed an archived workspace that was previously created with a PAT.
 	ws := &Workspace{
-		Slug:        "reclone-ws",
-		GitURL:      "https://github.com/acme/private",
-		OwnerID:     "clone-user-001",
-		Status:      "active",
-		CloneStatus: "pending",
+		Slug:    "reclone-ws",
+		GitURL:  "https://github.com/acme/private",
+		OwnerID: "clone-user-001",
+		Status:  "pending",
 	}
 	if err := insertWorkspace(db, ws); err != nil {
 		t.Fatalf("seed workspace: %v", err)
@@ -344,7 +343,7 @@ func TestWorkerCredential_CloneAuthError(t *testing.T) {
 		Slug:    "auth-fail-ws",
 		GitURL:  "https://github.com/acme/private",
 		OwnerID: "clone-user-001",
-		Status:  "active",
+		Status:  "pending",
 	}
 	if err := insertWorkspace(db, ws); err != nil {
 		t.Fatalf("seed workspace: %v", err)
@@ -372,12 +371,12 @@ func TestWorkerCredential_CloneAuthError(t *testing.T) {
 	})
 
 	// Verify workspace is marked as failed.
-	cloneStatus, _, cloneError, err := getCloneFields(db, "auth-fail-ws")
+	status, _, cloneError, err := getCloneFields(db, "auth-fail-ws")
 	if err != nil {
 		t.Fatalf("getCloneFields() returned error: %v", err)
 	}
-	if cloneStatus != "failed" {
-		t.Errorf("clone_status = %q; want %q", cloneStatus, "failed")
+	if status != "failed" {
+		t.Errorf("status = %q; want %q", status, "failed")
 	}
 	if cloneError == nil || *cloneError == "" {
 		t.Error("clone_error should contain the authentication error message")

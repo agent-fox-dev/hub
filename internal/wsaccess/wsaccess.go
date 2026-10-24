@@ -17,12 +17,11 @@ import (
 // apply their own precondition checks without a second lookup, and the
 // caller's access. OrgID is "" when the workspace has no org.
 type WorkspaceAccess struct {
-	Slug        string
-	OwnerID     string
-	OrgID       string
-	Status      string
-	CloneStatus string
-	Access      Access
+	Slug    string
+	OwnerID string
+	OrgID   string
+	Status  string
+	Access  Access
 }
 
 // Access is a caller's level on one workspace, as AuthorizeWorkspace decides
@@ -85,8 +84,8 @@ func AuthorizeWorkspaceAt(db *sql.DB, auth *apikit.AuthInfo, slug string, need N
 	}
 	var ws WorkspaceAccess
 	err := db.QueryRow(
-		`SELECT slug, owner_id, COALESCE(org_id, ''), status, clone_status FROM workspaces WHERE slug = ?`, slug,
-	).Scan(&ws.Slug, &ws.OwnerID, &ws.OrgID, &ws.Status, &ws.CloneStatus)
+		`SELECT slug, owner_id, COALESCE(org_id, ''), status FROM workspaces WHERE slug = ?`, slug,
+	).Scan(&ws.Slug, &ws.OwnerID, &ws.OrgID, &ws.Status)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, http.StatusNotFound, "workspace not found"
 	}

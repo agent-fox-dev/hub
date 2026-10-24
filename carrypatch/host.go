@@ -204,7 +204,6 @@ func emitAudit(c echo.Context, emitter Emitter, event Event) {
 type workspaceRow struct {
 	Slug              string
 	Status            string
-	CloneStatus       string
 	WorkspaceMode     string
 	IntegrationBranch *string
 	Branch            *string
@@ -216,9 +215,9 @@ type workspaceRow struct {
 func loadWorkspaceRow(db *sql.DB, slug string) (*workspaceRow, error) {
 	var ws workspaceRow
 	err := db.QueryRow(
-		`SELECT slug, status, clone_status, workspace_mode, integration_branch, branch, git_url
+		`SELECT slug, status, workspace_mode, integration_branch, branch, git_url
 		 FROM workspaces WHERE slug = ?`, slug,
-	).Scan(&ws.Slug, &ws.Status, &ws.CloneStatus, &ws.WorkspaceMode, &ws.IntegrationBranch, &ws.Branch, &ws.GitURL)
+	).Scan(&ws.Slug, &ws.Status, &ws.WorkspaceMode, &ws.IntegrationBranch, &ws.Branch, &ws.GitURL)
 	if err != nil {
 		return nil, err
 	}

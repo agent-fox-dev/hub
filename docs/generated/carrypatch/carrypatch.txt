@@ -514,11 +514,8 @@ type PatchStatusResponse struct {
 	WorkspaceSlug      string              `json:"workspace_slug"`
 	WorkspaceMode      string              `json:"workspace_mode"`
 	Status             string              `json:"status"`
-	CloneStatus        string              `json:"clone_status"`
 	CloneError         string              `json:"clone_error,omitempty"`
-	SyncStatus         string              `json:"sync_status"`
 	SyncError          string              `json:"sync_error,omitempty"`
-	SyncMode           string              `json:"sync_mode"`
 	HeadSHA            string              `json:"head_sha"`
 	GitURL             string              `json:"git_url"`
 	UpstreamURL        string              `json:"upstream_url"`

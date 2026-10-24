@@ -106,7 +106,7 @@ func TestJobQueue_ConcurrentWorkerLimit(t *testing.T) {
 			Slug:    slug,
 			GitURL:  "https://github.com/example/repo.git",
 			OwnerID: "user-1",
-			Status:  "active",
+			Status:  "pending",
 		}
 		if err := insertWorkspace(db, ws); err != nil {
 			t.Fatalf("seed workspace %q: %v", slug, err)
@@ -166,7 +166,7 @@ func TestJobQueue_WorkerLifecycle(t *testing.T) {
 		Slug:    "ws-lifecycle",
 		GitURL:  "https://github.com/example/repo.git",
 		OwnerID: "user-1",
-		Status:  "active",
+		Status:  "pending",
 	}
 	if err := insertWorkspace(db, ws); err != nil {
 		cancel()
@@ -244,7 +244,7 @@ func TestJobQueue_GracefulShutdown(t *testing.T) {
 			Slug:    slug,
 			GitURL:  "https://github.com/example/repo.git",
 			OwnerID: "user-1",
-			Status:  "active",
+			Status:  "pending",
 		}
 		if err := insertWorkspace(db, ws); err != nil {
 			cancel()

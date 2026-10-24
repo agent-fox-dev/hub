@@ -290,7 +290,7 @@ func TestRebuildPreview_StandardWorkspace_Returns400(t *testing.T) {
 	env := newFullTestEnv(t)
 
 	// Seed a standard-mode workspace.
-	seedWorkspace(t, env.db, "standard-ws", "alice", "active", "ready", "standard", "")
+	seedWorkspace(t, env.db, "standard-ws", "alice", "ready", "standard", "")
 
 	rec := env.doRequest(t, http.MethodGet,
 		"/api/v1/workspaces/standard-ws/rebuild-preview", "",

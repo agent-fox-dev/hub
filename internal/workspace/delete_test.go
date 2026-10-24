@@ -126,7 +126,7 @@ func TestDelete_Spec05_NotArchivedReturns409(t *testing.T) {
 		Slug:    "active-ws",
 		GitURL:  "https://github.com/org/repo",
 		OwnerID: "user-1",
-		Status:  "active",
+		Status:  "pending",
 	})
 
 	rec := env.doRequest(t, http.MethodDelete, "/api/v1/workspaces/active-ws", "",

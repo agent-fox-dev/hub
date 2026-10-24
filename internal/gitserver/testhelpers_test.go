@@ -32,16 +32,16 @@ func openTestDB(t *testing.T) *sql.DB {
 	t.Cleanup(func() { db.Close() })
 
 	// Create the workspaces table schema.
-	// Includes clone_status (from spec 05) and head_sha (from spec 06)
-	// needed by the git server resolver and push handler.
+	// Includes the folded status (pending|cloning|ready|failed|archived)
+	// and head_sha (from spec 06) needed by the git server resolver and
+	// push handler.
 	workspaceSQL := `CREATE TABLE IF NOT EXISTS workspaces (
 		slug         TEXT PRIMARY KEY,
 		git_url      TEXT NOT NULL,
 		branch       TEXT,
 		owner_id     TEXT NOT NULL,
 		org_id       TEXT,
-		status       TEXT NOT NULL DEFAULT 'active',
-		clone_status TEXT NOT NULL DEFAULT 'ready',
+		status       TEXT NOT NULL DEFAULT 'ready',
 		head_sha     TEXT,
 		display_name TEXT NOT NULL DEFAULT '',
 		description  TEXT NOT NULL DEFAULT '',
@@ -355,20 +355,20 @@ func assertPktLineErrorBody(t *testing.T, body, context string) {
 	}
 }
 
-// setCloneStatus updates the clone_status column for a workspace.
-// Used by resolver tests to set non-default clone states (e.g. 'cloning').
-func (env *gitTestEnv) setCloneStatus(t *testing.T, slug, cloneStatus string) {
+// setStatus updates the status column for a workspace.
+// Used by resolver tests to set non-ready states (e.g. 'cloning').
+func (env *gitTestEnv) setStatus(t *testing.T, slug, status string) {
 	t.Helper()
 	result, err := env.db.Exec(
-		`UPDATE workspaces SET clone_status = ? WHERE slug = ?`,
-		cloneStatus, slug,
+		`UPDATE workspaces SET status = ? WHERE slug = ?`,
+		status, slug,
 	)
 	if err != nil {
-		t.Fatalf("setCloneStatus(%q, %q) failed: %v", slug, cloneStatus, err)
+		t.Fatalf("setStatus(%q, %q) failed: %v", slug, status, err)
 	}
 	rows, _ := result.RowsAffected()
 	if rows == 0 {
-		t.Fatalf("setCloneStatus(%q, %q): no workspace found", slug, cloneStatus)
+		t.Fatalf("setStatus(%q, %q): no workspace found", slug, status)
 	}
 }
 

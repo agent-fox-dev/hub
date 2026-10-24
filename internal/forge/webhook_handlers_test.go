@@ -257,7 +257,7 @@ func TestPutWebhook_ChecksInOrder_TS_32_4(t *testing.T) {
 		{"a PAT with forge:read only", webhookPath, patAuth("forge:read"), http.StatusForbidden, "forge:write"},
 		{"another user's workspace", webhookPath, stranger, http.StatusNotFound, ""},
 		{"an unknown workspace", "/workspaces/nosuch/forge/webhook", apiKeyAuth(), http.StatusNotFound, ""},
-		{"an archived workspace", "/workspaces/old/forge/webhook", apiKeyAuth(), http.StatusBadRequest, "workspace is not active"},
+		{"an archived workspace", "/workspaces/old/forge/webhook", apiKeyAuth(), http.StatusBadRequest, "workspace is archived"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rec := e.send(http.MethodPut, tc.path, tc.auth, invalid)
@@ -268,7 +268,7 @@ func TestPutWebhook_ChecksInOrder_TS_32_4(t *testing.T) {
 			if tc.msg != "" && !strings.Contains(msg, tc.msg) {
 				t.Errorf("message = %q; want it to contain %q", msg, tc.msg)
 			}
-			if tc.msg == "workspace is not active" && msg != tc.msg {
+			if tc.msg == "workspace is archived" && msg != tc.msg {
 				t.Errorf("message = %q; want exactly %q", msg, tc.msg)
 			}
 			if strings.Contains(msg, "secret") && !strings.Contains(msg, "forge:write") {

@@ -16,16 +16,13 @@ CREATE TABLE IF NOT EXISTS workspaces (
 	branch            TEXT,
 	owner_id          TEXT NOT NULL,
 	org_id            TEXT,
-	status            TEXT NOT NULL DEFAULT 'active',
+	status            TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','cloning','ready','failed','archived')),
 	display_name      TEXT NOT NULL DEFAULT '',
 	description       TEXT NOT NULL DEFAULT '',
-	clone_status      TEXT NOT NULL DEFAULT 'pending' CHECK(clone_status IN ('pending','cloning','ready','failed','archived')),
 	head_sha          TEXT,
 	clone_error       TEXT,
 	created_at        TEXT NOT NULL,
 	updated_at        TEXT NOT NULL,
-	sync_mode         TEXT NOT NULL DEFAULT 'pull_only',
-	sync_status       TEXT NOT NULL DEFAULT 'idle',
 	upstream_head_sha TEXT,
 	last_sync_at      TEXT,
 	sync_error        TEXT,
@@ -35,13 +32,11 @@ CREATE TABLE IF NOT EXISTS workspaces (
 	settings          TEXT NOT NULL DEFAULT '{}'
 )`
 
-// syncFieldDDL contains ALTER TABLE statements that add the five sync-related
+// syncFieldDDL contains ALTER TABLE statements that add the sync-related
 // columns to an existing workspaces table. Each statement is executed
 // individually; "duplicate column name" errors are logged and treated as
 // no-ops so the migration is idempotent (13-REQ-1.E1).
 var syncFieldDDL = []string{
-	`ALTER TABLE workspaces ADD COLUMN sync_mode TEXT NOT NULL DEFAULT 'pull_only'`,
-	`ALTER TABLE workspaces ADD COLUMN sync_status TEXT NOT NULL DEFAULT 'idle'`,
 	`ALTER TABLE workspaces ADD COLUMN upstream_head_sha TEXT`,
 	`ALTER TABLE workspaces ADD COLUMN last_sync_at TEXT`,
 	`ALTER TABLE workspaces ADD COLUMN sync_error TEXT`,
@@ -145,6 +140,16 @@ func InitSchema(db *sql.DB) error {
 		}
 	}
 
+	// Fold the clone_status, sync_status and sync_mode columns of a table
+	// from before the one status column.
+	existing, err = existingColumns(db, "workspaces")
+	if err != nil {
+		return fmt.Errorf("status schema migration: %w", err)
+	}
+	if err := foldStatusColumns(db, existing); err != nil {
+		return fmt.Errorf("status schema migration failed: %w", err)
+	}
+
 	// Create the patches table (15-REQ-7.1).
 	if _, err := db.Exec(createPatchesTableSQL); err != nil {
 		return fmt.Errorf("failed to create patches table: %w", err)
@@ -175,6 +180,45 @@ func InitSchema(db *sql.DB) error {
 	}
 
 	return nil
+}
+
+// foldStatusColumns rewrites a workspaces table that still has the
+// clone_status, sync_status and sync_mode columns into the current shape, in
+// one transaction: status takes the clone state ('archived' for an archived
+// workspace), a sync_mode of 'disabled' becomes the sync_enabled setting, a
+// sync left 'syncing' by the old hub becomes a sync_error, and the three
+// columns go. SQLite cannot change a CHECK constraint, so the table is
+// rebuilt and its rows copied. A table without clone_status is left alone.
+func foldStatusColumns(db *sql.DB, existing map[string]bool) error {
+	if !existing["clone_status"] {
+		return nil
+	}
+	settings := "settings"
+	if existing["sync_mode"] {
+		settings = "CASE WHEN sync_mode = 'disabled' THEN json_set(settings, '$.sync_enabled', json('false')) ELSE settings END"
+	}
+	syncError := "sync_error"
+	if existing["sync_status"] {
+		syncError = "CASE WHEN sync_status = 'syncing' THEN 'sync interrupted by server restart' ELSE sync_error END"
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, stmt := range []string{
+		strings.Replace(createTableSQL, "IF NOT EXISTS workspaces", "workspaces_fold", 1),
+		`INSERT INTO workspaces_fold (slug, git_url, branch, owner_id, org_id, status, display_name, description, head_sha, clone_error, created_at, updated_at, upstream_head_sha, last_sync_at, sync_error, workspace_mode, upstream_url, integration_branch, settings)
+		 SELECT slug, git_url, branch, owner_id, org_id, CASE WHEN status = 'archived' THEN 'archived' ELSE clone_status END, display_name, description, head_sha, clone_error, created_at, updated_at, upstream_head_sha, last_sync_at, ` + syncError + `, workspace_mode, upstream_url, integration_branch, ` + settings + `
+		 FROM workspaces`,
+		`DROP TABLE workspaces`,
+		`ALTER TABLE workspaces_fold RENAME TO workspaces`,
+	} {
+		if _, err := tx.Exec(stmt); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 // existingColumns returns the set of column names present in the given table.

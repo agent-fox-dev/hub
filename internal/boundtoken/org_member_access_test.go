@@ -24,7 +24,7 @@ func countRows(t *testing.T, env *testEnv, table string) int {
 func TestMemberMintAndList_TS_35_50(t *testing.T) {
 	stub := newStub(http.StatusCreated, okAnswer)
 	env := newTestEnv(t, Config{APIKit: stub})
-	seedWorkspace(t, env.db, "w", "u1", "active")
+	seedWorkspace(t, env.db, "w", "u1", "ready")
 	addOrgMember(t, env.db, "w", "O", "u2")
 	seedPAT(t, env.db, patRow{id: "existing-tok", name: "svc", perms: `["workspaces:read"]`})
 	bind(t, env.db, "existing-tok", "w")
@@ -52,7 +52,7 @@ func TestMemberMintAndList_TS_35_50(t *testing.T) {
 func TestMintRefusalsBeforeLookup_TS_35_51(t *testing.T) {
 	stub := newStub(http.StatusCreated, okAnswer)
 	env := newTestEnv(t, Config{APIKit: stub})
-	seedWorkspace(t, env.db, "w", "u1", "active")
+	seedWorkspace(t, env.db, "w", "u1", "ready")
 	addOrgMember(t, env.db, "w", "O", "u2")
 	bind(t, env.db, "TB", "w")
 	reports := recordRefusals(t)
@@ -95,7 +95,7 @@ func TestMintRefusalsBeforeLookup_TS_35_51(t *testing.T) {
 func TestTokenRoutesScopeAndStranger_TS_35_53(t *testing.T) {
 	stub := newStub(http.StatusCreated, okAnswer)
 	env := newTestEnv(t, Config{APIKit: stub})
-	seedWorkspace(t, env.db, "w", "u1", "active")
+	seedWorkspace(t, env.db, "w", "u1", "ready")
 	addOrgMember(t, env.db, "w", "O", "u2")
 	for _, method := range []string{http.MethodPost, http.MethodGet} {
 		for _, tc := range []struct {

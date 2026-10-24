@@ -128,8 +128,8 @@ func TestPropWorkspace_OwnerIsRealUser(t *testing.T) {
 }
 
 // TS-01-P3: For any workspace record in the workspaces table, the status
-// column contains exactly 'active' or 'archived'; the value 'deleted' is
-// never present.
+// column contains one of 'pending', 'cloning', 'ready', 'failed' or
+// 'archived'; the value 'deleted' is never present.
 // Property: 01-PROP-3
 // Validates: 01-REQ-1.9, 01-REQ-10.5
 func TestPropWorkspace_ValidStatusValues(t *testing.T) {
@@ -172,18 +172,18 @@ func TestPropWorkspace_ValidStatusValues(t *testing.T) {
 }
 
 // assertNoDeletedStatus checks that no row in the workspaces table has a
-// status value outside {'active', 'archived'}.
+// status value outside {'pending', 'cloning', 'ready', 'failed', 'archived'}.
 func assertNoDeletedStatus(t *testing.T, env *testEnv) {
 	t.Helper()
 	var count int
 	err := env.db.QueryRow(
-		`SELECT COUNT(*) FROM workspaces WHERE status NOT IN ('active', 'archived')`,
+		`SELECT COUNT(*) FROM workspaces WHERE status NOT IN ('pending', 'cloning', 'ready', 'failed', 'archived')`,
 	).Scan(&count)
 	if err != nil {
 		t.Fatalf("status invariant query failed: %v", err)
 	}
 	if count != 0 {
-		t.Errorf("found %d rows with invalid status (not 'active' or 'archived'); want 0", count)
+		t.Errorf("found %d rows with invalid status; want 0", count)
 	}
 }
 
@@ -201,7 +201,7 @@ func TestPropWorkspace_DeleteOnlyFromArchived(t *testing.T) {
 			Slug:    "active-ws",
 			GitURL:  "https://github.com/org/repo-active",
 			OwnerID: "alice-id",
-			Status:  "active",
+			Status:  "pending",
 		})
 
 		rec := env.doRequest(t, http.MethodDelete, "/api/v1/workspaces/active-ws", "", auth)
@@ -266,7 +266,7 @@ func TestPropWorkspace_AccessScoping(t *testing.T) {
 			Slug:    u.slug,
 			GitURL:  fmt.Sprintf("https://github.com/org/%s", u.slug),
 			OwnerID: u.id,
-			Status:  "active",
+			Status:  "pending",
 		})
 	}
 
@@ -318,7 +318,7 @@ func TestPropWorkspace_ArchivedExcludedByDefault(t *testing.T) {
 		Slug:    "active-one",
 		GitURL:  "https://github.com/org/repo1",
 		OwnerID: "alice-id",
-		Status:  "active",
+		Status:  "pending",
 	})
 	env.seedWorkspace(t, &Workspace{
 		Slug:    "archived-one",
@@ -330,7 +330,7 @@ func TestPropWorkspace_ArchivedExcludedByDefault(t *testing.T) {
 		Slug:    "active-two",
 		GitURL:  "https://github.com/org/repo3",
 		OwnerID: "alice-id",
-		Status:  "active",
+		Status:  "pending",
 	})
 	env.seedWorkspace(t, &Workspace{
 		Slug:    "archived-two",
@@ -457,7 +457,7 @@ func TestPropWorkspace_SlugEnumerationPrevention(t *testing.T) {
 		Slug:    "bob-ws",
 		GitURL:  "https://github.com/org/bob-repo",
 		OwnerID: "bob-id",
-		Status:  "active",
+		Status:  "pending",
 	})
 
 	// Also seed an archived workspace for bob.

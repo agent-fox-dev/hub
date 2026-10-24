@@ -1106,7 +1106,7 @@ func TestQueryAudit_NoFiltersEmptyResult(t *testing.T) {
 func newMemberQueryEnv(t *testing.T) (*auditTestEnv, *SSEManager) {
 	t.Helper()
 	env := newOrgMemberEnv(t)
-	env.seedWorkspaceInOrg(t, "w-own", "u2", "", "active")
+	env.seedWorkspaceInOrg(t, "w-own", "u2", "", "ready")
 	mgr := NewSSEManager(10)
 	done := make(chan struct{})
 	t.Cleanup(func() { close(done) })
@@ -1211,7 +1211,7 @@ func TestAuditQuery_AdminUnrestricted_TS_36_21(t *testing.T) {
 // shares an org with, of any status, and none without a workspace.
 // Requirement: 36-REQ-4.5
 func TestAuditQuery_PropertyReadable_TS_36_22(t *testing.T) {
-	users, orgs, statuses := []string{"u1", "u2", "u3", "u4"}, []string{"", "O1", "O2"}, []string{"active", "archived"}
+	users, orgs, statuses := []string{"u1", "u2", "u3", "u4"}, []string{"", "O1", "O2"}, []string{"ready", "archived"}
 	for seed := int64(1); seed <= 40; seed++ {
 		rng := rand.New(rand.NewSource(seed))
 		env := newAuditTestEnvWithSQLite(t)

@@ -61,8 +61,8 @@ func newGitClientServerForWorkspace(t *testing.T, slug string) (*gitTestEnv, str
 	env := newGitTestEnv(t)
 	env.seedOrg(t, "org-1", "My Org", "myorg")
 	env.seedOrgMember(t, "org-1", "user-1")
-	env.seedWorkspace(t, slug, "https://github.com/org/repo", "user-1", "org-1", "active")
-	env.setCloneStatus(t, slug, "ready")
+	env.seedWorkspace(t, slug, "https://github.com/org/repo", "user-1", "org-1", "ready")
+	env.setStatus(t, slug, "ready")
 	trunk := env.initWorkspaceRepo(t, slug)
 
 	srv := httptest.NewServer(env.echo)
@@ -84,8 +84,8 @@ func newGitClientServerWithCred(t *testing.T, slug, user, pass string) (*gitTest
 	env := newGitTestEnv(t)
 	env.seedOrg(t, "org-1", "My Org", "myorg")
 	env.seedOrgMember(t, "org-1", "user-1")
-	env.seedWorkspace(t, slug, "https://github.com/org/repo", "user-1", "org-1", "active")
-	env.setCloneStatus(t, slug, "ready")
+	env.seedWorkspace(t, slug, "https://github.com/org/repo", "user-1", "org-1", "ready")
+	env.setStatus(t, slug, "ready")
 	trunk := env.initWorkspaceRepo(t, slug)
 
 	srv := httptest.NewServer(env.echo)

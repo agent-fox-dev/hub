@@ -43,7 +43,7 @@ func TestBranchPushAllowedCallers_TS_38_15(t *testing.T) {
 	}
 	trunk := filepath.Join(env.root, "allow-bound", "trunk")
 	bare := newPushTrunk(t, trunk, "fix")
-	if err := insertWorkspace(hub.db.SqlDB, &Workspace{Slug: "allow-bound", GitURL: bare, OwnerID: "u1", Status: "active", CloneStatus: "ready"}); err != nil {
+	if err := insertWorkspace(hub.db.SqlDB, &Workspace{Slug: "allow-bound", GitURL: bare, OwnerID: "u1", Status: "ready"}); err != nil {
 		t.Fatal(err)
 	}
 	pat, patID := hub.mintPAT(t, "workspaces:write")

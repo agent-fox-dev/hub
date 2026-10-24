@@ -283,14 +283,14 @@ func TestIngestion_NilSQLiteSkipsChecks_TS_33_50(t *testing.T) {
 // same user and scopes, and nothing outside S. Requirements: 33-REQ-6.4,
 // 33-REQ-6.6, 33-REQ-9.3, 33-REQ-9.5
 func TestSessionsAudit_PropertyNeverWidens_TS_33_53(t *testing.T) {
-	for _, state := range []string{"active", "archived", "deleted", "foreign"} {
+	for _, state := range []string{"ready", "archived", "deleted", "foreign"} {
 		t.Run(state, func(t *testing.T) {
 			env := newAuditTestEnvWithSQLite(t)
 			query := env.echo.Group("/api/v1")
 			query.Use(testAuthMiddleware())
 			RegisterAuditQueryRoutes(query, env.store, &mockSSEManager{}, env.sqliteDB)
 			switch state {
-			case "active", "archived":
+			case "ready", "archived":
 				env.seedWorkspaceWithStatus(t, "s", "u1", state)
 			case "foreign":
 				env.seedWorkspace(t, "s", "u2")

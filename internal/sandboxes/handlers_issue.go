@@ -12,7 +12,7 @@ import (
 // handleIssueLease serves POST /workspaces/:slug/sandboxes. It issues a lease
 // in the workspace and answers 201 with the lease and its token, the only
 // response that ever carries the token. The checks run in the order of
-// authorize, then the workspace must be active, then the body is validated,
+// authorize, then the workspace must not be archived, then the body is validated,
 // and only then are the secrets checked and the lease stored.
 func handleIssueLease(s *LeaseService) echo.HandlerFunc {
 	return func(c echo.Context) error {
@@ -20,8 +20,8 @@ func handleIssueLease(s *LeaseService) echo.HandlerFunc {
 		if req == nil {
 			return err
 		}
-		if req.workspace.Status != "active" {
-			return apikit.WriteAPIError(c, http.StatusBadRequest, "workspace is not active")
+		if req.workspace.Status == "archived" {
+			return apikit.WriteAPIError(c, http.StatusBadRequest, "workspace is archived")
 		}
 
 		slug := req.workspace.Slug

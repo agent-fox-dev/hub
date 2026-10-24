@@ -8,17 +8,17 @@ import (
 )
 
 // ========================================================================
-// Spec 13 Task 5.1: CLI workspace create --sync-mode flag
-// (TS-13-6, 13-REQ-2.E3)
+// Spec 13 Task 5.1: CLI workspace create with sync disabled
+// (TS-13-6)
 // Requirements: 13-REQ-2.3
 // ========================================================================
 
-// TS-13-6: Verifies that 'afc workspace create --sync-mode disabled' passes
-// sync_mode in the API request body and the workspace is created with the
-// specified mode.
+// TS-13-6: Verifies that 'afc workspace create --setting sync_enabled=false'
+// passes the sync_enabled setting in the API request body and the workspace
+// is created with sync disabled.
 // Requirement: 13-REQ-2.3
-func TestCLI_WorkspaceCreate_SyncMode(t *testing.T) {
-	var capturedSyncMode string
+func TestCLI_WorkspaceCreate_SyncDisabled(t *testing.T) {
+	var capturedSettings any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost && r.URL.Path == "/api/v1/workspaces" {
 			var req map[string]any
@@ -26,15 +26,13 @@ func TestCLI_WorkspaceCreate_SyncMode(t *testing.T) {
 				writeJSON(w, http.StatusBadRequest, errorResp{})
 				return
 			}
-			if sm, ok := req["sync_mode"].(string); ok {
-				capturedSyncMode = sm
-			}
+			capturedSettings = req["settings"]
 			resp := map[string]any{
-				"slug":      req["slug"],
-				"git_url":   req["git_url"],
-				"owner_id":  "test-user-id",
-				"status":    "active",
-				"sync_mode": capturedSyncMode,
+				"slug":     req["slug"],
+				"git_url":  req["git_url"],
+				"owner_id": "test-user-id",
+				"status":   "pending",
+				"settings": map[string]any{"sync_enabled": false},
 			}
 			writeJSON(w, http.StatusCreated, resp)
 			return
@@ -45,18 +43,19 @@ func TestCLI_WorkspaceCreate_SyncMode(t *testing.T) {
 
 	stdout, _, err := runWorkspaceCmd(t, server.URL, "test-api-key",
 		"create", "--git-url", "https://github.com/example/repo.git",
-		"--slug", "cli-ws", "--sync-mode", "disabled")
+		"--slug", "cli-ws", "--setting", "sync_enabled=false")
 
 	if err != nil {
 		t.Fatalf("command returned error: %v", err)
 	}
 
-	// Verify sync_mode was sent in the request body.
-	if capturedSyncMode != "disabled" {
-		t.Errorf("captured sync_mode = %q; want %q", capturedSyncMode, "disabled")
+	// Verify the settings were sent in the request body as given.
+	got, _ := json.Marshal(capturedSettings)
+	if string(got) != `{"sync_enabled":false}` {
+		t.Errorf("captured settings = %s; want %s", got, `{"sync_enabled":false}`)
 	}
 
-	// Verify the output contains "disabled".
+	// Verify the output carries the setting.
 	if stdout == "" {
 		t.Fatal("stdout is empty")
 	}
@@ -64,44 +63,16 @@ func TestCLI_WorkspaceCreate_SyncMode(t *testing.T) {
 	if jsonErr := json.Unmarshal([]byte(stdout), &resp); jsonErr != nil {
 		t.Fatalf("stdout is not valid JSON: %v\nstdout: %s", jsonErr, stdout)
 	}
-	if sm, ok := resp["sync_mode"].(string); !ok || sm != "disabled" {
-		t.Errorf("response sync_mode = %v; want %q", resp["sync_mode"], "disabled")
+	settings, _ := resp["settings"].(map[string]any)
+	if enabled, ok := settings["sync_enabled"].(bool); !ok || enabled {
+		t.Errorf("response settings.sync_enabled = %v; want false", settings["sync_enabled"])
 	}
 }
 
-// 13-REQ-2.E3: Verifies that 'afc workspace create --sync-mode <invalid>'
-// rejects the command with a non-zero exit code before making any API call.
-// Requirement: 13-REQ-2.3
-func TestCLI_WorkspaceCreate_InvalidSyncMode(t *testing.T) {
-	apiCalled := false
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		apiCalled = true
-		writeJSON(w, http.StatusOK, map[string]any{})
-	}))
-	defer server.Close()
-
-	stdout, _, err := runWorkspaceCmd(t, server.URL, "test-api-key",
-		"create", "--git-url", "https://github.com/example/repo.git",
-		"--slug", "bad-mode-ws", "--sync-mode", "full_sync")
-
-	if err == nil {
-		t.Fatal("expected error for invalid sync_mode, got nil")
-	}
-
-	if apiCalled {
-		t.Error("API was called despite invalid sync_mode; want client-side rejection")
-	}
-
-	// Verify the output contains an error envelope (CLIHandleError writes to stdout).
-	if !hasErrorEnvelope(stdout) {
-		t.Errorf("expected error envelope in stdout; got: %s", stdout)
-	}
-}
-
-// Verifies that 'afc workspace create' without --sync-mode does NOT include
-// sync_mode in the request body (server defaults to 'pull_only').
-func TestCLI_WorkspaceCreate_NoSyncModeOmitted(t *testing.T) {
-	var hasSyncMode bool
+// Verifies that 'afc workspace create' without --setting does NOT include
+// settings in the request body (the server applies every default).
+func TestCLI_WorkspaceCreate_NoSettingsOmitted(t *testing.T) {
+	var hasSettings bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost && r.URL.Path == "/api/v1/workspaces" {
 			var req map[string]any
@@ -109,13 +80,13 @@ func TestCLI_WorkspaceCreate_NoSyncModeOmitted(t *testing.T) {
 				writeJSON(w, http.StatusBadRequest, errorResp{})
 				return
 			}
-			_, hasSyncMode = req["sync_mode"]
+			_, hasSettings = req["settings"]
 			resp := map[string]any{
-				"slug":      req["slug"],
-				"git_url":   req["git_url"],
-				"owner_id":  "test-user-id",
-				"status":    "active",
-				"sync_mode": "pull_only",
+				"slug":     req["slug"],
+				"git_url":  req["git_url"],
+				"owner_id": "test-user-id",
+				"status":   "pending",
+				"settings": map[string]any{"sync_enabled": true},
 			}
 			writeJSON(w, http.StatusCreated, resp)
 			return
@@ -132,7 +103,7 @@ func TestCLI_WorkspaceCreate_NoSyncModeOmitted(t *testing.T) {
 		t.Fatalf("command returned error: %v", err)
 	}
 
-	if hasSyncMode {
-		t.Error("sync_mode was included in request body when --sync-mode flag was not set; want omitted")
+	if hasSettings {
+		t.Error("settings was included in request body when no --setting flag was set; want omitted")
 	}
 }

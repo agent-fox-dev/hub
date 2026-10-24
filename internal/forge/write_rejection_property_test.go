@@ -39,7 +39,7 @@ func rejectionTable() []rejectionInputs {
 
 // TS-31-7: Any refusal hub makes on its own, for any write route, sends nothing to the forge
 // and records no event: no credential, no forge:write, an unknown credential type, a
-// workspace that is not there or not the caller's, one that is not active, an invalid
+// workspace that is not there or not the caller's, one that is archived, an invalid
 // request, a target the workspace does not have, a forge hub cannot tell, a credential it
 // cannot read, a body over the limit.
 // Requirement: 31-REQ-1.7
@@ -69,7 +69,7 @@ func TestHubSideRejectionsSendNothingAndRecordNothing_TS_31_7(t *testing.T) {
 			{"an unknown credential type", e, 403, func() int { return e.sendRoute(route, "widgets", service).Code }},
 			{"another user's workspace", e, 404, func() int { return e.sendRoute(route, "theirs", apiKeyAuth()).Code }},
 			{"a workspace that is not there", e, 404, func() int { return e.sendRoute(route, "ghost", apiKeyAuth()).Code }},
-			{"a workspace that is not active", e, 400, func() int { return e.sendRoute(route, "retired", apiKeyAuth()).Code }},
+			{"a workspace that is archived", e, 400, func() int { return e.sendRoute(route, "retired", apiKeyAuth()).Code }},
 			{"an invalid request", e, 400, func() int {
 				path := route.url("widgets")
 				if in.invalidPath != "" {

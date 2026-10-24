@@ -100,10 +100,9 @@ func createWorkspacesTable(t *testing.T, db *sql.DB) {
 			branch       TEXT,
 			owner_id     TEXT NOT NULL,
 			org_id       TEXT,
-			status       TEXT NOT NULL DEFAULT 'active',
+			status       TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','cloning','ready','failed','archived')),
 			display_name TEXT NOT NULL DEFAULT '',
 			description  TEXT NOT NULL DEFAULT '',
-			clone_status TEXT NOT NULL DEFAULT 'pending' CHECK(clone_status IN ('pending','cloning','ready','failed','archived')),
 			head_sha     TEXT,
 			clone_error  TEXT,
 			created_at   TEXT NOT NULL,
@@ -115,13 +114,13 @@ func createWorkspacesTable(t *testing.T, db *sql.DB) {
 }
 
 // seedTestWorkspace inserts a workspace row directly into the database.
-func seedTestWorkspace(t *testing.T, db *sql.DB, slug, ownerID, status, cloneStatus string) {
+func seedTestWorkspace(t *testing.T, db *sql.DB, slug, ownerID, status string) {
 	t.Helper()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	_, err := db.Exec(
-		`INSERT INTO workspaces (slug, git_url, owner_id, status, clone_status, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		slug, "https://github.com/example/repo", ownerID, status, cloneStatus, now, now,
+		`INSERT INTO workspaces (slug, git_url, owner_id, status, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+		slug, "https://github.com/example/repo", ownerID, status, now, now,
 	)
 	if err != nil {
 		t.Fatalf("seedTestWorkspace(%q) returned error: %v", slug, err)
@@ -248,8 +247,8 @@ func TestSubmitMerge_ValidRequest_Returns202(t *testing.T) {
 	}
 	env := newMergeTestEnv(t, branchRegistry)
 
-	// Seed an active workspace with clone_status=ready.
-	seedTestWorkspace(t, env.db, "ws1", "alice", "active", "ready")
+	// Seed a ready workspace.
+	seedTestWorkspace(t, env.db, "ws1", "alice", "ready")
 
 	body := `{"target_branch":"main","source_ref":"feature/a"}`
 	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/ws1/merges", body, mergeUserAuth("alice"))
@@ -296,7 +295,7 @@ func TestSubmitMerge_Duplicate_Returns409(t *testing.T) {
 	}
 	env := newMergeTestEnv(t, branchRegistry)
 
-	seedTestWorkspace(t, env.db, "ws1", "alice", "active", "ready")
+	seedTestWorkspace(t, env.db, "ws1", "alice", "ready")
 
 	body := `{"target_branch":"main","source_ref":"feature/a"}`
 	auth := mergeUserAuth("alice")
@@ -337,7 +336,7 @@ func TestSubmitMerge_MissingSourceRef_Returns400(t *testing.T) {
 	}
 	env := newMergeTestEnv(t, branchRegistry)
 
-	seedTestWorkspace(t, env.db, "ws1", "alice", "active", "ready")
+	seedTestWorkspace(t, env.db, "ws1", "alice", "ready")
 
 	// Request with target_branch but missing source_ref.
 	body := `{"target_branch":"main"}`
@@ -360,7 +359,7 @@ func TestSubmitMerge_MissingTargetBranch_Returns400(t *testing.T) {
 	}
 	env := newMergeTestEnv(t, branchRegistry)
 
-	seedTestWorkspace(t, env.db, "ws1", "alice", "active", "ready")
+	seedTestWorkspace(t, env.db, "ws1", "alice", "ready")
 
 	// Request with source_ref but missing target_branch.
 	body := `{"source_ref":"feature/a"}`
@@ -404,7 +403,7 @@ func TestSubmitMerge_WorkspaceNotFound_Returns404(t *testing.T) {
 
 // ===========================================================================
 // TS-12-32: POST /api/v1/workspaces/:slug/merges for a workspace that is
-// not active returns HTTP 400 indicating workspace is not active.
+// archived returns HTTP 400 indicating workspace is not ready.
 //
 // Requirement: 12-REQ-9.5
 // ===========================================================================
@@ -413,7 +412,7 @@ func TestSubmitMerge_WorkspaceNotActive_Returns400(t *testing.T) {
 	env := newMergeTestEnv(t, nil)
 
 	// Seed an archived workspace.
-	seedTestWorkspace(t, env.db, "ws1", "alice", "archived", "archived")
+	seedTestWorkspace(t, env.db, "ws1", "alice", "archived")
 
 	body := `{"target_branch":"main","source_ref":"feature/a"}`
 	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/ws1/merges", body, mergeUserAuth("alice"))
@@ -424,8 +423,8 @@ func TestSubmitMerge_WorkspaceNotActive_Returns400(t *testing.T) {
 	}
 
 	resp := parseMergeErrorEnvelope(t, rec)
-	if !strings.Contains(strings.ToLower(resp.Error.Message), "not active") {
-		t.Errorf("expected error message to mention 'not active', got %q", resp.Error.Message)
+	if !strings.Contains(strings.ToLower(resp.Error.Message), "not ready") {
+		t.Errorf("expected error message to mention 'not ready', got %q", resp.Error.Message)
 	}
 }
 
@@ -439,8 +438,8 @@ func TestSubmitMerge_WorkspaceNotActive_Returns400(t *testing.T) {
 func TestSubmitMerge_CloneNotReady_Returns400(t *testing.T) {
 	env := newMergeTestEnv(t, nil)
 
-	// Seed an active workspace with clone_status='cloning' (not ready).
-	seedTestWorkspace(t, env.db, "ws1", "alice", "active", "cloning")
+	// Seed a workspace with status 'cloning' (not ready).
+	seedTestWorkspace(t, env.db, "ws1", "alice", "cloning")
 
 	body := `{"target_branch":"main","source_ref":"feature/a"}`
 	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/ws1/merges", body, mergeUserAuth("alice"))
@@ -451,8 +450,8 @@ func TestSubmitMerge_CloneNotReady_Returns400(t *testing.T) {
 	}
 
 	resp := parseMergeErrorEnvelope(t, rec)
-	if !strings.Contains(strings.ToLower(resp.Error.Message), "clone") {
-		t.Errorf("expected error message to mention 'clone', got %q", resp.Error.Message)
+	if !strings.Contains(strings.ToLower(resp.Error.Message), "not ready") {
+		t.Errorf("expected error message to mention 'not ready', got %q", resp.Error.Message)
 	}
 }
 
@@ -471,7 +470,7 @@ func TestSubmitMerge_BranchNotFound_Returns400(t *testing.T) {
 	}
 	env := newMergeTestEnv(t, branchRegistry)
 
-	seedTestWorkspace(t, env.db, "ws1", "alice", "active", "ready")
+	seedTestWorkspace(t, env.db, "ws1", "alice", "ready")
 
 	body := `{"target_branch":"main","source_ref":"feature/nonexistent"}`
 	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/ws1/merges", body, mergeUserAuth("alice"))
@@ -494,7 +493,7 @@ func TestSubmitMerge_TargetBranchNotFound_Returns400(t *testing.T) {
 	}
 	env := newMergeTestEnv(t, branchRegistry)
 
-	seedTestWorkspace(t, env.db, "ws1", "alice", "active", "ready")
+	seedTestWorkspace(t, env.db, "ws1", "alice", "ready")
 
 	body := `{"target_branch":"main","source_ref":"feature/a"}`
 	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/ws1/merges", body, mergeUserAuth("alice"))
@@ -524,7 +523,7 @@ func TestSubmitMerge_PATWithoutScope_Returns403(t *testing.T) {
 	}
 	env := newMergeTestEnv(t, branchRegistry)
 
-	seedTestWorkspace(t, env.db, "ws1", "alice", "active", "ready")
+	seedTestWorkspace(t, env.db, "ws1", "alice", "ready")
 
 	body := `{"target_branch":"main","source_ref":"feature/a"}`
 
@@ -553,7 +552,7 @@ func TestSubmitMerge_PATWithoutScope_Returns403(t *testing.T) {
 func TestSubmitMerge_MalformedJSON_Returns400(t *testing.T) {
 	env := newMergeTestEnv(t, nil)
 
-	seedTestWorkspace(t, env.db, "ws1", "alice", "active", "ready")
+	seedTestWorkspace(t, env.db, "ws1", "alice", "ready")
 
 	body := `{invalid json`
 	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/ws1/merges", body, mergeUserAuth("alice"))
@@ -702,7 +701,7 @@ func newMergeTestEnvWithRebase(t *testing.T, branchRegistry map[string]bool, reb
 func TestListMerges_Returns200WithArray(t *testing.T) {
 	env := newMergeTestEnv(t, nil)
 
-	seedTestWorkspace(t, env.db, "ws1", "alice", "active", "ready")
+	seedTestWorkspace(t, env.db, "ws1", "alice", "ready")
 
 	// Seed two merge jobs for workspace ws1.
 	seedMergeJob(t, env.db, "job-list-1", "queued", "ws1", "main", "feature/a", "alice", nil, nil)
@@ -752,7 +751,7 @@ func TestListMerges_Returns200WithArray(t *testing.T) {
 func TestListMerges_Empty_Returns200WithEmptyArray(t *testing.T) {
 	env := newMergeTestEnv(t, nil)
 
-	seedTestWorkspace(t, env.db, "ws1", "alice", "active", "ready")
+	seedTestWorkspace(t, env.db, "ws1", "alice", "ready")
 
 	// No merge jobs seeded.
 	rec := env.doRequest(t, http.MethodGet, "/api/v1/workspaces/ws1/merges", "", mergeUserAuth("alice"))
@@ -782,7 +781,7 @@ func TestListMerges_Empty_Returns200WithEmptyArray(t *testing.T) {
 func TestGetMerge_ValidID_Returns200(t *testing.T) {
 	env := newMergeTestEnv(t, nil)
 
-	seedTestWorkspace(t, env.db, "ws1", "alice", "active", "ready")
+	seedTestWorkspace(t, env.db, "ws1", "alice", "ready")
 	seedMergeJob(t, env.db, "job-uuid-1", "queued", "ws1", "main", "feature/a", "alice", nil, nil)
 
 	rec := env.doRequest(t, http.MethodGet, "/api/v1/workspaces/ws1/merges/job-uuid-1", "", mergeUserAuth("alice"))
@@ -804,7 +803,7 @@ func TestGetMerge_ValidID_Returns200(t *testing.T) {
 func TestGetMerge_NonexistentID_Returns404(t *testing.T) {
 	env := newMergeTestEnv(t, nil)
 
-	seedTestWorkspace(t, env.db, "ws1", "alice", "active", "ready")
+	seedTestWorkspace(t, env.db, "ws1", "alice", "ready")
 
 	rec := env.doRequest(t, http.MethodGet, "/api/v1/workspaces/ws1/merges/nonexistent-id", "", mergeUserAuth("alice"))
 
@@ -823,8 +822,8 @@ func TestGetMerge_NonexistentID_Returns404(t *testing.T) {
 func TestGetMerge_DifferentWorkspace_Returns404(t *testing.T) {
 	env := newMergeTestEnv(t, nil)
 
-	seedTestWorkspace(t, env.db, "ws1", "alice", "active", "ready")
-	seedTestWorkspace(t, env.db, "ws2", "bob", "active", "ready")
+	seedTestWorkspace(t, env.db, "ws1", "alice", "ready")
+	seedTestWorkspace(t, env.db, "ws2", "bob", "ready")
 
 	// Job belongs to ws2, but we query via ws1.
 	seedMergeJob(t, env.db, "job-ws2-only", "queued", "ws2", "main", "feature/a", "bob", nil, nil)
@@ -847,7 +846,7 @@ func TestGetMerge_DifferentWorkspace_Returns404(t *testing.T) {
 func TestListMerges_PATWithoutReadScope_Returns403(t *testing.T) {
 	env := newMergeTestEnv(t, nil)
 
-	seedTestWorkspace(t, env.db, "ws1", "alice", "active", "ready")
+	seedTestWorkspace(t, env.db, "ws1", "alice", "ready")
 
 	// PAT with no merge scopes.
 	auth := mergePATAuth("alice")
@@ -867,7 +866,7 @@ func TestListMerges_PATWithoutReadScope_Returns403(t *testing.T) {
 func TestGetMerge_PATWithoutReadScope_Returns403(t *testing.T) {
 	env := newMergeTestEnv(t, nil)
 
-	seedTestWorkspace(t, env.db, "ws1", "alice", "active", "ready")
+	seedTestWorkspace(t, env.db, "ws1", "alice", "ready")
 	seedMergeJob(t, env.db, "job-perm-1", "queued", "ws1", "main", "feature/a", "alice", nil, nil)
 
 	// PAT with no merge scopes.
@@ -890,7 +889,7 @@ func TestGetMerge_PATWithoutReadScope_Returns403(t *testing.T) {
 func TestCancelMerge_QueuedJob_Returns200(t *testing.T) {
 	env := newMergeTestEnv(t, nil)
 
-	seedTestWorkspace(t, env.db, "ws1", "alice", "active", "ready")
+	seedTestWorkspace(t, env.db, "ws1", "alice", "ready")
 	seedMergeJob(t, env.db, "job-cancel-1", "queued", "ws1", "main", "feature/a", "alice", nil, nil)
 
 	rec := env.doRequest(t, http.MethodDelete, "/api/v1/workspaces/ws1/merges/job-cancel-1", "", mergeUserAuth("alice"))
@@ -921,7 +920,7 @@ func TestCancelMerge_QueuedJob_Returns200(t *testing.T) {
 func TestCancelMerge_RunningJob_Returns409(t *testing.T) {
 	env := newMergeTestEnv(t, nil)
 
-	seedTestWorkspace(t, env.db, "ws1", "alice", "active", "ready")
+	seedTestWorkspace(t, env.db, "ws1", "alice", "ready")
 	seedMergeJob(t, env.db, "job-running-1", "running", "ws1", "main", "feature/a", "alice", nil, nil)
 
 	rec := env.doRequest(t, http.MethodDelete, "/api/v1/workspaces/ws1/merges/job-running-1", "", mergeUserAuth("alice"))
@@ -940,7 +939,7 @@ func TestCancelMerge_RunningJob_Returns409(t *testing.T) {
 func TestCancelMerge_CompletedJob_Returns409(t *testing.T) {
 	env := newMergeTestEnv(t, nil)
 
-	seedTestWorkspace(t, env.db, "ws1", "alice", "active", "ready")
+	seedTestWorkspace(t, env.db, "ws1", "alice", "ready")
 	seedMergeJob(t, env.db, "job-done-1", "completed", "ws1", "main", "feature/a", "alice", nil, nil)
 
 	rec := env.doRequest(t, http.MethodDelete, "/api/v1/workspaces/ws1/merges/job-done-1", "", mergeUserAuth("alice"))
@@ -954,7 +953,7 @@ func TestCancelMerge_CompletedJob_Returns409(t *testing.T) {
 func TestCancelMerge_CancelledJob_Returns409(t *testing.T) {
 	env := newMergeTestEnv(t, nil)
 
-	seedTestWorkspace(t, env.db, "ws1", "alice", "active", "ready")
+	seedTestWorkspace(t, env.db, "ws1", "alice", "ready")
 	seedMergeJob(t, env.db, "job-already-cancelled", "cancelled", "ws1", "main", "feature/a", "alice", nil, nil)
 
 	rec := env.doRequest(t, http.MethodDelete, "/api/v1/workspaces/ws1/merges/job-already-cancelled", "", mergeUserAuth("alice"))
@@ -975,7 +974,7 @@ func TestCancelMerge_CancelledJob_Returns409(t *testing.T) {
 func TestCancelMerge_PATWithoutWriteScope_Returns403(t *testing.T) {
 	env := newMergeTestEnv(t, nil)
 
-	seedTestWorkspace(t, env.db, "ws1", "alice", "active", "ready")
+	seedTestWorkspace(t, env.db, "ws1", "alice", "ready")
 	seedMergeJob(t, env.db, "job-perm-cancel", "queued", "ws1", "main", "feature/a", "alice", nil, nil)
 
 	// PAT with merges:read only — no merges:write.
@@ -1001,7 +1000,7 @@ func TestCancelMerge_PATWithoutWriteScope_Returns403(t *testing.T) {
 func TestCancelMerge_NonexistentJob_Returns404(t *testing.T) {
 	env := newMergeTestEnv(t, nil)
 
-	seedTestWorkspace(t, env.db, "ws1", "alice", "active", "ready")
+	seedTestWorkspace(t, env.db, "ws1", "alice", "ready")
 
 	rec := env.doRequest(t, http.MethodDelete, "/api/v1/workspaces/ws1/merges/nonexistent-id", "", mergeUserAuth("alice"))
 
@@ -1014,8 +1013,8 @@ func TestCancelMerge_NonexistentJob_Returns404(t *testing.T) {
 func TestCancelMerge_DifferentWorkspaceJob_Returns404(t *testing.T) {
 	env := newMergeTestEnv(t, nil)
 
-	seedTestWorkspace(t, env.db, "ws1", "alice", "active", "ready")
-	seedTestWorkspace(t, env.db, "ws2", "bob", "active", "ready")
+	seedTestWorkspace(t, env.db, "ws1", "alice", "ready")
+	seedTestWorkspace(t, env.db, "ws2", "bob", "ready")
 
 	// Job belongs to ws2.
 	seedMergeJob(t, env.db, "job-ws2-cancel", "queued", "ws2", "main", "feature/a", "bob", nil, nil)
@@ -1051,7 +1050,7 @@ func TestBatchRebase_ValidRequest_Returns200(t *testing.T) {
 	}
 
 	env := newMergeTestEnvWithRebase(t, nil, rebaseFunc)
-	seedTestWorkspace(t, env.db, "ws1", "alice", "active", "ready")
+	seedTestWorkspace(t, env.db, "ws1", "alice", "ready")
 
 	body := `{"target_ref":"main","branches":["feature/a","feature/b"]}`
 	auth := mergePATAuth("alice", "merges:write")
@@ -1096,7 +1095,7 @@ func TestBatchRebase_EmptyBranches_Returns400(t *testing.T) {
 	}
 
 	env := newMergeTestEnvWithRebase(t, nil, rebaseFunc)
-	seedTestWorkspace(t, env.db, "ws1", "alice", "active", "ready")
+	seedTestWorkspace(t, env.db, "ws1", "alice", "ready")
 
 	body := `{"target_ref":"main","branches":[]}`
 	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/ws1/rebase", body, mergeUserAuth("alice"))
@@ -1125,7 +1124,7 @@ func TestBatchRebase_EmptyBranches_Returns400(t *testing.T) {
 
 func TestBatchRebase_PATWithoutWriteScope_Returns403(t *testing.T) {
 	env := newMergeTestEnvWithRebase(t, nil, nil)
-	seedTestWorkspace(t, env.db, "ws1", "alice", "active", "ready")
+	seedTestWorkspace(t, env.db, "ws1", "alice", "ready")
 
 	body := `{"target_ref":"main","branches":["feature/a"]}`
 	// PAT with merges:read only — no merges:write.
@@ -1152,7 +1151,7 @@ func TestBatchRebase_PATWithoutWriteScope_Returns403(t *testing.T) {
 
 func TestBatchRebase_MissingTargetRef_Returns400(t *testing.T) {
 	env := newMergeTestEnvWithRebase(t, nil, nil)
-	seedTestWorkspace(t, env.db, "ws1", "alice", "active", "ready")
+	seedTestWorkspace(t, env.db, "ws1", "alice", "ready")
 
 	// Body has branches but no target_ref.
 	body := `{"branches":["feature/a"]}`

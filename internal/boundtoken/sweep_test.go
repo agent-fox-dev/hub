@@ -32,7 +32,7 @@ func countBindings(db *sql.DB) int {
 // is gone and deletes bindings whose pats row is gone. Requirement: 34-REQ-6.2
 func TestSweep_Pass_TS_34_36(t *testing.T) {
 	db := openTestDB(t)
-	seedWorkspace(t, db, "here", "u1", "active")
+	seedWorkspace(t, db, "here", "u1", "ready")
 	seedPAT(t, db, patRow{id: "a"})
 	seedPAT(t, db, patRow{id: "b", revokedAt: "2026-01-01T00:00:00Z"})
 	seedPAT(t, db, patRow{id: "d"})
@@ -69,7 +69,7 @@ func TestSweep_Pass_TS_34_36(t *testing.T) {
 // survive the sweep and stay listed. Requirement: 34-REQ-6.3
 func TestSweep_KeepsRevokedAndExpired_TS_34_37(t *testing.T) {
 	env := newTestEnv(t, Config{})
-	seedWorkspace(t, env.db, "s", "u1", "active")
+	seedWorkspace(t, env.db, "s", "u1", "ready")
 	seedPAT(t, env.db, patRow{id: "revoked", revokedAt: "2026-01-01T00:00:00Z", createdAt: "2026-09-01T10:00:00Z"})
 	seedPAT(t, env.db, patRow{id: "expired", expiresAt: "2026-01-01T00:00:00Z", createdAt: "2026-09-01T10:00:01Z"})
 	bind(t, env.db, "revoked", "s")

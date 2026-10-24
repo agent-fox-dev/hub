@@ -42,7 +42,7 @@ func TestMountWorkspaceHandlers_CreatesBindingTable_TS_33_3(t *testing.T) {
 	}
 
 	// The first request of a bound token is served, not a missing-table 500.
-	h.seed(t, "s", "u1", "active")
+	h.seed(t, "s", "u1", "pending")
 	token, id := h.mintPAT(t, "workspaces:read")
 	bindToken(t, database.SqlDB, id, "s")
 	if rec := h.do(http.MethodGet, "/api/v1/workspaces/s", token, ""); rec.Code != http.StatusOK {
@@ -65,7 +65,7 @@ func TestArchiveDelete_KeepBindings_TS_33_6(t *testing.T) {
 	defaultWorkspaceRoot = t.TempDir()
 	defer func() { defaultWorkspaceRoot = oldRoot }()
 
-	env.seedWorkspace(t, &Workspace{Slug: "s", GitURL: "https://github.com/org/repo", OwnerID: "user-1", Status: "active"})
+	env.seedWorkspace(t, &Workspace{Slug: "s", GitURL: "https://github.com/org/repo", OwnerID: "user-1", Status: "pending"})
 	createPatsTable(t, env.db)
 	for _, id := range []string{"t1", "t2", "t3"} {
 		seedPAT(t, env.db, id, "")
@@ -116,7 +116,7 @@ func TestArchiveDelete_KeepBindings_TS_33_6(t *testing.T) {
 // with the same scopes gets. Requirement: 33-REQ-3.2
 func TestBoundToken_OwnSlugEqualsUnbound_TS_33_14(t *testing.T) {
 	h := newRealHub(t)
-	h.seed(t, "s", "u1", "active")
+	h.seed(t, "s", "u1", "pending")
 
 	for _, scopes := range [][]string{{"workspaces:read", "patches:read"}, {"users:read"}} {
 		bound, boundID := h.mintPAT(t, scopes...)
@@ -139,8 +139,8 @@ func TestBoundToken_OwnSlugEqualsUnbound_TS_33_14(t *testing.T) {
 // runs subgroup, are guarded without further change. Requirement: 33-REQ-3.4
 func TestBindingGuard_CoversLaterRoutes_TS_33_16(t *testing.T) {
 	h := newRealHub(t)
-	h.seed(t, "s", "u1", "active")
-	h.seed(t, "x", "u1", "active")
+	h.seed(t, "s", "u1", "pending")
+	h.seed(t, "x", "u1", "pending")
 
 	duck, err := audit.OpenDB(filepath.Join(t.TempDir(), "audit.duckdb"))
 	if err != nil {
@@ -202,7 +202,7 @@ func TestLookupWorkspaceForAuth_Binding_TS_33_18(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, slug := range []string{"s", "x"} {
-		if err := insertWorkspace(db, &Workspace{Slug: slug, GitURL: "https://github.com/org/r", OwnerID: "u1", Status: "active"}); err != nil {
+		if err := insertWorkspace(db, &Workspace{Slug: slug, GitURL: "https://github.com/org/r", OwnerID: "u1", Status: "pending"}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -232,7 +232,7 @@ func TestBindingLookupFailure_Is500_TS_33_19(t *testing.T) {
 	if err := wsaccess.InitBindingSchema(db); err != nil {
 		t.Fatal(err)
 	}
-	if err := insertWorkspace(db, &Workspace{Slug: "s", GitURL: "https://github.com/org/r", OwnerID: "u1", Status: "active"}); err != nil {
+	if err := insertWorkspace(db, &Workspace{Slug: "s", GitURL: "https://github.com/org/r", OwnerID: "u1", Status: "pending"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`DROP TABLE token_workspace_bindings`); err != nil {
@@ -355,8 +355,8 @@ func TestAPIKitRoutes_BoundPATCannotMint_TS_33_29(t *testing.T) {
 // Requirement: 33-REQ-6.1
 func TestListWorkspaces_BoundToken_TS_33_34(t *testing.T) {
 	h := newRealHub(t)
-	h.seed(t, "s", "u1", "active")
-	h.seed(t, "x", "u1", "active")
+	h.seed(t, "s", "u1", "pending")
+	h.seed(t, "x", "u1", "pending")
 	h.seed(t, "a", "u1", "archived")
 
 	slugs := func(rec *httptest.ResponseRecorder) []string {

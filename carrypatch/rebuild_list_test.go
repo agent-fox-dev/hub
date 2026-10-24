@@ -18,7 +18,7 @@ func TestRebuildList_Returns200WithJobsDescending(t *testing.T) {
 	env := newFullTestEnv(t)
 
 	// Seed a carry_patch workspace.
-	seedWorkspace(t, env.db, "my-workspace", "alice", "active", "ready", "carry_patch", "integration")
+	seedWorkspace(t, env.db, "my-workspace", "alice", "ready", "carry_patch", "integration")
 
 	// Seed 3 rebuild jobs at different created_at timestamps.
 	t1 := time.Now().UTC().Add(-3 * time.Hour)
@@ -84,7 +84,7 @@ func TestRebuildList_Returns200WithJobsDescending(t *testing.T) {
 func TestRebuildList_NoHistory_ReturnsEmptyList(t *testing.T) {
 	env := newFullTestEnv(t)
 
-	seedWorkspace(t, env.db, "ws-no-rebuilds", "alice", "active", "ready", "carry_patch", "integration")
+	seedWorkspace(t, env.db, "ws-no-rebuilds", "alice", "ready", "carry_patch", "integration")
 
 	auth := rebuildUserAuth("alice")
 	rec := env.doRequest(t, http.MethodGet, "/api/v1/workspaces/ws-no-rebuilds/rebuilds", "", auth)
@@ -111,7 +111,7 @@ func TestRebuildList_NoHistory_ReturnsEmptyList(t *testing.T) {
 func TestRebuildList_PATWithoutReadScope_Returns403(t *testing.T) {
 	env := newFullTestEnv(t)
 
-	seedWorkspace(t, env.db, "ws-perm", "alice", "active", "ready", "carry_patch", "integration")
+	seedWorkspace(t, env.db, "ws-perm", "alice", "ready", "carry_patch", "integration")
 
 	// PAT with no rebuilds:read scope.
 	auth := rebuildPATAuth("alice", "workspaces:read")
@@ -132,7 +132,7 @@ func TestRebuildList_PATWithoutReadScope_Returns403(t *testing.T) {
 func TestRebuildList_PATWithReadScope_Returns200(t *testing.T) {
 	env := newFullTestEnv(t)
 
-	seedWorkspace(t, env.db, "ws-pat-ok", "alice", "active", "ready", "carry_patch", "integration")
+	seedWorkspace(t, env.db, "ws-pat-ok", "alice", "ready", "carry_patch", "integration")
 
 	auth := rebuildPATAuth("alice", "rebuilds:read")
 	rec := env.doRequest(t, http.MethodGet, "/api/v1/workspaces/ws-pat-ok/rebuilds", "", auth)
@@ -153,7 +153,7 @@ func TestRebuildList_PATWithReadScope_Returns200(t *testing.T) {
 func TestRebuildStatus_Returns200WithPatchResults(t *testing.T) {
 	env := newFullTestEnv(t)
 
-	seedWorkspace(t, env.db, "my-workspace", "alice", "active", "ready", "carry_patch", "integration")
+	seedWorkspace(t, env.db, "my-workspace", "alice", "ready", "carry_patch", "integration")
 
 	// Seed a completed rebuild job with patch_results in the result field.
 	patchResults := []PatchResult{
@@ -215,8 +215,8 @@ func TestRebuildStatus_Returns200WithPatchResults(t *testing.T) {
 func TestRebuildStatus_CrossWorkspace_Returns404(t *testing.T) {
 	env := newFullTestEnv(t)
 
-	seedWorkspace(t, env.db, "ws-a", "alice", "active", "ready", "carry_patch", "integration")
-	seedWorkspace(t, env.db, "ws-b", "alice", "active", "ready", "carry_patch", "integration")
+	seedWorkspace(t, env.db, "ws-a", "alice", "ready", "carry_patch", "integration")
+	seedWorkspace(t, env.db, "ws-b", "alice", "ready", "carry_patch", "integration")
 
 	// Seed a job belonging to ws-b.
 	seedRebuildJobWithResult(t, env.db, "job-from-b", "completed", "ws-b", "rebase", time.Now().UTC(), nil)
@@ -235,7 +235,7 @@ func TestRebuildStatus_CrossWorkspace_Returns404(t *testing.T) {
 func TestRebuildStatus_NotFound_Returns404(t *testing.T) {
 	env := newFullTestEnv(t)
 
-	seedWorkspace(t, env.db, "my-workspace", "alice", "active", "ready", "carry_patch", "integration")
+	seedWorkspace(t, env.db, "my-workspace", "alice", "ready", "carry_patch", "integration")
 
 	auth := rebuildUserAuth("alice")
 	rec := env.doRequest(t, http.MethodGet, "/api/v1/workspaces/my-workspace/rebuilds/nonexistent-id", "", auth)

@@ -52,10 +52,9 @@ func newHandlerTestEnv(t *testing.T) *handlerTestEnv {
 			branch TEXT,
 			owner_id TEXT NOT NULL,
 			org_id TEXT,
-			status TEXT NOT NULL DEFAULT 'active',
+			status TEXT NOT NULL DEFAULT 'ready',
 			display_name TEXT NOT NULL DEFAULT '',
 			description TEXT NOT NULL DEFAULT '',
-			clone_status TEXT NOT NULL DEFAULT 'pending',
 			head_sha TEXT,
 			clone_error TEXT,
 			created_at TEXT NOT NULL,
@@ -179,8 +178,8 @@ func (env *handlerTestEnv) seedWorkspaceForTest(t *testing.T, slug, ownerID stri
 	t.Helper()
 	now := time.Now().UTC().Format(time.RFC3339)
 	_, err := env.db.Exec(
-		`INSERT INTO workspaces (slug, git_url, owner_id, status, display_name, description, clone_status, created_at, updated_at)
-		 VALUES (?, ?, ?, 'active', ?, '', 'pending', ?, ?)`,
+		`INSERT INTO workspaces (slug, git_url, owner_id, status, display_name, description, created_at, updated_at)
+		 VALUES (?, ?, ?, 'ready', ?, '', ?, ?)`,
 		slug, "https://github.com/org/repo", ownerID, slug, now, now,
 	)
 	if err != nil {
@@ -231,8 +230,8 @@ func (env *handlerTestEnv) seedWorkspaceWithOrg(t *testing.T, slug, ownerID, org
 	t.Helper()
 	now := time.Now().UTC().Format(time.RFC3339)
 	_, err := env.db.Exec(
-		`INSERT INTO workspaces (slug, git_url, owner_id, org_id, status, display_name, description, clone_status, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, 'active', ?, '', 'pending', ?, ?)`,
+		`INSERT INTO workspaces (slug, git_url, owner_id, org_id, status, display_name, description, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, 'ready', ?, '', ?, ?)`,
 		slug, "https://github.com/org/repo", ownerID, orgID, slug, now, now,
 	)
 	if err != nil {

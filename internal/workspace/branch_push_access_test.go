@@ -46,7 +46,7 @@ func useBranchPushEmitter(t *testing.T) *mockAuditEmitter {
 // owner, and returns it.
 func (e *branchPushEnv) seedReady(t *testing.T, slug, owner string) *Workspace {
 	t.Helper()
-	ws := &Workspace{Slug: slug, GitURL: "https://github.com/org/" + slug, OwnerID: owner, Status: "active", CloneStatus: "ready"}
+	ws := &Workspace{Slug: slug, GitURL: "https://github.com/org/" + slug, OwnerID: owner, Status: "ready"}
 	e.seedWorkspace(t, ws)
 	return ws
 }
@@ -180,8 +180,8 @@ func TestBranchPushBoundElsewhere_TS_38_10(t *testing.T) {
 	hub := newRealHub(t)
 	events := useBranchPushEmitter(t)
 	pushes := recordPushes(t)
-	hub.seed(t, "ws-a", "u1", "active")
-	hub.seed(t, "ws-b", "u1", "active")
+	hub.seed(t, "ws-a", "u1", "pending")
+	hub.seed(t, "ws-b", "u1", "pending")
 	withScope, withScopeID := hub.mintPAT(t, "workspaces:write")
 	withoutScope, withoutScopeID := hub.mintPAT(t, "workspaces:read")
 	bindToken(t, hub.db.SqlDB, withScopeID, "ws-a")
@@ -235,7 +235,7 @@ func TestBranchPushOrgMember_TS_38_13(t *testing.T) {
 	env.seedOrgMember(t, "org-push", "user-a")
 	env.seedOrgMember(t, "org-push", "user-m")
 	org := "org-push"
-	env.seedWorkspace(t, &Workspace{Slug: "ws-org", GitURL: "https://github.com/org/ws-org", OwnerID: "user-a", OrgID: &org, Status: "active", CloneStatus: "ready"})
+	env.seedWorkspace(t, &Workspace{Slug: "ws-org", GitURL: "https://github.com/org/ws-org", OwnerID: "user-a", OrgID: &org, Status: "ready"})
 
 	for _, auth := range []*apikit.AuthInfo{userAuth("user-m"), patAuth("user-m", "workspaces:write")} {
 		rec := env.push(t, "ws-org", "feat", "", auth)
@@ -290,19 +290,19 @@ func TestBranchPushInvalidName_TS_38_16(t *testing.T) {
 	env.assertNothingHappened(t)
 }
 
-// TS-38-17: An inactive workspace or one whose clone is not ready is refused
-// with 400 before the lock.
+// TS-38-17: A workspace that is not ready (archived, or its clone not done)
+// is refused with 400 before the lock.
 // Requirement: 38-REQ-3.2, 38-REQ-3.3
 func TestBranchPushWorkspaceNotUsable_TS_38_17(t *testing.T) {
 	env := newBranchPushEnv(t)
-	env.seedWorkspace(t, &Workspace{Slug: "ws-archived", GitURL: "https://github.com/org/a", OwnerID: "user-a", Status: "archived", CloneStatus: "archived"})
-	env.seedWorkspace(t, &Workspace{Slug: "ws-cloning", GitURL: "https://github.com/org/c", OwnerID: "user-a", Status: "active", CloneStatus: "cloning"})
+	env.seedWorkspace(t, &Workspace{Slug: "ws-archived", GitURL: "https://github.com/org/a", OwnerID: "user-a", Status: "archived"})
+	env.seedWorkspace(t, &Workspace{Slug: "ws-cloning", GitURL: "https://github.com/org/c", OwnerID: "user-a", Status: "cloning"})
 	holdLock(t, "ws-archived")
 	holdLock(t, "ws-cloning")
 
 	assertRefusal(t, env.push(t, "ws-archived", "feat", "", userAuth("user-a")),
-		http.StatusBadRequest, "workspace is not active; push requires an active workspace", "")
+		http.StatusBadRequest, "workspace is not ready; push requires a ready workspace", "")
 	assertRefusal(t, env.push(t, "ws-cloning", "feat", "", userAuth("user-a")),
-		http.StatusBadRequest, "workspace clone is not ready; clone_status must be 'ready' to push", "")
+		http.StatusBadRequest, "workspace is not ready; push requires a ready workspace", "")
 	env.assertNothingHappened(t)
 }

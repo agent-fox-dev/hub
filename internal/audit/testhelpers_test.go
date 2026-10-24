@@ -261,9 +261,8 @@ func openTestSQLiteDB(t *testing.T) *sql.DB {
 	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS workspaces (
 		slug         TEXT PRIMARY KEY,
 		owner_id     TEXT NOT NULL,
-		status       TEXT NOT NULL DEFAULT 'active',
-		org_id       TEXT,
-		clone_status TEXT NOT NULL DEFAULT 'ready'
+		status       TEXT NOT NULL DEFAULT 'ready',
+		org_id       TEXT
 	)`)
 	if err != nil {
 		t.Fatalf("create workspaces table: %v", err)
@@ -1001,7 +1000,7 @@ func (env *auditTestEnv) seedTrace(t *testing.T, id, runID, workspace, eventType
 }
 
 // TS-36-46: the shared SQLite fixture has the columns and the table the
-// workspace access rule reads: workspaces.org_id and clone_status, and
+// workspace access rule reads: workspaces.org_id and status, and
 // org_members(org_id, user_id). Requirement: 36-REQ-10.4
 func TestOpenTestSQLiteDB_OrgSchema_TS_36_46(t *testing.T) {
 	db := openTestSQLiteDB(t)
@@ -1021,7 +1020,7 @@ func TestOpenTestSQLiteDB_OrgSchema_TS_36_46(t *testing.T) {
 		t.Fatal(err)
 	}
 	rows.Close()
-	for _, c := range []string{"org_id", "clone_status"} {
+	for _, c := range []string{"org_id", "status"} {
 		if !cols[c] {
 			t.Errorf("workspaces has no %s column (columns %v)", c, cols)
 		}

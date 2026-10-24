@@ -20,12 +20,9 @@ import (
 // handleRecloneWorkspace handles POST /api/v1/workspaces/:slug/reclone.
 // It executes the archive flow (push local commits to upstream, logging a
 // warning if the push fails), deletes the local clone directory, atomically
-// resets workspace state (clone_status='pending', sync_status='idle', clears
-// sync_error and upstream_head_sha), enqueues a clone job, and returns the
-// workspace with clone_status='pending' and status='active'.
-//
-// The workspace status is never changed by this handler — it remains 'active'
-// throughout the entire reclone lifecycle (13-PROP-5).
+// resets workspace state (status='pending', clears sync_error and
+// upstream_head_sha), enqueues a clone job, and returns the workspace with
+// status='pending'.
 //
 // Requirements: 13-REQ-7
 func handleRecloneWorkspace(db *sql.DB) echo.HandlerFunc {
@@ -51,10 +48,17 @@ func handleRecloneWorkspace(db *sql.DB) echo.HandlerFunc {
 			return nil // Response already written by lookupWorkspaceForAuth.
 		}
 
+		// An archived workspace has no clone to replace; reactivation
+		// clones it again.
+		if ws.Status == "archived" {
+			return respondError(c, http.StatusBadRequest,
+				"workspace is archived and must be reactivated before recloning")
+		}
+
 		// ---- Reject concurrent reclone (13-REQ-7.E7) ----
-		if ws.CloneStatus == "pending" || ws.CloneStatus == "cloning" {
+		if ws.Status == "pending" || ws.Status == "cloning" {
 			return respondError(c, http.StatusConflict,
-				"clone operation already in progress; cannot reclone while clone_status is '"+ws.CloneStatus+"'")
+				"clone operation already in progress; cannot reclone while status is '"+ws.Status+"'")
 		}
 
 		// Reclone removes the trunk; refuse while another operation uses it.
@@ -108,12 +112,11 @@ func handleRecloneWorkspace(db *sql.DB) echo.HandlerFunc {
 				fmt.Sprintf("failed to delete workspace directory: %v", err))
 		}
 
-		// ---- Atomic DB update (13-REQ-7.1, 13-REQ-7.2, 13-PROP-5) ----
-		// Set clone_status='pending', sync_status='idle', clear sync_error and
-		// upstream_head_sha. Workspace status remains 'active' — never modified.
+		// ---- Atomic DB update (13-REQ-7.1, 13-REQ-7.2) ----
+		// Set status='pending', clear sync_error and upstream_head_sha.
 		now := time.Now().UTC().Format(timestampFormat)
 		_, err := db.Exec(
-			`UPDATE workspaces SET clone_status = 'pending', sync_status = 'idle', sync_error = NULL, upstream_head_sha = NULL, updated_at = ? WHERE slug = ?`,
+			`UPDATE workspaces SET status = 'pending', sync_error = NULL, upstream_head_sha = NULL, updated_at = ? WHERE slug = ?`,
 			now, slug,
 		)
 		if err != nil {

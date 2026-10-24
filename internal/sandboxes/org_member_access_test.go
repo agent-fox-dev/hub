@@ -28,7 +28,7 @@ func memberPAT(perms ...string) *apikit.AuthInfo {
 // and makes leaseMember a member of O.
 func addTeam(t *testing.T, e *leaseEnv) {
 	t.Helper()
-	e.addWorkspace("team", leaseOwner, "O", "active")
+	e.addWorkspace("team", leaseOwner, "O", "ready")
 	e.plantSecret("workspace", "team", "GIT_PAT", "TEAM-VALUE-456")
 	if _, err := e.db.Exec(`INSERT INTO org_members (org_id, user_id) VALUES ('O', ?)`, leaseMember); err != nil {
 		t.Fatal(err)

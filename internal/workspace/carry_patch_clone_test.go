@@ -199,10 +199,8 @@ func seedCarryPatchWorkspaceRaw(t *testing.T, db *sql.DB, slug, gitURL, upstream
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	_, err := db.Exec(
 		`INSERT INTO workspaces (slug, git_url, owner_id, status, display_name, description,
-		 clone_status, created_at, updated_at, sync_mode, sync_status,
-		 workspace_mode, upstream_url, integration_branch)
-		 VALUES (?, ?, 'user-1', 'active', '', '', 'pending', ?, ?, 'pull_only', 'idle',
-		 'carry_patch', ?, ?)`,
+		 created_at, updated_at, workspace_mode, upstream_url, integration_branch)
+		 VALUES (?, ?, 'user-1', 'pending', '', '', ?, ?, 'carry_patch', ?, ?)`,
 		slug, gitURL, now, now, upstreamURL, integrationBranch,
 	)
 	if err != nil {
@@ -213,7 +211,7 @@ func seedCarryPatchWorkspaceRaw(t *testing.T, db *sql.DB, slug, gitURL, upstream
 // TS-15-18: When a carry_patch workspace clone job executes, it clones
 // git_url as origin, adds 'upstream' remote pointing to upstream_url,
 // sets rerere.enabled=true and rerere.autoupdate=true, creates the
-// integration branch, and marks clone_status as 'ready'.
+// integration branch, and marks status as 'ready'.
 // Requirement: 15-REQ-6.1
 func TestCarryPatch_CloneSetup_DualRemote(t *testing.T) {
 	db := openTestDB(t)
@@ -241,13 +239,13 @@ func TestCarryPatch_CloneSetup_DualRemote(t *testing.T) {
 		GitURL: "https://github.com/fork/repo.git",
 	})
 
-	// Verify clone_status is 'ready'.
-	cloneStatus, _, _, err := getCloneFields(db, slug)
+	// Verify status is 'ready'.
+	status, _, _, err := getCloneFields(db, slug)
 	if err != nil {
 		t.Fatalf("getCloneFields: %v", err)
 	}
-	if cloneStatus != "ready" {
-		t.Fatalf("clone_status = %q; want %q", cloneStatus, "ready")
+	if status != "ready" {
+		t.Fatalf("status = %q; want %q", status, "ready")
 	}
 
 	trunkDir := filepath.Join(wsRoot, slug, "trunk")
@@ -323,13 +321,13 @@ func TestCarryPatch_CloneSetup_PostCloneFailureStillReady(t *testing.T) {
 		GitURL: "https://github.com/fork/repo.git",
 	})
 
-	// Verify clone_status is 'ready' (not 'failed').
-	cloneStatus, _, _, err := getCloneFields(db, slug)
+	// Verify status is 'ready' (not 'failed').
+	status, _, _, err := getCloneFields(db, slug)
 	if err != nil {
 		t.Fatalf("getCloneFields: %v", err)
 	}
-	if cloneStatus != "ready" {
-		t.Errorf("clone_status = %q; want %q (post-clone setup failure should not prevent ready)", cloneStatus, "ready")
+	if status != "ready" {
+		t.Errorf("status = %q; want %q (post-clone setup failure should not prevent ready)", status, "ready")
 	}
 
 	// Verify that a warning was logged about the post-clone setup failure.
@@ -371,12 +369,12 @@ func TestCarryPatch_CloneSetup_ConfigSetFailureStillReady(t *testing.T) {
 		GitURL: "https://github.com/fork/repo.git",
 	})
 
-	cloneStatus, _, _, err := getCloneFields(db, slug)
+	status, _, _, err := getCloneFields(db, slug)
 	if err != nil {
 		t.Fatalf("getCloneFields: %v", err)
 	}
-	if cloneStatus != "ready" {
-		t.Errorf("clone_status = %q; want %q", cloneStatus, "ready")
+	if status != "ready" {
+		t.Errorf("status = %q; want %q", status, "ready")
 	}
 }
 
@@ -405,12 +403,12 @@ func TestCarryPatch_CloneSetup_UnreachableUpstream_StillReady(t *testing.T) {
 		GitURL: "https://github.com/fork/repo.git",
 	})
 
-	cloneStatus, _, _, err := getCloneFields(db, slug)
+	status, _, _, err := getCloneFields(db, slug)
 	if err != nil {
 		t.Fatalf("getCloneFields: %v", err)
 	}
-	if cloneStatus != "ready" {
-		t.Errorf("clone_status = %q; want %q", cloneStatus, "ready")
+	if status != "ready" {
+		t.Errorf("status = %q; want %q", status, "ready")
 	}
 
 	// Verify the upstream remote was still added despite being unreachable.
@@ -452,12 +450,12 @@ func TestCarryPatch_CloneSetup_IntegrationBranchExists_StillReady(t *testing.T) 
 		GitURL: "https://github.com/fork/repo.git",
 	})
 
-	cloneStatus, _, _, err := getCloneFields(db, slug)
+	status, _, _, err := getCloneFields(db, slug)
 	if err != nil {
 		t.Fatalf("getCloneFields: %v", err)
 	}
-	if cloneStatus != "ready" {
-		t.Errorf("clone_status = %q; want %q (CreateBranch conflict should not prevent ready)", cloneStatus, "ready")
+	if status != "ready" {
+		t.Errorf("status = %q; want %q (CreateBranch conflict should not prevent ready)", status, "ready")
 	}
 }
 
@@ -486,12 +484,12 @@ func TestCarryPatch_CloneSetup_CoreCloneFails_NoPostClone(t *testing.T) {
 		GitURL: "https://github.com/fork/repo.git",
 	})
 
-	cloneStatus, _, cloneError, err := getCloneFields(db, slug)
+	status, _, cloneError, err := getCloneFields(db, slug)
 	if err != nil {
 		t.Fatalf("getCloneFields: %v", err)
 	}
-	if cloneStatus != "failed" {
-		t.Errorf("clone_status = %q; want %q", cloneStatus, "failed")
+	if status != "failed" {
+		t.Errorf("status = %q; want %q", status, "failed")
 	}
 	if cloneError == nil || *cloneError == "" {
 		t.Error("clone_error should contain the error message")
@@ -519,7 +517,7 @@ func TestCarryPatch_CloneSetup_StandardSkipsSetup(t *testing.T) {
 		Slug:    slug,
 		GitURL:  "https://github.com/org/repo.git",
 		OwnerID: "user-1",
-		Status:  "active",
+		Status:  "pending",
 	}
 	if err := insertWorkspace(db, ws); err != nil {
 		t.Fatalf("seed workspace: %v", err)
@@ -538,12 +536,12 @@ func TestCarryPatch_CloneSetup_StandardSkipsSetup(t *testing.T) {
 		GitURL: "https://github.com/org/repo.git",
 	})
 
-	cloneStatus, _, _, err := getCloneFields(db, slug)
+	status, _, _, err := getCloneFields(db, slug)
 	if err != nil {
 		t.Fatalf("getCloneFields: %v", err)
 	}
-	if cloneStatus != "ready" {
-		t.Fatalf("clone_status = %q; want %q", cloneStatus, "ready")
+	if status != "ready" {
+		t.Fatalf("status = %q; want %q", status, "ready")
 	}
 
 	trunkDir := filepath.Join(wsRoot, slug, "trunk")

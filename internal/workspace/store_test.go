@@ -101,7 +101,7 @@ func TestWorkspaceStore_AllFields(t *testing.T) {
 		Branch:  &branch,
 		OwnerID: "user-uuid-1234",
 		OrgID:   nil,
-		Status:  "active",
+		Status:  "pending",
 	}
 
 	if err := insertWorkspace(db, ws); err != nil {
@@ -135,8 +135,8 @@ func TestWorkspaceStore_AllFields(t *testing.T) {
 	if orgID != nil {
 		t.Errorf("org_id = %v; want nil", orgID)
 	}
-	if status != "active" {
-		t.Errorf("status = %q; want %q", status, "active")
+	if status != "pending" {
+		t.Errorf("status = %q; want %q", status, "pending")
 	}
 	if _, err := time.Parse(time.RFC3339, createdAt); err != nil {
 		t.Errorf("created_at %q is not valid RFC 3339: %v", createdAt, err)
@@ -157,13 +157,13 @@ func TestWorkspaceStore_DuplicateGitURL(t *testing.T) {
 		Slug:    "ws-alice",
 		GitURL:  sharedURL,
 		OwnerID: "user-1",
-		Status:  "active",
+		Status:  "pending",
 	}
 	wsB := &Workspace{
 		Slug:    "ws-bob",
 		GitURL:  sharedURL,
 		OwnerID: "user-1",
-		Status:  "active",
+		Status:  "pending",
 	}
 
 	if err := insertWorkspace(db, wsA); err != nil {
@@ -251,7 +251,7 @@ func TestWorkspaceStore_RFC3339Timestamps(t *testing.T) {
 		Slug:    "ts-ws",
 		GitURL:  "https://github.com/org/repo",
 		OwnerID: "user-1",
-		Status:  "active",
+		Status:  "pending",
 	}
 
 	if err := insertWorkspace(db, ws); err != nil {

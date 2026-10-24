@@ -112,7 +112,7 @@ func TestStrangerAnswers_TS_35_54(t *testing.T) {
 func TestOwnerAndAdminUnchanged_TS_35_55(t *testing.T) {
 	env := newTestEnv(t)
 	env.seedWorkspace(t, &Workspace{Slug: "mine", GitURL: "https://github.com/a/mine", OwnerID: "alice-id",
-		OrgID: strp("personal-org-alice-id"), Status: "active", CloneStatus: "ready"})
+		OrgID: strp("personal-org-alice-id"), Status: "ready"})
 	owner := decodeObject(t, env.doRequest(t, http.MethodGet, "/api/v1/workspaces/mine", "", userAuth("alice-id")))
 	admin := decodeObject(t, env.doRequest(t, http.MethodGet, "/api/v1/workspaces/mine", "", adminAuth()))
 	if owner["access"] != "owner" || admin["access"] != "admin" || owner["org_slug"] != "personal-alice-id" {

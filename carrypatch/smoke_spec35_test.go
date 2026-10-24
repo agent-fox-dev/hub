@@ -10,7 +10,7 @@ import (
 // Path: 35-PATH-2. Requirement: 35-REQ-7.3
 func TestSmoke_MemberRebuildRefused_TS_35_58(t *testing.T) {
 	env := newRebuildTestEnv(t)
-	seedWorkspace(t, env.db, "cp", cpOwner, "active", "ready", "carry_patch", "deploy")
+	seedWorkspace(t, env.db, "cp", cpOwner, "ready", "carry_patch", "deploy")
 	seedPatch(t, env.db, "p1", "cp", "feature/a", 1, "active")
 	addOrgMember(t, env.db, "cp", "O", cpMember)
 	jobs := func() int {

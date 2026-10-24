@@ -177,8 +177,8 @@ func TestWriteRoutes_MissingOrNotOwnedWorkspace_TS_31_5(t *testing.T) {
 	}
 }
 
-// TS-31-6: A workspace that is not active, archived for one, answers 400 workspace is
-// not active on every write route, after the ownership check and before the body is read.
+// TS-31-6: An archived workspace answers 400 workspace is archived on every write
+// route, after the ownership check and before the body is read.
 // Requirement: 31-REQ-1.6
 func TestWriteRoutes_InactiveWorkspace_TS_31_6(t *testing.T) {
 	e := newEnv(t)
@@ -186,7 +186,7 @@ func TestWriteRoutes_InactiveWorkspace_TS_31_6(t *testing.T) {
 	addWorkspace(t, e.db, "theirs", func(r *workspaceRow) { r.status = "archived"; r.owner = otherID })
 	addWorkspace(t, e.db, "widgets")
 
-	const want = "workspace is not active"
+	const want = "workspace is archived"
 	for _, route := range writeRouteCases {
 		rec := e.sendRoute(route, "retired", apiKeyAuth())
 		if rec.Code != http.StatusBadRequest {
@@ -219,7 +219,7 @@ func TestWriteRoutes_InactiveWorkspace_TS_31_6(t *testing.T) {
 	for _, route := range writeRouteCases {
 		active := e.sendRoute(route, "widgets", apiKeyAuth())
 		if active.Code == http.StatusBadRequest && strings.Contains(active.Body.String(), want) {
-			t.Errorf("%s on an active workspace: refused as not active", route.name)
+			t.Errorf("%s on a ready workspace: refused as archived", route.name)
 		}
 	}
 }

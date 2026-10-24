@@ -110,8 +110,8 @@ func TestPurgeExpiredDeletedPatchesWithRefs_TS2352(t *testing.T) {
 	// Set up two workspaces with trunks.
 	slug1 := "purge-ws1"
 	slug2 := "purge-ws2"
-	seedWorkspace(t, db, slug1, "owner1", "active", "ready", "carry_patch", "deploy")
-	seedWorkspace(t, db, slug2, "owner1", "active", "ready", "carry_patch", "deploy")
+	seedWorkspace(t, db, slug1, "owner1", "ready", "carry_patch", "deploy")
+	seedWorkspace(t, db, slug2, "owner1", "ready", "carry_patch", "deploy")
 
 	_, trunkDir1, _ := setupForkAndTrunk(t, workspaceRoot, slug1)
 	_, trunkDir2, _ := setupForkAndTrunk(t, workspaceRoot, slug2)
@@ -184,9 +184,9 @@ func TestPurgeExpiredDeletedPatchesWithRefs_FailingRefRemoval_TS2353(t *testing.
 	slug1 := "purge-ok1"
 	slug2 := "purge-fail"
 	slug3 := "purge-ok2"
-	seedWorkspace(t, db, slug1, "owner1", "active", "ready", "carry_patch", "deploy")
-	seedWorkspace(t, db, slug2, "owner1", "active", "ready", "carry_patch", "deploy")
-	seedWorkspace(t, db, slug3, "owner1", "active", "ready", "carry_patch", "deploy")
+	seedWorkspace(t, db, slug1, "owner1", "ready", "carry_patch", "deploy")
+	seedWorkspace(t, db, slug2, "owner1", "ready", "carry_patch", "deploy")
+	seedWorkspace(t, db, slug3, "owner1", "ready", "carry_patch", "deploy")
 
 	_, trunkDir1, _ := setupForkAndTrunk(t, workspaceRoot, slug1)
 	_, _, _ = setupForkAndTrunk(t, workspaceRoot, slug2)
@@ -284,12 +284,12 @@ func TestPurgeExpiredDeletedPatchesWithRefs_MissingRefAndTrunk_TS2354(t *testing
 
 	// Workspace 1: trunk exists but no backup ref.
 	slug1 := "purge-noref"
-	seedWorkspace(t, db, slug1, "owner1", "active", "ready", "carry_patch", "deploy")
+	seedWorkspace(t, db, slug1, "owner1", "ready", "carry_patch", "deploy")
 	_, _, _ = setupForkAndTrunk(t, workspaceRoot, slug1)
 
 	// Workspace 2: trunk directory does not exist.
 	slug2 := "purge-notrunk"
-	seedWorkspace(t, db, slug2, "owner1", "active", "ready", "carry_patch", "deploy")
+	seedWorkspace(t, db, slug2, "owner1", "ready", "carry_patch", "deploy")
 	// Don't create a trunk for slug2.
 
 	eightDaysAgo := time.Now().UTC().Add(-8 * 24 * time.Hour).Format(time.RFC3339)
@@ -329,7 +329,7 @@ func TestPurgeExpiredDeletedPatchesWithRefs_RetentionWindow_TS2355(t *testing.T)
 	workspaceRoot := t.TempDir()
 
 	slug := "purge-retention"
-	seedWorkspace(t, db, slug, "owner1", "active", "ready", "carry_patch", "deploy")
+	seedWorkspace(t, db, slug, "owner1", "ready", "carry_patch", "deploy")
 	_, trunkDir, _ := setupForkAndTrunk(t, workspaceRoot, slug)
 
 	// Create a branch and backup ref for the recent row.
@@ -402,7 +402,7 @@ func TestPurgeDeletedPatches_KeepsBehaviour_TS2356(t *testing.T) {
 
 	workspaceRoot := t.TempDir()
 	slug := "purge-compat"
-	seedWorkspace(t, db, slug, "owner1", "active", "ready", "carry_patch", "deploy")
+	seedWorkspace(t, db, slug, "owner1", "ready", "carry_patch", "deploy")
 	_, trunkDir, _ := setupForkAndTrunk(t, workspaceRoot, slug)
 
 	// Create a branch and backup ref.

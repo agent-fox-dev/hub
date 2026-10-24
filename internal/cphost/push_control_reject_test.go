@@ -61,8 +61,8 @@ func newRejectTestEnv(t *testing.T, gitURL string, getVar carrypatch.GetVariable
 
 	// Seed carry_patch workspace.
 	mustExec(t, db,
-		`INSERT INTO workspaces (slug, git_url, owner_id, org_id, status, clone_status, workspace_mode, integration_branch, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, 'active', 'ready', 'carry_patch', 'main-int', ?, ?)`,
+		`INSERT INTO workspaces (slug, git_url, owner_id, org_id, status, workspace_mode, integration_branch, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, 'ready', 'carry_patch', 'main-int', ?, ?)`,
 		"myws", gitURL, "user-1", "org-1", now, now)
 
 	wsRoot := t.TempDir()
@@ -130,8 +130,7 @@ func openRejectTestDB(t *testing.T) *sql.DB {
 		branch            TEXT,
 		owner_id          TEXT NOT NULL,
 		org_id            TEXT,
-		status            TEXT NOT NULL DEFAULT 'active',
-		clone_status      TEXT NOT NULL DEFAULT 'ready',
+		status            TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','cloning','ready','failed','archived')),
 		head_sha          TEXT,
 		display_name      TEXT NOT NULL DEFAULT '',
 		description       TEXT NOT NULL DEFAULT '',
@@ -349,7 +348,7 @@ func TestRejectMode_TS22_16_UserinfoStripped(t *testing.T) {
 	createWorkspacesTable(t, db)
 	createPatchesTable(t, db)
 
-	seedWorkspaceWithGitURL(t, db, "myws", "user-1", "active", "ready",
+	seedWorkspaceWithGitURL(t, db, "myws", "user-1", "ready",
 		"carry_patch", "main-int", "https://user:s3cret@example.com/fork.git")
 	seedPatch(t, db, "p1", "myws", "feature/a", 1, "active")
 
@@ -466,7 +465,7 @@ func TestRejectMode_TS22_17_PropertyUserinfoStripped(t *testing.T) {
 			createWorkspacesTable(t, db)
 			createPatchesTable(t, db)
 
-			seedWorkspaceWithGitURL(t, db, "ws", "user-1", "active", "ready",
+			seedWorkspaceWithGitURL(t, db, "ws", "user-1", "ready",
 				"carry_patch", "main-int", tc.rawURL)
 			seedPatch(t, db, "p1", "ws", "feature/x", 1, "active")
 
@@ -533,7 +532,7 @@ func TestRejectMode_TS22_18_RefusesDeletion(t *testing.T) {
 		createWorkspacesTable(t, db)
 		createPatchesTable(t, db)
 
-		seedWorkspaceWithGitURL(t, db, "myws", "user-1", "active", "ready",
+		seedWorkspaceWithGitURL(t, db, "myws", "user-1", "ready",
 			"carry_patch", "main-int", "https://example.com/fork.git")
 		seedPatch(t, db, "p1", "myws", "p1", 1, "active")
 
@@ -700,7 +699,7 @@ func TestRejectMode_TS22_20_LoggedAndHTTP200(t *testing.T) {
 		createWorkspacesTable(t, db)
 		createPatchesTable(t, db)
 
-		seedWorkspaceWithGitURL(t, db, "myws", "user-1", "active", "ready",
+		seedWorkspaceWithGitURL(t, db, "myws", "user-1", "ready",
 			"carry_patch", "main-int", "https://example.com/fork.git")
 		seedPatch(t, db, "p1", "myws", "feature/a", 1, "active")
 
@@ -746,7 +745,7 @@ func TestRejectMode_TS22_20_LoggedAndHTTP200(t *testing.T) {
 		createWorkspacesTable(t, db)
 		createPatchesTable(t, db)
 
-		seedWorkspaceWithGitURL(t, db, "myws", "user-1", "active", "ready",
+		seedWorkspaceWithGitURL(t, db, "myws", "user-1", "ready",
 			"carry_patch", "main-int", "https://example.com/fork.git")
 		seedPatch(t, db, "p1", "myws", "feature/a", 1, "active")
 

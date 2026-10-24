@@ -50,7 +50,6 @@ afc workspace create --slug <slug> --git-url <url> [flags]
 | `--org` | no | string | Organization slug to associate the workspace with (sent as `org_id`) |
 | `--display-name` | no | string | Human-readable label; defaults to slug value if omitted |
 | `--description` | no | string | Free-form text describing the workspace; defaults to empty string |
-| `--sync-mode` | no | string | Upstream sync mode: `pull_only` (default) or `disabled`; invalid values are rejected client-side |
 | `--workspace-mode` | no | string | Workspace mode: `standard` (default) or `carry_patch`; invalid values are rejected client-side |
 | `--upstream-url` | conditional | string | Upstream repository URL; required when `--workspace-mode` is `carry_patch`, rejected for `standard` |
 | `--integration-branch` | no | string | Integration branch name for carry-patch workspaces; defaults to `deploy` when omitted; rejected for `standard` |
@@ -90,7 +89,7 @@ afc workspace create --slug <slug> --git-url <url> [flags]
 |------|-----------|
 | 0 | Workspace created successfully |
 | 1 | API error (4xx/5xx), network error, or timeout |
-| 2 | Missing required flags (`--slug`, `--git-url`), credential validation error (mutual exclusion, pair completeness, empty values, non-HTTPS URL), invalid `--sync-mode` value, invalid `--workspace-mode` value, missing `--upstream-url` for carry_patch, or `--upstream-url`/`--integration-branch` provided with standard mode |
+| 2 | Missing required flags (`--slug`, `--git-url`), credential validation error (mutual exclusion, pair completeness, empty values, non-HTTPS URL), invalid `--workspace-mode` value, missing `--upstream-url` for carry_patch, or `--upstream-url`/`--integration-branch` provided with standard mode |
 
 ---
 
@@ -264,7 +263,7 @@ afc workspace reactivate <slug>
 **Behavior:**
 
 - Sends `POST /api/v1/workspaces/<slug>/reactivate`.
-- Prints the updated workspace JSON to stdout (status = `"active"`).
+- Prints the updated workspace JSON to stdout (status = `"pending"`; the clone runs again).
 
 **Exit Codes:**
 
@@ -374,9 +373,8 @@ afc workspace sync <slug> [--reset-to-upstream] [--wait] [--timeout <duration>] 
   recovering from force-pushes). Carry-patch workspaces ignore it: an
   upstream force-push is reported as `force_push_detected` and handled by the
   rebuild.
-- Prints the updated workspace JSON to stdout, including sync status fields
-  (`sync_status`, `sync_mode`, `upstream_head_sha`, `last_sync_at`,
-  `sync_error`).
+- Prints the updated workspace JSON to stdout, including the sync fields
+  (`upstream_head_sha`, `last_sync_at`, `sync_error`).
 - For carry-patch workspaces, the response additionally carries
   `patches_merged`, `rebuild_triggered`, `force_push_detected`,
   `origin_fetched`, and -- only when a rebuild was enqueued --
@@ -438,8 +436,8 @@ afc workspace reclone <slug> --confirm
 - The reclone operation attempts to push local commits to upstream (logging a
   warning if push fails), deletes the local clone directory, resets workspace
   clone state to `pending`, and enqueues a new clone job.
-- The workspace status remains `active` throughout the reclone lifecycle.
-- Prints the workspace JSON to stdout with `clone_status='pending'`.
+- Prints the workspace JSON to stdout with `status='pending'`; the status
+  follows the new clone (`cloning`, then `ready` or `failed`).
 - Requires `workspaces:write` permission scope for PATs.
 
 **Exit Codes:**
@@ -1882,7 +1880,7 @@ rebuild was enqueued).
 | Code | Condition |
 |------|----------|
 | 0 | Patch branch reset successfully |
-| 1 | Patch not found, ineligible status, workspace not active, origin fetch failed, API error, network error, or timeout |
+| 1 | Patch not found, ineligible status, workspace archived, origin fetch failed, API error, network error, or timeout |
 
 ---
 
@@ -2122,7 +2120,7 @@ JSON document.
 - **The writes** (`issue create|update|close|comment|label|unlabel`, `label create`,
   `pr create|comment`) change the forge. They need an API key, an admin token, or a PAT
   holding `forge:write` (`forge:read` is not enough: 403), and an active workspace
-  (`400 workspace is not active`). The hub records each write that reaches the forge as
+  (`400 workspace is archived`). The hub records each write that reaches the forge as
   an audit event. The command itself checks what it can see before it sends anything:
   a missing required flag, `--body` together with `--body-file`, a body file that
   cannot be read, an issue or pull-request number that is not a positive integer and
@@ -2223,7 +2221,7 @@ The three flags exclude each other; more than one is a usage error (exit code 2,
   `{"status": "unset", "workspace": "<slug>"}`. The hub then answers the forge's deliveries
   with 404. It works on an archived workspace and when there was no secret.
 - `set` needs an API key, an admin token, or a PAT holding `forge:write`, and an active
-  workspace (`400 workspace is not active`); `unset` the same without the active check.
+  workspace (`400 workspace is archived`); `unset` the same without the archived check.
 
 **Example:**
 
@@ -2594,7 +2592,7 @@ afc pr comment <workspace-slug> <number> (--body <text> | --body-file <path>)
 | Code | Condition |
 |------|-----------|
 | 0 | The answer was printed |
-| 1 | The hub answered with an error: not authenticated (401), a PAT without the scope (`forge:read` for a read, `forge:write` for a write: 403), a workspace that is missing or not the caller's, or something the forge does not have (404, the latter with `error_type: forge_not_found`), a workspace that is not active or a bad parameter or body (400), a body over the forge's limit (413, `error_type: body_too_large`), a forge that cannot be told or an invalid API URL variable (422), a forge failure (429, 502, 504) or a server error. The error envelope on stdout carries the hub's message, in which the workspace's token is replaced with `[redacted]` |
+| 1 | The hub answered with an error: not authenticated (401), a PAT without the scope (`forge:read` for a read, `forge:write` for a write: 403), a workspace that is missing or not the caller's, or something the forge does not have (404, the latter with `error_type: forge_not_found`), an archived workspace or a bad parameter or body (400), a body over the forge's limit (413, `error_type: body_too_large`), a forge that cannot be told or an invalid API URL variable (422), a forge failure (429, 502, 504) or a server error. The error envelope on stdout carries the hub's message, in which the workspace's token is replaced with `[redacted]` |
 | 2 | Usage error such as a wrong number of arguments, a missing required flag, `--body` with `--body-file`, an unreadable body file, a number that is not a positive integer, an `issue update` with nothing to change, no API key configured (run `afc login`), or the hub could not be reached |
 
 ---

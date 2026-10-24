@@ -40,7 +40,7 @@ func TestGitBodyPassthrough_ExemptsGitRoutesFromBodyLimit(t *testing.T) {
 	env := &gitTestEnv{echo: e, db: db, workspaceRoot: wsRoot}
 	env.seedOrg(t, "org-1", "My Org", "myorg")
 	env.seedOrgMember(t, "org-1", "user-1")
-	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "active")
+	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "ready")
 	env.initWorkspaceRepo(t, "myws")
 
 	big := strings.Repeat("x", 4096)

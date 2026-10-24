@@ -27,22 +27,20 @@ CREATE TABLE IF NOT EXISTS workspaces (
 	branch            TEXT,
 	owner_id          TEXT NOT NULL,
 	org_id            TEXT,
-	status            TEXT NOT NULL DEFAULT 'active',
+	status            TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','cloning','ready','failed','archived')),
 	display_name      TEXT NOT NULL DEFAULT '',
 	description       TEXT NOT NULL DEFAULT '',
-	clone_status      TEXT NOT NULL DEFAULT 'pending' CHECK(clone_status IN ('pending','cloning','ready','failed','archived')),
 	head_sha          TEXT,
 	clone_error       TEXT,
 	created_at        TEXT NOT NULL,
 	updated_at        TEXT NOT NULL,
-	sync_mode         TEXT NOT NULL DEFAULT 'pull_only',
-	sync_status       TEXT NOT NULL DEFAULT 'idle',
 	upstream_head_sha TEXT,
 	last_sync_at      TEXT,
 	sync_error        TEXT,
 	workspace_mode    TEXT NOT NULL DEFAULT 'standard',
 	upstream_url      TEXT,
-	integration_branch TEXT
+	integration_branch TEXT,
+	settings          TEXT NOT NULL DEFAULT '{}'
 )`
 
 // smokeDB is a database with the production workspaces table, apikit's
@@ -70,8 +68,8 @@ func TestSmoke_APIKeyCallerListsOpenTriageIssues_TS_30_53(t *testing.T) {
 	stub := newForgeStub(t)
 	stub.setHandler(githubFixture)
 
-	if _, err := db.Exec(`INSERT INTO workspaces (slug, git_url, owner_id, status, clone_status, created_at, updated_at)
-		VALUES ('widgets', 'https://github.com/acme/widgets', 'user-1', 'active', 'ready', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`); err != nil {
+	if _, err := db.Exec(`INSERT INTO workspaces (slug, git_url, owner_id, status, created_at, updated_at)
+		VALUES ('widgets', 'https://github.com/acme/widgets', 'user-1', 'ready', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.CreateSecrets("workspace", "widgets", []secrets.EntryInput{{Key: "GIT_PAT", Value: "smoke-pat-value"}}); err != nil {

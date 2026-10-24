@@ -27,7 +27,7 @@ func newOrgHub(t *testing.T) (h *realHub, memberKey string) {
 		}
 	}
 	if err := insertWorkspace(db, &Workspace{Slug: "team-w", GitURL: "https://github.com/acme/w", OwnerID: "u1", OrgID: strp("org-acme"),
-		Status: "active", CloneStatus: "ready", WorkspaceMode: "carry_patch",
+		Status: "ready", WorkspaceMode: "carry_patch",
 		UpstreamURL: strp("https://github.com/up/w"), IntegrationBranch: strp("deploy")}); err != nil {
 		t.Fatal(err)
 	}

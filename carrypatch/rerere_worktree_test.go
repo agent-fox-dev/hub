@@ -136,7 +136,7 @@ type rerereHTTP struct {
 func newRerereHTTP(t *testing.T) *rerereHTTP {
 	t.Helper()
 	fe := newFullTestEnv(t)
-	seedWorkspace(t, fe.db, "ws-real", "alice", "active", "ready", "carry_patch", "integration")
+	seedWorkspace(t, fe.db, "ws-real", "alice", "ready", "carry_patch", "integration")
 	return &rerereHTTP{fullTestEnv: fe, real: newRealEnvAt(t, fe.workspaceRoot, "ws-real")}
 }
 

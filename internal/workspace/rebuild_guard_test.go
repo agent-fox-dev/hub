@@ -34,11 +34,10 @@ func guardTestSetup(t *testing.T, env *testEnv, slug string) string {
 	t.Cleanup(func() { archiveHeadFn = oldHead })
 
 	env.seedWorkspace(t, &Workspace{
-		Slug:        slug,
-		GitURL:      "https://github.com/example/repo.git",
-		OwnerID:     "alice-id",
-		Status:      "active",
-		CloneStatus: "ready",
+		Slug:    slug,
+		GitURL:  "https://github.com/example/repo.git",
+		OwnerID: "alice-id",
+		Status:  "ready",
 	})
 
 	trunkDir := filepath.Join(wsRoot, slug, "trunk")
@@ -135,12 +134,12 @@ func TestReclone_RebuildGuardSet_Returns409_TS_01_36(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(trunkDir, "marker")); err != nil {
 		t.Errorf("clone directory must be untouched: %v", err)
 	}
-	var cloneStatus string
-	if err := env.db.QueryRow(`SELECT clone_status FROM workspaces WHERE slug = ?`, slug).Scan(&cloneStatus); err != nil {
-		t.Fatalf("query clone_status: %v", err)
+	var status string
+	if err := env.db.QueryRow(`SELECT status FROM workspaces WHERE slug = ?`, slug).Scan(&status); err != nil {
+		t.Fatalf("query status: %v", err)
 	}
-	if cloneStatus != "ready" {
-		t.Errorf("clone_status = %q; want ready", cloneStatus)
+	if status != "ready" {
+		t.Errorf("status = %q; want ready", status)
 	}
 	assertLockFree(t, slug)
 }
@@ -152,11 +151,10 @@ func TestArchiveAndReclone_GuardEnded_BehaveAsBefore_TS_01_37(t *testing.T) {
 	guardTestSetup(t, env, "guard-ended-a")
 	// A second workspace under the same (already redirected) root.
 	env.seedWorkspace(t, &Workspace{
-		Slug:        "guard-ended-b",
-		GitURL:      "https://github.com/example/repo.git",
-		OwnerID:     "alice-id",
-		Status:      "active",
-		CloneStatus: "ready",
+		Slug:    "guard-ended-b",
+		GitURL:  "https://github.com/example/repo.git",
+		OwnerID: "alice-id",
+		Status:  "ready",
 	})
 	if err := os.MkdirAll(filepath.Join(defaultWorkspaceRoot, "guard-ended-b", "trunk"), 0o755); err != nil {
 		t.Fatalf("create trunk dir: %v", err)
@@ -199,10 +197,6 @@ func TestSync_RebuildGuardSet_NotRejected_TS_01_38(t *testing.T) {
 	const slug = "guard-sync"
 	guardTestSetup(t, env, slug)
 	stubSyncUpToDate(t, "abc1234567890abcdef1234567890abcdef123456")
-	if _, err := env.db.Exec(
-		`UPDATE workspaces SET sync_mode = 'pull_only', sync_status = 'idle' WHERE slug = ?`, slug); err != nil {
-		t.Fatalf("set sync fields: %v", err)
-	}
 
 	end, ok := wslock.BeginRebuild(slug)
 	if !ok {

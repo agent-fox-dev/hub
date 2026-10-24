@@ -18,8 +18,8 @@ import (
 func TestSubmitRebuild_ValidRequest_Returns202(t *testing.T) {
 	env := newRebuildTestEnv(t)
 
-	// Seed an active carry_patch workspace with clone_status=ready.
-	seedWorkspace(t, env.db, "my-workspace", "alice", "active", "ready", "carry_patch", "integration")
+	// Seed a ready carry_patch workspace.
+	seedWorkspace(t, env.db, "my-workspace", "alice", "ready", "carry_patch", "integration")
 
 	// Seed at least one active patch.
 	seedPatch(t, env.db, "patch-1", "my-workspace", "feature/foo", 1, PatchStatusActive)
@@ -70,7 +70,7 @@ func TestSubmitRebuild_StrategyCapturedAtEnqueueTime(t *testing.T) {
 	// Override GetVariable to return 'merge' strategy.
 	mergeEnv := newRebuildTestEnvWithStrategy(t, "merge")
 
-	seedWorkspace(t, mergeEnv.db, "ws-merge", "alice", "active", "ready", "carry_patch", "integration")
+	seedWorkspace(t, mergeEnv.db, "ws-merge", "alice", "ready", "carry_patch", "integration")
 	seedPatch(t, mergeEnv.db, "patch-m1", "ws-merge", "feature/bar", 1, PatchStatusActive)
 
 	rec := mergeEnv.doRequest(t, http.MethodPost, "/api/v1/workspaces/ws-merge/rebuild", "", rebuildUserAuth("alice"))
@@ -94,7 +94,7 @@ func TestSubmitRebuild_StrategyCapturedAtEnqueueTime(t *testing.T) {
 func TestSubmitRebuild_DefaultStrategy_IsRebase(t *testing.T) {
 	env := newRebuildTestEnvWithStrategy(t, "")
 
-	seedWorkspace(t, env.db, "ws-default", "alice", "active", "ready", "carry_patch", "integration")
+	seedWorkspace(t, env.db, "ws-default", "alice", "ready", "carry_patch", "integration")
 	seedPatch(t, env.db, "patch-d1", "ws-default", "feature/foo", 1, PatchStatusActive)
 
 	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/ws-default/rebuild", "", rebuildUserAuth("alice"))
@@ -121,7 +121,7 @@ func TestSubmitRebuild_DefaultStrategy_IsRebase(t *testing.T) {
 func TestSubmitRebuild_StandardMode_Returns400(t *testing.T) {
 	env := newRebuildTestEnv(t)
 
-	seedWorkspace(t, env.db, "ws-std", "alice", "active", "ready", "standard", "")
+	seedWorkspace(t, env.db, "ws-std", "alice", "ready", "standard", "")
 
 	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/ws-std/rebuild", "", rebuildUserAuth("alice"))
 
@@ -137,14 +137,14 @@ func TestSubmitRebuild_StandardMode_Returns400(t *testing.T) {
 }
 
 // ===========================================================================
-// 16-REQ-1.E2: POST /rebuild when workspace is not active or clone not ready
+// 16-REQ-1.E2: POST /rebuild when workspace status is not ready (archived, cloning, ...)
 // returns HTTP 400.
 // ===========================================================================
 
 func TestSubmitRebuild_WorkspaceNotActive_Returns400(t *testing.T) {
 	env := newRebuildTestEnv(t)
 
-	seedWorkspace(t, env.db, "ws-archived", "alice", "archived", "ready", "carry_patch", "integration")
+	seedWorkspace(t, env.db, "ws-archived", "alice", "archived", "carry_patch", "integration")
 	seedPatch(t, env.db, "patch-a1", "ws-archived", "feature/foo", 1, PatchStatusActive)
 
 	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/ws-archived/rebuild", "", rebuildUserAuth("alice"))
@@ -163,7 +163,7 @@ func TestSubmitRebuild_WorkspaceNotActive_Returns400(t *testing.T) {
 func TestSubmitRebuild_CloneNotReady_Returns400(t *testing.T) {
 	env := newRebuildTestEnv(t)
 
-	seedWorkspace(t, env.db, "ws-cloning", "alice", "active", "cloning", "carry_patch", "integration")
+	seedWorkspace(t, env.db, "ws-cloning", "alice", "cloning", "carry_patch", "integration")
 	seedPatch(t, env.db, "patch-c1", "ws-cloning", "feature/foo", 1, PatchStatusActive)
 
 	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/ws-cloning/rebuild", "", rebuildUserAuth("alice"))
@@ -187,7 +187,7 @@ func TestSubmitRebuild_CloneNotReady_Returns400(t *testing.T) {
 func TestSubmitRebuild_NoActivePatches_Returns400(t *testing.T) {
 	env := newRebuildTestEnv(t)
 
-	seedWorkspace(t, env.db, "ws-nopatch", "alice", "active", "ready", "carry_patch", "integration")
+	seedWorkspace(t, env.db, "ws-nopatch", "alice", "ready", "carry_patch", "integration")
 
 	// Seed only disabled and merged_upstream patches — no active or conflict.
 	seedPatch(t, env.db, "patch-d1", "ws-nopatch", "feature/disabled", 1, PatchStatusDisabled)
@@ -209,7 +209,7 @@ func TestSubmitRebuild_NoActivePatches_Returns400(t *testing.T) {
 func TestSubmitRebuild_EmptyPatchList_Returns400(t *testing.T) {
 	env := newRebuildTestEnv(t)
 
-	seedWorkspace(t, env.db, "ws-empty", "alice", "active", "ready", "carry_patch", "integration")
+	seedWorkspace(t, env.db, "ws-empty", "alice", "ready", "carry_patch", "integration")
 	// No patches at all.
 
 	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/ws-empty/rebuild", "", rebuildUserAuth("alice"))
@@ -228,7 +228,7 @@ func TestSubmitRebuild_EmptyPatchList_Returns400(t *testing.T) {
 func TestSubmitRebuild_DuplicateJob_Returns409(t *testing.T) {
 	env := newRebuildTestEnv(t)
 
-	seedWorkspace(t, env.db, "ws-dup", "alice", "active", "ready", "carry_patch", "integration")
+	seedWorkspace(t, env.db, "ws-dup", "alice", "ready", "carry_patch", "integration")
 	seedPatch(t, env.db, "patch-dup1", "ws-dup", "feature/foo", 1, PatchStatusActive)
 
 	// First submission should succeed.
@@ -259,7 +259,7 @@ func TestSubmitRebuild_DuplicateJob_Returns409(t *testing.T) {
 func TestSubmitRebuild_PATWithoutScope_Returns403(t *testing.T) {
 	env := newRebuildTestEnv(t)
 
-	seedWorkspace(t, env.db, "ws-perm", "alice", "active", "ready", "carry_patch", "integration")
+	seedWorkspace(t, env.db, "ws-perm", "alice", "ready", "carry_patch", "integration")
 	seedPatch(t, env.db, "patch-p1", "ws-perm", "feature/foo", 1, PatchStatusActive)
 
 	// PAT with only rebuilds:read scope (no rebuilds:write).
@@ -280,7 +280,7 @@ func TestSubmitRebuild_PATWithoutScope_Returns403(t *testing.T) {
 func TestSubmitRebuild_PATWithWriteScope_Returns202(t *testing.T) {
 	env := newRebuildTestEnv(t)
 
-	seedWorkspace(t, env.db, "ws-pat-ok", "alice", "active", "ready", "carry_patch", "integration")
+	seedWorkspace(t, env.db, "ws-pat-ok", "alice", "ready", "carry_patch", "integration")
 	seedPatch(t, env.db, "patch-pa1", "ws-pat-ok", "feature/foo", 1, PatchStatusActive)
 
 	// PAT with rebuilds:write scope should succeed.
@@ -303,7 +303,7 @@ func TestSubmitRebuild_BodyStrategyOverride(t *testing.T) {
 	// Create env where GetVariable returns 'rebase' (default).
 	env := newRebuildTestEnvWithStrategy(t, "rebase")
 
-	seedWorkspace(t, env.db, "ws-override", "alice", "active", "ready", "carry_patch", "integration")
+	seedWorkspace(t, env.db, "ws-override", "alice", "ready", "carry_patch", "integration")
 	seedPatch(t, env.db, "patch-o1", "ws-override", "feature/foo", 1, PatchStatusActive)
 
 	// Send POST with body strategy=merge; variable says rebase.
@@ -329,7 +329,7 @@ func TestSubmitRebuild_BodyStrategyOverride(t *testing.T) {
 func TestSubmitRebuild_BodyStrategyOverride_Rebase(t *testing.T) {
 	env := newRebuildTestEnvWithStrategy(t, "merge")
 
-	seedWorkspace(t, env.db, "ws-override2", "alice", "active", "ready", "carry_patch", "integration")
+	seedWorkspace(t, env.db, "ws-override2", "alice", "ready", "carry_patch", "integration")
 	seedPatch(t, env.db, "patch-o2", "ws-override2", "feature/foo", 1, PatchStatusActive)
 
 	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/ws-override2/rebuild",
@@ -358,7 +358,7 @@ func TestSubmitRebuild_BodyStrategyOverride_Rebase(t *testing.T) {
 func TestSubmitRebuild_InvalidBodyStrategy_Returns400(t *testing.T) {
 	env := newRebuildTestEnv(t)
 
-	seedWorkspace(t, env.db, "ws-invalid", "alice", "active", "ready", "carry_patch", "integration")
+	seedWorkspace(t, env.db, "ws-invalid", "alice", "ready", "carry_patch", "integration")
 	seedPatch(t, env.db, "patch-i1", "ws-invalid", "feature/foo", 1, PatchStatusActive)
 
 	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/ws-invalid/rebuild",
@@ -689,7 +689,7 @@ func TestRollbackRebuild_CrossWorkspace_Returns404(t *testing.T) {
 func TestSubmitRebuild_FailModeContinue_InPayload(t *testing.T) {
 	env := newRebuildTestEnv(t)
 
-	seedWorkspace(t, env.db, "ws-failmode", "alice", "active", "ready", "carry_patch", "integration")
+	seedWorkspace(t, env.db, "ws-failmode", "alice", "ready", "carry_patch", "integration")
 	seedPatch(t, env.db, "patch-fm1", "ws-failmode", "feature/foo", 1, PatchStatusActive)
 
 	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/ws-failmode/rebuild",
@@ -714,7 +714,7 @@ func TestSubmitRebuild_FailModeContinue_InPayload(t *testing.T) {
 func TestSubmitRebuild_NoFailMode_OmittedFromPayload(t *testing.T) {
 	env := newRebuildTestEnv(t)
 
-	seedWorkspace(t, env.db, "ws-nofm", "alice", "active", "ready", "carry_patch", "integration")
+	seedWorkspace(t, env.db, "ws-nofm", "alice", "ready", "carry_patch", "integration")
 	seedPatch(t, env.db, "patch-nofm", "ws-nofm", "feature/foo", 1, PatchStatusActive)
 
 	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/ws-nofm/rebuild",
@@ -740,7 +740,7 @@ func TestSubmitRebuild_NoFailMode_OmittedFromPayload(t *testing.T) {
 func TestSubmitRebuild_InvalidFailMode_Returns400(t *testing.T) {
 	env := newRebuildTestEnv(t)
 
-	seedWorkspace(t, env.db, "ws-badfm", "alice", "active", "ready", "carry_patch", "integration")
+	seedWorkspace(t, env.db, "ws-badfm", "alice", "ready", "carry_patch", "integration")
 	seedPatch(t, env.db, "patch-badfm", "ws-badfm", "feature/foo", 1, PatchStatusActive)
 
 	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/ws-badfm/rebuild",
@@ -846,7 +846,7 @@ func TestSubmitRebuild_BodyFailModeOverridesVariable(t *testing.T) {
 func TestSubmitRebuild_StandardMode_ErrorType(t *testing.T) {
 	env := newRebuildTestEnv(t)
 
-	seedWorkspace(t, env.db, "ws-errtype-std", "alice", "active", "ready", "standard", "")
+	seedWorkspace(t, env.db, "ws-errtype-std", "alice", "ready", "standard", "")
 
 	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/ws-errtype-std/rebuild", "", rebuildUserAuth("alice"))
 
@@ -871,7 +871,7 @@ func TestSubmitRebuild_StandardMode_ErrorType(t *testing.T) {
 func TestSubmitRebuild_NoActivePatches_ErrorType(t *testing.T) {
 	env := newRebuildTestEnv(t)
 
-	seedWorkspace(t, env.db, "ws-errtype-nopatch", "alice", "active", "ready", "carry_patch", "integration")
+	seedWorkspace(t, env.db, "ws-errtype-nopatch", "alice", "ready", "carry_patch", "integration")
 	// Seed only disabled patches — no active or conflict.
 	seedPatch(t, env.db, "patch-et-d1", "ws-errtype-nopatch", "feature/disabled", 1, PatchStatusDisabled)
 
@@ -898,7 +898,7 @@ func TestSubmitRebuild_NoActivePatches_ErrorType(t *testing.T) {
 func TestSubmitRebuild_DuplicateJob_ErrorType(t *testing.T) {
 	env := newRebuildTestEnv(t)
 
-	seedWorkspace(t, env.db, "ws-errtype-dup", "alice", "active", "ready", "carry_patch", "integration")
+	seedWorkspace(t, env.db, "ws-errtype-dup", "alice", "ready", "carry_patch", "integration")
 	seedPatch(t, env.db, "patch-et-dup1", "ws-errtype-dup", "feature/foo", 1, PatchStatusActive)
 
 	// First submission should succeed.

@@ -37,8 +37,7 @@ func TestCarryPatchSync_ResponseIncludesStandardSyncFields(t *testing.T) {
 		Slug:              "cp-ws",
 		GitURL:            "https://github.com/example/repo.git",
 		OwnerID:           "alice-id",
-		Status:            "active",
-		CloneStatus:       "ready",
+		Status:            "ready",
 		WorkspaceMode:     "carry_patch",
 		UpstreamURL:       strPtr("https://github.com/upstream/repo.git"),
 		IntegrationBranch: strPtr("deploy"),
@@ -68,7 +67,7 @@ func TestCarryPatchSync_ResponseIncludesStandardSyncFields(t *testing.T) {
 
 	// Standard sync fields must be present (16-REQ-5.1).
 	for _, field := range []string{
-		"slug", "git_url", "status", "clone_status", "sync_mode", "sync_status",
+		"slug", "git_url", "status", "settings",
 		"head_sha", "upstream_head_sha", "last_sync_at", "workspace_mode",
 		"upstream_url", "integration_branch", "created_at", "updated_at",
 	} {
@@ -113,8 +112,7 @@ func TestCarryPatchSync_OmitsRebuildJobIDWhenNoRebuild(t *testing.T) {
 		Slug:              "cp-quiet",
 		GitURL:            "https://github.com/example/repo.git",
 		OwnerID:           "alice-id",
-		Status:            "active",
-		CloneStatus:       "ready",
+		Status:            "ready",
 		WorkspaceMode:     "carry_patch",
 		UpstreamURL:       strPtr("https://github.com/upstream/repo.git"),
 		IntegrationBranch: strPtr("deploy"),
@@ -156,8 +154,7 @@ func TestCarryPatchSync_UnhandledFallsThroughToStandardSync(t *testing.T) {
 		Slug:          "cp-fallthrough",
 		GitURL:        "https://github.com/example/repo.git",
 		OwnerID:       "alice-id",
-		Status:        "active",
-		CloneStatus:   "ready",
+		Status:        "ready",
 		WorkspaceMode: "carry_patch",
 		UpstreamURL:   strPtr("https://github.com/upstream/repo.git"),
 	})
@@ -197,8 +194,7 @@ func TestCarryPatchSync_HookErrorPropagates(t *testing.T) {
 		Slug:          "cp-err",
 		GitURL:        "https://github.com/example/repo.git",
 		OwnerID:       "alice-id",
-		Status:        "active",
-		CloneStatus:   "ready",
+		Status:        "ready",
 		WorkspaceMode: "carry_patch",
 		UpstreamURL:   strPtr("https://github.com/upstream/repo.git"),
 	})

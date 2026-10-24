@@ -81,7 +81,7 @@ func newMirrorTestEnv(t *testing.T) *mirrorTestEnv {
 	runGitCmdR(t, trunkPath, "push", "origin", "main")
 
 	// Seed workspace.
-	seedWorkspaceWithGitURL(t, db, "myws", "user-1", "active", "ready",
+	seedWorkspaceWithGitURL(t, db, "myws", "user-1", "ready",
 		"carry_patch", "main-int", bareOrigin)
 
 	return &mirrorTestEnv{
@@ -555,7 +555,7 @@ func TestMirror_TS22_37_NoMirrorCases(t *testing.T) {
 			addCommitR(t, trunkPath, tc.branch+".txt", tc.branch+" commit")
 			runGitCmdR(t, trunkPath, "checkout", "main")
 
-			seedWorkspaceWithGitURL(t, db, "myws", "user-1", "active", "ready",
+			seedWorkspaceWithGitURL(t, db, "myws", "user-1", "ready",
 				tc.mode, tc.intBranch, bareOrigin)
 
 			if tc.seedPatch {
@@ -739,7 +739,7 @@ func TestMirror_TS22_39_NilDependencies(t *testing.T) {
 			addCommitR(t, trunkPath, "p1.txt", "p1 commit")
 			runGitCmdR(t, trunkPath, "checkout", "main")
 
-			seedWorkspaceWithGitURL(t, db, "myws", "user-1", "active", "ready",
+			seedWorkspaceWithGitURL(t, db, "myws", "user-1", "ready",
 				"carry_patch", "main-int", bareOrigin)
 			seedPatch(t, db, "p1-id", "myws", "p1", 1, "active")
 

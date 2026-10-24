@@ -101,7 +101,7 @@ func TestBranchPushMessagePrefixes_TS_38_8(t *testing.T) {
 	env.seedOrg(t, "org-msgs", "Msgs", "msgs-org")
 	env.seedOrgMember(t, "org-msgs", "user-m")
 	org := "org-msgs"
-	env.seedWorkspace(t, &Workspace{Slug: "msgs-org", GitURL: "https://x/y", OwnerID: "user-a", OrgID: &org, Status: "active", CloneStatus: "ready"})
+	env.seedWorkspace(t, &Workspace{Slug: "msgs-org", GitURL: "https://x/y", OwnerID: "user-a", OrgID: &org, Status: "ready"})
 	assertRefusal(t, env.push(t, "nope", "feat", "", user), 404, "workspace not found", "")
 	assertRefusal(t, env.push(t, "msgs-org", "feat", "", userAuth("user-m")), 403, "org members have read-only access to this workspace", "forbidden")
 	assertRefusal(t, env.push(t, "msgs", "feat", "", patAuth("user-a", "workspaces:read")), 403, "PAT requires workspaces:write scope to push branches", "")
@@ -385,15 +385,15 @@ func TestBranchPushRefusalsEmitNothing_TS_38_44(t *testing.T) {
 	env.seedPushWorkspace(t, &Workspace{Slug: "quiet", OwnerID: "user-a", Branch: strPtr("main")}, "feat")
 	env.seedPushWorkspace(t, &Workspace{Slug: "quiet-cp", OwnerID: "user-a", WorkspaceMode: "carry_patch"}, "p1")
 	seedPatchRow(t, env, "quiet-cp", "p1", "active", 0)
-	env.seedWorkspace(t, &Workspace{Slug: "quiet-archived", GitURL: "x", OwnerID: "user-a", Status: "archived", CloneStatus: "archived"})
-	env.seedWorkspace(t, &Workspace{Slug: "quiet-cloning", GitURL: "x", OwnerID: "user-a", Status: "active", CloneStatus: "cloning"})
-	env.seedWorkspace(t, &Workspace{Slug: "quiet-no-trunk", GitURL: "x", OwnerID: "user-a", Status: "active", CloneStatus: "ready"})
+	env.seedWorkspace(t, &Workspace{Slug: "quiet-archived", GitURL: "x", OwnerID: "user-a", Status: "archived"})
+	env.seedWorkspace(t, &Workspace{Slug: "quiet-cloning", GitURL: "x", OwnerID: "user-a", Status: "cloning"})
+	env.seedWorkspace(t, &Workspace{Slug: "quiet-no-trunk", GitURL: "x", OwnerID: "user-a", Status: "ready"})
 	env.seedPushWorkspace(t, &Workspace{Slug: "quiet-no-origin", OwnerID: "user-a"}, "feat")
 	pushGit(t, filepath.Join(env.root, "quiet-no-origin", "trunk"), "remote", "remove", "origin")
 	env.seedOrg(t, "org-q", "Q", "q")
 	env.seedOrgMember(t, "org-q", "user-m")
 	org := "org-q"
-	env.seedWorkspace(t, &Workspace{Slug: "quiet-org", GitURL: "x", OwnerID: "user-a", OrgID: &org, Status: "active", CloneStatus: "ready"})
+	env.seedWorkspace(t, &Workspace{Slug: "quiet-org", GitURL: "x", OwnerID: "user-a", OrgID: &org, Status: "ready"})
 
 	for _, c := range []struct {
 		slug, name, body string
