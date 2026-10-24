@@ -522,31 +522,6 @@ func enqueueRebuildJob(q RebuildEnqueuer, getVariable GetVariableFunc, slug, int
 	return jobID, true, nil
 }
 
-// handleCarryPatchSyncEndpoint adapts runCarryPatchSync to an echo.HandlerFunc
-// for RegisterSyncRoutes, which mounts the carry-patch sync logic as a
-// standalone route.
-//
-// The server binary does not use this route: it registers the workspace sync
-// endpoint and reaches the carry-patch logic through NewCarryPatchSyncHook, so
-// that the response carries the standard sync fields as well (16-REQ-5.1).
-// Mounted on its own, only the carry-patch fields are available, because the
-// workspace record is rendered by the workspace package.
-func handleCarryPatchSyncEndpoint(cfg SyncAPIConfig) echo.HandlerFunc {
-	return func(c echo.Context) error {
-		resp, err := runCarryPatchSync(cfg, c)
-		if err != nil {
-			return err
-		}
-		if resp == nil {
-			// 16-REQ-5.E4: standard workspace. Without the workspace package
-			// there is no standard sync response to fall through to, so
-			// acknowledge the sync without carry-patch fields.
-			return c.JSON(http.StatusOK, map[string]string{"status": "synced"})
-		}
-		return c.JSON(http.StatusOK, resp)
-	}
-}
-
 // ===========================================================================
 // Squash merge detection helpers
 // ===========================================================================

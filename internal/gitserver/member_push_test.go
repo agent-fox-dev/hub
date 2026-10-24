@@ -74,7 +74,7 @@ func useAuditStore(t *testing.T) *sql.DB {
 		t.Fatal(err)
 	}
 	origEmitter := defaultAuditEmitter
-	SetAuditEmitter(audit.NewEmitter(audit.NewStore(duck)))
+	SetAuditEmitter(audit.NewEmitter(audit.NewStore(duck), nil))
 	t.Cleanup(func() { defaultAuditEmitter = origEmitter })
 	return duck
 }

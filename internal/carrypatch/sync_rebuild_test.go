@@ -122,7 +122,7 @@ func newRebuildSyncTestEnv(t *testing.T) *rebuildSyncTestEnv {
 			return nil, nil
 		},
 	}
-	RegisterSyncRoutes(api, syncCfg)
+	registerSyncRoutes(api, syncCfg)
 
 	rebuildCfg := RebuildAPIConfig{
 		DB:          db,
@@ -285,7 +285,7 @@ func TestSyncRebuild_DisabledPatchNoRebuild_ActiveConflictDo_TS2027(t *testing.T
 				},
 				ResolveOriginAuth: func(_ string) (transport.AuthMethod, error) { return nil, nil },
 			}
-			RegisterSyncRoutes(api, syncCfg)
+			registerSyncRoutes(api, syncCfg)
 
 			auth := rebuildUserAuth("alice")
 			authJSON, _ := json.Marshal(auth)
@@ -538,7 +538,7 @@ func TestSyncRebuild_PatchOnlyChangeReachesMergeDetection_TS2029(t *testing.T) {
 		},
 		ResolveOriginAuth: func(_ string) (transport.AuthMethod, error) { return nil, nil },
 	}
-	RegisterSyncRoutes(api, syncCfg)
+	registerSyncRoutes(api, syncCfg)
 
 	auth := rebuildUserAuth("alice")
 	authJSON, _ := json.Marshal(auth)
@@ -760,7 +760,7 @@ func TestSyncRebuild_PatchOnlyChangeEnqueuesRebuild_TS2031(t *testing.T) {
 			FetchOrigin:       func(_ context.Context, _ string, _ transport.AuthMethod) error { return nil },
 			ResolveOriginAuth: func(_ string) (transport.AuthMethod, error) { return nil, nil },
 		}
-		RegisterSyncRoutes(api, syncCfg)
+		registerSyncRoutes(api, syncCfg)
 
 		auth := rebuildUserAuth("alice")
 		authJSON, _ := json.Marshal(auth)
@@ -1187,7 +1187,7 @@ func TestSyncRebuild_HubModeClearsOriginColumns_TS2043(t *testing.T) {
 		GetVariable: getVar,
 		PatchStore:  patchStore,
 	}
-	RegisterSyncRoutes(api, syncCfg)
+	registerSyncRoutes(api, syncCfg)
 
 	auth := rebuildUserAuth("alice")
 	authJSON, _ := json.Marshal(auth)

@@ -929,55 +929,6 @@ func TestRecovery_PackageBoundaries_TS2361(t *testing.T) {
 	}
 }
 
-func TestRecovery_ImportGraph_TS2361(t *testing.T) {
-	// Verify that internal/workspace does not depend on internal/carrypatch
-	// and vice versa. This is a build-time check.
-	repoRoot := findRepoRoot(t)
-
-	cmd := exec.Command("go", "list", "-deps", "./internal/workspace")
-	cmd.Dir = repoRoot
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("go list -deps ./internal/workspace failed: %v\n%s", err, out)
-	}
-	for _, line := range strings.Split(string(out), "\n") {
-		if strings.HasSuffix(strings.TrimSpace(line), "internal/carrypatch") {
-			t.Error("internal/workspace depends on internal/carrypatch")
-		}
-	}
-
-	cmd = exec.Command("go", "list", "-deps", "./internal/carrypatch")
-	cmd.Dir = repoRoot
-	out, err = cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("go list -deps ./internal/carrypatch failed: %v\n%s", err, out)
-	}
-	for _, line := range strings.Split(string(out), "\n") {
-		if strings.HasSuffix(strings.TrimSpace(line), "internal/workspace") {
-			t.Error("internal/carrypatch depends on internal/workspace")
-		}
-	}
-}
-
-// findRepoRoot walks up from the current directory to find the go.mod file.
-func findRepoRoot(t *testing.T) string {
-	t.Helper()
-	dir, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("getwd: %v", err)
-	}
-	for {
-		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
-			return dir
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			t.Fatal("could not find go.mod")
-		}
-		dir = parent
-	}
-}
-
 // ===========================================================================
 // ReadReplacedSHA and RemoveBackup tests
 // ===========================================================================

@@ -28,7 +28,7 @@ func TestSmoke_IssueReadEndLease_TS_26_57(t *testing.T) {
 	if err := audit.InitSchema(auditDB); err != nil {
 		t.Fatalf("audit.InitSchema: %v", err)
 	}
-	env := newLeaseEnv(t, leaseEnvOptions{emitter: audit.NewEmitter(audit.NewStore(auditDB))})
+	env := newLeaseEnv(t, leaseEnvOptions{emitter: audit.NewEmitter(audit.NewStore(auditDB), nil)})
 
 	rec := env.post("widgets", `{"profile":"tools"}`, apiKeyAuth())
 	if rec.Code != http.StatusCreated {

@@ -219,7 +219,7 @@ func main() {
 	}
 	sseMgr := audit.NewSSEManager(sseMaxConns)
 	go sseMgr.Run(ctx.Done())
-	auditEmitter := audit.NewEmitterWithBroadcast(auditStore, sseMgr)
+	auditEmitter := audit.NewEmitter(auditStore, sseMgr)
 
 	server := apikit.NewServer(cfg, health.NewDBChecker(database))
 

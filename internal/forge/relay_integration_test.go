@@ -67,7 +67,7 @@ func newRelayHub(t *testing.T) *httptest.Server {
 	t.Cleanup(func() { close(done) })
 	go sse.Run(done)
 
-	e := newEnv(t, func(cfg *Config) { cfg.Audit = audit.NewEmitterWithBroadcast(store, sse) })
+	e := newEnv(t, func(cfg *Config) { cfg.Audit = audit.NewEmitter(store, sse) })
 	e.webhookWorkspace("widgets")
 	api := e.echo.Group("/api/v1")
 	api.Use(testAuthMiddleware())

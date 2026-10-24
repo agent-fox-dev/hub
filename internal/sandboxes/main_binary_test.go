@@ -19,6 +19,19 @@ import (
 // subprocess, because the order of start-up and the process exit are decided
 // in cmd/af-hub/main.go, which in-process tests cannot see.
 
+// repoRoot is the directory of the hub module.
+func repoRoot(t *testing.T) string {
+	t.Helper()
+	root, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatalf("resolving repository root: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "go.mod")); err != nil {
+		t.Fatalf("repository root %s has no go.mod: %v", root, err)
+	}
+	return root
+}
+
 // buildAfHub compiles the real af-hub binary into a temp dir and returns its
 // path. The test is skipped under -short or without a go tool, since
 // compiling the binary (it links DuckDB through cgo) dominates the runtime.

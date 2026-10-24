@@ -150,7 +150,7 @@ func (env *smokeForkEnv) buildEchoWithAudit(t *testing.T) {
 		},
 		Audit: env.emitter,
 	}
-	RegisterSyncRoutes(api, syncCfg)
+	registerSyncRoutes(api, syncCfg)
 
 	patchStatusCfg := PatchStatusAPIConfig{
 		DB:            env.db,
@@ -789,7 +789,7 @@ func TestSmoke_HubMode_NoChange_TS2060(t *testing.T) {
 		},
 		Audit: env.emitter,
 	}
-	RegisterSyncRoutes(api, syncCfg)
+	registerSyncRoutes(api, syncCfg)
 	env.echo = e
 
 	// Record last_sync_at before sync.
@@ -954,7 +954,7 @@ func TestSmoke_LostCAS_KeepsEarlierOutcome_TS2061(t *testing.T) {
 		},
 		Audit: env.emitter,
 	}
-	RegisterSyncRoutes(api, syncCfg)
+	registerSyncRoutes(api, syncCfg)
 	env.echo = e
 
 	rec := env.doSync(t)

@@ -202,29 +202,6 @@ func (h *Handler) PreCheck(ctx context.Context, workspaceSlug, targetBranch, sou
 	return nil, nil
 }
 
-// DryRunCheck invokes git merge-tree --write-tree to detect conflicts
-// without modifying the working tree. Returns nil on clean merge, or
-// *MergeRejection{Reason: WouldConflict} with ConflictFiles on conflicts.
-func (h *Handler) DryRunCheck(ctx context.Context, workspaceSlug, targetBranch, sourceRef string) error {
-	runner, err := h.runnerForWorkspace(workspaceSlug)
-	if err != nil {
-		return err
-	}
-
-	// Resolve target and source branch HEADs.
-	targetHead, err := runner.RevParse(ctx, targetBranch)
-	if err != nil {
-		return fmt.Errorf("cannot resolve target ref %q: %w", targetBranch, err)
-	}
-
-	sourceHead, err := runner.RevParse(ctx, sourceRef)
-	if err != nil {
-		return fmt.Errorf("cannot resolve source ref %q: %w", sourceRef, err)
-	}
-
-	return h.dryRunConflictCheck(ctx, runner, targetHead, sourceHead)
-}
-
 // dryRunConflictCheck runs git merge-tree --write-tree with the resolved
 // target and source HEADs. Returns nil on clean merge, or *MergeRejection
 // with WouldConflict on conflict detection.

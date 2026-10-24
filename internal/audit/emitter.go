@@ -20,16 +20,10 @@ type defaultEmitter struct {
 	mgr   *SSEManager // nil when SSE broadcast is not wired
 }
 
-// NewEmitter creates the default Emitter implementation backed by a Store.
-// Emit errors are swallowed and logged (TS-17-12).
-func NewEmitter(store Store) Emitter {
-	return &defaultEmitter{store: store}
-}
-
-// NewEmitterWithBroadcast creates an Emitter that writes to the Store and also
-// publishes events to the SSE broadcast channel (18-REQ-9.2). Every successful
+// NewEmitter creates an Emitter that writes to the Store and, when mgr is not nil,
+// publishes events to the SSE broadcast channel. Every successful
 // Emit call inserts into hub_audit_events and broadcasts to the SSEManager.
-func NewEmitterWithBroadcast(store Store, mgr *SSEManager) Emitter {
+func NewEmitter(store Store, mgr *SSEManager) Emitter {
 	return &defaultEmitter{store: store, mgr: mgr}
 }
 

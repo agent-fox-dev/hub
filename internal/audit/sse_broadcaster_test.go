@@ -47,7 +47,7 @@ func TestSSEManager_EmitterIntegration_TS18_45(t *testing.T) {
 	store := NewStore(db)
 
 	mgr := NewSSEManager(DefaultMaxConnections)
-	emitter := NewEmitterWithBroadcast(store, mgr)
+	emitter := NewEmitter(store, mgr)
 
 	event := HubEvent{
 		EventType:    "hub.workspace.create",

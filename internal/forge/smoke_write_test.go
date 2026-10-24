@@ -98,7 +98,7 @@ func newWriteSmoke(t *testing.T) *writeSmoke {
 		},
 		GetVariable: store.GetVariableValue,
 		Transport:   s.forge.Client().Transport,
-		Audit:       audit.NewEmitterWithBroadcast(auditStore, sse),
+		Audit:       audit.NewEmitter(auditStore, sse),
 	})
 	audit.RegisterAuditQueryRoutes(api, auditStore, sse, db)
 

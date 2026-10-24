@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -624,10 +623,10 @@ func TestWorktreeRebuild_TS_01_9_WorktreeAddFailure(t *testing.T) {
 }
 
 // ===========================================================================
-// TS-01-10: trunk runner runs no mutating commands; legacy helpers are gone
+// TS-01-10: trunk runner runs no mutating commands
 // ===========================================================================
 
-func TestWorktreeRebuild_TS_01_10_TrunkNotMutatedAndLegacyHelpersGone(t *testing.T) {
+func TestWorktreeRebuild_TS_01_10_TrunkNotMutated(t *testing.T) {
 	// Successful rebuild.
 	e := newWtEnv(t, onePatch())
 	if _, _, err := e.h.HandleRebuildJob(context.Background(), e.payload(StrategyRebase, "")); err != nil {
@@ -649,15 +648,6 @@ func TestWorktreeRebuild_TS_01_10_TrunkNotMutatedAndLegacyHelpersGone(t *testing
 		t.Fatal("expected conflict error")
 	}
 	assertTrunkUntouched(t, e.trunk)
-
-	src, err := os.ReadFile("rebuild_executor.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	re := regexp.MustCompile(`(?m)^func\s+(\([^)]*\)\s*)?(currentCheckout|restoreCheckout|preflightCleanup)\b`)
-	if m := re.Find(src); m != nil {
-		t.Errorf("legacy function still present: %s", m)
-	}
 }
 
 // ===========================================================================

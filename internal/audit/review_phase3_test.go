@@ -86,7 +86,7 @@ func TestDecodeMetadata_AcceptsTextAndDecodedShapes(t *testing.T) {
 
 func TestUnifiedQuery_HubEventsCarryTimestampAndOrderWithAgentEvents(t *testing.T) {
 	env := newUnifiedQueryTestEnv(t)
-	emitter := NewEmitter(env.store)
+	emitter := NewEmitter(env.store, nil)
 
 	// Legacy row written before hub_audit_events.timestamp was populated:
 	// falls back to ingested_at instead of breaking the query.
@@ -338,7 +338,7 @@ func TestMetrics_SSEGaugeAndAuditCounterAreWired(t *testing.T) {
 	}
 
 	db := openTestAuditDB(t)
-	if err := NewEmitter(NewStore(db)).Emit(context.Background(), HubEvent{EventType: "hub.workspace.create"}); err != nil {
+	if err := NewEmitter(NewStore(db), nil).Emit(context.Background(), HubEvent{EventType: "hub.workspace.create"}); err != nil {
 		t.Fatal(err)
 	}
 	if v := getCounterValue(t, m.AuditEventsTotal, prometheus.Labels{"source": "hub", "event_type": "hub.workspace.create"}); v != 1 {

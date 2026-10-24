@@ -28,7 +28,7 @@ engine on the hub's own host or a remote `agentkit-gateway` (below).
 | `lease_service.go`, `lease_validate.go`, `token.go` | `LeaseService.Issue`: request validation, the required-secret check, id and token generation, the capacity count and the insert. |
 | `secretcheck.go` | `ResolutionChain` and `CheckRequiredSecrets`: which scopes a workspace's secrets are searched in, and a check that lists names only. |
 | `routes.go`, `handlers_issue.go`, `handlers_read.go`, `handlers_delete.go`, `delete_destroy.go`, `render.go` | `RegisterLeaseRoutes`: the five lease routes, the checks they share (`begin`, `authorize`), the lease representation (with `gateway_url`) and how `DELETE` ends a lease and its sandbox. |
-| `gateway.go` | `NewGateway`: loads the key pair, binds `listen`, builds the `gatewayd.Server`, the backend and the sweeper without serving; `Gateway.Run` (start-up work, then serving), `Gateway.Shutdown`, `Gateway.DestroyBox`, and `List` and `Destroy`, which make the gateway the `Boxes` of the sweep. `StartGateway` is `NewGateway` and serving at once. |
+| `gateway.go` | `NewGateway`: loads the key pair, binds `listen`, builds the `gatewayd.Server`, the backend and the sweeper without serving; `Gateway.Run` (start-up work, then serving), `Gateway.Shutdown`, `Gateway.DestroyBox`, and `List` and `Destroy`, which make the gateway the `Boxes` of the sweep. |
 | `gateway_auth.go` | `NewLeaseAuthenticator`: the function gatewayd calls for every RPC to turn a lease token into a principal. |
 | `backend.go`, `create_spec.go`, `secret_resolve.go`, `handle.go`, `events.go`, `scrub.go` | The wrapping backend, the `sandbox.Provider` hub gives gatewayd: `Create` and its outcomes, the spec built from the lease, the secrets read when the sandbox is created, the handle around the provider's sandbox, the audit events and the scrubber for provider errors. |
 | `expire.go`, `metrics.go` | The `Boxes` seam, and the `ender`: the expiry path, `endDestroyed` for shutdown and restart, and the events they emit; the recorder of the three sandbox metrics. |
@@ -155,7 +155,7 @@ metrics (a nil `*audit.Metrics`) records nothing.
 
 `LeaseStore.LookupByToken` (a presented token to its live lease, or
 `ErrLeaseNotFound` without saying why) is what the gateway authenticates with.
-`LeaseStore.RevokeToken` still has no production caller. `ResolutionChain` serves
+`ResolutionChain` serves
 both the presence check at issue and the lookup of secret *values* when a sandbox
 is created, so that the check and the lookup agree.
 
@@ -400,14 +400,13 @@ workflows supply the checkout in the same way. The durable job queue that
 `cmd/af-hub`, `internal/carrypatch` and `internal/merge` run their jobs on is the
 `jobqueue` package of the same module; hub keeps no copy of its own. Only the
 packages under `internal/forge` import `issuex`. `afc` stays a static `CGO_ENABLED=0` binary:
-neither `cmd/afc` nor `internal/cli` imports `internal/forge` in a build (the tests
-`TestIssuexImportedOnlyUnderInternalForge_TS_30_2` and `TestAfcFreeOfInternalForge_TS_30_3`
-hold this; a test file of `internal/cli` imports it to run `afc` against the routes).
+neither `cmd/afc` nor `internal/cli` imports `internal/forge` in a build (a test
+file of `internal/cli` imports it to run `afc` against the routes).
 
 | File | Responsibility |
 |------|----------------|
 | `permissions.go`, `auth.go` | The `forge:read` and `forge:write` scopes (`Permissions`, appended to `extraPerms` in `cmd/af-hub/main.go`) and the standalone auth helpers; `forge:write` implies `forge:read`. |
-| `config.go` | `Config`: the database, the two credential resolvers (`workspace.ResolveCloneAuth` and `ResolveUpstreamAuthMethod`, as closures in `main.go`), `GetVariable`, an optional base `Transport`, an optional `NewClient`, the audit emitter `Audit` that `main.go` builds with `audit.NewEmitterWithBroadcast`, the secrets store `Secrets` (the interface `SecretStore`, which `*secrets.Store` satisfies) and `ExternalURL` (`server.external_url`); and `webhookURL`, the ingress URL of a workspace. One value serves `RegisterRoutes` and `MountWebhookIngress`. |
+| `config.go` | `Config`: the database, the two credential resolvers (`workspace.ResolveCloneAuth` and `ResolveUpstreamAuthMethod`, as closures in `main.go`), `GetVariable`, an optional base `Transport`, an optional `NewClient`, the audit emitter `Audit` that `main.go` builds with `audit.NewEmitter`, the secrets store `Secrets` (the interface `SecretStore`, which `*secrets.Store` satisfies) and `ExternalURL` (`server.external_url`); and `webhookURL`, the ingress URL of a workspace. One value serves `RegisterRoutes` and `MountWebhookIngress`. |
 | `routes.go` | `RegisterRoutes`: the twenty-two routes under `/workspaces/:slug` (ten reads, nine writes, and the webhook secret and delivery routes), and `authorize`, the checks they share, in order: 401, 403 (the scope of the verb), 404, 400 for a write on a workspace that is not active, then the workspace's `git_url`, `workspace_mode` and `upstream_url`. |
 | `target.go`, `params.go` | `resolveTarget` (`?target=`), `parseNumber` (`:n`) and `parseIssueFilter` (the query of `GET .../issues`): the refusals that come before a client is built. |
 | `client.go` | `buildClient`: a fresh issuex client for one request, from the remote URL, the API URL variable and the credential; `credentialOf` (`pat`, `basic`, `none`); `parseRemote` and `redactRemote`; `describeRemote` for the diagnostic. |
@@ -699,9 +698,7 @@ The resolver follows the same nil-default hook pattern as the recovery hook:
   before it returns, so the database insert never runs under it.
 - `cmd/af-hub/main.go` wires the two together.
 
-`internal/workspace` and `internal/carrypatch` do not import each other
-(`TestTS21_36_WorkspaceAndCarrypatchDoNotImportEachOther` in
-`internal/carrypatch/import_graph_test.go` checks this with `go list -deps`).
+`internal/workspace` and `internal/carrypatch` do not import each other.
 Classified resolver errors cross the boundary structurally: the carrypatch
 error type has a `BranchResolveKind() string` method, which the workspace
 handler reads with `errors.As` against its own `BranchResolveError`

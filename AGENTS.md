@@ -29,7 +29,7 @@ Do not implement anything before completing these steps.
 cmd/af-hub/             # The hub server
 cmd/afc/                # The afc command-line client
 internal/               # Packages: audit, carrypatch, cli, forge, gitcmd, gitserver,
-                        #   health, merge, sandboxes, secrets, upstream, vars,
+                        #   health, merge, sandboxes, secrets, upstream,
                         #   workspace, wsaccess, wslock (tests alongside)
 containers/             # Containerfiles: hub, sandbox, agents
 deploy/                 # Kubernetes manifests

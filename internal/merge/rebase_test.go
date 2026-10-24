@@ -320,6 +320,9 @@ func (m *sequenceMockRunner) RevParse(_ context.Context, ref string) (string, er
 // Verify *sequenceMockRunner satisfies RebaseRunner at compile time.
 var _ RebaseRunner = (*sequenceMockRunner)(nil)
 
+// errRefNotFound stands in for the error RevParse returns for an unknown ref.
+var errRefNotFound = errors.New("ref not found")
+
 // ===========================================================================
 // Task Group 4 Tests: Single Branch Rebase Edge Cases
 // ===========================================================================
@@ -333,7 +336,7 @@ func TestRebaseBranch_RefNotFound_ReturnsErrorWithoutGitOps(t *testing.T) {
 	// Mock runner that returns ErrRefNotFound from RevParse, simulating a
 	// non-existent source branch.
 	runner := &mockRebaseRunner{
-		revParseErr: gitcmd.ErrRefNotFound,
+		revParseErr: errRefNotFound,
 	}
 
 	ctx := context.Background()
@@ -350,7 +353,7 @@ func TestRebaseBranch_RefNotFound_ReturnsErrorWithoutGitOps(t *testing.T) {
 	}
 
 	// The error should wrap or be ErrRefNotFound.
-	if !errors.Is(err, gitcmd.ErrRefNotFound) {
+	if !errors.Is(err, errRefNotFound) {
 		t.Errorf("expected error to wrap ErrRefNotFound, got %T: %v", err, err)
 	}
 
@@ -632,7 +635,7 @@ func (m *branchExistenceMockRunner) RevParse(_ context.Context, ref string) (str
 
 	// If we know this branch doesn't exist, return ErrRefNotFound.
 	if exists, ok := m.branchExists[ref]; ok && !exists {
-		return "", gitcmd.ErrRefNotFound
+		return "", errRefNotFound
 	}
 	return m.successSHA, nil
 }

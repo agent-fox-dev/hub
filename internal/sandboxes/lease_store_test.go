@@ -244,36 +244,6 @@ func TestLookupByToken_NotFound_TS_26_39(t *testing.T) {
 	}
 }
 
-// TS-26-40: Revocation ends the lease and clears the hash in one update.
-// Requirement: 26-REQ-6.6
-func TestRevokeToken_TS_26_40(t *testing.T) {
-	store, db := newLeaseStore(t, time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC))
-	insertRawLease(t, db, leaseID(1), "widgets", "leased", HashToken(testToken(1)))
-	if _, err := store.LookupByToken(testToken(1)); err != nil {
-		t.Fatalf("the token does not work before revocation: %v", err)
-	}
-
-	if err := store.RevokeToken(leaseID(1)); err != nil {
-		t.Fatalf("RevokeToken returned error: %v", err)
-	}
-	var state string
-	var hash sql.NullString
-	if err := db.QueryRow(`SELECT state, token_hash FROM sandbox_leases WHERE id = ?`, leaseID(1)).Scan(&state, &hash); err != nil {
-		t.Fatalf("reading the row: %v", err)
-	}
-	if hash.Valid {
-		t.Errorf("token hash after revocation = %q; want NULL", hash.String)
-	}
-	if state != "destroyed" && state != "expired" && state != "failed" {
-		t.Errorf("state after revocation = %q; want a terminal state", state)
-	}
-	for range 2 {
-		if got, err := store.LookupByToken(testToken(1)); got != nil || err != ErrLeaseNotFound {
-			t.Errorf("LookupByToken after revocation = (%v, %v); want (nil, ErrLeaseNotFound)", got, err)
-		}
-	}
-}
-
 // TS-26-52: All lease endings go through one function that conditionally
 // updates live leases.
 // Requirement: 26-REQ-8.4

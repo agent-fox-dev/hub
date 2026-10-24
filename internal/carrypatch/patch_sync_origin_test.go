@@ -141,7 +141,7 @@ func (env *originIntegrationEnv) buildEcho(t *testing.T, runner GitRunner) {
 		FetchOrigin:       func(_ context.Context, _ string, _ transport.AuthMethod) error { return nil },
 		ResolveOriginAuth: func(_ string) (transport.AuthMethod, error) { return nil, nil },
 	}
-	RegisterSyncRoutes(api, syncCfg)
+	registerSyncRoutes(api, syncCfg)
 
 	env.echo = e
 }
@@ -178,7 +178,7 @@ func (env *originIntegrationEnv) buildEchoWithProductionFetch(t *testing.T, runn
 		FetchOrigin:       DefaultFetchOriginFunc(),
 		ResolveOriginAuth: func(_ string) (transport.AuthMethod, error) { return nil, nil },
 	}
-	RegisterSyncRoutes(api, syncCfg)
+	registerSyncRoutes(api, syncCfg)
 
 	env.echo = e
 }

@@ -60,7 +60,7 @@ func newRealHub(t *testing.T) *realHub {
 		t.Fatal(err)
 	}
 	store := audit.NewStore(duck)
-	emitter := audit.NewEmitter(store)
+	emitter := audit.NewEmitter(store, nil)
 
 	server := apikit.NewServer(cfg, func() error { return nil })
 	perms := append(audit.Permissions(), secrets.Permissions()...)

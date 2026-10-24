@@ -949,11 +949,6 @@ func RegisterRerereRoutes(api *echo.Group, cfg RerereAPIConfig) {
 	api.DELETE("/workspaces/:slug/rerere/*", handleForgetRerere(cfg))
 }
 
-// RegisterSyncRoutes mounts carry-patch sync extension endpoints on the API group.
-func RegisterSyncRoutes(api *echo.Group, cfg SyncAPIConfig) {
-	api.POST("/workspaces/:slug/sync", handleCarryPatchSyncEndpoint(cfg))
-}
-
 // RegisterPatchStatusRoutes mounts patch-status dashboard endpoints on the API group.
 func RegisterPatchStatusRoutes(api *echo.Group, cfg PatchStatusAPIConfig) {
 	api.GET("/workspaces/:slug/patch-status", handlePatchStatus(cfg))

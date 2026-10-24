@@ -1229,9 +1229,8 @@ When a rebuild job runs, the hub executes the following steps:
    `refs/remotes/upstream/<workspace branch>` and finally `FETCH_HEAD`, and
    sets the rebuild-active flag (archive and reclone answer `409
    workspace_busy` until the run has ended). Worktrees left by a crashed
-   run under `<workspace_root>/<slug>/rebuild/` are removed and pruned, and
-   a legacy `_rebuild_temp` branch from a pre-worktree hub version is
-   deleted once (legacy migration). The lock is then released and the job
+   run under `<workspace_root>/<slug>/rebuild/` are removed and pruned.
+   The lock is then released and the job
    creates a detached `git worktree` for this run at
    `<workspace_root>/<slug>/rebuild/<job id>`, positioned at the base. The
    worktree shares the trunk's objects, refs, configuration and rerere

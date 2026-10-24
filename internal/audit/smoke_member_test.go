@@ -67,7 +67,7 @@ func startMemberHub(t *testing.T) *memberHub {
 	t.Cleanup(cancel)
 	mgr := audit.NewSSEManager(10)
 	go mgr.Run(ctx.Done())
-	emitter := audit.NewEmitterWithBroadcast(store, mgr)
+	emitter := audit.NewEmitter(store, mgr)
 
 	// The wiring of cmd/af-hub: workspace handlers first, then audit.
 	server := apikit.NewServer(cfg, func() error { return nil })

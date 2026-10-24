@@ -151,7 +151,7 @@ func TestBindingGuard_CoversLaterRoutes_TS_33_16(t *testing.T) {
 		t.Fatalf("audit.InitSchema: %v", err)
 	}
 	store := audit.NewStore(duck)
-	audit.RegisterRoutes(h.server.APIGroup(), store, audit.NewEmitter(store), h.db.SqlDB)
+	audit.RegisterRoutes(h.server.APIGroup(), store, audit.NewEmitter(store, nil), h.db.SqlDB)
 	newRouteCalls := 0
 	h.server.APIGroup().GET("/workspaces/:slug/new", func(c echo.Context) error {
 		newRouteCalls++

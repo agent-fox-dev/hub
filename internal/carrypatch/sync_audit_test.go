@@ -115,7 +115,7 @@ func newAuditSyncTestEnv(t *testing.T, emitter audit.Emitter) *auditSyncTestEnv 
 		},
 		Audit: emitter,
 	}
-	RegisterSyncRoutes(api, syncCfg)
+	registerSyncRoutes(api, syncCfg)
 
 	env.echo = e
 	return env
@@ -267,7 +267,7 @@ func TestSyncAudit_MixedOriginSync_EmitsPatchSyncEvent_TS2047(t *testing.T) {
 		ResolveOriginAuth: func(_ string) (transport.AuthMethod, error) { return nil, nil },
 		Audit:             emitter,
 	}
-	RegisterSyncRoutes(api, syncCfg)
+	registerSyncRoutes(api, syncCfg)
 	env.echo = e
 
 	// Seed patches.
@@ -484,7 +484,7 @@ func TestSyncAudit_ReplacedBranches_EmitPatchReplaceEvents_TS2048(t *testing.T) 
 		ResolveOriginAuth: func(_ string) (transport.AuthMethod, error) { return nil, nil },
 		Audit:             emitter,
 	}
-	RegisterSyncRoutes(api, syncCfg)
+	registerSyncRoutes(api, syncCfg)
 
 	auth := rebuildUserAuth("alice")
 	authJSON, _ := json.Marshal(auth)
@@ -739,7 +739,7 @@ func TestSyncAudit_RefWriteFailure_EmitsPartialEvents_TS2050(t *testing.T) {
 		ResolveOriginAuth: func(_ string) (transport.AuthMethod, error) { return nil, nil },
 		Audit:             emitter,
 	}
-	RegisterSyncRoutes(api, syncCfg)
+	registerSyncRoutes(api, syncCfg)
 
 	auth := rebuildUserAuth("alice")
 	authJSON, _ := json.Marshal(auth)
@@ -874,7 +874,7 @@ func TestSyncAudit_NilEmitter_SyncCompletes_TS2051(t *testing.T) {
 		ResolveOriginAuth: func(_ string) (transport.AuthMethod, error) { return nil, nil },
 		Audit:             nil, // nil emitter
 	}
-	RegisterSyncRoutes(api, syncCfg)
+	registerSyncRoutes(api, syncCfg)
 	env.echo = e
 
 	rec := env.doSync(t)
@@ -1053,7 +1053,7 @@ func runSyncWithEmitter(t *testing.T, emitter audit.Emitter) []byte {
 		ResolveOriginAuth: func(_ string) (transport.AuthMethod, error) { return nil, nil },
 		Audit:             emitter,
 	}
-	RegisterSyncRoutes(api, syncCfg)
+	registerSyncRoutes(api, syncCfg)
 
 	auth := rebuildUserAuth("alice")
 	authJSON, _ := json.Marshal(auth)

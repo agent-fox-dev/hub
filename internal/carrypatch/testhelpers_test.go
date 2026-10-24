@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"github.com/go-git/go-git/v5/plumbing/transport"
 	"io"
 	"log/slog"
 	"net/http"
@@ -17,6 +16,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/go-git/go-git/v5/plumbing/transport"
 
 	"github.com/labstack/echo/v4"
 	"github.com/txsvc/apikit"
@@ -869,7 +870,7 @@ func newFullTestEnv(t *testing.T) *fullTestEnv {
 		GetVariable: getVar,
 		PatchStore:  patches,
 	}
-	RegisterSyncRoutes(api, syncCfg)
+	registerSyncRoutes(api, syncCfg)
 
 	rebuildPreviewCfg := RebuildPreviewAPIConfig{
 		DB:            db,
@@ -963,7 +964,7 @@ func newFullTestEnvWithGetVariable(t *testing.T, getVar GetVariableFunc) *fullTe
 		GetVariable: getVar,
 		PatchStore:  patches,
 	}
-	RegisterSyncRoutes(api, syncCfg)
+	registerSyncRoutes(api, syncCfg)
 
 	rebuildPreviewCfg := RebuildPreviewAPIConfig{
 		DB:            db,
@@ -1184,4 +1185,34 @@ func addOrgMember(t *testing.T, db *sql.DB, slug, org, user string) {
 			t.Fatalf("addOrgMember: %v", err)
 		}
 	}
+}
+
+// syncEndpointForTest adapts runCarryPatchSync to an echo.HandlerFunc
+// for RegisterSyncRoutes, which mounts the carry-patch sync logic as a
+// standalone route.
+//
+// The server binary does not use this route: it registers the workspace sync
+// endpoint and reaches the carry-patch logic through NewCarryPatchSyncHook, so
+// that the response carries the standard sync fields as well (16-REQ-5.1).
+// Mounted on its own, only the carry-patch fields are available, because the
+// workspace record is rendered by the workspace package.
+func syncEndpointForTest(cfg SyncAPIConfig) echo.HandlerFunc {
+	return func(c echo.Context) error {
+		resp, err := runCarryPatchSync(cfg, c)
+		if err != nil {
+			return err
+		}
+		if resp == nil {
+			// 16-REQ-5.E4: standard workspace. Without the workspace package
+			// there is no standard sync response to fall through to, so
+			// acknowledge the sync without carry-patch fields.
+			return c.JSON(http.StatusOK, map[string]string{"status": "synced"})
+		}
+		return c.JSON(http.StatusOK, resp)
+	}
+}
+
+// registerSyncRoutes mounts the carry-patch sync route for tests.
+func registerSyncRoutes(api *echo.Group, cfg SyncAPIConfig) {
+	api.POST("/workspaces/:slug/sync", syncEndpointForTest(cfg))
 }

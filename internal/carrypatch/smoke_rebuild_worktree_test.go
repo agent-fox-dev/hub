@@ -139,7 +139,7 @@ func newSmokeHub(t *testing.T, grace time.Duration) *smokeHub {
 	api.Use(rebuildTestAuthMiddleware())
 	RegisterRebuildRoutes(api, RebuildAPIConfig{DB: s.db, Queue: q, GetVariable: getVar, Audit: s.audit})
 	RegisterRerereRoutes(api, RerereAPIConfig{DB: s.db, WorkspaceRoot: root, NewGitRunner: factory})
-	RegisterSyncRoutes(api, SyncAPIConfig{
+	registerSyncRoutes(api, SyncAPIConfig{
 		DB: s.db, Queue: q, WorkspaceRoot: root, NewGitRunner: factory,
 		Fetch: func(ctx context.Context, repoPath string, auth transport.AuthMethod) error {
 			s.mu.Lock()
@@ -843,96 +843,5 @@ func TestSmoke_TS_01_78_RerereResolutionReplaysAndEndpointsListForget(t *testing
 		if r.ID == id {
 			t.Errorf("GET /rerere still lists %s after DELETE", id)
 		}
-	}
-}
-
-// ===========================================================================
-// TS-01-79 (smoke): a fail-fast conflict leaves the trunk untouched after a
-// legacy _rebuild_temp migration. Verifies: 01-PATH-7, 01-REQ-2.7
-// ===========================================================================
-
-func TestSmoke_TS_01_79_FailFastConflictAfterLegacyMigration(t *testing.T) {
-	s := newSmokeHub(t, 30*time.Second)
-	e := s.e
-	if _, err := s.db.Exec(`UPDATE patches SET branch_name = 'feature/conflict' WHERE id = 'p2'`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.db.Exec(`UPDATE workspaces SET branch = 'main' WHERE slug = ?`, e.slug); err != nil {
-		t.Fatal(err)
-	}
-
-	// A pre-upgrade run left the trunk on _rebuild_temp, mid cherry-pick.
-	runGitCmd(t, e.trunk, "checkout", "-b", "_rebuild_temp")
-	if _, err := gitTry(e.trunk, "cherry-pick", "feature/conflict"); err == nil {
-		t.Fatal("setup: the cherry-pick was expected to conflict")
-	}
-	if _, err := gitTry(e.trunk, "rev-parse", "--verify", "-q", "CHERRY_PICK_HEAD"); err != nil {
-		t.Fatal("setup: no cherry-pick in progress")
-	}
-	integrationBefore := runGitCmd(t, e.trunk, "rev-parse", "refs/heads/integration")
-	s.start()
-
-	// The worktree runner is built after phase one, i.e. after the migration:
-	// record the trunk there. During the run a developer pushes a fix to the
-	// conflicting patch branch; the queue is told to claim nothing further so
-	// the follow-up stays observable.
-	var afterMigration [4]string
-	var once sync.Once
-	s.setWrap(func(_ string, hr *hookRunner) GitRunner {
-		afterMigration = e.trunkSnapshot()
-		hr.onCherryPick = func(context.Context, string) error {
-			once.Do(func() {
-				s.q.Shutdown()
-				s.advanceBranch("feature/conflict")
-			})
-			return nil
-		}
-		return hr
-	})
-
-	jobID := s.submitRebuild(`{"fail_mode":"fail_fast"}`)
-	job := s.waitStatus(jobID, jobqueue.StatusDeadLetter, jobqueue.StatusFailed, jobqueue.StatusCompleted)
-	if job.Status != jobqueue.StatusDeadLetter || !strings.Contains(strings.ToLower(job.Error), "conflict") {
-		t.Fatalf("job = %s (error %q), want a fail-fast conflict failure", job.Status, job.Error)
-	}
-
-	// The migration moved the trunk to the workspace branch and removed the
-	// legacy branch and the half-applied pick.
-	if afterMigration[0] != "refs/heads/main" {
-		t.Errorf("after migration the trunk is on %q, want refs/heads/main", afterMigration[0])
-	}
-	if out, err := gitTry(e.trunk, "show-ref", "refs/heads/_rebuild_temp"); err == nil {
-		t.Errorf("_rebuild_temp still exists: %s", out)
-	}
-	if _, err := gitTry(e.trunk, "rev-parse", "--verify", "-q", "CHERRY_PICK_HEAD"); err == nil {
-		t.Error("the half-applied cherry-pick was not aborted")
-	}
-
-	// The run stopped with the integration branch unchanged, and the trunk is
-	// exactly as the migration left it.
-	if got := runGitCmd(t, e.trunk, "rev-parse", "refs/heads/integration"); got != integrationBefore {
-		t.Errorf("integration moved from %s to %s on a fail-fast conflict", integrationBefore, got)
-	}
-	if after := e.trunkSnapshot(); after != afterMigration {
-		t.Errorf("trunk changed by the rebuild after the migration:\nbefore=%q\nafter =%q", afterMigration, after)
-	}
-	s.assertNoWorktrees("after the conflict")
-
-	// The stale-input check ran on the conflict exit: the pushed fix produced
-	// a follow-up.
-	fu := s.followUps()
-	if len(fu) != 1 || fu[0].Status != jobqueue.StatusQueued {
-		t.Fatalf("follow-ups = %+v, want one queued", fu)
-	}
-	evs := s.events(audit.EventRebuildFollowup)
-	if len(evs) != 1 {
-		t.Fatalf("hub.rebuild.followup emitted %d times, want 1", len(evs))
-	}
-	stale, _ := evs[0].Metadata["stale_patches"].([]string)
-	if len(stale) != 1 || stale[0] != "feature/conflict" {
-		t.Errorf("stale_patches = %v, want [feature/conflict]", evs[0].Metadata["stale_patches"])
-	}
-	if n := len(s.events("hub.rebuild.fail")); n != 1 {
-		t.Errorf("hub.rebuild.fail emitted %d times, want 1", n)
 	}
 }

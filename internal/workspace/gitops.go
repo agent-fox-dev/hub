@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"fmt"
 
 	"github.com/go-git/go-git/v5/plumbing/transport"
 
@@ -63,38 +62,4 @@ func InitCloneQueue(ctx context.Context, db *sql.DB, workspaceRoot string, worke
 	validateCredentialsFn = defaultValidateCredentialsFn
 	defaultWorkspaceRoot = workspaceRoot
 	defaultQueue = NewJobQueue(ctx, db, workspaceRoot, workers)
-}
-
-// validCloneTransitions defines the allowed clone_status state machine.
-// Each key is a current state; the value is the set of valid target states.
-var validCloneTransitions = map[string]map[string]bool{
-	"pending":  {"cloning": true, "archived": true},
-	"cloning":  {"ready": true, "failed": true},
-	"ready":    {"archived": true},
-	"failed":   {"archived": true},
-	"archived": {"pending": true},
-}
-
-// ValidateCloneStatusTransition checks whether a clone_status transition
-// from the current state to the target state is valid according to the
-// state machine defined in 05-REQ-9.1:
-//
-//	pending   -> cloning
-//	cloning   -> ready | failed
-//	ready     -> archived
-//	pending   -> archived
-//	failed    -> archived
-//	archived  -> pending
-//
-// Returns nil if the transition is valid, or an error describing why
-// the transition is rejected.
-func ValidateCloneStatusTransition(from, to string) error {
-	targets, ok := validCloneTransitions[from]
-	if !ok {
-		return fmt.Errorf("invalid clone_status %q", from)
-	}
-	if !targets[to] {
-		return fmt.Errorf("invalid clone_status transition from %q to %q", from, to)
-	}
-	return nil
 }

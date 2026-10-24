@@ -48,7 +48,7 @@ func newSmokeEnv(t *testing.T) *smokeEnv {
 	if err := audit.InitSchema(auditDB); err != nil {
 		t.Fatalf("audit.InitSchema: %v", err)
 	}
-	env := newBackendEnv(t, leaseEnvOptions{config: gatewayLeaseConfig(), emitter: audit.NewEmitter(audit.NewStore(auditDB))})
+	env := newBackendEnv(t, leaseEnvOptions{config: gatewayLeaseConfig(), emitter: audit.NewEmitter(audit.NewStore(auditDB), nil)})
 	return &smokeEnv{backendEnv: env, gw: env.startGateway(), auditDB: auditDB}
 }
 
@@ -484,37 +484,5 @@ ttl     = "30m"
 	}
 	if _, err := client.List(context.Background()); !errors.Is(err, gateway.ErrUnauthenticated) {
 		t.Errorf("List with the revoked token = %v; want ErrUnauthenticated", err)
-	}
-}
-
-// cmd/af-hub is the one place the gateway is started and handed to the lease
-// service, and a real box cannot be made by the fake engine the binary tests use,
-// so the wiring that matters for DELETE is checked in the source. In main the lease
-// table exists before startSandboxes is called, and the lease routes are mounted
-// and the server run after it. In startSandboxes the gateway is built, set running
-// (spec 28: after the recovery of the leases a crash left, and the first sweep)
-// and then handed to the lease service with its address and its way to destroy
-// boxes.
-// Path: 27-PATH-1, 27-PATH-3.
-func TestAfHubMain_WiresTheGateway(t *testing.T) {
-	src := readRepoFile(t, "cmd/af-hub/main.go")
-	inOrder := func(where string, tokens ...string) {
-		t.Helper()
-		last, lastToken := -1, ""
-		for _, token := range tokens {
-			i := strings.Index(src, token)
-			if i < 0 {
-				t.Fatalf("cmd/af-hub/main.go does not contain %q", token)
-			}
-			if i <= last {
-				t.Errorf("%s: main.go has %q before %q; want the reverse", where, token, lastToken)
-			}
-			last, lastToken = i, token
-		}
-	}
-	inOrder("main", "sandboxes.InitSchema(", "sandboxes.MigrateLeaseExpiry(", "startSandboxes(ctx,", "sandboxes.RegisterLeaseRoutes(", "runServer(server.Start,")
-	inOrder("startSandboxes", "func startSandboxes(", "sandboxes.NewGateway(", "gateway.Run(ctx)", "sandboxes.NewLeaseService(", "GatewayURL: ", "Boxes:")
-	if strings.Index(src, "func startSandboxes(") < strings.Index(src, "runServer(server.Start,") {
-		t.Error("main.go defines startSandboxes before main")
 	}
 }

@@ -85,7 +85,7 @@ func TestSmoke_OperatorStartsHubAgainstARemote_TS_29_47(t *testing.T) {
 
 	// Then hub's gateway and its HTTP server bind.
 	env := newLeaseEnv(t, leaseEnvOptions{service: svc})
-	gw, err := StartGateway(svc, GatewayDeps{DB: env.db, Secrets: env.secrets, Now: env.clock.Now})
+	gw, err := startGateway(svc, GatewayDeps{DB: env.db, Secrets: env.secrets, Now: env.clock.Now}, gatewaySeams{})
 	if err != nil {
 		t.Fatalf("StartGateway: %v", err)
 	}
@@ -192,7 +192,7 @@ func TestSmoke_RemoteErrorWithTokenAndHostIsScrubbedEndToEnd_TS_29_49(t *testing
 		t.Fatalf("audit.InitSchema: %v", err)
 	}
 	env := &remoteLeaseEnv{}
-	env.remoteEnv = newRemoteEnv(t, leaseEnvOptions{emitter: audit.NewEmitter(audit.NewStore(auditDB))})
+	env.remoteEnv = newRemoteEnv(t, leaseEnvOptions{emitter: audit.NewEmitter(audit.NewStore(auditDB), nil)})
 	env.gw = env.startGateway()
 	env.prov.mu.Lock()
 	env.prov.createErr = fmt.Errorf("create failed: token %s refused at %s (%s)", remoteToken, env.remote.url(), env.remote.host())

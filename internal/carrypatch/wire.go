@@ -601,12 +601,3 @@ func CarryPatchPermissions() []apikit.Permission {
 func FormatGroupKey(workspaceSlug, integrationBranch string) string {
 	return workspaceSlug + ":" + integrationBranch
 }
-
-// SplitGroupKey parses a group_key into workspace_slug and integration_branch.
-func SplitGroupKey(groupKey string) (workspaceSlug, integrationBranch string) {
-	parts := strings.SplitN(groupKey, ":", 2)
-	if len(parts) == 2 {
-		return parts[0], parts[1]
-	}
-	return groupKey, ""
-}

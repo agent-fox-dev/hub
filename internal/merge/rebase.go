@@ -44,8 +44,8 @@ type RebaseResult struct {
 // 'git rebase <targetRef>'. Returns the new HEAD SHA on success.
 //
 // On conflict, the runner automatically aborts the rebase and returns a
-// *RebaseConflictError with the conflicting file paths. On ref-not-found,
-// returns ErrRefNotFound without invoking Rebase.
+// *RebaseConflictError with the conflicting file paths. When the source ref
+// cannot be resolved, the RevParse error is returned without invoking Rebase.
 func RebaseBranch(ctx context.Context, runner RebaseRunner, sourceBranch, targetRef string) (string, error) {
 	// Validate source branch exists before attempting any git operations.
 	if _, err := runner.RevParse(ctx, sourceBranch); err != nil {

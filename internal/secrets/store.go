@@ -417,28 +417,6 @@ func (s *Store) listVariablesRaw(ownerType, ownerID string) ([]VariableEntry, er
 	return s.ListVariables(ownerType, ownerID)
 }
 
-// ---------------------------------------------------------------------------
-// Cascading Deletion
-// ---------------------------------------------------------------------------
-
-// DeleteUserCascade deletes a user and all associated secrets and variables
-// within a single database transaction.
-func (s *Store) DeleteUserCascade(userID string) error {
-	return s.cascadeDelete("DELETE FROM users WHERE id = ?", "user", userID)
-}
-
-// DeleteOrgCascade deletes an org and all associated secrets and variables
-// within a single database transaction.
-func (s *Store) DeleteOrgCascade(orgID string) error {
-	return s.cascadeDelete("DELETE FROM orgs WHERE id = ?", "org", orgID)
-}
-
-// DeleteWorkspaceCascade deletes a workspace and all associated secrets and
-// variables within a single database transaction.
-func (s *Store) DeleteWorkspaceCascade(slug string) error {
-	return s.cascadeDelete("DELETE FROM workspaces WHERE slug = ?", "workspace", slug)
-}
-
 // cascadeDelete wraps parent resource deletion and child secrets/variables
 // deletion in a single database transaction.
 func (s *Store) cascadeDelete(parentSQL, ownerType, ownerID string) error {

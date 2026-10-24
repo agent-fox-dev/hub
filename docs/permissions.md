@@ -686,8 +686,8 @@ at startup via the `extraPerms` parameter.
 
 ## Hub Variables Permissions
 
-These 4 permissions are registered by `VarsPermissions()` in
-`hub/internal/vars/permissions.go` and included in `secrets.Permissions()`
+These 4 permissions are defined in
+`hub/internal/secrets/permissions.go` and included in `secrets.Permissions()`
 for startup registration.
 
 ### vars:manage

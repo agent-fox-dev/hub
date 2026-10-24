@@ -21,7 +21,7 @@ import (
 
 // ===========================================================================
 // TS-01-66: worktree creation and removal, per-run and startup stale cleanup
-// and the _rebuild_temp migration are logged at info with slug and path;
+// are logged at info with slug and path;
 // removal failures are logged at warning.
 // Requirement: 01-REQ-10.1
 // ===========================================================================
@@ -34,16 +34,6 @@ func TestObservability_TS_01_66_InfoLogsCarrySlugAndPath(t *testing.T) {
 	if err := os.MkdirAll(stale, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// A legacy _rebuild_temp branch for the migration. The trunk mock
-	// answers for-each-ref with the exact ref name.
-	base := e.trunk.RunFunc
-	e.trunk.RunFunc = func(ctx context.Context, args ...string) (string, error) {
-		if len(args) > 0 && args[0] == "for-each-ref" && args[len(args)-1] == "refs/heads/_rebuild_temp" {
-			return "refs/heads/_rebuild_temp", nil
-		}
-		return base(ctx, args...)
-	}
-
 	if _, _, err := e.h.HandleRebuildJob(context.Background(), e.payload(StrategyRebase, "")); err != nil {
 		t.Fatalf("HandleRebuildJob: %v", err)
 	}
@@ -59,7 +49,6 @@ func TestObservability_TS_01_66_InfoLogsCarrySlugAndPath(t *testing.T) {
 		{"worktree creation", []string{"created", e.slug, wtPath}},
 		{"worktree removal", []string{"removed", e.slug, wtPath}},
 		{"per-run stale cleanup", []string{"stale", e.slug, stale}},
-		{"_rebuild_temp migration", []string{"_rebuild_temp", e.slug, e.trunkPath()}},
 	} {
 		if !e.logs.has(slog.LevelInfo, tc.subs...) {
 			t.Errorf("no info log for %s containing %v; records=%+v", tc.name, tc.subs, e.logs.records)
