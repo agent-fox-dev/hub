@@ -1,970 +1,904 @@
 # Permissions Reference
 
-This document lists every permission scope known to **hub** and **apikit**,
-the credential types that interact with them, and the authorization rules
-that govern access.
+This document says who may do what on the hub. It is for operators and
+integrators who decide which credential to hand to a person, a CI job or an
+agent, and which scopes to put on a personal access token (PAT). It covers the
+credential types, the order in which a request is checked, every permission
+scope and, endpoint by endpoint, what a caller needs. The endpoints themselves
+are described in [api.md](api.md), the `afc` commands in [cli.md](cli.md), the
+server's settings in [configuration.md](configuration.md), and how the checks
+are implemented in [architecture.md](architecture.md).
 
-## Permission Format
+## Contents
 
-Permissions follow the pattern `resource_type:action` where both parts are
-non-empty strings containing only lowercase ASCII letters, digits, and
-underscores (regex `^[a-z0-9_]+$`).
-
-The permission registry in apikit is pre-populated with 8 built-in scopes.
-Consuming projects (like hub) register additional scopes by passing
-`apikit.Permission` structs to `Server.MountHandlers()`. PAT creation
-validates every requested scope against this registry and rejects unknown
-scopes with HTTP 400.
+- [Credential types](#credential-types)
+  - [Admin token](#admin-token)
+  - [API keys](#api-keys)
+  - [Personal access tokens](#personal-access-tokens)
+  - [Workspace-Bound PATs](#workspace-bound-pats)
+  - [Presenting a credential](#presenting-a-credential)
+- [How a request is authorized](#how-a-request-is-authorized)
+  - [Scope check](#scope-check)
+  - [Workspace access levels](#workspace-access-levels)
+  - [Admin role](#admin-role)
+  - [Anti-Enumeration Policy](#anti-enumeration-policy)
+- [Scope reference](#scope-reference)
+  - [Account and token scopes](#account-and-token-scopes): [users:read](#usersread), [orgs:read](#orgsread),
+    [orgs:write](#orgswrite), [keys:read](#keysread),
+    [keys:manage](#keysmanage), [tokens:read](#tokensread),
+    [tokens:write](#tokenswrite), [tokens:manage](#tokensmanage)
+  - [Workspace scopes](#workspace-scopes): [workspaces:read](#workspacesread),
+    [workspaces:write](#workspaceswrite)
+  - [Carry-patch scopes](#carry-patch-scopes): [patches:read](#patchesread), [patches:write](#patcheswrite),
+    [rebuilds:read](#rebuildsread), [rebuilds:write](#rebuildswrite)
+  - [Merge scopes](#merge-scopes): [merges:read](#mergesread), [merges:write](#mergeswrite)
+  - [Git scopes](#git-scopes): [git:read](#gitread), [git:write](#gitwrite)
+  - [Secrets and variables scopes](#secrets-and-variables-scopes): [secrets:read](#secretsread),
+    [secrets:write](#secretswrite), [vars:read](#varsread),
+    [vars:write](#varswrite)
+  - [Session and audit scopes](#session-and-audit-scopes): [sessions:read](#sessionsread),
+    [sessions:write](#sessionswrite), [audit:read](#auditread),
+    [audit:write](#auditwrite)
+  - [Sandbox scopes](#sandbox-scopes): [sandboxes:read](#sandboxesread),
+    [sandboxes:write](#sandboxeswrite)
+  - [Forge scopes](#forge-scopes): [forge:read](#forgeread), [forge:write](#forgewrite)
+- [Complete Permission List](#complete-permission-list)
+- [Endpoint Access Matrix](#endpoint-access-matrix)
+  - [Account and token endpoints](#account-and-token-endpoints)
+  - [Admin endpoints](#admin-endpoints)
+  - [Workspace endpoints](#workspace-endpoints)
+  - [Carry-patch endpoints](#carry-patch-endpoints)
+  - [Merge endpoints](#merge-endpoints)
+  - [Git endpoints](#git-endpoints)
+  - [Secrets and variables endpoints](#secrets-and-variables-endpoints)
+  - [Session, cost and audit endpoints](#session-cost-and-audit-endpoints)
+  - [Sandbox endpoints](#sandbox-endpoints)
+  - [Forge endpoints](#forge-endpoints)
+- [Retired scope names](#retired-scope-names)
+- [Extending the Permission Registry](#extending-the-permission-registry)
 
 ---
 
-## Credential Types
+## Credential types
 
-| Type | Format | Permission Model |
-|------|--------|-----------------|
-| Admin Token | `af_admin_<64-hex>` | Implicit full access. Bypasses all permission and ownership checks. Cannot create workspaces (no user identity). |
-| API Key | `af_<key_id>_<secret>` | Implicit full access to the owning user's resources. Admin-role API keys also pass admin-level checks. |
-| PAT | `af_pat_<token_id>_<secret>` | Explicit scope-based access. Restricted to the permission list granted at creation. Never treated as admin, even if the user has admin role. |
+| Type | Format | Issued by | Access |
+|------|--------|-----------|--------|
+| Admin token | `af_admin_<64-hex>` | the hub, at first boot or on rotation | Everything, in every workspace. No scope or ownership check applies. It has no user behind it. |
+| API key | `af_<key_id>_<secret>` | the OAuth login (`afc login`) | Everything the owning user may reach. No scope check applies; workspace access still does. |
+| PAT | `af_pat_<token_id>_<secret>` | `POST /api/v1/user/tokens` | Only what its scopes allow, within what its user may reach. Never admin. |
 
-Admin tokens and API keys bypass all `RequirePermission` checks — scopes
-only constrain PATs.
+Scopes constrain PATs only: admin tokens and API keys are never scope-checked.
+A PAT can also be bound to one workspace, which narrows where its scopes apply
+and never widens what they allow (see [Workspace-Bound PATs](#workspace-bound-pats)).
 
-A PAT can also be bound to one workspace. The binding narrows where its scopes
-apply and never changes what they allow; see
-[Workspace-Bound PATs](#workspace-bound-pats).
+### Admin token
+
+The operator receives the admin token when the hub is first started with
+`--admin-email`, and a new one with `--reset-admin-token` (see
+[First boot](configuration.md#first-boot)). It may do everything, in every
+workspace, and passes every admin check. Because it has no user identity it
+cannot:
+
+- create a workspace (`403`; a workspace needs a real user as its owner);
+- use the user-scoped secrets and variables routes (`/api/v1/user/...`, `403`);
+- mint workspace-bound tokens (a token needs a user as its owner).
+
+### API keys
+
+API keys are the credential of interactive users and of the CLI. They carry no
+scope list: what they reach is decided by who owns the key.
+
+- **Creation.** Only through the OAuth login flow (`POST /api/v1/auth/callback`,
+  which `afc login` drives through a browser). The hub creates or updates the
+  user, **revokes every existing API key of that user**, and returns the new key
+  once. Only a hash of the secret is stored. The expiry is 90 days by default;
+  the allowed values are 0, 30, 60 and 90.
+- **Refresh.** `POST /api/v1/user/keys/:key_id/refresh` issues a new secret for
+  the same key id and recalculates the expiry. It needs an API key; a PAT is
+  refused.
+- **Revocation.** By the owner (`DELETE /api/v1/user/keys/:key_id`; a key may
+  revoke itself), by an admin (`DELETE /api/v1/users/:id/keys/:key_id`), or
+  automatically by the next OAuth login of the same user. Automated systems that
+  use an API key therefore lose it when the user logs in again.
+- **Blocked users.** Blocking a user disables all their API keys when they
+  authenticate, without revoking them; the git server refuses every credential
+  of a blocked user. Unblocking re-enables every key that is neither revoked nor
+  expired.
+- **PATs.** An API key may create a PAT with any registered scope; the subset
+  rule applies only when a PAT creates a PAT.
+
+### Personal access tokens
+
+PATs are for programmatic use: CI, agents, scripts. A PAT is created with
+`POST /api/v1/user/tokens` and an explicit list of scopes. Every scope must be
+registered (see the [Complete Permission List](#complete-permission-list)); an
+unknown scope is refused with `400`. A PAT that creates another PAT (it needs
+`tokens:manage`) can grant only scopes it holds itself. A PAT is never treated as
+admin, even when its user has the admin role.
+
+| Aspect | API key | PAT |
+|--------|---------|-----|
+| Permissions | All of the user's (no scope check) | Only its scopes |
+| Admin access | An admin-role key passes the admin checks (see [Admin role](#admin-role)) | Never |
+| Creating PATs | With any registered scope | Only with a subset of its own scopes |
+| Refresh | `POST /api/v1/user/keys/:key_id/refresh` | Not supported |
+| Changing permissions | — | `PUT`, `PATCH`, `DELETE /api/v1/user/tokens/:token_id/permissions` |
+| Intended use | Interactive, CLI | Programmatic, CI, agents |
+
+### Workspace-Bound PATs
+
+A PAT can be bound to exactly one workspace `S`. The binding narrows where the
+token works; on `S` its scopes decide as for an unbound PAT of the same user.
+API keys and admin tokens cannot be bound.
+
+**Minting and listing.** `POST /api/v1/workspaces/:slug/tokens` mints a bound PAT
+for the owner of an active workspace, with an API key or with a PAT holding
+`tokens:manage`; the scopes granted must be a subset of the creating PAT's.
+`GET /api/v1/workspaces/:slug/tokens` lists them for the owner (a PAT needs
+`tokens:read` or `tokens:manage`) and for admin tokens. Both routes need the
+*private* access level: a member of the workspace's org gets the stranger's
+`404 workspace not found`. Admin tokens cannot mint. Deleting a workspace revokes
+its bound tokens.
+
+For a bound PAT:
+
+- **Routes that name a workspace** answer `404 workspace not found` for every
+  slug other than `S`. This comes before the scope check: to a bound PAT, other
+  workspaces do not exist.
+- **Cross-workspace routes** that allow bound tokens (`GET /workspaces`, the
+  session routes, `GET /audit`, `GET /events`, `GET /sandbox-profiles`) see only
+  `S`. For any other workspace they give the answer a non-owner gets.
+- **Every other route** is refused with `403` and `error_type: token_bound`:
+  `POST /workspaces`, user and org secrets and variables, `GET /sandboxes`, every
+  account, token and admin route, and unknown paths. So `tokens:manage` on a bound
+  PAT cannot mint an unbound PAT through `POST /user/tokens`.
+- **`tokens:*` scopes do nothing.** On its own workspace's `/tokens` routes a bound
+  PAT gets `403 token_bound`, on any other workspace's `404 workspace not found`.
+- **Git** serves `S`'s repository under the `git:read` and `git:write` scopes and
+  the user's access (a member's bound PAT still cannot push), and answers a
+  pkt-line `404 repository not found` for every other repository.
+- **Refusals are audited** as `hub.token.bound_refused`, at most once per token
+  per minute.
+
+[Workspace-Bound Tokens](api.md#workspace-bound-tokens) in the API reference lists
+every answer.
+
+### Presenting a credential
+
+- **REST:** `Authorization: Bearer <credential>`, for all three types.
+- **Git:** the credential is the HTTP Basic password; the username is ignored.
+  All three types are accepted. A request without credentials gets `401` with
+  `WWW-Authenticate: Basic realm="af-hub"`; an unknown, revoked or expired
+  credential, or one of a blocked user, gets `401`.
+- **CLI:** `afc login --provider github --expires 90` opens a browser for the
+  OAuth login and saves the API key in `~/.af/config.toml`. `afc` sends it as a
+  bearer token on every request and checks no expiry itself. The precedence of
+  `--api-key`, `API_KEY` and the file is described under
+  [CLI Configuration](configuration.md#cli-configuration-afconfigtoml).
+- **Git through the CLI:** `afc credential-helper get` hands the stored API key
+  to git as the HTTP Basic password (username `x-token-auth`). Set it up with:
+
+  ```
+  git config --global credential.<hub-url>.helper "!afc credential-helper"
+  ```
 
 ---
 
-## API Key Authorization in Detail
+## How a request is authorized
 
-API keys are the primary credential for interactive users and CLI callers.
-They carry no explicit permission list — their access is governed by
-ownership and role instead.
+Every request below the mount point goes through the same checks, in this
+order. The first one that fails decides the answer.
 
-### Lifecycle
+1. **Authentication.** A request without a valid credential (missing, unknown,
+   revoked or expired) is refused with `401`.
+2. **Token binding.** A bound PAT on a route it may not use: `403 token_bound`;
+   on another workspace: `404 workspace not found`.
+3. **Scope** (PATs only). A PAT without the scope the route needs: `403`, or
+   `404` on the workspace CRUD routes (see
+   [Anti-Enumeration Policy](#anti-enumeration-policy)). This check comes before
+   the workspace is looked up, so a PAT without the scope gets the same answer
+   for a slug that does not exist.
+4. **Workspace access.** An unknown slug, or a workspace the caller may not see:
+   `404 workspace not found`. A member of the workspace's org on a write: `403`
+   with `error_type: forbidden`.
+5. **State and preconditions** of the workspace and the resource, for example
+   `400` on a write to an archived workspace. Because access comes first, a
+   member's write to an archived workspace is `403`, not `400`.
 
-**Creation.** API keys are created exclusively through the OAuth login
-flow (`POST /api/v1/auth/callback`). The CLI runs `afc login`, opens a browser
-for GitHub OAuth, receives an authorization code, and exchanges it with
-the hub. The hub upserts the user record, revokes all existing API keys
-for that user, generates a new key (`af_<key_id>_<secret>`), and returns
-it once. The plaintext secret is never stored server-side — only the
-SHA-256 hash is persisted. Default expiry is 90 days (allowed: 0, 30, 60,
-or 90).
+A database error during these checks is `500`, never a grant.
 
-**Refresh.** `POST /api/v1/user/keys/:key_id/refresh` generates a new secret
-while preserving the key_id and recalculates expiry. This endpoint
-rejects PAT authentication — API key auth is required.
+### Scope check
 
-**Revocation.** Keys can be revoked three ways:
-- Self-service: `DELETE /api/v1/user/keys/:key_id` (self-revocation of the
-  authenticating key is allowed).
-- Admin: `DELETE /api/v1/users/:id/keys/:key_id`.
-- Automatic: re-login via OAuth mass-revokes all existing keys for the
-  user.
+A scope has the form `resource:action`; both parts use only lowercase ASCII
+letters, digits and underscores. For every hub resource, `resource:write`
+implies `resource:read`, so a route that needs `resource:read` also accepts
+`resource:write`; `resource:read` never implies a write. The account scopes keep
+their own shape: `tokens:manage` satisfies a check for `tokens:write`, and
+`keys:manage`, `orgs:write` and `users:read` stand alone.
 
-**Blocked users.** Blocking a user disables all their API keys at
-authentication time without individually revoking them. Unblocking
-immediately re-enables all non-revoked, non-expired keys.
+A scope refusal is a `403` without `error_type`, so a client can tell it from a
+member's `forbidden`. The messages are:
 
-### Authentication Flow
-
-REST API requests pass the API key as `Authorization: Bearer <key>`. Git
-operations pass it as the HTTP Basic password (username is ignored). Both
-paths validate the credential independently:
-
-1. Parse the token format to identify it as an API key.
-2. Look up the `key_id` in the `api_keys` table.
-3. Check `revoked_at` is NULL.
-4. Check `expires_at` is not in the past.
-5. SHA-256 hash the secret and constant-time compare against the stored
-   hash.
-6. (REST only) Check the owning user's status is not `blocked`.
-
-### Authorization Model
-
-API key authorization rests on three principles:
-
-**1. Permission bypass.** `RequirePermission` returns nil immediately for
-API keys without inspecting any scope list. The `AuthInfo` struct for API
-keys has `Permissions` set to nil. `wsaccess.CanRead` and `CanWrite`
-return true for API keys without reading a scope. In the git server, `requireGitScope` returns nil for API
-keys — they have implicit `git:read` + `git:write`.
-
-**2. Workspace access.** Despite bypassing scope checks, API keys
-are strictly scoped to the resources they may reach:
-- REST `/api/v1/user/*` endpoints query `WHERE user_id = ?` using the
-  authenticated user's ID.
-- Every REST route that names a workspace decides access through
-  `wsaccess.AuthorizeWorkspace` (see [Workspace access
-  levels](#workspace-access-levels); the session, cost and audit routes keep
-  their own refusal answers): the owner and admin tokens may do
-  everything, a member of the workspace's org may read, and everyone else
-  gets 404 (anti-enumeration). Sync and reclone are writes like any other.
-  The listing returns the caller's own workspaces plus those of the orgs
-  the caller belongs to.
-- The git server decides through `wsaccess.AuthorizeWorkspaceAt` with
-  the read level for clone and fetch and the write level for push: the
-  owner and admin tokens may do both, a member of the workspace's org may
-  clone and fetch and gets a pkt-line 403 on push, and everyone else gets a
-  pkt-line 404.
+| Routes | Answer to a PAT without the scope |
+|--------|-----------------------------------|
+| Workspace get, list, update, archive, reactivate, delete | `404 workspace not found` |
+| `POST /workspaces` | `403 PAT requires workspaces:write scope to create workspaces` |
+| Sync | `403 PAT requires workspaces:write scope to sync workspaces`; on a carry-patch workspace `403 missing required scope: workspaces:write` |
+| Reclone | `403 PAT requires workspaces:write scope to reclone workspaces` |
+| Branch push | `403 PAT requires workspaces:write scope to push branches` |
+| Rerere list, patch-status | `403 missing required scope: workspaces:read` |
+| Rerere forget | `403 missing required scope: workspaces:write` |
+| Patches | `403 PAT requires patches:read scope` (or `patches:write`) |
+| Rebuilds | `403 missing required scope: rebuilds:read` (or `rebuilds:write`) |
+| Merges | `403 PAT requires merges:read scope` (or `merges:write`) |
+| Secrets and variables | `403 insufficient permission scope` |
+| Sessions and cost | `403 sessions:read scope required` (or `sessions:write`) |
+| Audit | `403 insufficient scope: audit:read required` (or `audit:write`) |
+| Sandboxes | `403 PAT requires sandboxes:read scope` (or `sandboxes:write`) |
+| Forge | `403 PAT requires forge:read scope` (or `forge:write`) |
+| Git | `403 insufficient git permissions` |
 
 ### Workspace access levels
 
-`internal/wsaccess` decides a caller's access to a workspace, in this order,
-and each REST endpoint states what it needs:
+Every route that names a workspace decides the caller's access to it the same
+way, and each route needs one of three levels.
 
 | Access | Who |
 |--------|-----|
-| `admin` | an admin token (`CredentialType == "admin_token"`); an admin-role API key is not one |
-| `owner` | a credential whose user id is the workspace's `owner_id` |
-| `member` | a credential whose user id has a row `(org_id, user_id)` in `org_members` for the workspace's `org_id` (whatever the org's status or kind); read on every request, so removing a member takes effect at once |
-| none | everyone else, including a credential with no user id |
+| `admin` | an admin token (an admin-role API key is not one) |
+| `owner` | a credential of the user who owns the workspace |
+| `member` | a credential of a user who is a member of the workspace's org, whatever the org's status or kind; membership is read on every request, so removing a member takes effect at once |
+| none | everyone else |
 
 | Need | Admitted | A member gets | Anyone else gets |
 |------|----------|---------------|------------------|
 | read | member, owner, admin | the answer the owner gets | `404 workspace not found` |
-| write | owner, admin | `403` `org members have read-only access to this workspace`, `error_type: forbidden` | `404 workspace not found` |
+| write | owner, admin | `403 org members have read-only access to this workspace`, `error_type: forbidden` | `404 workspace not found` |
 | private | owner, admin | `404 workspace not found`, as a stranger | `404 workspace not found` |
 
-The checks run in this order: no credential is 401; an unknown slug and a
-caller with no access are 404 (with no binding lookup); a PAT bound to another
-workspace is 404 (spec 33) and the refusal is reported; then the need decides.
-A database error is 500 and never a grant. The access step sits where the
-ownership step always sat: after the PAT scope check (a PAT without the scope
-gets the scope answer whatever its membership) and before status and
-precondition checks, so a member's write to an archived workspace is 403, not
-400. A scope 403 carries no `error_type`, so a client can tell it from a
-member's `forbidden`.
-
-Every workspace object carries `access` (the caller's level, `admin`, `owner`
-or `member`, whatever the PAT's scopes) and `org_slug`.
-
-| Routes | Need |
-|--------|------|
-| `GET /workspaces/:slug`, patch reads, rebuild reads, `rebuild-preview`, `patch-status`, `GET .../rerere`, merge reads, lease list and get, the forge reads and `forge/deliveries`, `GET .../vars`, `GET .../vars/resolved` | read |
-| workspace update, archive, reactivate, delete, sync, reclone, branch push; patch writes; rebuild submit, cancel, requeue, rollback; `DELETE .../rerere/*`; merge submit, cancel, requeue, `rebase`; lease issue and delete; the forge writes and `PUT`/`DELETE .../forge/webhook`; variable create, update, delete | write |
-| workspace secrets (all four routes); bound tokens (`POST`, `GET .../tokens`) | private |
-
-The session, cost and audit routes decide through the same rule and keep their
-own refusal answers:
-
-| Routes | Need | A member gets | Anyone else gets |
-|--------|------|---------------|------------------|
-| per-run audit reads (`events`, `sessions/outcomes`, `tools/calls`, `tools/errors`, `traces`, `postmortem`) and the transcript | read, any workspace status | the owner's answer | `404 workspace not found` |
-| `GET /sessions/:id`, `GET /sessions/:id/usage`, `GET /workspaces/:slug/cost`, `GET /sessions?workspace_slug=` | read, and the workspace must be active | the owner's answer | `403 workspace access denied` |
-| `GET /sessions` | the active workspaces the caller may read | the sessions of owned and member workspaces | its own workspaces' sessions |
-| `GET /audit`, `GET /events` | the workspaces of any status the caller may read (the stream computes the set when it opens) | the events of owned and member workspaces; never a hub event without a workspace | `404 workspace not found` for a `workspace` filter outside the set |
-| `POST /sessions` | write | `403` `org members have read-only access to this workspace`, `error_type: forbidden` | `404 workspace not found` |
-| `POST /sessions/:id/complete`, `POST /sessions/:id/usage` | the session's creator (owner or admin token) | `403 not session owner` | `403 not session owner` |
-| the eight audit ingestion routes | owner (`checkWorkspaceAccess`) | `403 workspace_access_denied` (`409 workspace_archived` first on an archived workspace) | the same |
+The level a PAT has is its user's, whatever its scopes: a PAT without the scope
+gets the scope answer whatever its membership. Every workspace object carries
+`access` (the caller's level: `admin`, `owner` or `member`) and `org_slug`. The
+workspace listing returns the caller's own workspaces and those of the orgs the
+caller belongs to; an admin token sees all of them.
 
 The git server uses the same levels: clone and fetch need read, push needs
-write (a member's push is a pkt-line `403 org members have read-only access to
-this workspace`); see [Git Endpoints](#git-endpoints-all-api-keys-access-enforced).
+write. A member's push is refused with a pkt-line
+`403 org members have read-only access to this workspace`.
 
-**3. Role-based escalation.** `IsAdmin()` returns true when
-`CredentialType == "api_key"` AND `Role == "admin"`. This grants access
-to `RequireAdmin`-gated endpoints (user management, org management).
-However, admin-role API keys do NOT gain elevated access in two
-subsystems:
-- **Workspaces:** `convertApikitAuth` discards the `Role` field and maps
-  `api_key` to `CredentialAPIKey` regardless of role. Admin-role API keys
-  see only their own workspaces.
-- **Git server:** `wsaccess.AuthorizeWorkspaceAt` treats only
-  `CredentialType == "admin_token"` as admin, not `IsAdmin()`. An admin-role
-  API key is owner, member or stranger like any other API key.
+Which routes need which level is listed in the
+[Endpoint Access Matrix](#endpoint-access-matrix). The session, cost and audit
+routes apply the same levels but keep refusal answers of their own (see
+[Session, cost and audit endpoints](#session-cost-and-audit-endpoints)).
 
-This creates an intentional asymmetry: an admin-role API key is admin for
-REST user/org management but NOT for cross-tenant workspace or git access.
-Only admin tokens bypass ownership.
+### Admin role
 
-### API Key vs PAT
+A user can have the admin role. Their API keys then pass the admin checks of the
+user and org management routes (see [Admin endpoints](#admin-endpoints)), and a
+user-role key gets `403` there. An admin-role API key is **not** admin for
+workspaces or git: it is owner, member or stranger like any other API key and
+sees only the workspaces of its user and its user's orgs. Only an admin token
+reaches every workspace. PATs are never admin.
 
-| Aspect | API Key | PAT |
-|--------|---------|-----|
-| Permissions | Implicit full access (bypass all scope checks) | Must carry explicit scopes |
-| Admin access | Admin-role keys pass `RequireAdmin` | Never admin, regardless of user role |
-| Privilege escalation | Can create PATs with any registered permissions | New PAT must be a subset of creating PAT |
-| Credential refresh | `POST /api/v1/user/keys/:key_id/refresh` (API key auth only) | Not supported |
-| Intended use | Interactive / CLI | Programmatic / CI |
+### Anti-Enumeration Policy
 
-### CLI Usage
+The hub does not tell a caller that a workspace exists unless the caller may
+read it:
 
-**Login:** `afc login --provider github --expires 90` opens a browser for
-OAuth, receives an API key, and saves it to `~/.af/config.toml` (mode
-0600 in a mode 0700 directory).
+- A workspace the caller may not read (neither owner, nor member of its org, nor
+  an admin token) gets the same `404 workspace not found` as a slug that does
+  not exist, on every route that names a workspace: workspace CRUD, sync,
+  reclone, branch push, patches, rebuilds, rerere, patch-status, merges, leases,
+  forge, secrets, variables, bound tokens and the per-run audit reads.
+- On the workspace CRUD routes (list, get, update, archive, reactivate, delete) a
+  PAT without the workspace scope also gets `404`.
+- `POST /workspaces` answers a missing scope with `403`: there is nothing to
+  enumerate.
+- The git server answers a caller who may not read the repository with a
+  pkt-line `404 repository not found`.
+- A member of the workspace's org already knows it exists, so a member's write is
+  `403` with `error_type: forbidden`, and a member's push is a pkt-line `403`.
+- A workspace-bound PAT gets the stranger's answer for every workspace other
+  than its own.
+- Other refusals of a missing scope are `403` (see [Scope check](#scope-check)).
 
-**Credential precedence:** (1) `--api-key` flag, (2) `API_KEY` env var,
-(3) `~/.af/config.toml`, (4) error.
+Three groups answer differently:
 
-**HTTP requests:** The CLI sets `Authorization: Bearer <key>` on every
-request. No client-side expiry check — all validation is server-side.
-
-**Git credential helper:** `afc credential-helper get` reads
-`~/.af/config.toml` and returns the API key as an HTTP Basic password
-(`username=x-token-auth`), bridging REST Bearer auth and git HTTP Basic
-auth. Configure with:
-```
-git config --global credential.<hub-url>.helper "!afc credential-helper"
-```
-
-### Endpoint Access Matrix
-
-All apikit endpoints below are mounted on the same API group as the workspace
-endpoints, so they live under the configured mount point -- `/api/v1` by
-default (`server.mount_point` in `config.toml`). Only `GET /healthz`,
-`GET /readyz`, `GET /version`, hub's `GET /metrics`, and the `/git/...` routes
-sit outside it.
-
-#### Self-Service Endpoints (all API keys)
-
-| Endpoint | Access | Ownership |
-|----------|--------|-----------|
-| `GET /api/v1/user` | allowed | own profile via `GetUserID` |
-| `PATCH /api/v1/user` | allowed | own profile |
-| `GET /api/v1/user/orgs` | allowed | own memberships |
-| `GET /api/v1/user/keys` | allowed | own keys via `WHERE user_id = ?` |
-| `POST /api/v1/user/keys/:key_id/refresh` | allowed | own key (404 on mismatch) |
-| `DELETE /api/v1/user/keys/:key_id` | allowed | own key (self-revocation permitted) |
-| `POST /api/v1/user/tokens` | allowed | creates PAT for own user (no escalation check) |
-| `GET /api/v1/user/tokens` | allowed | own PATs |
-| `GET /api/v1/user/tokens/:token_id` | allowed | own PAT (404 on mismatch) |
-| `DELETE /api/v1/user/tokens/:token_id` | allowed | own PAT (404 on mismatch) |
-| `PUT /api/v1/user/tokens/:token_id/permissions` | allowed | own PAT (requires `tokens:write` or `tokens:manage` scope) |
-| `PATCH /api/v1/user/tokens/:token_id/permissions` | allowed | own PAT (requires `tokens:write` or `tokens:manage` scope) |
-| `DELETE /api/v1/user/tokens/:token_id/permissions` | allowed | own PAT (requires `tokens:write` or `tokens:manage` scope) |
-
-#### Workspace Endpoints (all API keys)
-
-| Endpoint | Access | Ownership |
-|----------|--------|-----------|
-| `POST /api/v1/workspaces` | allowed | new workspace owned by caller |
-| `GET /api/v1/workspaces` | allowed | own workspaces and those of the caller's orgs |
-| `GET /api/v1/workspaces/:slug` | allowed | read: owner or org member (404 if neither) |
-| `PATCH /api/v1/workspaces/:slug` | allowed | write: must own (org member 403) |
-| `POST /api/v1/workspaces/:slug/archive` | allowed | write: must own (org member 403) |
-| `POST /api/v1/workspaces/:slug/reactivate` | allowed | write: must own (org member 403) |
-| `DELETE /api/v1/workspaces/:slug` | allowed | write: must own (org member 403), must be archived |
-| `POST /api/v1/workspaces/:slug/sync` | allowed | write: must own (org member 403) |
-| `POST /api/v1/workspaces/:slug/reclone` | allowed | write: must own (org member 403) |
-| `POST /api/v1/workspaces/:slug/branches/:name/push` | allowed | write: must own (org member 403) |
-| patches, merges, rebase, rebuilds, rerere, patch-status | allowed | reads: owner or org member; writes: must own (org member 403); 404 otherwise |
-| sessions, cost, audit | allowed | reads: owner or org member (sessions and cost only on an active workspace); opening a session: must own (org member 403 `forbidden`); completing, usage reports and ingestion: owner only (org member 403) |
-
-Admin-role API keys have the same access as user-role — they do NOT see
-other users' workspaces beyond their orgs'.
-
-#### Sandbox Endpoints (all API keys)
-
-| Endpoint | Access | Ownership |
-|----------|--------|-----------|
-| `GET /api/v1/sandbox-profiles` | allowed | none; every authorised caller sees the same list |
-| `POST /api/v1/workspaces/:slug/sandboxes` | allowed | write: must own the workspace (org member 403, 404 otherwise), which must not be archived |
-| `GET /api/v1/workspaces/:slug/sandboxes`, `GET .../sandboxes/:id` | allowed | read: owner or org member (404 otherwise) |
-| `DELETE /api/v1/workspaces/:slug/sandboxes/:id` | allowed | write: must own the workspace (org member 403, 404 otherwise) |
-| `GET /api/v1/sandboxes` | **admin tokens only** (403 for an API key) | all workspaces |
-
-#### Forge Endpoints (all API keys)
-
-| Endpoint | Access | Ownership |
-|----------|--------|-----------|
-| `GET /api/v1/workspaces/:slug/forge` and the nine read routes (`.../forge/repository`, `.../issues`, `.../issues/:n`, `.../issues/:n/comments`, `.../pulls/:n`, `.../pulls/:n/state`, `.../pulls/:n/files`, `.../pulls/:n/checks`, `.../pulls/:n/reviews`) | allowed | read: owner or org member (404 otherwise); an admin token may read any workspace |
-| the nine write routes (`POST .../issues`, `PATCH .../issues/:n`, `POST .../issues/:n/close`, `POST .../issues/:n/comments`, `POST .../issues/:n/labels`, `DELETE .../issues/:n/labels/:name`, `POST .../labels`, `POST .../pulls`, `POST .../pulls/:n/comments`) | allowed | write: must own the workspace (org member 403, 404 otherwise), which must not be archived (400 if it is); an admin token may write to any workspace |
-| `GET /api/v1/workspaces/:slug/forge/deliveries` | allowed | as the reads: owner or org member (404 otherwise); works on archived workspaces |
-| `PUT /api/v1/workspaces/:slug/forge/webhook` | allowed | as the writes: must own the workspace (org member 403, 404 otherwise), which must not be archived (400 if it is) |
-| `DELETE /api/v1/workspaces/:slug/forge/webhook` | allowed | write: must own the workspace (org member 403, 404 otherwise); works on archived workspaces |
-| `POST /hooks/forge/:slug` | **no credential** | none: outside the API group; the forge proves who it is with the HMAC signature or the token of the workspace's `FORGE_WEBHOOK_SECRET` |
-
-For a read the checks run in this order: no credential is 401; a PAT without
-`forge:read` or `forge:write` (and a credential type the hub does not know) is 403,
-before the workspace is looked up; a workspace that is missing or that the caller may
-not read is 404. For a write: no credential is 401; a PAT without `forge:write`,
-`forge:read` alone included, is 403 (`PAT requires forge:write scope`), and so is an
-unknown credential type, before the workspace is looked up; a workspace that is missing
-or that the caller may not read is 404; a member of its org is 403 `forbidden`; one
-that is archived is 400. The hub reads and writes the forge with the workspace's own
-stored git credential, never with the caller's, a member's reads included; the
-diagnostic names only the credential's kind.
-
-The webhook ingress `POST /hooks/forge/:slug` is the one forge route that takes no bearer
-credential and no scope: it is mounted on the server root beside `/git/...`, and a delivery
-is accepted only when its signature (GitHub) or token (GitLab) matches the workspace's
-`FORGE_WEBHOOK_SECRET`. A workspace without the secret and a slug that does not exist
-answer the same `404`, so the endpoint does not tell which slugs exist. The secret is
-managed with `forge:write` (`PUT`, `DELETE`) and its deliveries are read with `forge:read`.
-
-#### Git Endpoints (all API keys, access enforced)
-
-| Endpoint | Access | Ownership |
-|----------|--------|-----------|
-| `GET /git/:org/:slug.git/info/refs` | allowed | `service=git-receive-pack`: must own (org member pkt-line 403); otherwise owner or org member |
-| `POST /git/:org/:slug.git/git-upload-pack` | allowed | owner or org member |
-| `POST /git/:org/:slug.git/git-receive-pack` | allowed | must own (org member pkt-line 403) |
-
-Anyone else gets a pkt-line 404. API keys have implicit `git:read` +
-`git:write`. Admin-role API keys do NOT bypass the access rule in the git
-server. Blocked users are rejected.
-
-#### Admin Endpoints (admin-role API keys only)
-
-User-role API keys receive 403 on all admin endpoints. Admin-role API
-keys (`Role == "admin"`) pass `RequireAdmin` and gain access to:
-
-| Endpoint | Description |
-|----------|-------------|
-| `POST /api/v1/users` | Create user |
-| `GET /api/v1/users` | List all users |
-| `GET /api/v1/users/:id` | Get any user |
-| `PATCH /api/v1/users/:id` | Update any user |
-| `POST /api/v1/users/:id/promote` | Promote to admin |
-| `POST /api/v1/users/:id/demote` | Demote from admin |
-| `POST /api/v1/users/:id/block` | Block user |
-| `POST /api/v1/users/:id/unblock` | Unblock user |
-| `GET /api/v1/users/:id/keys` | List any user's keys |
-| `DELETE /api/v1/users/:id/keys/:key_id` | Revoke any user's key |
-| `GET /api/v1/users/:id/tokens` | List any user's PATs |
-| `DELETE /api/v1/users/:id/tokens/:token_id` | Revoke any user's PAT |
-| `POST /api/v1/orgs` | Create org |
-| `GET /api/v1/orgs` | List all orgs |
-| `GET /api/v1/orgs/:id` | View any org (bypasses membership) |
-| `PATCH /api/v1/orgs/:id` | Update any org |
-| `DELETE /api/v1/orgs/:id` | Delete org |
-| `POST /api/v1/orgs/:id/block` | Block org |
-| `POST /api/v1/orgs/:id/unblock` | Unblock org |
-| `GET /api/v1/orgs/:id/members` | List members (bypasses membership) |
-| `PUT /api/v1/orgs/:id/members/:user_id` | Add member |
-| `DELETE /api/v1/orgs/:id/members/:user_id` | Remove member |
-
-### Non-Obvious Behaviors
-
-- **OAuth re-login mass-revokes keys.** Logging in via OAuth revokes ALL
-  existing API keys for the user, invalidating any keys used by automated
-  systems.
-- **Admin-role API keys are not admin everywhere.** They pass
-  `RequireAdmin` for user/org management but are treated as regular users
-  in workspace and git subsystems. Only admin tokens have cross-tenant
-  workspace/git access.
-- **Admin tokens cannot create workspaces.** They have no user identity,
-  so workspace creation is rejected with 403. For the same reason they get
-  403 on the user-scoped secrets and variables endpoints (`/api/v1/user/...`).
-- **API keys can create PATs with any permissions.** The privilege
-  escalation check only applies when a PAT creates another PAT.
-- **Self-revocation is allowed.** A key can revoke itself because the
-  auth middleware validates the credential before the handler executes.
-- **Config supports env var expansion.** `~/.af/config.toml` values
-  containing `$VAR` are expanded via `os.ExpandEnv()` at load time.
+- The session and cost reads answer a workspace the caller may not read with
+  `403 workspace access denied`.
+- The audit ingestion routes answer a caller who does not own an existing
+  workspace with `403 token owner does not have write access to this workspace`
+  (`error_type: workspace_access_denied`), and an archived workspace with
+  `409 workspace_archived` before the ownership check; an unknown slug is `404`.
+- Org-scoped secrets and variables answer a non-member with `404`.
 
 ---
 
-## apikit Built-in Permissions
+## Scope reference
 
-These 8 permissions are registered automatically by `apikit`'s
-`NewPermissionRegistry()` in `apikit/internal/auth/permissions.go`.
+Every scope is described with the same rows:
 
-### users:read
+- **Grants** — what a PAT holding the scope may do.
+- **Endpoints** — the routes that check it, relative to the mount point
+  (`/api/v1` by default); git routes and `afc` commands are named in full.
+- **Implies / implied by** — the scopes it satisfies or that satisfy it.
+- **Workspace access** — the [access level](#workspace-access-levels) the
+  routes need, besides the scope.
+- **Notes** — anything else a caller sees.
 
-| | |
-|---|---|
-| **Source** | apikit |
-| **Grants** | Read access to the authenticated user's own profile |
-| **Endpoints** | `GET /api/v1/user`, `PATCH /api/v1/user` |
+API keys and admin tokens are never scope-checked; for them only the workspace
+access applies.
 
-### orgs:read
+### Account and token scopes
 
-| | |
-|---|---|
-| **Source** | apikit |
-| **Grants** | Read access to the authenticated user's organization memberships |
-| **Endpoints** | `GET /api/v1/user/orgs` |
+These eight scopes are built into the server framework the hub runs on and
+cover the caller's own account.
 
-### orgs:write
-
-| | |
-|---|---|
-| **Source** | apikit |
-| **Grants** | Reserved for PAT-scoped organization write operations |
-| **Endpoints** | — (registered but not yet enforced by apikit handlers) |
-
-### keys:read
+#### users:read
 
 | | |
 |---|---|
-| **Source** | apikit |
-| **Grants** | Reserved for PAT-scoped read access to API key metadata |
-| **Endpoints** | — (registered but not yet enforced by apikit handlers) |
+| **Grants** | Read and update the caller's own profile |
+| **Endpoints** | `GET /user`, `PATCH /user` |
+| **Implies / implied by** | — |
+| **Workspace access** | — |
+| **Notes** | — |
 
-### keys:manage
-
-| | |
-|---|---|
-| **Source** | apikit |
-| **Grants** | Reserved for PAT-scoped API key management (revoke) |
-| **Endpoints** | `DELETE /api/v1/user/keys/:key_id` |
-
-### tokens:read
+#### orgs:read
 
 | | |
 |---|---|
-| **Source** | apikit |
-| **Grants** | List and retrieve the authenticated user's PATs (metadata only) |
-| **Endpoints** | `GET /api/v1/user/tokens`, `GET /api/v1/user/tokens/:token_id`; hub's `GET /api/v1/workspaces/:slug/tokens` (the workspace's owner) |
+| **Grants** | List the caller's own org memberships |
+| **Endpoints** | `GET /user/orgs` |
+| **Implies / implied by** | — |
+| **Workspace access** | — |
+| **Notes** | — |
 
-### tokens:manage
-
-| | |
-|---|---|
-| **Source** | apikit |
-| **Grants** | Create and revoke PATs, and modify PAT permissions. Privilege escalation is blocked: a new PAT's permissions must be a subset of the creating PAT's permissions. |
-| **Endpoints** | `POST /api/v1/user/tokens`, `DELETE /api/v1/user/tokens/:token_id`, `PUT /api/v1/user/tokens/:token_id/permissions`, `PATCH /api/v1/user/tokens/:token_id/permissions`, `DELETE /api/v1/user/tokens/:token_id/permissions`; hub's `POST /api/v1/workspaces/:slug/tokens` (checked by apikit's route, which hub calls) and `GET /api/v1/workspaces/:slug/tokens` |
-
-### tokens:write
+#### orgs:write
 
 | | |
 |---|---|
-| **Source** | apikit |
-| **Grants** | Modify PAT permissions. A strict subset of `tokens:manage` by convention — a caller with `tokens:manage` can do everything `tokens:write` allows. |
-| **Endpoints** | `PUT /api/v1/user/tokens/:token_id/permissions`, `PATCH /api/v1/user/tokens/:token_id/permissions`, `DELETE /api/v1/user/tokens/:token_id/permissions` |
+| **Grants** | Reserved for org write operations |
+| **Endpoints** | None: no route checks it yet |
+| **Implies / implied by** | — |
+| **Workspace access** | — |
+| **Notes** | Org management is admin-only (see [Admin endpoints](#admin-endpoints)). |
 
----
-
-## Hub Workspace Permissions
-
-These 2 permissions are registered by `WorkspacePermissions()` in
-`hub/internal/workspace/routes.go` and passed to `apikit.Server.MountHandlers()`
-at startup.
-
-### workspaces:read
+#### keys:read
 
 | | |
 |---|---|
-| **Source** | hub |
-| **Grants** | List and view the workspaces the authenticated user owns or whose org they belong to; list rerere resolutions; view the patch-status dashboard |
-| **Endpoints** | `GET /api/v1/workspaces`, `GET /api/v1/workspaces/:slug`, `GET /api/v1/workspaces/:slug/rerere`, `GET /api/v1/workspaces/:slug/patch-status` |
-| **Implied by** | `workspaces:write` |
-| **Ownership** | Enforced through `wsaccess` with the read level: the workspace's owner, a member of its org and an admin token may read; anyone else gets `404` (anti-enumeration, see [Workspace access levels](#workspace-access-levels)). The listing returns the caller's own workspaces and those of the caller's orgs. |
+| **Grants** | Reserved for reading API key metadata |
+| **Endpoints** | None: no route checks it yet |
+| **Implies / implied by** | — |
+| **Workspace access** | — |
+| **Notes** | — |
 
-### workspaces:write
-
-| | |
-|---|---|
-| **Source** | hub |
-| **Grants** | Create workspaces (admin tokens cannot: a real user is required as owner); update, archive, reactivate, sync, reclone and delete the workspaces the authenticated user owns; push one of their branches to the workspace's `origin`; forget rerere resolutions |
-| **Endpoints** | `POST /api/v1/workspaces`, `PATCH /api/v1/workspaces/:slug`, `DELETE /api/v1/workspaces/:slug`, `POST /api/v1/workspaces/:slug/archive`, `POST /api/v1/workspaces/:slug/reactivate`, `POST /api/v1/workspaces/:slug/sync`, `POST /api/v1/workspaces/:slug/reclone`, `POST /api/v1/workspaces/:slug/branches/:name/push`, `DELETE /api/v1/workspaces/:slug/rerere/*pathspec` (plus all `workspaces:read` endpoints) |
-| **Implies** | `workspaces:read` |
-| **Ownership** | Enforced through `wsaccess` with the write level: the workspace's owner or an admin token; a member of its org gets `403` with `error_type: forbidden`; anyone else gets `404`. Delete needs an archived workspace. |
-
----
-
-## Hub Patch Permissions
-
-These 2 permissions are registered by the workspace package in
-`hub/internal/workspace/routes.go` and passed to `apikit.Server.MountHandlers()`
-at startup. They control access to the carry-patch patch list endpoints.
-
-### patches:read
+#### keys:manage
 
 | | |
 |---|---|
-| **Source** | hub |
-| **Grants** | List and view patches for a workspace |
-| **Endpoints** | `GET /api/v1/workspaces/:slug/patches`, `GET /api/v1/workspaces/:slug/patches/:id` |
-| **Implied by** | `patches:write` |
-| **Ownership** | Enforced through `wsaccess` with the read level: the workspace's owner, a member of its org and an admin token may read; anyone else gets `404` (anti-enumeration, see [Workspace access levels](#workspace-access-levels)). |
+| **Grants** | Revoke the caller's own API keys |
+| **Endpoints** | `DELETE /user/keys/:key_id` |
+| **Implies / implied by** | — |
+| **Workspace access** | — |
+| **Notes** | Refreshing a key needs an API key; a PAT is refused whatever its scopes. |
 
-### patches:write
-
-| | |
-|---|---|
-| **Source** | hub |
-| **Grants** | Add, remove, update, restore, reorder, and reset patches for a workspace |
-| **Endpoints** | `POST /api/v1/workspaces/:slug/patches`, `PATCH /api/v1/workspaces/:slug/patches/:id`, `DELETE /api/v1/workspaces/:slug/patches/:id`, `POST /api/v1/workspaces/:slug/patches/:id/restore`, `POST /api/v1/workspaces/:slug/patches/:id/reset-to-origin`, `POST /api/v1/workspaces/:slug/patches/reorder` |
-| **Implies** | `patches:read` |
-| **Ownership** | Enforced through `wsaccess` with the write level: the workspace's owner or an admin token; a member of its org gets `403` with `error_type: forbidden`; anyone else gets `404`. The check runs before any git operation. |
-
----
-
-## Hub Merge Permissions
-
-These 2 permissions are registered by `MergePermissions()` in
-`hub/internal/merge/api.go` and passed to `apikit.Server.MountHandlers()`
-at startup.
-
-### merges:read
+#### tokens:read
 
 | | |
 |---|---|
-| **Source** | hub |
-| **Grants** | List and view merge job status for workspaces |
-| **Endpoints** | `GET /api/v1/workspaces/:slug/merges`, `GET /api/v1/workspaces/:slug/merges/:id` |
-| **Ownership** | Enforced through `wsaccess` with the read level: the workspace's owner, a member of its org and an admin token may read; anyone else gets `404` (anti-enumeration, see [Workspace access levels](#workspace-access-levels)). |
+| **Grants** | List and read the caller's own PATs (metadata only), and the bound tokens of a workspace the caller owns |
+| **Endpoints** | `GET /user/tokens`, `GET /user/tokens/:token_id`, `GET /workspaces/:slug/tokens` |
+| **Implies / implied by** | Implied by `tokens:manage` on `GET /workspaces/:slug/tokens` |
+| **Workspace access** | private, on `GET /workspaces/:slug/tokens` |
+| **Notes** | Does nothing on a [workspace-bound PAT](#workspace-bound-pats). |
 
-### merges:write
-
-| | |
-|---|---|
-| **Source** | hub |
-| **Grants** | Submit merge requests, cancel queued merge jobs, requeue dead-lettered merge jobs, and trigger batch rebase operations |
-| **Endpoints** | `POST /api/v1/workspaces/:slug/merges`, `DELETE /api/v1/workspaces/:slug/merges/:id`, `POST /api/v1/workspaces/:slug/merges/:id/requeue`, `POST /api/v1/workspaces/:slug/rebase` |
-| **Ownership** | Enforced through `wsaccess` with the write level: the workspace's owner or an admin token; a member of its org gets `403` with `error_type: forbidden`; anyone else gets `404`. Submit and rebase then need an active workspace with a ready clone (400). |
-
----
-
-## Hub Rebuild Permissions
-
-These 2 permissions are registered by `CarryPatchPermissions()` of the
-carry-patch module (`carrypatch/wire.go`) and passed to `apikit.Server.MountHandlers()`
-at startup via the `extraPerms` parameter.
-
-### rebuilds:read
+#### tokens:write
 
 | | |
 |---|---|
-| **Source** | hub |
-| **Grants** | List and view rebuild job status and history for carry-patch workspaces; preview rebuild conflict predictions |
-| **Endpoints** | `GET /api/v1/workspaces/:slug/rebuilds`, `GET /api/v1/workspaces/:slug/rebuilds/:id`, `GET /api/v1/workspaces/:slug/rebuild-preview` |
-| **Ownership** | Enforced through `wsaccess` with the read level: the workspace's owner, a member of its org and an admin token may read; anyone else gets `404` (anti-enumeration, see [Workspace access levels](#workspace-access-levels)). |
+| **Grants** | Change the permissions of the caller's own PATs |
+| **Endpoints** | `PUT /user/tokens/:token_id/permissions`, `PATCH /user/tokens/:token_id/permissions`, `DELETE /user/tokens/:token_id/permissions` |
+| **Implies / implied by** | Implied by `tokens:manage` |
+| **Workspace access** | — |
+| **Notes** | Does nothing on a workspace-bound PAT. |
 
-### rebuilds:write
-
-| | |
-|---|---|
-| **Source** | hub |
-| **Grants** | Submit rebuild jobs, cancel queued rebuild jobs, requeue dead-lettered rebuild jobs, and roll back the integration branch to a previous rebuild state for carry-patch workspaces |
-| **Endpoints** | `POST /api/v1/workspaces/:slug/rebuild`, `DELETE /api/v1/workspaces/:slug/rebuilds/:id`, `POST /api/v1/workspaces/:slug/rebuilds/:id/requeue`, `POST /api/v1/workspaces/:slug/rebuilds/:id/rollback` |
-| **Ownership** | Enforced through `wsaccess` with the write level: the workspace's owner or an admin token; a member of its org gets `403` with `error_type: forbidden`; anyone else gets `404`. Rebuild handlers then check workspace mode, status and clone status. |
-
----
-
-## Hub Audit and Session Permissions
-
-These 4 permissions are registered by `Permissions()` in
-`hub/internal/audit/permissions.go` and passed to `apikit.Server.MountHandlers()`
-at startup via the `extraPerms` parameter.
-
-### sessions:read
+#### tokens:manage
 
 | | |
 |---|---|
-| **Source** | hub |
-| **Grants** | Read agent session records, token usage records, and workspace cost summaries |
-| **Endpoints** | `GET /api/v1/sessions`, `GET /api/v1/sessions/:id`, `GET /api/v1/sessions/:id/usage`, `GET /api/v1/workspaces/:slug/cost` |
-| **Ownership** | Non-admin callers see only sessions of active workspaces they own or whose org they belong to; any other workspace is `403 workspace access denied`. Admin tokens see all workspaces. |
+| **Grants** | Create and revoke the caller's own PATs, change their permissions, and mint and list the bound tokens of a workspace the caller owns. A new PAT's scopes must be a subset of the creating PAT's. |
+| **Endpoints** | `POST /user/tokens`, `DELETE /user/tokens/:token_id`, `PUT /user/tokens/:token_id/permissions`, `PATCH /user/tokens/:token_id/permissions`, `DELETE /user/tokens/:token_id/permissions`, `POST /workspaces/:slug/tokens`, `GET /workspaces/:slug/tokens` |
+| **Implies / implied by** | Satisfies `tokens:write`, and `tokens:read` on `GET /workspaces/:slug/tokens` |
+| **Workspace access** | private, on the `/workspaces/:slug/tokens` routes; minting also needs an active workspace |
+| **Notes** | Does nothing on a workspace-bound PAT. |
 
-### sessions:write
+### Workspace scopes
 
-| | |
-|---|---|
-| **Source** | hub |
-| **Grants** | Open, close, and report token usage on agent sessions |
-| **Endpoints** | `POST /api/v1/sessions`, `POST /api/v1/sessions/:id/complete`, `POST /api/v1/sessions/:id/usage` |
-| **Ownership** | Opening a session needs write access to the workspace: its owner or an admin token (an org member gets `403 forbidden`). Completing a session and reporting usage enforce that the caller is the session owner or an admin token. |
-
-### audit:read
+#### workspaces:read
 
 | | |
 |---|---|
-| **Source** | hub |
-| **Grants** | Query audit events, traces, session outcomes, tool calls, tool errors, postmortems, unified audit queries, transcripts, and SSE event streams |
-| **Endpoints** | `GET /api/v1/workspaces/:slug/runs/:run_id/events`, `GET /api/v1/workspaces/:slug/runs/:run_id/traces`, `GET /api/v1/workspaces/:slug/runs/:run_id/sessions/outcomes`, `GET /api/v1/workspaces/:slug/runs/:run_id/tools/calls`, `GET /api/v1/workspaces/:slug/runs/:run_id/tools/errors`, `GET /api/v1/workspaces/:slug/runs/:run_id/postmortem`, `GET /api/v1/audit`, `GET /api/v1/workspaces/:slug/runs/:run_id/transcript`, `GET /api/v1/events` |
-| **Ownership** | The workspace's owner, a member of its org and admin tokens read a workspace's runs and transcripts (`404 workspace not found` otherwise); `GET /api/v1/audit` and `GET /api/v1/events` return non-admins the events of the workspaces they own or share an org with, and hub events without a workspace to admin tokens only. |
+| **Grants** | List and view workspaces; list rerere resolutions; view the patch-status dashboard |
+| **Endpoints** | `GET /workspaces`, `GET /workspaces/:slug`, `GET /workspaces/:slug/rerere`, `GET /workspaces/:slug/patch-status` |
+| **Implies / implied by** | Implied by `workspaces:write` |
+| **Workspace access** | read |
+| **Notes** | The listing returns the caller's own workspaces and those of the caller's orgs. A PAT without the scope gets `404` on list and get. |
 
-### audit:write
-
-| | |
-|---|---|
-| **Source** | hub |
-| **Grants** | Ingest audit events, traces, session outcomes, tool calls, tool errors, and postmortems |
-| **Endpoints** | `POST /api/v1/workspaces/:slug/runs/:run_id/events`, `POST /api/v1/workspaces/:slug/runs/:run_id/events/batch`, `POST /api/v1/workspaces/:slug/runs/:run_id/traces`, `POST /api/v1/workspaces/:slug/runs/:run_id/traces/batch`, `POST /api/v1/workspaces/:slug/runs/:run_id/sessions/outcomes`, `POST /api/v1/workspaces/:slug/runs/:run_id/tools/calls`, `POST /api/v1/workspaces/:slug/runs/:run_id/tools/errors`, `POST /api/v1/workspaces/:slug/runs/:run_id/postmortem` |
-
----
-
-## Hub Git Permissions
-
-These 2 permissions are registered by `GitPermissions()` in
-`hub/internal/gitserver/permissions.go` and passed to
-`apikit.Server.MountHandlers()` at startup via the `extraPerms` parameter of
-`MountWorkspaceHandlers()`.
-
-### git:read
+#### workspaces:write
 
 | | |
 |---|---|
-| **Source** | hub |
-| **Grants** | Clone and fetch access to workspace repositories via git smart HTTP |
+| **Grants** | Create workspaces; update, archive, reactivate, delete, sync and reclone them; push a branch to the workspace's `origin`; forget rerere resolutions |
+| **Endpoints** | `POST /workspaces`, `PATCH /workspaces/:slug`, `DELETE /workspaces/:slug`, `POST /workspaces/:slug/archive`, `POST /workspaces/:slug/reactivate`, `POST /workspaces/:slug/sync`, `POST /workspaces/:slug/reclone`, `POST /workspaces/:slug/branches/:name/push`, `DELETE /workspaces/:slug/rerere/*pathspec`, and every `workspaces:read` endpoint |
+| **Implies / implied by** | Implies `workspaces:read` |
+| **Workspace access** | write (creation: none; the caller becomes the owner) |
+| **Notes** | Admin tokens cannot create workspaces. Delete needs an archived workspace. |
+
+### Carry-patch scopes
+
+#### patches:read
+
+| | |
+|---|---|
+| **Grants** | List and view the patches of a workspace |
+| **Endpoints** | `GET /workspaces/:slug/patches`, `GET /workspaces/:slug/patches/:id` |
+| **Implies / implied by** | Implied by `patches:write` |
+| **Workspace access** | read |
+| **Notes** | — |
+
+#### patches:write
+
+| | |
+|---|---|
+| **Grants** | Add, update, remove, restore, reorder and reset the patches of a workspace |
+| **Endpoints** | `POST /workspaces/:slug/patches`, `PATCH /workspaces/:slug/patches/:id`, `DELETE /workspaces/:slug/patches/:id`, `POST /workspaces/:slug/patches/:id/restore`, `POST /workspaces/:slug/patches/:id/reset-to-origin`, `POST /workspaces/:slug/patches/reorder` |
+| **Implies / implied by** | Implies `patches:read` |
+| **Workspace access** | write |
+| **Notes** | Access is checked before any git operation. |
+
+#### rebuilds:read
+
+| | |
+|---|---|
+| **Grants** | List and view rebuild jobs and their history; preview the conflicts of a rebuild |
+| **Endpoints** | `GET /workspaces/:slug/rebuilds`, `GET /workspaces/:slug/rebuilds/:id`, `GET /workspaces/:slug/rebuild-preview` |
+| **Implies / implied by** | Implied by `rebuilds:write` |
+| **Workspace access** | read |
+| **Notes** | — |
+
+#### rebuilds:write
+
+| | |
+|---|---|
+| **Grants** | Submit, cancel and requeue rebuild jobs, and roll the integration branch back to an earlier rebuild |
+| **Endpoints** | `POST /workspaces/:slug/rebuild`, `DELETE /workspaces/:slug/rebuilds/:id`, `POST /workspaces/:slug/rebuilds/:id/requeue`, `POST /workspaces/:slug/rebuilds/:id/rollback` |
+| **Implies / implied by** | Implies `rebuilds:read` |
+| **Workspace access** | write |
+| **Notes** | After the access check the routes check the workspace's mode, status and clone. |
+
+### Merge scopes
+
+#### merges:read
+
+| | |
+|---|---|
+| **Grants** | List and view merge jobs |
+| **Endpoints** | `GET /workspaces/:slug/merges`, `GET /workspaces/:slug/merges/:id` |
+| **Implies / implied by** | Implied by `merges:write` |
+| **Workspace access** | read |
+| **Notes** | — |
+
+#### merges:write
+
+| | |
+|---|---|
+| **Grants** | Submit merges, cancel queued merge jobs, requeue dead-lettered ones, and start a batch rebase |
+| **Endpoints** | `POST /workspaces/:slug/merges`, `DELETE /workspaces/:slug/merges/:id`, `POST /workspaces/:slug/merges/:id/requeue`, `POST /workspaces/:slug/rebase` |
+| **Implies / implied by** | Implies `merges:read` |
+| **Workspace access** | write |
+| **Notes** | Submit and rebase then need an active workspace with a ready clone (`400` otherwise). |
+
+### Git scopes
+
+#### git:read
+
+| | |
+|---|---|
+| **Grants** | Clone and fetch a workspace's repository over git smart HTTP |
 | **Endpoints** | `GET /git/:org/:slug.git/info/refs?service=git-upload-pack`, `POST /git/:org/:slug.git/git-upload-pack` |
-| **Implied by** | `git:write` |
+| **Implies / implied by** | Implied by `git:write` |
+| **Workspace access** | read |
+| **Notes** | A caller who may not read the repository gets a pkt-line `404 repository not found`. |
 
-### git:write
-
-| | |
-|---|---|
-| **Source** | hub |
-| **Grants** | Push access to workspace repositories via git smart HTTP |
-| **Endpoints** | `POST /git/:org/:slug.git/git-receive-pack`, `GET /git/:org/:slug.git/info/refs?service=git-receive-pack` (plus all `git:read` endpoints) |
-| **Implies** | `git:read` |
-
----
-
-## Hub Secrets Permissions
-
-These 2 permissions are registered by `Permissions()` in
-`hub/internal/secrets/permissions.go` and passed to `apikit.Server.MountHandlers()`
-at startup via the `extraPerms` parameter.
-
-### secrets:read
+#### git:write
 
 | | |
 |---|---|
-| **Source** | hub |
-| **Grants** | List secret names (values are never returned) |
-| **Endpoints** | `GET /api/v1/user/secrets`, `GET /api/v1/orgs/:slug/secrets`, `GET /api/v1/workspaces/:slug/secrets` |
-| **Implied by** | `secrets:write` |
+| **Grants** | Push to a workspace's repository over git smart HTTP |
+| **Endpoints** | `GET /git/:org/:slug.git/info/refs?service=git-receive-pack`, `POST /git/:org/:slug.git/git-receive-pack`, and every `git:read` endpoint |
+| **Implies / implied by** | Implies `git:read` |
+| **Workspace access** | write |
+| **Notes** | A member's push is a pkt-line `403`. |
 
-### secrets:write
+### Secrets and variables scopes
+
+The same scopes cover the three tiers: the caller's user, an org, and a
+workspace. See [Secrets and variables endpoints](#secrets-and-variables-endpoints)
+for who may reach each tier.
+
+#### secrets:read
 
 | | |
 |---|---|
-| **Source** | hub |
+| **Grants** | List secret names; values are never returned |
+| **Endpoints** | `GET /user/secrets`, `GET /orgs/:slug/secrets`, `GET /workspaces/:slug/secrets` |
+| **Implies / implied by** | Implied by `secrets:write` |
+| **Workspace access** | private |
+| **Notes** | — |
+
+#### secrets:write
+
+| | |
+|---|---|
 | **Grants** | Create, update and delete secrets |
-| **Endpoints** | `POST /api/v1/user/secrets`, `POST /api/v1/orgs/:slug/secrets`, `POST /api/v1/workspaces/:slug/secrets`, `PATCH /api/v1/user/secrets/:key`, `PATCH /api/v1/orgs/:slug/secrets/:key`, `PATCH /api/v1/workspaces/:slug/secrets/:key`, `DELETE /api/v1/user/secrets/:key`, `DELETE /api/v1/orgs/:slug/secrets/:key`, `DELETE /api/v1/workspaces/:slug/secrets/:key` (plus all `secrets:read` endpoints) |
-| **Implies** | `secrets:read` |
+| **Endpoints** | `POST`, `PATCH .../:key` and `DELETE .../:key` on `/user/secrets`, `/orgs/:slug/secrets` and `/workspaces/:slug/secrets`, and every `secrets:read` endpoint |
+| **Implies / implied by** | Implies `secrets:read` |
+| **Workspace access** | private |
+| **Notes** | — |
 
----
-
-## Hub Variables Permissions
-
-These 2 permissions are defined in
-`hub/internal/secrets/permissions.go` and included in `secrets.Permissions()`
-for startup registration.
-
-### vars:read
+#### vars:read
 
 | | |
 |---|---|
-| **Source** | hub |
-| **Grants** | List and read variable values |
-| **Endpoints** | `GET /api/v1/user/vars`, `GET /api/v1/orgs/:slug/vars`, `GET /api/v1/workspaces/:slug/vars`, `GET /api/v1/workspaces/:slug/vars/resolved` |
-| **Implied by** | `vars:write` |
+| **Grants** | List and read variable values, and a workspace's resolved variables |
+| **Endpoints** | `GET /user/vars`, `GET /orgs/:slug/vars`, `GET /workspaces/:slug/vars`, `GET /workspaces/:slug/vars/resolved` |
+| **Implies / implied by** | Implied by `vars:write` |
+| **Workspace access** | read |
+| **Notes** | A member's `GET /workspaces/:slug/vars/resolved` is the owner's document: the owner's user tier, the org tier while the owner is a member of the org, and the workspace tier. |
 
-### vars:write
+#### vars:write
 
 | | |
 |---|---|
-| **Source** | hub |
 | **Grants** | Create, update and delete variables |
-| **Endpoints** | `POST /api/v1/user/vars`, `POST /api/v1/orgs/:slug/vars`, `POST /api/v1/workspaces/:slug/vars`, `PATCH /api/v1/user/vars/:key`, `PATCH /api/v1/orgs/:slug/vars/:key`, `PATCH /api/v1/workspaces/:slug/vars/:key`, `DELETE /api/v1/user/vars/:key`, `DELETE /api/v1/orgs/:slug/vars/:key`, `DELETE /api/v1/workspaces/:slug/vars/:key` (plus all `vars:read` endpoints) |
-| **Implies** | `vars:read` |
+| **Endpoints** | `POST`, `PATCH .../:key` and `DELETE .../:key` on `/user/vars`, `/orgs/:slug/vars` and `/workspaces/:slug/vars`, and every `vars:read` endpoint |
+| **Implies / implied by** | Implies `vars:read` |
+| **Workspace access** | write |
+| **Notes** | — |
 
----
+### Session and audit scopes
 
-## Hub Sandbox Permissions
-
-These 2 permissions are registered by `Permissions()` in
-`hub/internal/sandboxes/permissions.go` and passed to `apikit.Server.MountHandlers()`
-at startup via the `extraPerms` parameter. They are registered on every start,
-whether or not a `[sandbox]` section is configured, so PATs can be issued with
-them before an operator enables sandboxes.
-
-### sandboxes:read
+#### sessions:read
 
 | | |
 |---|---|
-| **Source** | hub |
-| **Grants** | List the deployment's sandbox profiles (names, images, resources, network, TTL, secret names and env key names, never a value), and list and read sandbox leases |
-| **Endpoints** | `GET /api/v1/sandbox-profiles`, `GET /api/v1/workspaces/:slug/sandboxes`, `GET /api/v1/workspaces/:slug/sandboxes/:id` |
-| **Implied by** | `sandboxes:write` |
-| **Ownership** | Profiles: none, every authorised caller sees the same list. Leases: the workspace is looked up through `wsaccess.AuthorizeWorkspace` with the read level: its owner, a member of its org and an admin token may list and get leases, with the same bodies; anyone else gets `404`. The scope check comes first, so a PAT without the scope gets `403` even for a workspace that does not exist. |
-| **Note** | API keys and admin tokens are not scope-checked. Without a `[sandbox]` section every sandbox route answers `404` with `error_type: sandboxes_disabled` to every authenticated caller, before the scope is checked. `GET /api/v1/sandboxes` (every workspace's leases) needs an admin token: a PAT holding both scopes gets `403`. |
+| **Grants** | Read agent sessions, their token usage, and workspace cost summaries |
+| **Endpoints** | `GET /sessions`, `GET /sessions/:id`, `GET /sessions/:id/usage`, `GET /workspaces/:slug/cost` |
+| **Implies / implied by** | Implied by `sessions:write` |
+| **Workspace access** | read, and the workspace must be active |
+| **Notes** | Any other workspace is `403 workspace access denied`. `GET /sessions` returns the sessions of the active workspaces the caller may read; an admin token sees all. |
 
-### sandboxes:write
+#### sessions:write
 
 | | |
 |---|---|
-| **Source** | hub |
+| **Grants** | Open and complete agent sessions, and report their token usage |
+| **Endpoints** | `POST /sessions`, `POST /sessions/:id/complete`, `POST /sessions/:id/usage` |
+| **Implies / implied by** | Implies `sessions:read` |
+| **Workspace access** | write, to open a session; completing and reporting usage need the session's creator or an admin token |
+| **Notes** | A caller who is not the session's creator gets `403 not session owner`. |
+
+#### audit:read
+
+| | |
+|---|---|
+| **Grants** | Query audit events, traces, session outcomes, tool calls, tool errors, postmortems and transcripts; run unified audit queries; follow the event stream |
+| **Endpoints** | `GET /workspaces/:slug/runs/:run_id/events`, `GET .../traces`, `GET .../sessions/outcomes`, `GET .../tools/calls`, `GET .../tools/errors`, `GET .../postmortem`, `GET .../transcript`, `GET /audit`, `GET /events` |
+| **Implies / implied by** | Implied by `audit:write` |
+| **Workspace access** | read, on a workspace of any status |
+| **Notes** | `GET /audit` and `GET /events` return the events of the workspaces the caller may read; hub events without a workspace go to admin tokens only. |
+
+#### audit:write
+
+| | |
+|---|---|
+| **Grants** | Ingest audit events, traces, session outcomes, tool calls, tool errors and postmortems |
+| **Endpoints** | `POST /workspaces/:slug/runs/:run_id/events`, `POST .../events/batch`, `POST .../traces`, `POST .../traces/batch`, `POST .../sessions/outcomes`, `POST .../tools/calls`, `POST .../tools/errors`, `POST .../postmortem` |
+| **Implies / implied by** | Implies `audit:read` |
+| **Workspace access** | owner (or an admin token) |
+| **Notes** | Anyone else, a member included, gets `403` with `error_type: workspace_access_denied`; an archived workspace is `409 workspace_archived` first. |
+
+### Sandbox scopes
+
+Both scopes are registered on every start, whether or not sandboxes are
+configured, so PATs can carry them before an operator turns sandboxes on.
+Without a `[sandbox]` section every sandbox route answers `404` with
+`error_type: sandboxes_disabled` to every authenticated caller, before the scope
+is checked.
+
+#### sandboxes:read
+
+| | |
+|---|---|
+| **Grants** | List the deployment's sandbox profiles (names, images, resources, network, TTL, secret names and env key names, never a value); list and read sandbox leases |
+| **Endpoints** | `GET /sandbox-profiles`, `GET /workspaces/:slug/sandboxes`, `GET /workspaces/:slug/sandboxes/:id`; `afc sandbox profiles`, `list`, `get` |
+| **Implies / implied by** | Implied by `sandboxes:write` |
+| **Workspace access** | profiles: none, every caller sees the same list; leases: read |
+| **Notes** | `GET /sandboxes` (the leases of every workspace) needs an admin token: an API key or a PAT holding both scopes gets `403`. |
+
+#### sandboxes:write
+
+| | |
+|---|---|
 | **Grants** | Issue sandbox leases and end them. The lease token is returned only in the response that issues the lease. |
-| **Endpoints** | `POST /api/v1/workspaces/:slug/sandboxes`, `DELETE /api/v1/workspaces/:slug/sandboxes/:id` |
-| **Implies** | `sandboxes:read` |
-| **Ownership** | `wsaccess` with the write level: the workspace's owner or an admin token; a member of its org gets `403` with `error_type: forbidden`; anyone else gets `404`. Issuing needs an active workspace; ending works on an archived one. |
+| **Endpoints** | `POST /workspaces/:slug/sandboxes`, `DELETE /workspaces/:slug/sandboxes/:id`; `afc sandbox create`, `destroy` |
+| **Implies / implied by** | Implies `sandboxes:read` |
+| **Workspace access** | write |
+| **Notes** | Issuing needs an active workspace; ending works on an archived one. |
 
----
+### Forge scopes
 
-## Hub Forge Permissions
+The hub reads and writes the forge with the workspace's own stored git
+credential, never with the caller's, a member's reads included. Responses name
+the credential's kind, never its value. Both scopes are registered on every
+start.
 
-These 2 permissions are registered by `Permissions()` in
-`hub/internal/forge/permissions.go` and passed to `apikit.Server.MountHandlers()`
-at startup via the `extraPerms` parameter, on every start.
-
-### forge:read
-
-| | |
-|---|---|
-| **Source** | hub |
-| **Grants** | Read a workspace's repository, issues, comments and pull requests (state, files, CI checks, reviews) on its forge, see how the hub reaches the forge and whether its webhook is set up, and list the webhook deliveries the hub received. The hub uses the workspace's own stored git credential; the response shows its kind, never its value. |
-| **Endpoints** | `GET /api/v1/workspaces/:slug/forge`, `GET .../forge/deliveries`, `GET .../forge/repository`, `GET .../issues`, `GET .../issues/:n`, `GET .../issues/:n/comments`, `GET .../pulls/:n`, `GET .../pulls/:n/state`, `GET .../pulls/:n/files`, `GET .../pulls/:n/checks`, `GET .../pulls/:n/reviews` |
-| **Implied by** | `forge:write` |
-| **Ownership** | The workspace is looked up through `wsaccess.AuthorizeWorkspace` with the read level: its owner, a member of its org and an admin token may read, with the workspace's own forge credential; anyone else gets `404`. |
-| **Note** | API keys and admin tokens are not scope-checked. The scope is checked before the workspace is looked up, so a PAT without it gets `403` also for a slug that does not exist. Reads work on archived workspaces and on workspaces that are not cloned. |
-
-### forge:write
+#### forge:read
 
 | | |
 |---|---|
-| **Source** | hub |
-| **Grants** | Change a workspace's repository on its forge: create, update and close issues, comment on issues and pull requests, add and remove issue labels, make sure a repository label exists, and open pull requests. Also set and remove the secret the forge signs its webhook deliveries with. The hub uses the workspace's own stored git credential, never the caller's. |
-| **Endpoints** | `POST /api/v1/workspaces/:slug/issues`, `PATCH .../issues/:n`, `POST .../issues/:n/close`, `POST .../issues/:n/comments`, `POST .../issues/:n/labels`, `DELETE .../issues/:n/labels/:name`, `POST .../labels`, `POST .../pulls`, `POST .../pulls/:n/comments`, `PUT .../forge/webhook`, `DELETE .../forge/webhook`; and every `forge:read` endpoint |
-| **Implies** | `forge:read` |
-| **Ownership** | `wsaccess` with the write level: the workspace's owner or an admin token; a member of its org gets `403` with `error_type: forbidden`; anyone else gets `404`. A write also needs the workspace not to be archived: an archived one is `400 workspace is archived`, after the access check. This holds for the nine write routes and for `PUT .../forge/webhook`; `DELETE .../forge/webhook` works on a workspace of any status. |
-| **Note** | `forge:read` does not grant a write: a PAT holding only `forge:read` gets `403 PAT requires forge:write scope` on every write route, before the workspace is looked up. API keys and admin tokens are not scope-checked. A write that reaches the forge is recorded as a `hub.forge.*` audit event naming the caller; a request the hub refuses on its own is not. `PUT` and `DELETE .../forge/webhook` record `hub.forge.webhook.set` and `.unset` (never the secret). Neither scope is needed for the ingress, which is authenticated by the signature. |
+| **Grants** | Read a workspace's repository, issues, comments and pull requests (state, files, CI checks, reviews) on its forge; see how the hub reaches the forge and whether its webhook is set up; list the webhook deliveries the hub received |
+| **Endpoints** | `GET /workspaces/:slug/forge`, `GET .../forge/deliveries`, `GET .../forge/repository`, `GET .../issues`, `GET .../issues/:n`, `GET .../issues/:n/comments`, `GET .../pulls/:n`, `GET .../pulls/:n/state`, `GET .../pulls/:n/files`, `GET .../pulls/:n/checks`, `GET .../pulls/:n/reviews` |
+| **Implies / implied by** | Implied by `forge:write` |
+| **Workspace access** | read |
+| **Notes** | Reads work on archived workspaces and on workspaces that are not cloned. |
 
----
+#### forge:write
 
-## Implied Permissions Summary
-
-Every hub resource has one `read` and one `write` scope. `resource:write`
-implies `resource:read` for every hub resource (`workspaces`, `patches`,
-`rebuilds`, `merges`, `git`, `secrets`, `vars`, `sessions`, `audit`,
-`sandboxes`, `forge`); `resource:read` never implies `resource:write`.
-`wsaccess.CanRead` and `wsaccess.CanWrite` are the rule; a handler that
-keeps a helper of its own checks both scopes of the resource.
-
-apikit's own scopes keep their shape: `tokens:manage` satisfies a check for
-`tokens:write` by convention; `keys:manage`, `orgs:write` and `users:read`
-stand alone.
-
-### Renamed scopes
-
-The hub registered 29 scopes before the collapse; it registers 22 now
-([ADR 06](adr/06-collapse-scopes-to-read-and-write.md)). At start the hub
-rewrites the permissions of every stored PAT that names an old scope
-(`wsaccess.MigrateScopes`), and `POST /api/v1/user/tokens` rejects the old
-names with `400` like any unknown scope.
-
-| Old scope | Rewritten to |
-|-----------|--------------|
-| `workspaces:create` | `workspaces:write` |
-| `workspaces:delete` | `workspaces:write` |
-| `workspaces:sync` | `workspaces:write` |
-| `secrets:list` | `secrets:read` |
-| `secrets:manage` | `secrets:write` |
-| `secrets:delete` | `secrets:write` |
-| `vars:manage` | `vars:write` |
-| `vars:delete` | `vars:write` |
-
-A token that held `workspaces:write` alone could not
-list workspaces before; after the rewrite it holds `workspaces:write` and can.
+| | |
+|---|---|
+| **Grants** | Change a workspace's repository on its forge: create, update and close issues, comment on issues and pull requests, add and remove issue labels, make sure a repository label exists, open pull requests; set and remove the secret the forge signs its webhook deliveries with |
+| **Endpoints** | `POST /workspaces/:slug/issues`, `PATCH .../issues/:n`, `POST .../issues/:n/close`, `POST .../issues/:n/comments`, `POST .../issues/:n/labels`, `DELETE .../issues/:n/labels/:name`, `POST .../labels`, `POST .../pulls`, `POST .../pulls/:n/comments`, `PUT .../forge/webhook`, `DELETE .../forge/webhook`, and every `forge:read` endpoint |
+| **Implies / implied by** | Implies `forge:read` |
+| **Workspace access** | write |
+| **Notes** | A PAT with only `forge:read` gets `403 PAT requires forge:write scope` on every write. The nine writes and `PUT .../forge/webhook` need a workspace that is not archived (`400 workspace is archived`, after the access check); `DELETE .../forge/webhook` works on any status. A write that reaches the forge is recorded as a `hub.forge.*` audit event naming the caller; `PUT` and `DELETE .../forge/webhook` record `hub.forge.webhook.set` and `.unset`, never the secret. |
 
 ---
 
 ## Complete Permission List
 
-All 30 registered permission scopes, sorted alphabetically:
+All 30 registered scopes. "Framework" scopes are the account scopes built into
+the server framework; "hub" scopes belong to the hub.
 
-| # | Scope | Source | Resource | Action |
-|---|-------|--------|----------|--------|
-| 1 | `audit:read` | hub | audit | read |
-| 2 | `audit:write` | hub | audit | write |
-| 3 | `forge:read` | hub | forge | read |
-| 4 | `forge:write` | hub | forge | write |
-| 5 | `git:read` | hub | git | read |
-| 6 | `git:write` | hub | git | write |
-| 7 | `keys:manage` | apikit | keys | manage |
-| 8 | `keys:read` | apikit | keys | read |
-| 9 | `merges:read` | hub | merges | read |
-| 10 | `merges:write` | hub | merges | write |
-| 11 | `orgs:read` | apikit | orgs | read |
-| 12 | `orgs:write` | apikit | orgs | write |
-| 13 | `patches:read` | hub | patches | read |
-| 14 | `patches:write` | hub | patches | write |
-| 15 | `rebuilds:read` | hub | rebuilds | read |
-| 16 | `rebuilds:write` | hub | rebuilds | write |
-| 17 | `sandboxes:read` | hub | sandboxes | read |
-| 18 | `sandboxes:write` | hub | sandboxes | write |
-| 19 | `secrets:read` | hub | secrets | read |
-| 20 | `secrets:write` | hub | secrets | write |
-| 21 | `sessions:read` | hub | sessions | read |
-| 22 | `sessions:write` | hub | sessions | write |
-| 23 | `tokens:manage` | apikit | tokens | manage |
-| 24 | `tokens:read` | apikit | tokens | read |
-| 25 | `tokens:write` | apikit | tokens | write |
-| 26 | `users:read` | apikit | users | read |
-| 27 | `vars:read` | hub | vars | read |
-| 28 | `vars:write` | hub | vars | write |
-| 29 | `workspaces:read` | hub | workspaces | read |
-| 30 | `workspaces:write` | hub | workspaces | write |
-
----
-
-## Secrets and Variables Endpoint Access Matrix
-
-All secrets and variables endpoints follow the same credential-type
-authorization model. The scope checks (`wsaccess.IsPAT`, `wsaccess.IsAdmin`, `wsaccess.HasScope`) are enforced at
-the handler level in `hub/internal/secrets/handlers.go`.
-
-### Credential Access by Scope
-
-| Scope | Admin Token | API Key | PAT |
-|-------|-------------|---------|-----|
-| User-scoped (`/api/v1/user/secrets`, `/api/v1/user/vars`) | Full access | Full access (own user) | Requires explicit scope |
-| Org-scoped (`/api/v1/orgs/:slug/secrets`, `/api/v1/orgs/:slug/vars`) | Full access (bypasses membership) | Full access (requires org membership) | Requires explicit scope + org membership |
-| Workspace secrets (`/api/v1/workspaces/:slug/secrets`) | Full access (bypasses ownership) | Full access (requires workspace ownership; a member of its org gets `404`) | Requires explicit scope + workspace ownership |
-| Workspace variables (`/api/v1/workspaces/:slug/vars`) | Full access (bypasses ownership) | Read (list, resolved) for the owner and members of its org; writes for the owner (a member gets `403 forbidden`) | Requires explicit scope + the same access |
-
-### PAT Scope Requirements by Operation
-
-| Operation | Secrets Scope Required | Variables Scope Required |
-|-----------|----------------------|------------------------|
-| Create (POST) | `secrets:write` | `vars:write` |
-| List (GET) | `secrets:read` or `secrets:write` | `vars:read` or `vars:write` |
-| Update (PATCH) | `secrets:write` | `vars:write` |
-| Delete (DELETE) | `secrets:write` | `vars:write` |
-| Resolved (GET .../resolved) | — | `vars:read` or `vars:write` |
-
-### Ownership and Membership Rules
-
-- **Admin tokens** bypass all ownership and membership checks. They can
-  access secrets and variables for any user, org, or workspace.
-- **API keys** have implicit full access but are constrained by ownership:
-  user-scoped operations use the authenticated user's ID; org-scoped
-  operations require org membership; workspace-scoped operations go through
-  `wsaccess`: workspace secrets are private to the owner, workspace
-  variables are readable by members of the workspace's org and writable by
-  the owner.
-- **PATs** require explicit scopes as listed above. Additionally, org-scoped
-  operations require org membership and workspace-scoped operations require
-  the same access as for an API key.
-
-Non-admin credentials that fail ownership or membership checks receive
-HTTP 404 (not 403) consistent with the anti-enumeration policy; the workspace
-routes answer `404 workspace not found` in the apikit envelope. The one 403 is
-a member's variable write (`org members have read-only access to this
-workspace`, `error_type: forbidden`). A member's `GET .../vars/resolved` is the
-owner's document: the owner's user tier, the org tier while the owner is a
-member of the org, and the workspace tier.
+| Scope | Source | Implies | Grants |
+|-------|--------|---------|--------|
+| [`audit:read`](#auditread) | hub | — | Read audit data, transcripts and the event stream |
+| [`audit:write`](#auditwrite) | hub | `audit:read` | Ingest audit data |
+| [`forge:read`](#forgeread) | hub | — | Read a workspace's forge |
+| [`forge:write`](#forgewrite) | hub | `forge:read` | Write to a workspace's forge; manage its webhook secret |
+| [`git:read`](#gitread) | hub | — | Clone and fetch |
+| [`git:write`](#gitwrite) | hub | `git:read` | Push |
+| [`keys:manage`](#keysmanage) | framework | — | Revoke own API keys |
+| [`keys:read`](#keysread) | framework | — | Reserved |
+| [`merges:read`](#mergesread) | hub | — | Read merge jobs |
+| [`merges:write`](#mergeswrite) | hub | `merges:read` | Submit, cancel, requeue merges; rebase |
+| [`orgs:read`](#orgsread) | framework | — | List own org memberships |
+| [`orgs:write`](#orgswrite) | framework | — | Reserved |
+| [`patches:read`](#patchesread) | hub | — | Read patches |
+| [`patches:write`](#patcheswrite) | hub | `patches:read` | Change patches |
+| [`rebuilds:read`](#rebuildsread) | hub | — | Read rebuilds; preview |
+| [`rebuilds:write`](#rebuildswrite) | hub | `rebuilds:read` | Submit, cancel, requeue, roll back rebuilds |
+| [`sandboxes:read`](#sandboxesread) | hub | — | List profiles; read leases |
+| [`sandboxes:write`](#sandboxeswrite) | hub | `sandboxes:read` | Issue and end leases |
+| [`secrets:read`](#secretsread) | hub | — | List secret names |
+| [`secrets:write`](#secretswrite) | hub | `secrets:read` | Change secrets |
+| [`sessions:read`](#sessionsread) | hub | — | Read sessions, usage, cost |
+| [`sessions:write`](#sessionswrite) | hub | `sessions:read` | Open and complete sessions; report usage |
+| [`tokens:manage`](#tokensmanage) | framework | `tokens:write` | Create and revoke PATs; mint bound tokens |
+| [`tokens:read`](#tokensread) | framework | — | Read own PATs |
+| [`tokens:write`](#tokenswrite) | framework | — | Change PAT permissions |
+| [`users:read`](#usersread) | framework | — | Read and update own profile |
+| [`vars:read`](#varsread) | hub | — | Read variables |
+| [`vars:write`](#varswrite) | hub | `vars:read` | Change variables |
+| [`workspaces:read`](#workspacesread) | hub | — | List and view workspaces |
+| [`workspaces:write`](#workspaceswrite) | hub | `workspaces:read` | Create and change workspaces |
 
 ---
 
-## Workspace-Bound PATs
+## Endpoint Access Matrix
 
-Hub can bind a PAT to exactly one workspace `S`, through a row in its SQLite
-table `token_workspace_bindings`, keyed by the PAT's token id. API keys and
-admin tokens cannot be bound.
+Every route, what a PAT needs and which [workspace access](#workspace-access-levels)
+the caller needs. Paths are relative to the mount point, `/api/v1` by default
+(`server.mount_point` in [configuration.md](configuration.md#server)), except
+`GET /healthz`, `GET /readyz`, `GET /version`, `GET /metrics`, the `/git/...`
+routes and `POST /hooks/forge/:slug`, which sit outside it.
 
-**Who may mint and list bound tokens.** `POST /api/v1/workspaces/:slug/tokens`
-is open to the owner of an active workspace with an API key, or with a PAT
-holding `tokens:manage`; the token is minted by apikit's own route, so a PAT can
-grant only scopes it holds. Admin tokens cannot mint (a token needs a user as
-its owner). `GET /api/v1/workspaces/:slug/tokens` is open to the owner (a PAT
-needs `tokens:read` or `tokens:manage`) and to admin tokens. Both routes need
-the private access level: a member of the workspace's org gets the stranger's
-`404 workspace not found`. Deleting a workspace revokes its bound tokens.
+API keys need no scope; admin tokens need neither scope nor access, except where
+a row says otherwise.
 
-For a bound PAT:
+### Account and token endpoints
 
-- **Workspace-scoped routes** (path template with `workspaces/:slug`) answer
-  `404 workspace not found` for every slug other than `S`. The check runs
-  before the handler, so it comes before any scope check: to a bound PAT,
-  other workspaces do not exist. On `S` the route's own scope and ownership
-  checks decide, as for an unbound PAT of the same user and scopes.
-- **Cross-workspace routes** that are allowed (`GET /workspaces`, the session
-  routes, `GET /audit`, `GET /events`, `GET /sandbox-profiles`) see only `S`.
-  For any other workspace they give the answer a non-owner gets.
-- **Every other route** is refused with `403` and `error_type: token_bound`.
-  This includes `POST /workspaces`, user and org secrets and variables,
-  `GET /sandboxes`, unknown paths, and every route apikit mounts. So
-  `tokens:manage` on a bound PAT cannot be used to mint an unbound PAT through
-  `POST /user/tokens`.
-- **Git** serves `S`'s repository under the `git:read`/`git:write` scopes and
-  the token user's access (a member's bound PAT still cannot push), and
-  answers a pkt-line `404 repository not found` for every other repository.
-- **`tokens:*` scopes are inert.** A bound PAT can neither mint nor list bound
-  tokens: on its own workspace's `/tokens` routes it gets `403 token_bound`, on
-  any other workspace's the guard's `404 workspace not found`. It cannot reach
-  apikit's token routes either.
-- **Refusals are audited** as `hub.token.bound_refused`, at most once per token
-  per minute.
+These routes act on the caller's own account.
 
-The routes allowed to bound tokens are marked where they are registered
-(`wsaccess.AllowBoundTokens`). A route nobody marks is refused, which is the
-safe default. See `docs/api.md` (Workspace-Bound Tokens) for every answer.
+| Endpoint | PAT scope | Notes |
+|----------|-----------|-------|
+| `GET /user`, `PATCH /user` | `users:read` | own profile |
+| `GET /user/orgs` | `orgs:read` | own memberships |
+| `GET /user/keys` | not checked (`keys:read` is reserved) | own keys |
+| `POST /user/keys/:key_id/refresh` | refused: API key only | own key; `404` for another user's |
+| `DELETE /user/keys/:key_id` | `keys:manage` | own key; a key may revoke itself |
+| `POST /user/tokens` | `tokens:manage` | a PAT grants only a subset of its own scopes |
+| `GET /user/tokens`, `GET /user/tokens/:token_id` | `tokens:read` | own PATs; `404` for another user's |
+| `DELETE /user/tokens/:token_id` | `tokens:manage` | own PAT; `404` for another user's |
+| `PUT`, `PATCH`, `DELETE /user/tokens/:token_id/permissions` | `tokens:write` or `tokens:manage` | own PAT |
 
-## Anti-Enumeration Policy
+### Admin endpoints
 
-When a PAT lacks the required workspace scope, or when the caller may not
-read a workspace (neither its owner, nor a member of its org, nor an admin
-token), the workspace CRUD endpoints (list, get, update, archive, reactivate,
-delete) return HTTP 404 (not 403) to avoid disclosing the existence of
-resources. A member of the workspace's org can see it exists, so a member's
-write is HTTP 403 with `error_type: forbidden`. The workspace create endpoint returns HTTP 403
-(`"PAT requires workspaces:write scope to create workspaces"`) because
-there is no existing resource to enumerate. The git server returns HTTP 404
-to a caller who may not read the workspace (`authorizeGitAccess` writes a
-pkt-line 404 `"repository not found"`) to prevent workspace slug enumeration;
-a member's push, by someone who already knows the workspace exists, is a
-pkt-line 403 `"org members have read-only access to this workspace"`.
+Open to admin tokens and admin-role API keys (see [Admin role](#admin-role)); a
+user-role API key and every PAT get `403`.
 
-All workspace-scoped endpoint groups (sync, reclone, branch push, patches, merges,
-rebuilds, rerere, patch-status, leases, forge, secrets, variables, bound
-tokens, sessions, audit) return HTTP 404 for a workspace the caller may not
-see, matching the CRUD endpoints, with the same body as for a slug that does
-not exist. A
-workspace-bound PAT gets the answer a non-owner gets for every workspace other
-than its own.
+| Endpoint | Description |
+|----------|-------------|
+| `POST /users`, `GET /users`, `GET /users/:id`, `PATCH /users/:id` | create, list, read and update any user |
+| `POST /users/:id/promote`, `POST /users/:id/demote` | grant and remove the admin role |
+| `POST /users/:id/block`, `POST /users/:id/unblock` | block and unblock a user |
+| `GET /users/:id/keys`, `DELETE /users/:id/keys/:key_id` | list and revoke any user's API keys |
+| `GET /users/:id/tokens`, `DELETE /users/:id/tokens/:token_id` | list and revoke any user's PATs |
+| `POST /orgs`, `GET /orgs`, `GET /orgs/:id`, `PATCH /orgs/:id`, `DELETE /orgs/:id` | create, list, read, update and delete any org, member or not |
+| `POST /orgs/:id/block`, `POST /orgs/:id/unblock` | block and unblock an org |
+| `GET /orgs/:id/members`, `PUT /orgs/:id/members/:user_id`, `DELETE /orgs/:id/members/:user_id` | list, add and remove org members |
 
-Other endpoint groups return HTTP 403 for missing PAT scopes:
-git scope check returns 403 with `"insufficient git permissions"`;
-sync handler returns 403 with `"PAT requires workspaces:write scope to sync workspaces"`;
-reclone handler returns 403 with `"PAT requires workspaces:write scope to reclone workspaces"`;
-branch push handler returns 403 with `"PAT requires workspaces:write scope to push branches"`, before the workspace is looked up;
-carry-patch sync handler returns 403 with `"missing required scope: workspaces:write"`;
-secrets and variables handlers return 403 with `"insufficient permission scope"`;
-merge handlers return 403 with `"PAT requires merges:write scope"` (or
-`merges:read`); rebuild handlers return 403 with `"missing required scope:
-rebuilds:write"` (or `rebuilds:read`); patch handlers return 403 with
-`"PAT requires patches:read scope"` (or `patches:write`); rerere list
-handler returns 403 for missing `workspaces:read` scope; rerere forget
-handler returns 403 for missing `workspaces:write` scope; patch-status
-handler returns 403 for missing `workspaces:read` scope.
+### Workspace endpoints
 
-## Hub Audit Permissions
+| Endpoint | PAT scope | Access |
+|----------|-----------|--------|
+| `POST /workspaces` | `workspaces:write` | none; the caller becomes the owner; admin tokens `403` |
+| `GET /workspaces` | `workspaces:read` | lists the readable workspaces |
+| `GET /workspaces/:slug` | `workspaces:read` | read |
+| `PATCH /workspaces/:slug` | `workspaces:write` | write |
+| `POST /workspaces/:slug/archive`, `POST .../reactivate` | `workspaces:write` | write |
+| `DELETE /workspaces/:slug` | `workspaces:write` | write; the workspace must be archived |
+| `POST /workspaces/:slug/sync`, `POST .../reclone` | `workspaces:write` | write |
+| `POST /workspaces/:slug/branches/:name/push` | `workspaces:write` | write |
+| `GET /workspaces/:slug/rerere` | `workspaces:read` | read |
+| `DELETE /workspaces/:slug/rerere/*pathspec` | `workspaces:write` | write |
+| `GET /workspaces/:slug/patch-status` | `workspaces:read` | read |
+| `POST /workspaces/:slug/tokens` | `tokens:manage` | private; active workspace; admin tokens cannot mint |
+| `GET /workspaces/:slug/tokens` | `tokens:read` or `tokens:manage` | private |
 
-The `audit:read`, `audit:write`, `sessions:read`, and `sessions:write`
-permissions are registered by `Permissions()` in
-`hub/internal/audit/permissions.go`. The complete endpoint lists for
-`audit:read` and `audit:write` are documented in the
-[Hub Audit and Session Permissions](#audit-read) section above.
+### Carry-patch endpoints
 
-**Ownership notes:**
+| Endpoint | PAT scope | Access |
+|----------|-----------|--------|
+| `GET /workspaces/:slug/patches`, `GET .../patches/:id` | `patches:read` | read |
+| `POST .../patches`, `PATCH .../patches/:id`, `DELETE .../patches/:id`, `POST .../patches/:id/restore`, `POST .../patches/:id/reset-to-origin`, `POST .../patches/reorder` | `patches:write` | write |
+| `GET /workspaces/:slug/rebuilds`, `GET .../rebuilds/:id`, `GET .../rebuild-preview` | `rebuilds:read` | read |
+| `POST .../rebuild`, `DELETE .../rebuilds/:id`, `POST .../rebuilds/:id/requeue`, `POST .../rebuilds/:id/rollback` | `rebuilds:write` | write |
 
-- **audit:read**: Enforced through `wsaccess`. A non-admin caller reads the
-  runs and transcripts of the workspaces it owns or whose org it belongs to,
-  of any status (`404 workspace not found` otherwise), and `GET /audit` and
-  `GET /events` return it only those workspaces' events. Admin tokens read
-  everything, hub events without a workspace included.
-- **audit:write**: PATs and API keys must own the workspace (checked via
-  SQLite; an org member gets `403 workspace_access_denied`), and a PAT bound to
-  another workspace gets `404`. Admin tokens bypass all workspace checks.
-- **sessions:read**: Non-admin users are restricted to sessions of active
-  workspaces they own or whose org they belong to (checked via SQLite).
+### Merge endpoints
 
-### sessions:write
+| Endpoint | PAT scope | Access |
+|----------|-----------|--------|
+| `GET /workspaces/:slug/merges`, `GET .../merges/:id` | `merges:read` | read |
+| `POST .../merges`, `DELETE .../merges/:id`, `POST .../merges/:id/requeue`, `POST /workspaces/:slug/rebase` | `merges:write` | write |
 
-| | |
-|---|---|
-| **Source** | hub |
-| **Grants** | Open agent sessions, complete sessions, and report incremental token usage |
-| **Endpoints** | `POST /api/v1/sessions`, `POST /api/v1/sessions/:id/complete`, `POST /api/v1/sessions/:id/usage` |
-| **Ownership** | Session completion and usage reporting require the caller to be the session owner or an admin. |
+### Git endpoints
+
+Outside the mount point; authenticated with HTTP Basic (see
+[Presenting a credential](#presenting-a-credential)).
+
+| Endpoint | PAT scope | Access |
+|----------|-----------|--------|
+| `GET /git/:org/:slug.git/info/refs?service=git-upload-pack` | `git:read` | read |
+| `POST /git/:org/:slug.git/git-upload-pack` | `git:read` | read |
+| `GET /git/:org/:slug.git/info/refs?service=git-receive-pack` | `git:write` | write (member: pkt-line `403`) |
+| `POST /git/:org/:slug.git/git-receive-pack` | `git:write` | write (member: pkt-line `403`) |
+
+Anyone without read access gets a pkt-line `404 repository not found`. An
+admin-role API key is not admin here.
+
+### Secrets and variables endpoints
+
+| Operation | Secrets scope | Variables scope |
+|-----------|---------------|-----------------|
+| List (`GET`) | `secrets:read` | `vars:read` |
+| Resolved (`GET /workspaces/:slug/vars/resolved`) | — | `vars:read` |
+| Create (`POST`) | `secrets:write` | `vars:write` |
+| Update (`PATCH .../:key`) | `secrets:write` | `vars:write` |
+| Delete (`DELETE .../:key`) | `secrets:write` | `vars:write` |
+
+Who may reach each tier, with the scope above when the credential is a PAT:
+
+| Tier | Admin token | API key or PAT |
+|------|-------------|----------------|
+| User (`/user/secrets`, `/user/vars`) | `403`: an admin token has no user | the caller's own |
+| Org (`/orgs/:slug/secrets`, `/orgs/:slug/vars`) | any org | members of the org; anyone else `404` |
+| Workspace secrets (`/workspaces/:slug/secrets`) | any workspace | private: the owner; a member and anyone else `404 workspace not found` |
+| Workspace variables (`/workspaces/:slug/vars`) | any workspace | reads (list, resolved): read; writes: write (a member gets `403 forbidden`) |
+
+### Session, cost and audit endpoints
+
+These routes use the same access levels but answer refusals in their own way.
+
+| Endpoint | PAT scope | Access | A member gets | Anyone else gets |
+|----------|-----------|--------|---------------|------------------|
+| `POST /sessions` | `sessions:write` | write | `403 org members have read-only access to this workspace`, `error_type: forbidden` | `404 workspace not found` |
+| `POST /sessions/:id/complete`, `POST /sessions/:id/usage` | `sessions:write` | the session's creator or an admin token | `403 not session owner` | `403 not session owner` |
+| `GET /sessions/:id`, `GET /sessions/:id/usage`, `GET /workspaces/:slug/cost`, `GET /sessions?workspace_slug=` | `sessions:read` | read, active workspace | the owner's answer | `403 workspace access denied` |
+| `GET /sessions` | `sessions:read` | the active workspaces the caller may read | the sessions of owned and member workspaces | the sessions of its own workspaces |
+| per-run reads (`events`, `traces`, `sessions/outcomes`, `tools/calls`, `tools/errors`, `postmortem`) and `GET .../transcript` | `audit:read` | read, any workspace status | the owner's answer | `404 workspace not found` |
+| `GET /audit`, `GET /events` | `audit:read` | the workspaces of any status the caller may read (the stream fixes the set when it opens) | the events of owned and member workspaces, never a hub event without a workspace | `404 workspace not found` for a `workspace` filter outside the set |
+| the eight ingestion routes (`POST /workspaces/:slug/runs/:run_id/...`) | `audit:write` | owner | `403`, `error_type: workspace_access_denied` | `403`, `error_type: workspace_access_denied` |
+
+On the ingestion routes an archived workspace is `409 workspace_archived` before
+the ownership check, and an unknown slug is `404`.
+
+### Sandbox endpoints
+
+| Endpoint | PAT scope | Access |
+|----------|-----------|--------|
+| `GET /sandbox-profiles` | `sandboxes:read` | none; every caller sees the same list |
+| `POST /workspaces/:slug/sandboxes` | `sandboxes:write` | write; the workspace must not be archived |
+| `GET /workspaces/:slug/sandboxes`, `GET .../sandboxes/:id` | `sandboxes:read` | read |
+| `DELETE /workspaces/:slug/sandboxes/:id` | `sandboxes:write` | write; works on an archived workspace |
+| `GET /sandboxes` | admin token only | every workspace; API keys and PATs `403` |
+
+Without a `[sandbox]` section every route above answers `404` with
+`error_type: sandboxes_disabled`, before the scope is checked.
+
+### Forge endpoints
+
+| Endpoint | PAT scope | Access |
+|----------|-----------|--------|
+| `GET /workspaces/:slug/forge` and the nine reads (`.../forge/repository`, `.../issues`, `.../issues/:n`, `.../issues/:n/comments`, `.../pulls/:n`, `.../pulls/:n/state`, `.../pulls/:n/files`, `.../pulls/:n/checks`, `.../pulls/:n/reviews`) | `forge:read` | read |
+| `GET /workspaces/:slug/forge/deliveries` | `forge:read` | read; works on archived workspaces |
+| the nine writes (`POST .../issues`, `PATCH .../issues/:n`, `POST .../issues/:n/close`, `POST .../issues/:n/comments`, `POST .../issues/:n/labels`, `DELETE .../issues/:n/labels/:name`, `POST .../labels`, `POST .../pulls`, `POST .../pulls/:n/comments`) | `forge:write` | write; not archived (`400`) |
+| `PUT /workspaces/:slug/forge/webhook` | `forge:write` | write; not archived (`400`) |
+| `DELETE /workspaces/:slug/forge/webhook` | `forge:write` | write; works on archived workspaces |
+| `POST /hooks/forge/:slug` | no credential | see below |
+
+The order of the checks on a forge route: no credential is `401`; a PAT without
+the scope, or a credential type the hub does not know, is `403` before the
+workspace is looked up; a workspace that is missing or that the caller may not
+read is `404`; on a write, a member of its org is `403 forbidden` and an archived
+workspace is `400`.
+
+The webhook ingress `POST /hooks/forge/:slug` takes no bearer credential and no
+scope. It sits outside the mount point, beside `/git/...`, and accepts a delivery
+only when its signature (GitHub) or token (GitLab) matches the workspace's
+`FORGE_WEBHOOK_SECRET`. A workspace without the secret and a slug that does not
+exist answer the same `404`. The secret is managed with `forge:write` and the
+deliveries are read with `forge:read`. See
+[The webhook ingress](api.md#the-webhook-ingress).
+
+---
+
+## Retired scope names
+
+Earlier releases had finer-grained scopes; each was folded into the `read` or
+`write` scope of its resource ([ADR 06](adr/06-collapse-scopes-to-read-and-write.md)).
+`POST /user/tokens` refuses the old names with `400` like any unknown scope. At
+every start the hub rewrites stored PATs that still carry one:
+
+| Old scope | Rewritten to |
+|-----------|--------------|
+| `workspaces:create`, `workspaces:delete`, `workspaces:sync` | `workspaces:write` |
+| `secrets:list` | `secrets:read` |
+| `secrets:manage`, `secrets:delete` | `secrets:write` |
+| `vars:manage`, `vars:delete` | `vars:write` |
+
+Because `workspaces:write` implies `workspaces:read`, a rewritten token may list
+workspaces even if it could not before.
 
 ---
 
 ## Extending the Permission Registry
 
-To add custom permissions from a new hub module:
-
-1. Define a function returning `[]apikit.Permission` (see `GitPermissions()`
-   or `WorkspacePermissions()` for examples).
-2. Pass the permissions to `MountWorkspaceHandlers()` via the `extraPerms`
-   variadic parameter, or call `Server.MountHandlers()` directly.
-3. Check the scope in your handlers using `auth.RequirePermission(c, resource, action)`
-   (apikit-level) or the workspace package's `hasPermission()` helper.
+This section is for developers adding a hub module. A module registers its
+scopes with the server at start, alongside the scopes above, and checks them in
+its handlers; PAT creation then accepts the new names. Follow the
+`resource:read` / `resource:write` shape, with write implying read. How
+registration and the checks are wired is described in
+[architecture.md](architecture.md).

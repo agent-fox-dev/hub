@@ -48,7 +48,7 @@ A workspace from creation to a merged, pushed branch:
 
 ```sh
 # Log in (opens a browser for GitHub sign-in)
-afc login
+afc login --endpoint-url http://localhost:8080
 
 # Register a repository; --wait returns once the hub has cloned it.
 # The printed JSON includes hub_url, the workspace's address on the hub.
@@ -88,7 +88,7 @@ fork.
 | [Product Requirements](docs/prd/) | See features that are proposed or being specified |
 | [Go package docs](docs/generated/) | Browse the exported Go API of the public packages |
 | [Agents container](containers/agents/README.md) | Run the bundled coding agents in a container |
-| [carrypatch module](carrypatch/README.md) | Use the carry-patch Go module on its own |
+| [carrypatch module](carrypatch/README.md) | Understand the Go module that implements carry-patch, and how a host embeds it |
 
 ## Install
 
@@ -129,12 +129,14 @@ client_id = "${GITHUB_CLIENT_ID}"
 client_secret = "${GITHUB_CLIENT_SECRET}"
 ```
 
-On first boot, create the admin account. The hub writes an admin token to
-`admin_token` in its config directory and exits:
+On first boot, create the admin account. The hub writes an admin token to the
+file `admin_token` next to `config.toml` and exits. Store the token somewhere
+safe and delete the file (the hub will not start while it exists), then start
+the hub for real:
 
 ```sh
 bin/hub --admin-email=admin@example.com
-export ADMIN_TOKEN=$(cat admin_token)
+cat admin_token && rm admin_token   # keep this token: it is the admin credential
 bin/hub
 ```
 
@@ -144,7 +146,7 @@ Check that it is up:
 curl http://localhost:8080/healthz   # {"status": "ok"}
 ```
 
-Then run `afc login` to sign in. [Server Configuration](docs/configuration.md)
+Then sign in with `afc login --endpoint-url http://localhost:8080`. [Server Configuration](docs/configuration.md)
 covers every setting, sandboxes, the container image and the Kubernetes
 manifests in [`deploy/`](deploy/).
 
