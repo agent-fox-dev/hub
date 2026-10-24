@@ -984,7 +984,7 @@ func eventually(t *testing.T, what string, cond func() bool) {
 
 // githubFixture answers the requests of the nine read routes with minimal GitHub JSON for
 // acme/widgets: two issues and a pull request in the list, one issue with two comments,
-// one pull request whose head is abc123, one changed file, one check run and one review.
+// one pull request whose head is abc123, one changed file, one check run and one approval.
 func githubFixture(w http.ResponseWriter, r *http.Request) {
 	const (
 		user  = `{"login":"alice"}`

@@ -65,6 +65,7 @@ func TestMapForgeError(t *testing.T) {
 		{"400", httpError(400, token), 422, "forge_rejected", 400, 0},
 		{"bare ErrConflict", issuex.ErrConflict, 422, "forge_rejected", 0, 0},
 		{"500", httpError(500, token), 502, "forge_error", 500, 0},
+		{"503 without a message", &issuex.HTTPError{Status: 503}, 502, "forge_error", 503, 0},
 		{"refused", &url.Error{Op: "Get", URL: "https://h/x", Err: &net.OpError{Op: "dial", Err: errors.New("connection refused")}}, 502, "forge_unreachable", 0, 0},
 		{"tls", &url.Error{Op: "Get", URL: "https://h/x", Err: x509.HostnameError{Host: "h"}}, 502, "forge_unreachable", 0, 0},
 		{"deadline", &url.Error{Op: "Get", URL: "https://h/x", Err: context.DeadlineExceeded}, 504, "forge_timeout", 0, 0},
