@@ -16,7 +16,7 @@ import (
 	"github.com/agent-fox-dev/hub/internal/secrets"
 )
 
-// The workspace variables that override the API URL of the forge, one for each
+// The workspace settings that override the API URL of the forge, one for each
 // target. The upstream one has no fallback to the origin one: an upstream on another
 // host must not inherit the fork's API URL.
 const (
@@ -70,9 +70,9 @@ type forgeClient struct {
 
 // buildClient builds a fresh issuex client for the request's workspace and target,
 // from what hub holds for it and nothing the request carries but the target. Nothing
-// is cached, so a rotated secret or a changed variable applies to the next call.
+// is cached, so a rotated secret or a changed setting applies to the next call.
 //
-// A client for a write is given the API URL explicitly, the variable's or the one hub
+// A client for a write is given the API URL explicitly, the setting's or the one hub
 // states for the host, where a client for a read finds it by itself (and honours
 // GITHUB_API_URL and GITLAB_API_URL of the hub's environment). A write sends some of its
 // requests itself, beside the ones issuex sends, and the two must go to the same place.

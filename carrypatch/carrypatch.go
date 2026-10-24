@@ -212,7 +212,10 @@ type ResolveAuthFunc func(workspaceSlug string) (transport.AuthMethod, error)
 // when nil, the opt-in REBUILD_PUSH_INTEGRATION_BRANCH behaviour is disabled.
 type PushIntegrationFunc func(ctx context.Context, workspaceSlug, repoPath, branch string) error
 
-// GetVariableFunc retrieves a workspace variable.
+// GetVariableFunc reads a workspace setting of the host by the name the
+// setting had as a workspace variable (PATCH_BRANCH_SOURCE, REBUILD_STRATEGY,
+// ...); the hub serves it from the workspace's settings. A setting that is
+// not set answers an error the caller takes as "use the default".
 type GetVariableFunc func(scope, slug, key string) (string, error)
 
 // ===========================================================================
@@ -232,7 +235,7 @@ type RebuildHandler struct {
 	PatchStore    PatchStore
 
 	// PushIntegration, when non-nil, is invoked after a successful rebuild
-	// if the workspace variable REBUILD_PUSH_INTEGRATION_BRANCH is "true".
+	// if the workspace setting REBUILD_PUSH_INTEGRATION_BRANCH is "true".
 	PushIntegration PushIntegrationFunc
 
 	// Audit is the optional audit event emitter. When non-nil, rebuild

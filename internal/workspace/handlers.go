@@ -119,6 +119,7 @@ func workspaceResponse(ws *Workspace, orgSlug *string, access wsaccess.Access) m
 		"workspace_mode":     wsMode,
 		"upstream_url":       ws.UpstreamURL,
 		"integration_branch": ws.IntegrationBranch,
+		"settings":           ws.Settings,
 	}
 }
 
@@ -192,6 +193,10 @@ type createWorkspaceRequest struct {
 	WorkspaceMode     *string `json:"workspace_mode"`     // nullable: nil → "standard"
 	UpstreamURL       *string `json:"upstream_url"`       // required for carry_patch mode
 	IntegrationBranch *string `json:"integration_branch"` // nullable: nil → "deploy" for carry_patch
+
+	// Settings are the behaviour switches; keys not given have their
+	// defaults.
+	Settings json.RawMessage `json:"settings"`
 
 	// Optional git credential fields (09-REQ-2.1).
 	// PAT and username/password are mutually exclusive.
@@ -425,6 +430,14 @@ func handleCreateWorkspace(db *sql.DB) echo.HandlerFunc {
 			}
 		}
 
+		settings := DefaultSettings()
+		if len(req.Settings) > 0 {
+			var err error
+			if settings, err = applySettings(settings, req.Settings); err != nil {
+				return respondError(c, http.StatusBadRequest, err.Error())
+			}
+		}
+
 		// ---- Credential validation via ls-remote (09-REQ-3) ----
 
 		if hasCreds && validateCredentialsFn != nil {
@@ -503,6 +516,7 @@ func handleCreateWorkspace(db *sql.DB) echo.HandlerFunc {
 			WorkspaceMode:     workspaceMode,
 			UpstreamURL:       upstreamURL,
 			IntegrationBranch: integrationBranch,
+			Settings:          settings,
 		}
 
 		if err := insertWorkspace(db, ws); err != nil {
@@ -668,7 +682,8 @@ type updatePatchFields struct {
 	SetOrgID       bool
 	OrgID          *string // nil = JSON null, non-nil = provided value
 	SetSyncMode    bool
-	SyncMode       *string // nil = JSON null, non-nil = provided value (13-REQ-2.2)
+	SyncMode       *string         // nil = JSON null, non-nil = provided value (13-REQ-2.2)
+	Settings       json.RawMessage // the settings object given, nil when absent
 }
 
 // handleUpdateWorkspace handles PATCH /api/v1/workspaces/:slug.
@@ -767,6 +782,11 @@ func handleUpdateWorkspace(db *sql.DB) echo.HandlerFunc {
 			}
 		}
 
+		if raw, ok := rawBody["settings"]; ok {
+			fields.Settings = raw
+			mutableCount++
+		}
+
 		// Reject empty body (no mutable fields provided).
 		if mutableCount == 0 {
 			return respondError(c, http.StatusBadRequest, "request body must contain at least one updatable field")
@@ -823,9 +843,17 @@ func handleUpdateWorkspace(db *sql.DB) echo.HandlerFunc {
 			ws.SyncMode = *fields.SyncMode
 		}
 
+		if fields.Settings != nil {
+			next, err := applySettings(ws.Settings, fields.Settings)
+			if err != nil {
+				return respondError(c, http.StatusBadRequest, err.Error())
+			}
+			ws.Settings = next
+		}
+
 		// Persist the update: write all mutable fields (unchanged ones retain
 		// their loaded values) and refresh updated_at.
-		updated, err := updateWorkspaceRow(db, slug, ws.DisplayName, ws.Description, ws.OrgID, ws.SyncMode)
+		updated, err := updateWorkspaceRow(db, slug, ws.DisplayName, ws.Description, ws.OrgID, ws.SyncMode, ws.Settings)
 		if err != nil {
 			return respondError(c, http.StatusInternalServerError, "failed to update workspace")
 		}

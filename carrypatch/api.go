@@ -506,7 +506,7 @@ func handleSubmitRebuild(cfg APIConfig) echo.HandlerFunc {
 
 		// 16-REQ-1.1 / NS-REQ-4 / 16-PROP-3: capture REBUILD_STRATEGY and
 		// REBUILD_FAIL_MODE at enqueue time; body values override the
-		// workspace variables.
+		// workspace settings.
 		ib := nullStr(integrationBranch)
 		payload := BuildRebuildPayload(slug, ib, auth.UserID, cfg.GetVariable, bodyStrategy, bodyFailMode)
 		payloadJSON, err := json.Marshal(payload)

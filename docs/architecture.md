@@ -430,7 +430,7 @@ file of `internal/cli` imports it to run `afc` against the routes).
 1. `authorize` applies the checks in order and reads the workspace's remotes.
 2. `resolveTarget` and the route's own parameters are checked.
 3. `buildClient` reads the remote URL (`git_url` for `origin`, `upstream_url` for
-   `upstream`), finds the repository, reads `FORGE_API_URL` (`UPSTREAM_FORGE_API_URL`
+   `upstream`), finds the repository, reads `forge_api_url` (`upstream_forge_api_url`
    for `upstream`), resolves the credential and calls `issuex.NewWithOptions` with the
    shared HTTP client. Nothing is cached.
 4. The call runs under a context that carries the workspace's token and a 30-second
@@ -644,7 +644,7 @@ module's hook types (`carrypatch.RefUpdate`, `carrypatch.PreReceiveHook`,
 
 The carry-patch package registers a pre-receive hook that enforces a
 single-writer model for registered patch branches. The behaviour depends on
-`PATCH_BRANCH_SOURCE` and `PUSH_PATCHES_TO_ORIGIN`:
+`patch_branch_source` and `push_patches_to_origin`:
 
 - **Reject mode** (`origin` source, forwarding off): the push is refused.
 - **Forward mode** (`origin` source, forwarding on): the push is forwarded to
@@ -656,7 +656,7 @@ single-writer model for registered patch branches. The behaviour depends on
 
 After the push, the post-push hook runs asynchronously. It checks whether any
 accepted pushed branch is a registered patch and, if
-`AUTO_REBUILD_AFTER_PUSH` is not `"false"`, enqueues a rebuild. In hub mode
+`auto_rebuild_after_push` is not `false`, enqueues a rebuild. In hub mode
 with mirroring enabled, it also force-pushes each accepted registered patch
 branch to the fork.
 
@@ -712,7 +712,7 @@ nothing else.
 Registering a patch (`POST /api/v1/workspaces/:slug/patches`, single or
 batch) resolves each branch name in the workspace trunk before the row is
 inserted: `local`, then `origin_tracking`, then (with
-`PATCH_BRANCH_SOURCE=origin`) `origin_fetch`. A resolved branch ends up as a
+`patch_branch_source=origin`) `origin_fetch`. A resolved branch ends up as a
 local `refs/heads/<name>` ref. Elements with `skip_branch_check` are not
 resolved.
 
@@ -880,14 +880,14 @@ The SQL on `token_workspace_bindings` and the `pats` revocation live in
 `internal/wsaccess` (`binding_store.go`), beside spec 33's table and lookup, so
 that `internal/workspace` can use them.
 
-### Reading `PATCH_BRANCH_SOURCE` once per request
+### Reading `patch_branch_source` once per request
 
 `handleAddPatch` installs a request scope on the request context before it
 dispatches to the single or batch path. The resolver hook reads
-`PATCH_BRANCH_SOURCE` through the module's `requestScoped`, so the first
-resolution in a request reads the variable and every later one in the same
+`patch_branch_source` through the module's `requestScoped`, so the first
+resolution in a request reads the setting and every later one in the same
 request (the remaining batch elements) reuses that value. A change to the
-variable while a batch runs cannot mix modes within one request; it takes
+setting while a batch runs cannot mix modes within one request; it takes
 effect on the next request. A caller that passes a context without a scope
 gets one read per hook call.
 

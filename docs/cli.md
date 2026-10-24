@@ -57,6 +57,7 @@ afc workspace create --slug <slug> --git-url <url> [flags]
 | `--git-pat` | no | string | Personal access token for authenticating against a private repository |
 | `--git-username` | no | string | Git username for HTTP basic auth (must be paired with `--git-password`) |
 | `--git-password` | no | string | Git password for HTTP basic auth (must be paired with `--git-username`) |
+| `--setting` | no | string | A workspace setting as `key=value`, repeatable (for example `--setting patch_branch_source=origin --setting auto_rebuild_after_push=false`); `true` and `false` are sent as booleans. See the [Workspace Settings Reference](api.md#workspace-settings-reference) |
 | `--wait` | no | boolean | Block until the workspace clone reaches `ready` or `failed` status |
 | `--timeout` | no | duration | Maximum time to wait for clone completion (default `5m0s`, only effective with `--wait`) |
 | `--poll-interval` | no | duration | Interval between clone status polls (default `5s`, only effective with `--wait`) |
@@ -180,6 +181,7 @@ afc workspace update <slug> [flags]
 | `--clear-display-name` | boolean | Reset display_name to the server-side default (slug value) |
 | `--clear-description` | boolean | Reset description to the server-side default (empty string) |
 | `--clear-org` | boolean | Remove the organization association |
+| `--setting` | string | A workspace setting as `key=value`, repeatable; `key=` alone resets the setting to its default. See the [Workspace Settings Reference](api.md#workspace-settings-reference) |
 
 **Behavior:**
 
@@ -192,6 +194,9 @@ afc workspace update <slug> [flags]
 - Clear flags (`--clear-display-name`, `--clear-description`, `--clear-org`)
   set the corresponding field to `null` in the PATCH body, which resets the
   field to its server-side default.
+- `--setting key=value` flags are sent as the `settings` object (`true` and
+  `false` as booleans, an empty value as `null`); the server validates the
+  keys and values and rejects an unknown key with 400.
 - Prints the updated workspace JSON to stdout.
 - If the API returns a non-2xx status, prints the error message from the
   JSON error body to stderr and exits with code 1.
@@ -317,7 +322,7 @@ The remote that is fetched depends on the workspace mode:
 | Workspace mode | Syncs from | What happens |
 |---|---|---|
 | `standard` | `origin` -- the `--git-url` given at creation | Fetches `origin` and fast-forwards the workspace branch (`--branch`, or the repository's default branch) to it. A diverged branch (force-push on `origin`) fails with 409; recover with `--reset-to-upstream`. |
-| `carry_patch` | `upstream` -- the `--upstream-url` given at creation (**not** `origin`) | Fetches all `upstream` branches, records the upstream default branch as the new base, marks patches that were merged upstream as `merged_upstream`, and -- if upstream advanced or a patch branch changed -- enqueues a rebuild of the integration branch (upstream HEAD + active patches). The integration branch itself changes only when that rebuild completes. When `PATCH_BRANCH_SOURCE=origin`, the fork is also fetched and every registered patch branch is brought to the fork's tip. |
+| `carry_patch` | `upstream` -- the `--upstream-url` given at creation (**not** `origin`) | Fetches all `upstream` branches, records the upstream default branch as the new base, marks patches that were merged upstream as `merged_upstream`, and -- if upstream advanced or a patch branch changed -- enqueues a rebuild of the integration branch (upstream HEAD + active patches). The integration branch itself changes only when that rebuild completes. When `patch_branch_source=origin`, the fork is also fetched and every registered patch branch is brought to the fork's tip. |
 
 Notes for carry-patch workspaces:
 
@@ -325,17 +330,17 @@ Notes for carry-patch workspaces:
   read from the hub's clone, so push them to the hub's git server
   (`git push <hub-remote> <branch>`, using the workspace `hub_url`); pushing a
   registered patch branch also triggers a rebuild.
-- When `PATCH_BRANCH_SOURCE=origin`, the fork is fetched during sync and
+- When `patch_branch_source=origin`, the fork is fetched during sync and
   every registered patch branch is brought to the fork's tip. See the
-  `PATCH_BRANCH_SOURCE` and `PATCH_DIVERGENCE_POLICY` workspace variables.
+  `patch_branch_source` and `patch_divergence_policy` workspace settings.
 - Upstream credentials come from the `UPSTREAM_GIT_PAT` (or
   `UPSTREAM_GIT_USERNAME`/`UPSTREAM_GIT_PASSWORD`) workspace secrets, set with
   `afc secrets create --workspace <slug> ...` (see
   [Reserved secret names](#reserved-secret-names)); without them the `--git-pat` / `--git-username`
   credentials of `origin` are used.
 - The rebuilt integration branch is pushed back to `origin` only when the
-  workspace variable `REBUILD_PUSH_INTEGRATION_BRANCH` is `true`.
-- Set the workspace variable `AUTO_REBUILD_AFTER_SYNC=false` to sync without
+  workspace setting `rebuild_push_integration_branch` is `true`.
+- Set the workspace setting `auto_rebuild_after_sync=false` to sync without
   triggering a rebuild.
 
 **Usage:**
@@ -358,7 +363,7 @@ afc workspace sync <slug> [--reset-to-upstream] [--wait] [--timeout <duration>] 
 | `--wait` | no | boolean | `false` | Block until the auto-triggered rebuild (if any) reaches a terminal state |
 | `--timeout` | no | duration | `5m0s` | Maximum time to wait for rebuild completion (only effective with `--wait`) |
 | `--poll-interval` | no | duration | `5s` | Interval between rebuild status polls (only effective with `--wait`) |
-| `--fail-on-diverged` | no | boolean | `false` | Exit with code 3 when `patches_diverged` is non-empty (carry-patch workspaces with `PATCH_BRANCH_SOURCE=origin` and `PATCH_DIVERGENCE_POLICY=report`). With `--wait`, the check runs after the rebuild wait finishes; a wait failure (exit 1) takes precedence |
+| `--fail-on-diverged` | no | boolean | `false` | Exit with code 3 when `patches_diverged` is non-empty (carry-patch workspaces with `patch_branch_source=origin` and `patch_divergence_policy=report`). With `--wait`, the check runs after the rebuild wait finishes; a wait failure (exit 1) takes precedence |
 
 **Behavior:**
 
@@ -375,7 +380,7 @@ afc workspace sync <slug> [--reset-to-upstream] [--wait] [--timeout <duration>] 
 - For carry-patch workspaces, the response additionally carries
   `patches_merged`, `rebuild_triggered`, `force_push_detected`,
   `origin_fetched`, and -- only when a rebuild was enqueued --
-  `rebuild_job_id`. When `PATCH_BRANCH_SOURCE=origin`, the response also
+  `rebuild_job_id`. When `patch_branch_source=origin`, the response also
   includes `patches_synced` and `patches_diverged`.
 - With `--wait`: if a rebuild was triggered (`rebuild_job_id` is present),
   polls `GET /api/v1/workspaces/<slug>/rebuilds/<id>` until the rebuild
@@ -1639,7 +1644,7 @@ afc patch add <workspace-slug> --branch <name> [flags]
   and `if_not_exists` in the request body.
 - The server resolves the branch in the workspace trunk before registering it.
   It checks the local ref first, then the clone's origin tracking ref, and
-  finally (when `PATCH_BRANCH_SOURCE` is `origin`) fetches the branch from the
+  finally (when `patch_branch_source` is `origin`) fetches the branch from the
   fork. The resolution method is recorded in the `hub.patch.create` audit
   event.
 - When `--skip-branch-check` is set, the server skips all branch resolution:
@@ -1842,7 +1847,7 @@ afc patch restore <workspace-slug> <patch-id>
 ### afc patch reset-to-origin
 
 Reset a patch branch to the fork's current tip, regardless of
-`PATCH_DIVERGENCE_POLICY`. If the hub's branch tip is discarded (diverged or
+`patch_divergence_policy`. If the hub's branch tip is discarded (diverged or
 force-pushed on the fork), the old tip is saved under
 `refs/hub/replaced/<branch>`. The response includes `replaced_sha` when a
 backup exists.

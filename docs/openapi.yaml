@@ -743,9 +743,9 @@ paths:
         of the carry-patch fields (16-REQ-5.E4).
 
         Merge detection for carry-patch workspaces is governed by the
-        `SQUASH_MERGE_DETECTION` workspace variable (`ancestry_only`,
+        `squash_merge_detection` workspace setting (`ancestry_only`,
         `content_based`, or `both`, the default). A rebuild is enqueued when
-        the upstream ref advanced unless `AUTO_REBUILD_AFTER_SYNC` is
+        the upstream ref advanced unless `auto_rebuild_after_sync` is
         `"false"`; a duplicate enqueue is ignored silently and leaves
         `rebuild_triggered` false.
       x-required-scopes: ["workspaces:write"]
@@ -1084,9 +1084,9 @@ paths:
         in this order: (1) `local` — `refs/heads/<name>` exists in the trunk;
         (2) `origin_tracking` — `refs/remotes/origin/<name>` exists and a
         local branch is created at that commit; (3) `origin_fetch` — only
-        when `PATCH_BRANCH_SOURCE` is `origin`, the branch is fetched from
+        when `patch_branch_source` is `origin`, the branch is fetched from
         the fork and the local branch is created. Tags, bare SHAs and
-        remote-qualified names are not accepted. `PATCH_BRANCH_SOURCE` is read
+        remote-qualified names are not accepted. `patch_branch_source` is read
         once per request, so every element of a batch resolves in the same
         mode.
 
@@ -1169,7 +1169,7 @@ paths:
         "502":
           description: >-
             Origin fetch failed (`error_type: origin_fetch_failed`). Returned
-            when `PATCH_BRANCH_SOURCE` is `origin` and the fetch from the fork
+            when `patch_branch_source` is `origin` and the fetch from the fork
             fails due to a network or authentication error, or when origin
             credentials cannot be resolved.
           content:
@@ -1350,7 +1350,7 @@ paths:
       summary: Reset a patch branch to the fork's current tip
       description: |
         Fetches the branch from the fork, compares the tips, and moves the
-        local branch to the fork's tip regardless of `PATCH_DIVERGENCE_POLICY`.
+        local branch to the fork's tip regardless of `patch_divergence_policy`.
         If the move discards commits, the old tip is saved under
         `refs/hub/replaced/<branch>`. A fast-forward does not touch an existing
         backup.
@@ -1572,8 +1572,8 @@ paths:
         `active`, `clone_status` is `ready`, at least one patch is `active` or
         `conflict`, and no rebuild job for this workspace is queued or running.
 
-        With no body, `strategy` falls back to the `REBUILD_STRATEGY` workspace
-        variable (`rebase` if unset) and `fail_mode` to `REBUILD_FAIL_MODE`.
+        With no body, `strategy` falls back to the `rebuild_strategy` workspace
+        variable (`rebase` if unset) and `fail_mode` to `rebuild_fail_mode`.
         If neither the body nor a variable supplies `fail_mode`, it is left
         empty at enqueue time and the executor applies `fail_fast` at runtime.
 
@@ -1592,7 +1592,7 @@ paths:
         (`submitted_by: system:stale-snapshot`).
 
         A rebuild is also enqueued automatically when a push lands on a
-        registered patch branch, unless `AUTO_REBUILD_AFTER_PUSH` is `"false"`.
+        registered patch branch, unless `auto_rebuild_after_push` is `false`.
 
         Ownership is not enforced.
       x-required-scopes: ["rebuilds:write"]
@@ -2601,9 +2601,6 @@ paths:
       summary: Create workspace-scoped variables
       description: |
         Requires workspace ownership; admin tokens bypass the check.
-
-        Several variable keys change hub behaviour -- see the
-        `WorkspaceVariables` schema for the recognised names.
       x-required-scopes: ["vars:write"]
       requestBody:
         required: true
@@ -3052,8 +3049,8 @@ paths:
 
         The checks run in this order: no credential is `401`; a PAT with
         neither `forge:read` nor `forge:write` is `403`; a workspace that does
-        not exist or is not the caller's is `404`; an invalid `FORGE_API_URL`
-        (or `UPSTREAM_FORGE_API_URL` for the upstream block) is `422`.
+        not exist or is not the caller's is `404`; an invalid `forge_api_url`
+        (or `upstream_forge_api_url` for the upstream block) is `422`.
       x-required-scopes: ["forge:read", "forge:write"]
       responses:
         "200":
@@ -3070,7 +3067,7 @@ paths:
           $ref: "#/components/responses/WorkspaceNotFoundOrNotOwned"
         "422":
           description: >-
-            `FORGE_API_URL`, or `UPSTREAM_FORGE_API_URL` for the upstream block,
+            `forge_api_url`, or `upstream_forge_api_url` for the upstream block,
             is not an absolute `https://` URL with a host and without userinfo,
             query or fragment (`error_type: forge_api_url_invalid`).
           content:
@@ -5486,20 +5483,20 @@ paths:
 
         For carry-patch workspaces, a pre-receive hook enforces push control
         on registered patch branches. The behaviour depends on
-        `PATCH_BRANCH_SOURCE` and `PUSH_PATCHES_TO_ORIGIN`:
+        `patch_branch_source` and `push_patches_to_origin`:
 
-        - **Reject** (`PATCH_BRANCH_SOURCE=origin`, `PUSH_PATCHES_TO_ORIGIN`
+        - **Reject** (`patch_branch_source=origin`, `push_patches_to_origin`
           not `"true"`): the update is rejected with a per-ref message naming
           the fork.
-        - **Forward** (`PATCH_BRANCH_SOURCE=origin`,
-          `PUSH_PATCHES_TO_ORIGIN=true`): the update is pushed to the fork
+        - **Forward** (`patch_branch_source=origin`,
+          `push_patches_to_origin=true`): the update is pushed to the fork
           before the hub writes its ref. A forward failure rejects the ref.
-        - **Mirror** (`PATCH_BRANCH_SOURCE=hub`,
-          `PUSH_PATCHES_TO_ORIGIN=true`): accepted pushes are force-pushed to
+        - **Mirror** (`patch_branch_source=hub`,
+          `push_patches_to_origin=true`): accepted pushes are force-pushed to
           the fork after the push, best effort.
 
         If a pushed branch is a registered patch of a carry-patch workspace and
-        `AUTO_REBUILD_AFTER_PUSH` is not `"false"`, a rebuild job is enqueued.
+        `auto_rebuild_after_push` is not `false`, a rebuild job is enqueued.
         The hook runs asynchronously and never alters the push response.
       security:
         - gitBasicAuth: []
@@ -7300,10 +7297,10 @@ components:
 
     ForgeUnprocessable:
       description: >-
-        `FORGE_API_URL` (`UPSTREAM_FORGE_API_URL` for the upstream) is invalid
-        (`error_type: forge_api_url_invalid`; the message names the variable and
+        `forge_api_url` (`upstream_forge_api_url` for the upstream) is invalid
+        (`error_type: forge_api_url_invalid`; the message names the setting and
         the rule, not the value); or the forge cannot be told from the host or
-        an API URL variable, or the remote URL names no repository
+        an API URL setting, or the remote URL names no repository
         (`error_type: forge_unknown`); or the forge answered another 4xx
         (`error_type: forge_rejected`). Nothing is sent to the forge in the
         first two cases.
@@ -7688,6 +7685,7 @@ components:
         - head_sha
         - clone_error
         - created_at
+        - settings
         - updated_at
         - sync_mode
         - sync_status
@@ -7798,6 +7796,8 @@ components:
             The mechanically rebuilt branch combining the upstream base with all
             carried patches. Defaults to `deploy` for carry-patch workspaces and
             is null for standard ones; immutable after creation.
+        settings:
+          $ref: "#/components/schemas/WorkspaceSettings"
         created_at:
           type: string
           format: date-time
@@ -7847,6 +7847,9 @@ components:
           description: >-
             Defaults to `deploy` for carry-patch workspaces; rejected for
             standard workspaces.
+        settings:
+          allOf: [{ $ref: "#/components/schemas/WorkspaceSettings" }]
+          description: The behaviour switches to set; keys not given have their defaults.
         git_pat:
           type: string
           format: password
@@ -7887,6 +7890,12 @@ components:
           type: string
           enum: [pull_only, disabled]
           description: "`null` is rejected with `400`."
+        settings:
+          allOf: [{ $ref: "#/components/schemas/WorkspaceSettings" }]
+          description: >-
+            Keys given take their value, a key given as `null` returns to its
+            default, keys not given are kept; the whole object as `null`
+            resets every setting.
       additionalProperties: false
 
     CarryPatchSyncResponse:
@@ -7925,11 +7934,11 @@ components:
           type: boolean
           description: >-
             Always present. `true` when the fork (`origin`) was fetched in this
-            sync (`PATCH_BRANCH_SOURCE=origin`), `false` otherwise.
+            sync (`patch_branch_source=origin`), `false` otherwise.
         patches_synced:
           type: array
           description: >-
-            Present only when `PATCH_BRANCH_SOURCE` is `origin` (empty `[]`
+            Present only when `patch_branch_source` is `origin` (empty `[]`
             when there are no candidates). Each element describes the
             per-branch outcome.
           items:
@@ -7937,7 +7946,7 @@ components:
         patches_diverged:
           type: array
           description: >-
-            Present only when `PATCH_BRANCH_SOURCE` is `origin`. Branch names
+            Present only when `patch_branch_source` is `origin`. Branch names
             whose state is `diverged`. Always `[]` under the `replace` policy.
           items:
             type: string
@@ -8917,14 +8926,14 @@ components:
           enum: [rebase, merge]
           description: >-
             `rebase` cherry-picks each unique commit; `merge` uses
-            `git merge --no-ff`. Overrides `REBUILD_STRATEGY`.
+            `git merge --no-ff`. Overrides `rebuild_strategy`.
         fail_mode:
           type: string
           enum: [fail_fast, continue]
           description: >-
             `fail_fast` aborts on the first unresolved conflict; `continue`
             marks the patch as `conflict`, resets to the pre-patch state, and
-            proceeds. Overrides `REBUILD_FAIL_MODE`.
+            proceeds. Overrides `rebuild_fail_mode`.
 
     RebuildJobEnqueued:
       type: object
@@ -9446,21 +9455,55 @@ components:
           type: string
           format: date-time
 
-    WorkspaceVariables:
+    WorkspaceSettings:
       type: object
       description: |
-        Reference for the workspace variable keys the hub interprets. This
-        schema is documentation only -- it is not a request or response body.
-        Set these through `POST /api/v1/workspaces/{slug}/vars`.
+        A workspace's behaviour switches. Every key is present in a response
+        with its effective value. In a request every key is optional; a key
+        given as `null` returns to its default. An unknown key or a value a
+        setting cannot take is rejected with `400`.
       properties:
-        REBUILD_STRATEGY:
+        patch_branch_source:
+          type: string
+          enum: [hub, origin]
+          default: hub
+          description: >-
+            The authority for patch branches. `hub`: the hub's clone. `origin`:
+            the fork is fetched during sync and every registered patch branch
+            follows the fork's tip.
+        patch_divergence_policy:
+          type: string
+          enum: [replace, report]
+          default: replace
+          description: >-
+            In `origin` mode, what happens when the hub's and the fork's copy
+            of a patch branch diverged: `replace` the hub's copy (the old tip
+            is kept under `refs/hub/replaced/<branch>`) or `report` it.
+        push_patches_to_origin:
+          type: boolean
+          default: false
+          description: >-
+            Forward (origin mode) or mirror (hub mode) a push to a registered
+            patch branch to the fork. In origin mode a push is rejected when
+            this is off.
+        auto_rebuild_after_push:
+          type: boolean
+          default: true
+          description: A push to a registered patch branch enqueues a rebuild.
+        auto_rebuild_after_sync:
+          type: boolean
+          default: true
+          description: >-
+            A carry-patch sync that observes upstream advancement or a patch
+            branch change enqueues a rebuild.
+        rebuild_strategy:
           type: string
           enum: [rebase, merge]
           default: rebase
           description: >-
             Strategy used to apply patches during a rebuild. Overridable
             per-rebuild via the `strategy` request field.
-        REBUILD_FAIL_MODE:
+        rebuild_fail_mode:
           type: string
           enum: [fail_fast, continue]
           default: fail_fast
@@ -9468,31 +9511,13 @@ components:
             Whether a rebuild aborts on the first conflict or skips the
             conflicting patch and continues. Overridable per-rebuild via the
             `fail_mode` request field.
-        AUTO_REBUILD_AFTER_SYNC:
-          type: string
-          enum: ["true", "false"]
-          default: "true"
+        rebuild_push_integration_branch:
+          type: boolean
+          default: false
           description: >-
-            When not `"false"`, a carry-patch sync that observes upstream
-            advancement enqueues a rebuild.
-        AUTO_REBUILD_AFTER_PUSH:
-          type: string
-          enum: ["true", "false"]
-          default: "true"
-          description: >-
-            When not `"false"`, a push to a registered patch branch enqueues a
-            rebuild.
-        PUSH_PATCHES_TO_ORIGIN:
-          type: string
-          enum: ["true"]
-          description: >-
-            Enables forwarding or mirroring of hub pushes to registered patch
-            branches. Only the exact string `"true"` enables it. In `origin`
-            mode, enables forwarding to the fork before the hub writes its ref;
-            when disabled, the push is rejected. In `hub` mode, enables
-            best-effort mirroring (force-push) to the fork after the push is
-            accepted.
-        SQUASH_MERGE_DETECTION:
+            Every successful rebuild force-pushes the integration branch to
+            the fork with the workspace's credentials.
+        squash_merge_detection:
           type: string
           enum: [ancestry_only, content_based, both]
           default: both
@@ -9501,6 +9526,19 @@ components:
             `ancestry_only` uses `git merge-base --is-ancestor`;
             `content_based` uses `git cherry` plus PR-number scanning; `both`
             uses all of them and treats either signal as sufficient.
+        forge_api_url:
+          type: string
+          default: ""
+          description: >-
+            The API URL of the forge behind `git_url`: an absolute `https://`
+            URL with a host, without userinfo, query or fragment, or empty to
+            find the API from the host.
+        upstream_forge_api_url:
+          type: string
+          default: ""
+          description: >-
+            The same for the `upstream_url` of a `carry_patch` workspace; it
+            does not fall back to `forge_api_url`.
 
     # -- Sessions --------------------------------------------------------------
 

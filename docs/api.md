@@ -249,13 +249,13 @@ The `error_type` field is omitted when not applicable. Known error types:
 | `workspace_mode_mismatch` | POST /api/v1/workspaces/:slug/rebuild; every forge read route with `?target=upstream` | Workspace is not in `carry_patch` mode (a forge read with `target=upstream` also needs a non-empty `upstream_url`) |
 | `no_active_patches` | POST /api/v1/workspaces/:slug/rebuild | No patches with status `active` or `conflict` |
 | `concurrent_rebuild` | POST /api/v1/workspaces/:slug/rebuild | A rebuild job is already queued or running for this workspace |
-| `origin_fetch_failed` | POST /api/v1/workspaces/:slug/sync, POST .../patches/:id/reset-to-origin | The origin fetch failed during a carry-patch sync with `PATCH_BRANCH_SOURCE=origin` or during a reset-to-origin. Distinguished from the upstream fetch failure by this error type |
+| `origin_fetch_failed` | POST /api/v1/workspaces/:slug/sync, POST .../patches/:id/reset-to-origin | The origin fetch failed during a carry-patch sync with `patch_branch_source=origin` or during a reset-to-origin. Distinguished from the upstream fetch failure by this error type |
 | `missing_on_origin` | POST /api/v1/workspaces/:slug/patches/:id/reset-to-origin | The patch branch does not exist on the fork |
 | `ref_changed` | POST /api/v1/workspaces/:slug/patches/:id/reset-to-origin | The patch branch was modified by another operation between the SHA resolution and the compare-and-swap write; retry |
 | `workspace_busy` | archive, sync, reclone, rollback, batch rebase, rerere forget, reset-to-origin, branch push | Another operation currently holds the workspace lock; retry later. A rebuild holds the lock only in its fetch phase and final phase, so sync, rollback, rerere forget, batch rebase and branch push are rejected only then; archive and reclone are rejected for the whole rebuild |
 | `branch_not_found` | POST /api/v1/workspaces/:slug/branches/:name/push | 404. The name breaks git's branch-name rules (the message names the rule), or the trunk has no such branch |
-| `integration_branch` | POST /api/v1/workspaces/:slug/branches/:name/push | 400. On a `carry_patch` workspace the name is the integration branch, which hub builds; it reaches the fork through `REBUILD_PUSH_INTEGRATION_BRANCH` |
-| `patch_branch` | POST /api/v1/workspaces/:slug/branches/:name/push | 400. On a `carry_patch` workspace the name is a registered patch; patches reach the fork through `PUSH_PATCHES_TO_ORIGIN` |
+| `integration_branch` | POST /api/v1/workspaces/:slug/branches/:name/push | 400. On a `carry_patch` workspace the name is the integration branch, which hub builds; it reaches the fork through `rebuild_push_integration_branch` |
+| `patch_branch` | POST /api/v1/workspaces/:slug/branches/:name/push | 400. On a `carry_patch` workspace the name is a registered patch; patches reach the fork through `push_patches_to_origin` |
 | `protected_branch` | POST /api/v1/workspaces/:slug/branches/:name/push | 400. `force` on the workspace's own branch (its `branch`, or the trunk's `HEAD` branch when `branch` is null) |
 | `non_fast_forward` | POST /api/v1/workspaces/:slug/branches/:name/push | 409. Origin's branch has commits the trunk's branch lacks; the message names origin's commit when hub could list it |
 | `forbidden` | every workspace route that needs write access (see [Workspace Access](#workspace-access)) | 403. The caller is a member of the workspace's org, who may read the workspace but not change it. The message is `org members have read-only access to this workspace`. A PAT's scope 403 carries no `error_type` |
@@ -264,9 +264,9 @@ The `error_type` field is omitted when not applicable. Known error types:
 | `sandbox_capacity` | POST /api/v1/workspaces/:slug/sandboxes | The deployment's `max_sandboxes` limit on live leases is reached |
 | `secret_missing` | POST /api/v1/workspaces/:slug/sandboxes | A secret the profile requires exists in no searched scope of the workspace |
 | `sandbox_provider_error` | DELETE /api/v1/workspaces/:slug/sandboxes/:id | The provider could not destroy the sandbox of an `active` lease, or did not answer within 30 seconds. The message is the provider's, scrubbed; the lease is unchanged and the request can be repeated |
-| `forge_api_url_invalid` | every forge route | `FORGE_API_URL` (`UPSTREAM_FORGE_API_URL` for the upstream) is set to something that is not an absolute `https://` URL with a host and without userinfo, query or fragment. 422; the message names the variable and the rule, not the value |
+| `forge_api_url_invalid` | every forge route | `forge_api_url` (`upstream_forge_api_url` for the upstream) is set to something that is not an absolute `https://` URL with a host and without userinfo, query or fragment. 422; the message names the setting and the rule, not the value |
 | `body_too_large` | every forge write route with a body-like field | An issue, pull-request or comment body, or the comment of a close, is longer than the forge accepts: 65,536 Unicode code points on GitHub, 1,000,000 on GitLab. 413; the message names the field, its length, the forge and the limit, and nothing is sent to the forge |
-| `forge_unknown` | every forge route | The forge behind the remote URL cannot be told from its host or an API URL variable, or the remote URL names no repository. 422; nothing is sent to the forge |
+| `forge_unknown` | every forge route | The forge behind the remote URL cannot be told from its host or an API URL setting, or the remote URL names no repository. 422; nothing is sent to the forge |
 | `forge_not_found` | every forge route; branch push | The forge answered 404. 404. On the branch push: origin has no such repository, or the credential cannot see it |
 | `forge_unauthenticated` | every forge route; branch push | The forge answered 401. 502. On the branch push the message says that the workspace has no stored git credential, or which kind origin rejected (`GIT_PAT` or `GIT_USERNAME/GIT_PASSWORD`) |
 | `forge_forbidden` | every forge route; branch push | The forge answered 403 that is not a rate limit. 502 |
@@ -345,6 +345,7 @@ schema:
 | `workspace_mode` | string | Workspace operating mode: `"standard"` (default, single-remote) or `"carry_patch"` (dual-remote with patch list); immutable after creation |
 | `upstream_url` | string or null | URL of the upstream repository for carry-patch workspaces. Null for standard workspaces; immutable after creation. |
 | `integration_branch` | string or null | Name of the mechanically rebuilt branch that combines the upstream base with all carried patches. Defaults to `"deploy"` for carry-patch workspaces. Null for standard workspaces; immutable after creation. |
+| `settings` | object | The workspace's behaviour switches, every key with its effective value; see [Workspace Settings Reference](#workspace-settings-reference) |
 | `created_at` | string (RFC 3339) | Timestamp of workspace creation; immutable |
 | `updated_at` | string (RFC 3339) | Timestamp of last modification |
 
@@ -374,6 +375,7 @@ workspace requires a real user as owner.
   "workspace_mode": "standard",
   "upstream_url": "https://github.com/upstream/repo.git",
   "integration_branch": "deploy",
+  "settings": {"patch_branch_source": "origin"},
   "git_pat": "ghp_xxxxxxxxxxxx",
   "git_username": "user",
   "git_password": "token-or-password"
@@ -392,6 +394,7 @@ workspace requires a real user as owner.
 | `workspace_mode` | no | string | `"standard"` (default) or `"carry_patch"`; when `"carry_patch"`, `upstream_url` is required and `integration_branch` defaults to `"deploy"` |
 | `upstream_url` | conditional | string | Required when `workspace_mode` is `"carry_patch"`; must be a valid HTTPS or SSH git URL; rejected for standard workspaces |
 | `integration_branch` | no | string | Name of the integration branch; defaults to `"deploy"` for carry-patch workspaces; rejected for standard workspaces |
+| `settings` | no | object | The behaviour switches to set; keys not given have their defaults. See [Workspace Settings Reference](#workspace-settings-reference); an unknown key or a value a setting cannot take is rejected with HTTP 400 |
 | `git_pat` | no | string | Personal access token for private repo auth; mutually exclusive with `git_username`/`git_password`; requires HTTPS `git_url` |
 | `git_username` | no | string | Git username for HTTP basic auth; must be paired with `git_password`; mutually exclusive with `git_pat`; requires HTTPS `git_url` |
 | `git_password` | no | string | Git password for HTTP basic auth; must be paired with `git_username`; mutually exclusive with `git_pat`; requires HTTPS `git_url` |
@@ -501,7 +504,8 @@ mutable fields. At least one field must be provided.
   "display_name": "New Display Name",
   "description": "Updated description",
   "org_id": "uuid-string",
-  "sync_mode": "disabled"
+  "sync_mode": "disabled",
+  "settings": {"rebuild_strategy": "merge", "auto_rebuild_after_push": null}
 }
 ```
 
@@ -511,6 +515,7 @@ mutable fields. At least one field must be provided.
 | `description` | string or null | Max 1024 characters | Setting to `null` clears the description to an empty string |
 | `org_id` | string or null | Organization UUID or slug. Must reference an org the owner is a member of | Setting to `null` removes the organization association |
 | `sync_mode` | string | Must be `"pull_only"` or `"disabled"` | Setting to `null` is rejected with HTTP 400 |
+| `settings` | object | Keys of the [Workspace Settings Reference](#workspace-settings-reference) with values the settings take; keys not given are kept | A key given as `null` returns to its default; the whole object given as `null` resets every setting |
 
 **Partial Update Behavior:**
 
@@ -527,7 +532,7 @@ mutable fields. At least one field must be provided.
 
 | Status | Condition |
 |--------|-----------|
-| 400 | Empty body (no fields provided); workspace is archived (must reactivate first); `display_name` exceeds 128 characters; `description` exceeds 1024 characters; request includes immutable fields; `sync_mode` value is invalid or null |
+| 400 | Empty body (no fields provided); workspace is archived (must reactivate first); `display_name` exceeds 128 characters; `description` exceeds 1024 characters; request includes immutable fields; `sync_mode` value is invalid or null; `settings` names an unknown key or a value a setting cannot take |
 | 401 | Unauthenticated request |
 | 403 | Workspace owner is not a member of the organization specified in `org_id`; the caller is a member of the workspace's org: `org members have read-only access to this workspace` (`error_type: forbidden`) |
 | 404 | Workspace not found; PAT lacks `workspaces:write` scope; the caller may not see the workspace (anti-enumeration) |
@@ -621,9 +626,9 @@ branches are read from the hub's own clone, so they must be pushed to the
 hub's git server (`/git/:org/:slug.git`), which also triggers an automatic
 rebuild when a registered patch branch is pushed. The rebuilt integration
 branch is only pushed back to `origin` when the workspace variable
-`REBUILD_PUSH_INTEGRATION_BRANCH` is `"true"`.
+`rebuild_push_integration_branch` is `true`.
 
-When the workspace variable `PATCH_BRANCH_SOURCE` is set to `"origin"`, the
+When the workspace setting `patch_branch_source` is set to `"origin"`, the
 sync also fetches the `origin` remote and brings every registered patch
 branch to the fork's tip. See
 [Carry-Patch Sync Extension](#carry-patch-sync-extension) for details.
@@ -706,7 +711,7 @@ or unexpected failures.
 When the workspace is in `carry_patch` mode, the sync endpoint replaces the
 standard fetch-and-fast-forward with a fetch of the **`upstream` remote**
 (`upstream_url`) followed by an optional fetch of the **`origin` remote**
-(when `PATCH_BRANCH_SOURCE` is `"origin"`), upstream merge detection, squash
+(when `patch_branch_source` is `"origin"`), upstream merge detection, squash
 merge detection, upstream force-push detection, patch branch refresh, and
 automatic rebuild triggering.
 
@@ -773,14 +778,14 @@ reflect it:
 | `rebuild_triggered` | boolean | Whether a rebuild job was enqueued as a result of this sync |
 | `rebuild_job_id` | string | ID of the enqueued rebuild job. Omitted entirely when no rebuild was enqueued -- it is never `null`. |
 | `force_push_detected` | boolean | Whether the upstream HEAD is not a descendant of the previously stored upstream SHA, indicating a history rewrite. Informational only -- sync still proceeds. |
-| `origin_fetched` | boolean | Always present. `true` when the fork (`origin`) was fetched in this sync (`PATCH_BRANCH_SOURCE=origin`), `false` otherwise. |
-| `patches_synced` | array | Present only when `PATCH_BRANCH_SOURCE` is `"origin"` (empty `[]` when there are no candidates). Each element describes the per-branch outcome: `branch_name`, `action` (`none`, `created`, `fast_forwarded`, `replaced`), `state` (`in_sync`, `diverged`, `missing_on_origin`), `local_sha` (omitted when no local branch), `origin_sha` (omitted when fork has no such branch), and `replaced_sha` (present only for `replaced`). |
-| `patches_diverged` | array of strings | Present only when `PATCH_BRANCH_SOURCE` is `"origin"`. Branch names whose state is `diverged`. Always `[]` under the `replace` policy. |
+| `origin_fetched` | boolean | Always present. `true` when the fork (`origin`) was fetched in this sync (`patch_branch_source=origin`), `false` otherwise. |
+| `patches_synced` | array | Present only when `patch_branch_source` is `"origin"` (empty `[]` when there are no candidates). Each element describes the per-branch outcome: `branch_name`, `action` (`none`, `created`, `fast_forwarded`, `replaced`), `state` (`in_sync`, `diverged`, `missing_on_origin`), `local_sha` (omitted when no local branch), `origin_sha` (omitted when fork has no such branch), and `replaced_sha` (present only for `replaced`). |
+| `patches_diverged` | array of strings | Present only when `patch_branch_source` is `"origin"`. Branch names whose state is `diverged`. Always `[]` under the `replace` policy. |
 
 **Carry-Patch Sync Flow:**
 
-1. Read `PATCH_BRANCH_SOURCE` and `PATCH_DIVERGENCE_POLICY` workspace
-   variables. If `PATCH_BRANCH_SOURCE` is `"origin"`, resolve origin
+1. Read `patch_branch_source` and `patch_divergence_policy` workspace
+   variables. If `patch_branch_source` is `"origin"`, resolve origin
    credentials (`GIT_PAT` / `GIT_USERNAME` + `GIT_PASSWORD`) before any
    fetch. A failure answers `502` with the message `failed to resolve origin credentials`.
 2. Resolve upstream credentials via `resolveUpstreamAuth`: `UPSTREAM_GIT_PAT`,
@@ -790,7 +795,7 @@ reflect it:
    `refs/remotes/upstream/*` and the upstream default branch into
    `refs/remotes/upstream/HEAD`, which is the "upstream HEAD" used below and
    as the rebuild base.
-4. If `PATCH_BRANCH_SOURCE` is `"origin"`, fetch from the `origin` remote
+4. If `patch_branch_source` is `"origin"`, fetch from the `origin` remote
    with pruning (stale tracking refs are removed). A failure answers `502`
    with the message `origin fetch failed` and `error_type`
    `origin_fetch_failed`. The upstream tracking refs already updated are not
@@ -800,11 +805,11 @@ reflect it:
    the stored SHA and the new upstream HEAD. If the stored SHA is not an
    ancestor of the new HEAD, set `force_push_detected=true` (informational;
    sync continues). This comparison runs before the patch refresh.
-7. If `PATCH_BRANCH_SOURCE` is `"origin"`, refresh each candidate patch
+7. If `patch_branch_source` is `"origin"`, refresh each candidate patch
    branch (status `active`, `conflict` or `disabled`, excluding the
    integration branch) against the fork's tip, applying the first matching
    rule: fork missing, local missing (create), same commit, fast-forward, or
-   diverged (replace or report, per `PATCH_DIVERGENCE_POLICY`). Ref writes
+   diverged (replace or report, per `patch_divergence_policy`). Ref writes
    use compare-and-swap (`git update-ref <ref> <new> <expected-old>`).
    Replaced branches are backed up under `refs/hub/replaced/<branch>`. Then
    persist each candidate patch's `origin_sync_state`, `origin_sha` and
@@ -817,7 +822,7 @@ reflect it:
 
    A refresh failure stops the refresh and ends the sync with `500` after
    step 7: outcomes already produced are persisted, a rebuild is enqueued for
-   branches already moved (unless `AUTO_REBUILD_AFTER_SYNC` is `"false"`),
+   branches already moved (unless `auto_rebuild_after_sync` is `false`),
    audit events are emitted for the outcomes produced, and neither
    `upstream_head_sha` nor `last_sync_at` is written. The message tells the
    failures apart: `failed to update patch branch <branch>` (a ref write,
@@ -829,14 +834,14 @@ reflect it:
 8. Merge detection runs when upstream advanced or an `active` or `conflict`
    patch branch was moved by step 7. For each active patch, detect upstream
    merge using a multi-strategy approach controlled by the
-   `SQUASH_MERGE_DETECTION` workspace variable:
+   `squash_merge_detection` workspace setting:
    - **Ancestry check** (`git merge-base --is-ancestor`): detects standard merges
    - **Content-based detection** (`git cherry`): detects squash merges by comparing
      commit content (no pending commits = merged)
    - **PR-number scanning**: if `upstream_pr_url` is set, extracts the PR number
      and searches recent upstream commit messages for the GitHub squash-merge
      format `"Title (#NNN)"`
-   - The `SQUASH_MERGE_DETECTION` variable accepts: `"ancestry_only"`,
+   - The `squash_merge_detection` variable accepts: `"ancestry_only"`,
      `"content_based"`, or `"both"` (default). Either ancestry or content-based
      signal is sufficient to mark a patch as `merged_upstream`.
 9. Transition matched patches to `merged_upstream` status. In `origin` mode
@@ -847,7 +852,7 @@ reflect it:
 10. Write `last_sync_at` and `updated_at` on every completed sync, whether
     or not anything advanced. `upstream_head_sha` is written only when
     upstream advanced.
-11. If `AUTO_REBUILD_AFTER_SYNC` is not `"false"` (default is true) and the
+11. If `auto_rebuild_after_sync` is not `false` (default is true) and the
     upstream ref advanced, a patch branch was moved (created, fast-forwarded
     or replaced for an `active` or `conflict` patch), or at least one patch
     was newly marked `merged_upstream`, enqueue a rebuild job. If a rebuild
@@ -1626,7 +1631,7 @@ using the following order. The first step that succeeds ends the resolution:
 2. **`origin_tracking`** — `refs/remotes/origin/<name>` exists in the trunk
    and resolves to a commit. A local branch `refs/heads/<name>` is created at
    that commit.
-3. **`origin_fetch`** — only when `PATCH_BRANCH_SOURCE` is `origin`. The
+3. **`origin_fetch`** — only when `patch_branch_source` is `origin`. The
    branch is fetched from the fork's `origin` remote, and if
    `refs/remotes/origin/<name>` now resolves to a commit, the local branch is
    created at that commit.
@@ -1643,8 +1648,8 @@ A batch resolves every element before inserting any row. The first failure
 rejects the whole request. Local branches already created for earlier elements
 stay in place (they are harmless refs found as `local` on the next attempt).
 
-`PATCH_BRANCH_SOURCE` is read once per request. Every element of a batch is
-resolved in the mode read for the request, even if the variable changes while
+`patch_branch_source` is read once per request. Every element of a batch is
+resolved in the mode read for the request, even if the setting changes while
 the request runs; the change takes effect on the next request.
 
 **Audit Metadata:**
@@ -1671,7 +1676,7 @@ branch-check hook is registered. Batch registration does not emit
 | 409 | `branch_name` already exists in the patch list for this workspace (unless `if_not_exists` is `true`) |
 | 409 | Duplicate `branch_name` within a batch request |
 | 409 | Another operation holds the workspace lock (`error_type: workspace_busy`). Returned when the resolver needs to write a ref but the trunk is locked by another operation. |
-| 502 | Origin fetch failed (`error_type: origin_fetch_failed`). Returned when `PATCH_BRANCH_SOURCE` is `origin` and the fetch from the fork fails due to a network or authentication error. |
+| 502 | Origin fetch failed (`error_type: origin_fetch_failed`). Returned when `patch_branch_source` is `origin` and the fetch from the fork fails due to a network or authentication error. |
 | 502 | Failed to resolve origin credentials. Returned when the credential resolver cannot produce credentials for the fork. |
 
 ---
@@ -1885,7 +1890,7 @@ Restore a soft-deleted patch back to active status.
 ### POST /api/v1/workspaces/:slug/patches/:id/reset-to-origin
 
 Reset a patch branch to the fork's current tip, regardless of
-`PATCH_DIVERGENCE_POLICY`. The endpoint fetches the branch from the fork,
+`patch_divergence_policy`. The endpoint fetches the branch from the fork,
 compares the tips, and moves the local branch to the fork's tip. If the move
 discards commits (diverged or the fork tip is behind the local tip), the old
 tip is saved under `refs/hub/replaced/<branch>`, overwriting any earlier
@@ -1934,12 +1939,12 @@ git fetch <hub_url> refs/hub/replaced/<branch>
 - *Anything else (diverged):* Save the local tip to
   `refs/hub/replaced/<branch>`, then move the local branch. Action `replaced`.
 
-When `PATCH_BRANCH_SOURCE` is `origin`, a completed reset records the patch
+When `patch_branch_source` is `origin`, a completed reset records the patch
 as `in_sync` with the fork tip SHA. In `hub` mode, no origin state is written.
 
 When the branch moved and the patch status is `active` or `conflict`, a
 rebuild job is enqueued (same deduplication as sync), unless
-`AUTO_REBUILD_AFTER_SYNC` is `"false"`. A `disabled` patch does not trigger
+`auto_rebuild_after_sync` is `false`. A `disabled` patch does not trigger
 a rebuild.
 
 When the moved branch is checked out in the trunk, the work tree follows it
@@ -2151,7 +2156,7 @@ rebuild writes need write access (a member of the workspace's org gets
 | `integration_head_sha` | string | SHA of the integration branch HEAD after rebuild; empty for non-completed jobs |
 | `previous_integration_head_sha` | string | SHA of the integration branch HEAD before rebuild; empty for first-ever rebuild or non-completed jobs |
 | `upstream_head_sha` | string | SHA of the upstream base the rebuild started from (`refs/remotes/upstream/HEAD`, falling back to `refs/remotes/upstream/<workspace branch>` and then `FETCH_HEAD`) |
-| `integration_branch_pushed` | boolean | `true` when the `REBUILD_PUSH_INTEGRATION_BRANCH` workspace variable is `"true"` and the rebuilt integration branch was force-pushed to `origin`; omitted otherwise |
+| `integration_branch_pushed` | boolean | `true` when the `rebuild_push_integration_branch` workspace setting is `true` and the rebuilt integration branch was force-pushed to `origin`; omitted otherwise |
 
 Fields with `omitempty` tags (`strategy`, `error`, `patch_results`,
 `integration_head_sha`, `previous_integration_head_sha`,
@@ -2210,12 +2215,12 @@ Submit a new rebuild job for the workspace.
 
 | Field | Required | Type | Constraints |
 |-------|----------|------|-------------|
-| `strategy` | no | string | `"rebase"` (default) or `"merge"`. Overrides the `REBUILD_STRATEGY` workspace variable when provided. |
-| `fail_mode` | no | string | `"fail_fast"` (default) or `"continue"`. When `"continue"`, the rebuild skips conflicting patches and continues processing remaining patches instead of aborting. Overrides the `REBUILD_FAIL_MODE` workspace variable when provided. |
+| `strategy` | no | string | `"rebase"` (default) or `"merge"`. Overrides the `rebuild_strategy` workspace setting when provided. |
+| `fail_mode` | no | string | `"fail_fast"` (default) or `"continue"`. When `"continue"`, the rebuild skips conflicting patches and continues processing remaining patches instead of aborting. Overrides the `rebuild_fail_mode` workspace setting when provided. |
 
-When the request body is omitted, `strategy` defaults to the `REBUILD_STRATEGY`
+When the request body is omitted, `strategy` defaults to the `rebuild_strategy`
 workspace variable (or `"rebase"` if unset), and `fail_mode` defaults to the
-`REBUILD_FAIL_MODE` workspace variable. If neither the request body nor the
+`rebuild_fail_mode` workspace setting. If neither the request body nor the
 workspace variable provides a value, `fail_mode` is left empty at enqueue time
 and the executor applies `"fail_fast"` as the runtime default.
 
@@ -2282,7 +2287,7 @@ The rebuild executor processes patches in position order:
 
 When a git push updates a branch that is a registered patch in a carry-patch
 workspace, a rebuild is automatically enqueued (unless the
-`AUTO_REBUILD_AFTER_PUSH` workspace variable is set to `"false"`). The push
+`auto_rebuild_after_push` workspace setting is set to `false`). The push
 response is not affected -- the rebuild runs asynchronously.
 
 ### GET /api/v1/workspaces/:slug/rebuilds
@@ -2916,21 +2921,21 @@ The `.git` suffix is required. Requests without it receive HTTP 404.
 
 For carry-patch workspaces, the git server enforces a single-writer model for
 registered patch branches. A pre-receive hook runs after the pack is unpacked
-and before each ref is written. The behaviour depends on `PATCH_BRANCH_SOURCE`
-and `PUSH_PATCHES_TO_ORIGIN`:
+and before each ref is written. The behaviour depends on `patch_branch_source`
+and `push_patches_to_origin`:
 
-- **Reject mode** (`PATCH_BRANCH_SOURCE=origin`, `PUSH_PATCHES_TO_ORIGIN` not
+- **Reject mode** (`patch_branch_source=origin`, `push_patches_to_origin` not
   `"true"`): the update is rejected with the per-ref message
   `branch is synced from origin; push to <git_url> instead` (or
   `branch is synced from origin; delete it on the fork instead` for deletes).
   `<git_url>` is the workspace's clone URL with any userinfo removed.
-- **Forward mode** (`PATCH_BRANCH_SOURCE=origin`, `PUSH_PATCHES_TO_ORIGIN=true`):
+- **Forward mode** (`patch_branch_source=origin`, `push_patches_to_origin=true`):
   the update is pushed to the fork's `origin` remote (non-force) before the
   hub writes its ref. If the forward fails, the hub ref is not written and the
   client sees `origin rejected push: <error>` or
   `failed to resolve origin credentials` as a per-ref error. Deletes are
   rejected as in reject mode.
-- **Mirror mode** (`PATCH_BRANCH_SOURCE=hub`, `PUSH_PATCHES_TO_ORIGIN=true`):
+- **Mirror mode** (`patch_branch_source=hub`, `push_patches_to_origin=true`):
   the push is accepted normally. After the push, each accepted registered
   patch branch is force-pushed to the fork, best effort. A mirror failure
   emits `hub.patch.mirror_failed` but does not fail the push or the rebuild.
@@ -2979,9 +2984,9 @@ After a successful push, the git server:
 2. Resets the working tree to match the new HEAD.
 3. If a post-push hook is registered (carry-patch auto-rebuild), checks whether
    any accepted pushed branch is a registered patch in a carry-patch workspace
-   and, if `AUTO_REBUILD_AFTER_PUSH` is not `"false"`, enqueues a rebuild job.
+   and, if `auto_rebuild_after_push` is not `false`, enqueues a rebuild job.
    The push response is not affected -- the hook runs asynchronously.
-4. In hub mode with `PUSH_PATCHES_TO_ORIGIN=true`, each accepted registered
+4. In hub mode with `push_patches_to_origin=true`, each accepted registered
    patch branch is force-pushed (mirrored) to the fork. The mirror runs after
    the rebuild enqueue, whether or not a rebuild was enqueued. A mirror failure
    emits `hub.patch.mirror_failed` and is logged but does not fail the push or
@@ -3047,8 +3052,8 @@ branch matches a registered patch in a carry-patch workspace, a rebuild may be
 auto-triggered (see Post-Push Hooks above).
 
 For carry-patch workspaces, a pre-receive hook may reject or forward updates
-to registered patch branches depending on `PATCH_BRANCH_SOURCE` and
-`PUSH_PATCHES_TO_ORIGIN` (see Pre-Receive Hook above). Only accepted ref
+to registered patch branches depending on `patch_branch_source` and
+`push_patches_to_origin` (see Pre-Receive Hook above). Only accepted ref
 updates drive the `hub.git.push` audit event and the post-push hook.
 
 **Authentication:** HTTP Basic. PATs require `git:write` scope.
@@ -3819,24 +3824,36 @@ same condition, and the workspace tier.
 
 ---
 
-## Workspace Variables Reference
+## Workspace Settings Reference
 
-The following workspace variables control carry-patch rebuild and sync
-behavior and how the hub reaches a workspace's forge. They can be set via the
-`POST /api/v1/workspaces/:slug/vars` endpoint.
+A workspace's settings are its behaviour switches: how a carry-patch workspace
+syncs, rebuilds and pushes, and where its forge's API is. They are given as the
+`settings` object of `POST /api/v1/workspaces`, changed with the `settings`
+object of `PATCH /api/v1/workspaces/:slug` (a key given takes the value, a key
+given as `null` returns to its default, a key not given is kept), validated on
+every write (400 names the key and its choices) and returned in full, with the
+effective value of every key, in every workspace object. A key not given at
+creation has its default.
 
-| Variable | Values | Default | Description |
-|----------|--------|---------|-------------|
-| `REBUILD_STRATEGY` | `"rebase"`, `"merge"` | `"rebase"` | Strategy used to apply patches during rebuild. Can be overridden per-rebuild via the `strategy` field in the POST /rebuild request body. |
-| `REBUILD_FAIL_MODE` | `"fail_fast"`, `"continue"` | `"fail_fast"` | Controls whether rebuild aborts on first conflict or skips conflicting patches and continues. Can be overridden per-rebuild via the `fail_mode` field in the POST /rebuild request body. |
-| `AUTO_REBUILD_AFTER_SYNC` | `"true"`, `"false"` | `"true"` | When `"true"` (or unset), a carry-patch sync that detects upstream advancement or a patch branch change (created, fast-forwarded or replaced for an active or conflict patch) automatically enqueues a rebuild job. |
-| `AUTO_REBUILD_AFTER_PUSH` | `"true"`, `"false"` | `"true"` | When `"true"` (or unset), a git push to a registered patch branch automatically enqueues a rebuild job. |
-| `PATCH_BRANCH_SOURCE` | `"hub"`, `"origin"` | `"hub"` | Selects the authority for patch branches. `"hub"` (default): patch branches are read from the hub's local clone. `"origin"`: the fork is fetched during sync and every registered patch branch is brought to the fork's tip. Read on every sync; a change takes effect on the next sync without a restart. |
-| `PATCH_DIVERGENCE_POLICY` | `"replace"`, `"report"` | `"replace"` | Controls what happens when the hub's copy and the fork's copy of a patch branch have diverged. `"replace"` (default): the hub's copy is replaced with the fork's tip (the old tip is saved under `refs/hub/replaced/<branch>`). `"report"`: the hub's copy is left unchanged and the divergence is reported. Ignored when `PATCH_BRANCH_SOURCE` is `"hub"`. |
-| `PUSH_PATCHES_TO_ORIGIN` | `"true"` | (disabled) | Enables forwarding or mirroring of hub pushes to registered patch branches. Only the exact string `"true"` enables it. In `origin` mode (`PATCH_BRANCH_SOURCE=origin`): when enabled, a push to a registered patch branch is forwarded to the fork before the hub writes its ref; when disabled, the push is rejected. In `hub` mode: when enabled, accepted pushes to registered patch branches are mirrored (force-pushed) to the fork after the push is accepted. |
-| `SQUASH_MERGE_DETECTION` | `"ancestry_only"`, `"content_based"`, `"both"` | `"both"` | Controls which strategies are used to detect upstream merges during carry-patch sync. `"ancestry_only"` uses only `git merge-base --is-ancestor`. `"content_based"` uses only `git cherry` and PR-number scanning. `"both"` (default) uses all strategies. |
-| `FORGE_API_URL` | an absolute `https://` URL with a host, without userinfo, query or fragment | (unset) | The API URL of the forge behind the workspace's `git_url`, for the [forge read routes](#forge-endpoints). Unset, the API is found from the host (`api.github.com` for `github.com`, `<host>/api/v3` or `<host>/api/v4` for another). A value that contains exactly one of `github` and `gitlab` also tells which forge it is, and a GitLab value gets `/api/v4` appended when it does not end with it. Any other value answers `422 forge_api_url_invalid`. |
-| `UPSTREAM_FORGE_API_URL` | as `FORGE_API_URL` | (unset) | The same for the `upstream_url` of a `carry_patch` workspace (`?target=upstream`). It does not fall back to `FORGE_API_URL`: an upstream on another host must not inherit the fork's API URL. |
+| Setting | Type | Default | Description |
+|---------|------|---------|-------------|
+| `rebuild_strategy` | `"rebase"`, `"merge"` | `"rebase"` | Strategy used to apply patches during rebuild. Can be overridden per-rebuild via the `strategy` field in the POST /rebuild request body. |
+| `rebuild_fail_mode` | `"fail_fast"`, `"continue"` | `"fail_fast"` | Whether a rebuild aborts on the first conflict or skips the conflicting patch and continues. Can be overridden per-rebuild via the `fail_mode` field in the POST /rebuild request body. |
+| `auto_rebuild_after_sync` | boolean | `true` | A carry-patch sync that detects upstream advancement or a patch branch change (created, fast-forwarded or replaced for an active or conflict patch) enqueues a rebuild job. |
+| `auto_rebuild_after_push` | boolean | `true` | A git push to a registered patch branch enqueues a rebuild job. |
+| `patch_branch_source` | `"hub"`, `"origin"` | `"hub"` | The authority for patch branches. `"hub"`: patch branches are read from the hub's clone. `"origin"`: the fork is fetched during sync and every registered patch branch is brought to the fork's tip. Read on every sync; a change takes effect on the next sync. |
+| `patch_divergence_policy` | `"replace"`, `"report"` | `"replace"` | What happens when the hub's copy and the fork's copy of a patch branch have diverged. `"replace"`: the hub's copy is replaced with the fork's tip (the old tip is saved under `refs/hub/replaced/<branch>`). `"report"`: the hub's copy is left unchanged and the divergence is reported. Ignored when `patch_branch_source` is `"hub"`. |
+| `push_patches_to_origin` | boolean | `false` | Forwarding or mirroring of hub pushes to registered patch branches. In `origin` mode: a push to a registered patch branch is forwarded to the fork before the hub writes its ref; when off, the push is rejected. In `hub` mode: accepted pushes to registered patch branches are mirrored (force-pushed) to the fork after the push is accepted. |
+| `rebuild_push_integration_branch` | boolean | `false` | Every successful rebuild force-pushes the integration branch to `origin` with the workspace's credentials. |
+| `squash_merge_detection` | `"ancestry_only"`, `"content_based"`, `"both"` | `"both"` | Which strategies detect upstream merges during a carry-patch sync. `"ancestry_only"` uses `git merge-base --is-ancestor`; `"content_based"` uses `git cherry` and PR-number scanning; `"both"` uses all of them. |
+| `forge_api_url` | string | `""` | The API URL of the forge behind the workspace's `git_url`, for the [forge routes](#forge-endpoints): an absolute `https://` URL with a host, without userinfo, query or fragment, or empty to find the API from the host (`api.github.com` for `github.com`, `<host>/api/v3` or `<host>/api/v4` for another). A value that contains exactly one of `github` and `gitlab` also tells which forge it is, and a GitLab value gets `/api/v4` appended when it does not end with it. |
+| `upstream_forge_api_url` | string | `""` | The same for the `upstream_url` of a `carry_patch` workspace (`?target=upstream`). It does not fall back to `forge_api_url`: an upstream on another host must not inherit the fork's API URL. |
+
+Before they were settings, these switches were workspace variables of the same
+name in upper case (`PATCH_BRANCH_SOURCE`, ...). A hub that starts on a database
+from that time moves every such variable into the workspace's settings once (a
+value a setting cannot take is dropped with a warning) and deletes the variable;
+the variables API no longer changes hub behaviour.
 
 ---
 
@@ -4276,26 +4293,26 @@ for one.
 |---|---|---|
 | Remote URL | the workspace's `git_url` | the `upstream_url` of a `carry_patch` workspace |
 | Credential | `GIT_PAT`, or `GIT_USERNAME` with `GIT_PASSWORD` (the resolver the clone uses) | `UPSTREAM_GIT_PAT`, or `UPSTREAM_GIT_USERNAME` with `UPSTREAM_GIT_PASSWORD`, else the origin's (the resolver the carry-patch sync uses) |
-| API URL variable | `FORGE_API_URL` | `UPSTREAM_FORGE_API_URL`, with no fallback to `FORGE_API_URL` |
+| API URL setting | `forge_api_url` | `upstream_forge_api_url`, with no fallback to `forge_api_url` |
 
 - **Repository.** It is read from the remote URL: `https://host/owner/name`,
   `ssh://`, or `git@host:owner/name`, with `.git` and userinfo removed. GitLab
   subgroup paths are kept: for `https://gitlab.example.com/group/subgroup/widgets`
   the owner is `group/subgroup` and the name `widgets`.
 - **Which forge.** The forge is GitHub or GitLab. A host whose name contains
-  `github` or `gitlab` says which; so does an API URL variable that contains one
+  `github` or `gitlab` says which; so does an API URL setting that contains one
   of the two words. The API URL, when no variable sets it, is `https://api.github.com`
   for `github.com`, `https://<host>/api/v3` for another GitHub host and
   `https://<host>/api/v4` for a GitLab host. A host that names neither forge, with
-  no API URL variable that does, cannot be told: the answer is `422 forge_unknown`
+  no API URL setting that does, cannot be told: the answer is `422 forge_unknown`
   and nothing is sent. The classification is that of the aflib `issuex` package;
   the hub's own environment variables `GITHUB_API_URL` and `GITLAB_API_URL` are
   read by it too.
-- **API URL variables.** `FORGE_API_URL` and `UPSTREAM_FORGE_API_URL` are workspace
-  variables (see the [Workspace Variables Reference](#workspace-variables-reference)).
+- **API URL settings.** `forge_api_url` and `upstream_forge_api_url` are workspace
+  settings (see the [Workspace Settings Reference](#workspace-settings-reference)).
   A value that is set must be an absolute `https://` URL with a host and without
   userinfo, query or fragment; any other is `422 forge_api_url_invalid`, with a
-  message that names the variable and the rule and not the value. Surrounding
+  message that names the setting and the rule and not the value. Surrounding
   white space and trailing slashes are ignored. For GitLab, issuex puts `/api/v4`
   after a value that does not end with it, and the diagnostic shows the URL with it.
 - **Credential kind.** `pat` when the resolver returns the username `x-token-auth`
@@ -4395,10 +4412,10 @@ runs it when the other routes answer `forge_unknown`.
 | Field | Type | Description |
 |-------|------|-------------|
 | `forge` | string | `github`, `gitlab` or `unknown` |
-| `api_url` | string or null | The API URL the hub sends its requests under (for GitLab, with `/api/v4`); `null` when the forge is `unknown`. It is the variable's value or the default for the host, so a `GITHUB_API_URL` or `GITLAB_API_URL` in the hub's own environment, which issuex would honour, is not shown |
+| `api_url` | string or null | The API URL the hub sends its requests under (for GitLab, with `/api/v4`); `null` when the forge is `unknown`. It is the setting's value or the default for the host, so a `GITHUB_API_URL` or `GITLAB_API_URL` in the hub's own environment, which issuex would honour, is not shown |
 | `repository` | object or null | `host`, `owner` (the full namespace path) and `name`; `null` when the remote URL names no repository |
 | `credential` | string | `pat`, `basic` or `none`: the kind, never a value |
-| `upstream` | object or null | The same four fields for the `upstream_url`, computed with the upstream resolver and `UPSTREAM_FORGE_API_URL`; `null` unless the workspace is `carry_patch` with a non-empty `upstream_url` |
+| `upstream` | object or null | The same four fields for the `upstream_url`, computed with the upstream resolver and `upstream_forge_api_url`; `null` unless the workspace is `carry_patch` with a non-empty `upstream_url` |
 | `webhook` | object | The state of the workspace's webhook, described below. It never holds the secret |
 
 The `webhook` block:
@@ -4418,7 +4435,7 @@ names one.
 | Status | Condition |
 |--------|-----------|
 | 401, 403, 404 | As in [Order of checks](#order-of-checks) |
-| 422 | `FORGE_API_URL`, or `UPSTREAM_FORGE_API_URL` for the upstream block, is invalid (`error_type: forge_api_url_invalid`) |
+| 422 | `forge_api_url`, or `upstream_forge_api_url` for the upstream block, is invalid (`error_type: forge_api_url_invalid`) |
 | 500 | The secrets or variables store failed, or the delivery log could not be read (no partial `webhook` block is answered) |
 
 ### The read routes
@@ -4594,8 +4611,8 @@ own 413.
 
 **How a write is sent.**
 
-- The requests go to the API root of the workspace's `FORGE_API_URL` (or
-  `UPSTREAM_FORGE_API_URL`), or to the one the hub states for the host; unlike a read,
+- The requests go to the API root of the workspace's `forge_api_url` (or
+  `upstream_forge_api_url`), or to the one the hub states for the host; unlike a read,
   a write does not look at the `GITHUB_API_URL` or `GITLAB_API_URL` of the hub's own
   environment.
 - Creating an issue, commenting, adding labels and opening a pull request are issuex's
@@ -4852,7 +4869,7 @@ Every failure of a call to the forge is answered by one of these, whatever the r
 | an invalid `target`, `:n` or query parameter, or a write body that breaks a rule of its route | 400 | |
 | a write on a workspace that is not `active` | 400 | |
 | a body-like field over the forge's limit (writes) | 413 | `body_too_large` |
-| `FORGE_API_URL` / `UPSTREAM_FORGE_API_URL` invalid | 422 | `forge_api_url_invalid` |
+| `forge_api_url` / `upstream_forge_api_url` invalid | 422 | `forge_api_url_invalid` |
 | the forge cannot be told from the host, or the remote URL names no repository | 422 | `forge_unknown` |
 | the forge answered 404 | 404 | `forge_not_found` |
 | the forge answered 401 | 502 | `forge_unauthenticated` |

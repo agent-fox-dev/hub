@@ -331,7 +331,7 @@ func runCarryPatchSync(cfg SyncAPIConfig, c echo.Context) (*CarryPatchSyncRespon
 			}
 		}
 
-		// Determine squash merge detection mode from workspace variable.
+		// Determine squash merge detection mode from workspace setting.
 		// Values: "ancestry_only", "content_based", "both" (default).
 		squashDetectionMode := "both"
 		if cfg.GetVariable != nil {
@@ -490,7 +490,7 @@ func enqueueRebuildIfNeeded(cfg SyncAPIConfig, slug, integrationBranch, userID s
 
 // enqueueRebuildJob enqueues a rebuild job for slug and its integration
 // branch: the payload from BuildRebuildPayload (strategy and fail mode read
-// from the workspace variables), grouped by FormatGroupKey so rebuilds of one
+// from the workspace settings), grouped by FormatGroupKey so rebuilds of one
 // integration branch serialise, under a fresh nonce. enqueued is false, with a
 // nil error, when an equal job is already queued or running. It is the one
 // enqueue behind the sync rebuild and the patch reset rebuild
