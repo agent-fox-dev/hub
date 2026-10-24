@@ -37,8 +37,6 @@ import (
 	"github.com/agent-fox-dev/hub/internal/wsaccess"
 )
 
-// ---- configurations ----
-
 const (
 	// owner owns the test workspaces; ownerKey() is their API key.
 	owner = "user-1"
@@ -155,13 +153,9 @@ func requireValid(t *testing.T, cfg *Config) *Validated {
 	return v
 }
 
-// ---- credentials ----
-
 func ownerKey() *apikit.AuthInfo            { return testutil.User(owner) }
 func adminAuth() *apikit.AuthInfo           { return testutil.Admin() }
 func pat(scopes ...string) *apikit.AuthInfo { return testutil.PAT(owner, scopes...) }
-
-// ---- doubles ----
 
 // fakeProvider is a sandbox.Provider whose Reap, the probe, can fail or block.
 type fakeProvider struct {
@@ -659,8 +653,6 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 	}
 }
 
-// ---- logs and metrics ----
-
 // logBuffer is a goroutine-safe buffer of captured log output.
 type logBuffer struct {
 	mu  sync.Mutex
@@ -710,18 +702,6 @@ func logRecords(t *testing.T, buf *logBuffer) []map[string]any {
 		out = append(out, rec)
 	}
 	return out
-}
-
-// attributeKeys are the keys of a record other than slog's own, sorted.
-func attributeKeys(rec map[string]any) []string {
-	var keys []string
-	for k := range rec {
-		if k != "time" && k != "level" && k != "msg" {
-			keys = append(keys, k)
-		}
-	}
-	slices.Sort(keys)
-	return keys
 }
 
 // metricSample is the value of the series with exactly these labels.
@@ -786,8 +766,6 @@ func leaseSeconds(t *testing.T, m *audit.Metrics) (count uint64, sum float64) {
 	t.Fatal("afhub_sandbox_lease_seconds is not registered")
 	return 0, 0
 }
-
-// ---- database and lease rows ----
 
 // openDB opens apikit's database with the tables the package reads.
 func openDB(t *testing.T) *sql.DB {
@@ -876,8 +854,6 @@ func rowText(t *testing.T, db *sql.DB, id string) string {
 	return fmt.Sprintln(values...)
 }
 
-// ---- the lease environment ----
-
 // leaseEnvOptions changes how newLeaseEnv builds its environment.
 type leaseEnvOptions struct {
 	config    *Config
@@ -889,7 +865,6 @@ type leaseEnvOptions struct {
 	provider  sandbox.Provider
 	service   *Service
 	recording *recordingProvider
-	noEmitter bool
 	metrics   *audit.Metrics
 }
 
@@ -1087,8 +1062,6 @@ func ids(list []map[string]any) []string {
 	return out
 }
 
-// ---- the backend environment ----
-
 type testPrincipalKey struct{}
 
 func withPrincipal(ctx context.Context, id string) context.Context {
@@ -1117,10 +1090,8 @@ func newBackendEnv(t *testing.T, opts leaseEnvOptions) *backendEnv {
 	if env.prov == nil {
 		env.prov = newRecordingProvider()
 	}
-	switch {
-	case opts.emitter != nil:
-		env.sink = opts.emitter
-	case !opts.noEmitter:
+	env.sink = opts.emitter
+	if env.sink == nil {
 		env.sink = env.emitter
 	}
 	opts.provider, opts.emitter = env.prov, env.sink
@@ -1272,8 +1243,6 @@ func rawCall(t *testing.T, url, token, method string) error {
 	return cc.Invoke(ctx, method, &emptypb.Empty{}, &emptypb.Empty{})
 }
 
-// ---- the sweep environment ----
-
 // sweepEnv is a backend environment with metrics and a sweeper over fake boxes.
 type sweepEnv struct {
 	*backendEnv
@@ -1363,8 +1332,6 @@ func (e *sweepEnv) rowExists(id string) bool {
 	e.t.Helper()
 	return testutil.Count(e.t, e.db, `SELECT COUNT(*) FROM sandbox_leases WHERE id = ?`, id) == 1
 }
-
-// ---- the remote gateway ----
 
 // remoteGateway is an in-process agentkit-gateway over a recording provider,
 // which records every token it is shown and can be stopped and restarted.

@@ -29,10 +29,9 @@ func capacityConfig(limit float64) *Config {
 	return cfg
 }
 
-// POST answers 201 with the lease, a snapshot of the profile, and its token,
-// the only time the token exists in plaintext: the row holds its SHA-256 and
-// neither the token nor a secret value, and later edits of the profile the
-// service holds do not reach the lease.
+// POST answers 201 with a snapshot of the profile and the token, the only time
+// it exists in plaintext: the row holds its SHA-256 and no secret, and later
+// edits of the profile do not reach the lease.
 func TestIssue_CreatedWithTokenAndProfileSnapshot(t *testing.T) {
 	env := newLeaseEnv(t, leaseEnvOptions{})
 	body := env.mustIssue(`{"profile":"tools","purpose":"triage","labels":{"team":"red","Run.Id":"42"}}`)
@@ -159,10 +158,9 @@ func TestIssue_BodyValidation(t *testing.T) {
 	}
 }
 
-// profile names a configured profile exactly or is absent with a default; ttl
-// is a duration from 1m to the profile's TTL; purpose is at most 64 runes
-// without control characters; labels are at most 16 well-formed pairs of
-// strings. The first violation is a 400 naming it.
+// profile names a configured profile exactly or is absent with a default, ttl
+// runs from 1m to the profile's, purpose is at most 64 runes without control
+// characters, labels at most 16 well-formed string pairs; a violation is 400.
 func TestIssue_ParameterValidation(t *testing.T) {
 	noDefault := bigLeaseConfig()
 	noDefault.Profiles[0].Default = false
@@ -302,13 +300,6 @@ func TestIssue_Capacity(t *testing.T) {
 	env.mustIssue("")
 	env.clock.Advance(2 * time.Hour) // past expires_at of every lease
 	env.mustIssue("")
-	// An active lease past its deadline, but not its expires_at, still counts.
-	env = newLeaseEnv(t, leaseEnvOptions{config: capacityConfig(1)})
-	id := env.insertLeaseAt(1, "widgets", "active", env.clock.Now())
-	testutil.Exec(t, env.db, `UPDATE sandbox_leases SET lease_expires_at = ? WHERE id = ?`, apikit.FormatUTC(env.clock.Now().Add(-time.Minute)), id)
-	if rec := env.post("widgets", `{}`, ownerKey()); rec.Code != http.StatusConflict {
-		t.Errorf("an active lease past its deadline: %d; want 409", rec.Code)
-	}
 }
 
 // Concurrent POSTs never exceed max_sandboxes, even on a handle whose

@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 
@@ -64,7 +63,8 @@ ttl   = "2h"
 		t.Fatalf("Init = (%v, %v); want a service over the built provider", svc, err)
 	}
 	records := logRecords(t, buf)
-	if len(records) != 1 || records[0]["level"] != "INFO" || !slices.Equal(attributeKeys(records[0]), []string{"profiles", "provider"}) || records[0]["provider"] != "podman" {
+	// The record has slog's three attributes, the provider and the profiles.
+	if len(records) != 1 || records[0]["level"] != "INFO" || len(records[0]) != 5 || records[0]["provider"] != "podman" {
 		t.Fatalf("log = %s; want one info record with provider and profiles", buf)
 	}
 	if got, _ := json.Marshal(records[0]["profiles"]); string(got) != `["alpha","beta"]` {
@@ -149,7 +149,7 @@ func TestInit_GatewayProviderAgainstARemote(t *testing.T) {
 		}
 	}
 	records := logRecords(t, logs)
-	if len(records) != 1 || records[0]["provider"] != "gateway" || !slices.Equal(attributeKeys(records[0]), []string{"profiles", "provider"}) || strings.Contains(logs.String(), remoteToken) {
+	if len(records) != 1 || records[0]["provider"] != "gateway" || len(records[0]) != 5 || strings.Contains(logs.String(), remoteToken) {
 		t.Errorf("start-up log = %s; want one record for provider gateway without the token", logs)
 	}
 

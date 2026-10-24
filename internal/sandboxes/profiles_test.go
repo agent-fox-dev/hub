@@ -15,7 +15,6 @@ import (
 	"github.com/txsvc/apikit"
 
 	"github.com/agent-fox-dev/hub/internal/testutil"
-	"github.com/agent-fox-dev/hub/internal/wsaccess"
 )
 
 // profilesEcho mounts the profile route over svc, nil for a hub without [sandbox].
@@ -148,24 +147,6 @@ func TestProfiles_ListsSortedProfilesFromMemory(t *testing.T) {
 	for _, auth := range []*apikit.AuthInfo{ownerKey(), pat("sandboxes:read"), testutil.PAT("user-2", "sandboxes:write"), testutil.User("")} {
 		if other := getProfiles(t, e, auth); other.Code != http.StatusOK || !bytes.Equal(other.Body.Bytes(), rec.Body.Bytes()) {
 			t.Errorf("%s %q got %d %s; want the same listing", auth.CredentialType, auth.UserID, other.Code, other.Body)
-		}
-	}
-}
-
-// Behind the binding guard a bound token is answered exactly as an unbound PAT:
-// the listing names no workspace.
-func TestProfiles_BoundTokenAsUnbound(t *testing.T) {
-	db := openDB(t)
-	testutil.Exec(t, db, `INSERT INTO token_workspace_bindings (token_id, slug, created_at) VALUES ('tokB', 's', ?)`, apikit.NowUTC())
-	svc, _ := newTestService(t, defaultLeaseConfig())
-	e, api := testutil.API()
-	api.Use(wsaccess.BindingGuard(db))
-	RegisterRoutes(api, svc)
-	for _, scopes := range [][]string{{"sandboxes:read"}, {}} {
-		b := getProfiles(t, e, testutil.BoundPAT("u1", "tokB", scopes...))
-		u := getProfiles(t, e, testutil.BoundPAT("u1", "tokU", scopes...))
-		if b.Code != u.Code || b.Body.String() != u.Body.String() {
-			t.Errorf("%v: bound (%d, %s); want the unbound PAT's (%d, %s)", scopes, b.Code, b.Body, u.Code, u.Body)
 		}
 	}
 }

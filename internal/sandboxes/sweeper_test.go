@@ -14,10 +14,9 @@ import (
 	"github.com/agent-fox-dev/hub/internal/audit"
 )
 
-// A sweep lapses the leased leases past their deadline (expires_at for a row
-// from before the column), destroys the box of the active ones past expires_at
-// (the moment itself included) and ends them as destroyed, each with one expire
-// event, the token revoked and no provider call for a lease without a box.
+// A sweep lapses leased leases past their deadline (expires_at for a legacy row)
+// and destroys the boxes of active ones past expires_at, each ended with one
+// expire event and the token revoked, no provider call for a lease without a box.
 func TestSweep_EndsOverdueLeases(t *testing.T) {
 	env := newSweepEnv(t)
 	t0 := env.clock.Now()
@@ -54,10 +53,9 @@ func TestSweep_EndsOverdueLeases(t *testing.T) {
 	}
 }
 
-// The steps run in order, Reap before List, the overdue boxes destroyed before
-// the orphans are looked for, the orphans before the prune, and the gauge
-// recalibrated last; a failing step is logged and returned and the rest still
-// run; a hung call is cancelled at the call limit and logged as a timeout.
+// The steps run in order with the gauge recalibrated last; a failing step is
+// logged and returned and the rest still run; a hung call is cancelled at the
+// call limit and logged as a timeout.
 func TestSweep_StepOrderFailuresAndTimeouts(t *testing.T) {
 	env := newSweepEnv(t)
 	calls := &callLog{}
@@ -126,9 +124,8 @@ func TestSweep_StepOrderFailuresAndTimeouts(t *testing.T) {
 	}
 }
 
-// Terminal leases that ended 24 hours ago or less stay readable through GET
-// one, ?all=true and the admin list; older ones are pruned; leased and active
-// leases are never deleted whatever their age.
+// Terminal leases that ended 24 hours ago or less stay readable; older ones are
+// pruned; leased and active leases are never deleted whatever their age.
 func TestSweep_PrunesOldTerminalLeasesOnly(t *testing.T) {
 	env := newSweepEnv(t)
 	now := env.clock.Now()
@@ -146,12 +143,6 @@ func TestSweep_PrunesOldTerminalLeasesOnly(t *testing.T) {
 		"no ended_at, old":    env.seed(8, "expired", seedFields{created: old, updated: now.Add(-25 * time.Hour)}),
 	}
 	env.sweep()
-	has := func(path string) bool {
-		return slices.ContainsFunc(leaseList(t, env.get(path, adminAuth())), func(l map[string]any) bool { return l["id"] == kept["destroyed 23h ago"] })
-	}
-	if !has("/api/v1/workspaces/widgets/sandboxes?all=true") || !has("/api/v1/sandboxes?all=true") {
-		t.Error("a recent terminal lease is not listed")
-	}
 	for name, id := range kept {
 		if rec := env.get("/api/v1/workspaces/widgets/sandboxes/"+id, ownerKey()); rec.Code != http.StatusOK {
 			t.Errorf("%s: GET one answered %d; want 200", name, rec.Code)

@@ -22,10 +22,9 @@ func (e *sweepEnv) withTickers(tickers *fakeTickers) {
 	e.sweeper = NewSweeper(cfg)
 }
 
-// Recovery ends every lease an earlier process left active as destroyed/restart
-// with one destroy event by the system, destroys their boxes (a failure is
-// logged and left to the sweep), leaves leased leases alone, recalibrates the
-// gauge, and reports a lease that cannot be ended while ending the others.
+// Recovery ends the leases left active as destroyed/restart with one event by
+// the system, destroys their boxes (a failure is left to the sweep), leaves
+// leased leases alone, recalibrates the gauge and reports a lease it cannot end.
 func TestRecoverActive(t *testing.T) {
 	env := newSweepEnv(t)
 	now := env.clock.Now()
@@ -111,11 +110,9 @@ func TestStartReaperAndRunStartup(t *testing.T) {
 	}
 }
 
-// Shutdown puts hub in shutdown mode, stops the reaper, waits for a sweep in
-// progress, destroys every active box at once and ends each lease as
-// destroyed/shutdown with one event by the system, leaves leased leases alone,
-// and does nothing a second time; when its limit runs out (a hung Destroy, a
-// sweep that does not end) the leases whose ending did not complete stay active.
+// Shutdown enters shutdown mode, waits for a sweep in progress, ends every
+// active lease as destroyed/shutdown with one event, leaves leased leases alone
+// and does nothing twice; at its limit the leases not yet ended stay active.
 func TestSweeperShutdown(t *testing.T) {
 	env := newSweepEnv(t)
 	now := env.clock.Now()
@@ -180,11 +177,9 @@ func TestSweeperShutdown(t *testing.T) {
 	}
 }
 
-// The gateway's Shutdown stops the reaper, ends the active leases with their
-// boxes destroyed, stops gatewayd so the gateway no longer answers, closes the
-// remote client last, and does nothing a second time or on a nil gateway;
-// counters keep the creates before it; a hung provider does not hold it past
-// its limit.
+// The gateway's Shutdown stops the reaper, ends the active leases, stops
+// gatewayd and does nothing twice or on a nil gateway; the counters keep the
+// creates before it; a hung provider does not hold it past its limit.
 func TestGatewayShutdown(t *testing.T) {
 	m := audit.NewMetrics()
 	env := newBackendEnv(t, leaseEnvOptions{config: gatewayLeaseConfig(), metrics: m})

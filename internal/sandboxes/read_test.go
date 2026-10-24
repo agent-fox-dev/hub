@@ -104,9 +104,8 @@ func TestGetOne_AnyStateOrNotFound(t *testing.T) {
 }
 
 // Every representation has exactly the lease fields (plus token on the issuing
-// POST), lists and maps never null, lease_expires_at null for a row from before
-// the column, the same gateway_url on every lease in every state, and never the
-// token, its hash or an environment value.
+// POST), lists never null, lease_expires_at null for a legacy row, the same
+// gateway_url in every state, and never the token, its hash or an env value.
 func TestRender_ExactFieldsAndNoLeak(t *testing.T) {
 	cfg := defaultLeaseConfig()
 	cfg.Profiles[0].OptionalSecrets = nil

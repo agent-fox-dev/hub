@@ -17,37 +17,23 @@ import (
 	"github.com/agent-fox-dev/hub/internal/scrub"
 )
 
-// The engine options go to the provider constructor unchanged, defaults included.
-func TestBuildProvider_PassesTheEngineOptions(t *testing.T) {
-	for _, tc := range []struct {
-		edit func(*Config)
-		want podman.Options
-	}{
-		{func(*Config) {}, podman.Options{Binary: "podman"}},
-		{func(c *Config) { c.EngineBinary, c.Runtime, c.UserNS = "docker", "runsc", "keep-id" }, podman.Options{Binary: "docker", Runtime: "runsc", UserNS: "keep-id"}},
-	} {
-		factory := &recordingFactory{provider: newFakeProvider()}
-		if _, err := BuildProvider(requireValid(t, edited(tc.edit)), factory.build); err != nil {
-			t.Fatalf("BuildProvider: %v", err)
-		}
-		if !reflect.DeepEqual(factory.options, tc.want) {
-			t.Errorf("options = %+v; want %+v", factory.options, tc.want)
-		}
-	}
-}
-
-// Start validates first, then builds and probes the provider once with a
-// deadline within ten seconds, and keeps the provider and the profiles in
-// file order without ever calling Create.
+// Start validates first, builds the provider with the engine options as
+// written, probes it once with a deadline within ten seconds, and keeps the
+// provider and the profiles in file order without ever calling Create.
 func TestStart_ProbesOnceAndKeepsProviderAndProfiles(t *testing.T) {
 	fake := newFakeProvider()
 	factory := &recordingFactory{provider: fake}
-	svc, err := Start(configWith(validProfile("alpha"), validProfile("beta")), factory.build)
+	cfg := configWith(validProfile("alpha"), validProfile("beta"))
+	cfg.EngineBinary, cfg.Runtime, cfg.UserNS = "docker", "runsc", "keep-id"
+	svc, err := Start(cfg, factory.build)
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	if svc.Provider() != sandbox.Provider(fake) || factory.calls != 1 || fake.reapCalls != 1 || fake.createCalls != 0 {
 		t.Errorf("provider kept %v, factory calls %d, probes %d, creates %d; want true, 1, 1, 0", svc.Provider() == sandbox.Provider(fake), factory.calls, fake.reapCalls, fake.createCalls)
+	}
+	if want := (podman.Options{Binary: "docker", Runtime: "runsc", UserNS: "keep-id"}); !reflect.DeepEqual(factory.options, want) {
+		t.Errorf("options = %+v; want %+v", factory.options, want)
 	}
 	if left := fake.reapDeadlines[0]; left <= 0 || left > 10*time.Second {
 		t.Errorf("the probe had %v left; want a deadline within 10s", left)
@@ -95,11 +81,9 @@ func TestStart_ProviderFailuresRefuseStart(t *testing.T) {
 	}
 }
 
-// Every profile is turned into a spec of its image, fixed env, network,
-// resources in bytes, TTL and landlock, and checked once against the
-// provider's capabilities; what CheckSpec refuses names the profile, a network
-// the provider does not honour names network_modes once, and a size that does
-// not fit an int64 names the field.
+// Every profile becomes a spec checked once against the provider; a refused
+// profile is named, a network the provider does not honour is one network_modes
+// failure, and a size that does not fit an int64 names the field.
 func TestNew_ChecksEveryProfileAgainstTheProvider(t *testing.T) {
 	cfg := configWith(
 		profileWith("first", func(p *ProfileConfig) {

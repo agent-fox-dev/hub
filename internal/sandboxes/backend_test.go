@@ -132,10 +132,9 @@ func TestBackendCreate_RefusesWhatCannotBeCreatedFrom(t *testing.T) {
 	}
 }
 
-// A Create after the deadline (lease_expires_at, or expires_at for a row from
-// before the column, and less than a second left counts) is refused and ends
-// the lease as expired in the same call, with one expire event and no provider
-// call; a second Create finds it ended.
+// A Create after the deadline (lease_expires_at, else expires_at; under a second
+// left counts) is refused and ends the lease as expired in the same call, with
+// one expire event and no provider call; a second Create finds it ended.
 func TestBackendCreate_LateCreateExpiresTheLease(t *testing.T) {
 	env := newSweepEnv(t)
 	late := env.issue("")
@@ -177,11 +176,10 @@ func TestBackendCreate_LateCreateExpiresTheLease(t *testing.T) {
 	}
 }
 
-// The provider gets hub's spec, built from the lease and never from the caller:
-// the lease's image, network, resources, landlock, fixed env and time left in
-// whole seconds; only the caller's workdir and its labels are read, hub.* and
-// the provider's reserved labels dropped and hub.lease and hub.workspace set
-// last. A profile edited since does not change the box.
+// The provider gets hub's spec, built from the lease and never from the caller,
+// of which only the workdir and the labels are read: hub.* and the provider's
+// reserved labels dropped, hub.lease and hub.workspace set last. A profile
+// edited since does not change the box.
 func TestBackendCreate_BuildsTheSpecFromTheLease(t *testing.T) {
 	cfg := defaultLeaseConfig()
 	cfg.Profiles[0].TTL, cfg.LeaseTimeout = "2h", strPtr("2h")
@@ -228,12 +226,10 @@ func TestBackendCreate_BuildsTheSpecFromTheLease(t *testing.T) {
 	}
 }
 
-// A lease whose profile is gone, whose network the provider no longer honours or
-// whose required secret exists in no scope fails with a FailedPrecondition that
-// names the fault, one failed event and no provider call; the secrets are read
-// at Create down the chain (org scope only with membership), the first scope
-// wins, a rotated value is the one injected, an optional secret is put in when
-// it exists, and no column of the row ever holds a value.
+// The secrets are read at Create down the chain (the org scope only with
+// membership), the first scope wins, a rotated or optional value is injected
+// and no row holds one; a profile that is gone, a network no longer honoured or
+// a required secret found nowhere fail the lease with one event and no box.
 func TestBackendCreate_ResolvesSecretsAndFailsWhatCannotBeBuilt(t *testing.T) {
 	cfg := defaultLeaseConfig()
 	cfg.NetworkModes = []string{"none", "unrestricted"}
@@ -343,11 +339,9 @@ func (f *flakyReader) GetSecretValue(ownerType, ownerID, key string) (string, er
 	return f.SecretReader.GetSecretValue(ownerType, ownerID, key)
 }
 
-// A Create that succeeds moves the lease to active with the box's id and emits
-// one create event; a provider error echoing a secret, an env value and URL
-// userinfo is scrubbed before it is stored, emitted or returned, and the lease
-// fails; every accepted Create counts once as created or failed, and refusals
-// before that count nowhere.
+// A Create that succeeds activates the lease with one create event; a provider
+// error is scrubbed before it is stored, emitted or returned and fails the lease;
+// every accepted Create counts once as created or failed, refusals count nowhere.
 func TestBackendCreate_OutcomesAndCounters(t *testing.T) {
 	m := audit.NewMetrics()
 	env := newBackendEnv(t, leaseEnvOptions{metrics: m, config: bigLeaseConfig()})
@@ -398,10 +392,9 @@ func TestBackendCreate_OutcomesAndCounters(t *testing.T) {
 	}
 }
 
-// A lease that leaves leased while its box is being made (a DELETE, a sweep)
-// has the box destroyed at once, keeps the state and reason it got, and counts
-// as a failed create; a discarded box the provider cannot destroy stays held for
-// the sweep.
+// A lease that leaves leased while its box is made (DELETE, a sweep) has the box
+// destroyed at once, keeps its state and reason and counts as a failed create;
+// a discarded box the provider cannot destroy stays held for the sweep.
 func TestBackendCreate_LeaseEndsDuringCreate(t *testing.T) {
 	logs := captureDefaultLog(t)
 	for name, end := range map[string]func(env *sweepEnv, id string){
@@ -485,11 +478,10 @@ func TestBackend_CapabilitiesAndReap(t *testing.T) {
 	}
 }
 
-// The handle reports its spec with the env values redacted, delegates the rest
-// to the provider's box, and its Close ends the lease as the client's doing
-// once: not a second time, not after the lease ended, not after the lease's
-// time or within two seconds of it, and in shutdown mode with the reason
-// shutdown. Ending marks are counted.
+// The handle redacts the env values of its spec and delegates the rest; its
+// Close ends the lease as the client's once: not again, not after the lease
+// ended, not within two seconds of the lease's time or after it, and with the
+// reason shutdown in shutdown mode. Ending marks are counted.
 func TestHandle_SpecAndClose(t *testing.T) {
 	env := newBackendEnv(t, leaseEnvOptions{})
 	id := env.issue("")

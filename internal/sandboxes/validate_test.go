@@ -24,12 +24,6 @@ func mustFail(t *testing.T, cfg *Config) error {
 	return err
 }
 
-func TestValidate_NilSectionIsAnError(t *testing.T) {
-	if _, err := Validate(nil); err == nil {
-		t.Error("Validate(nil) returned no error")
-	}
-}
-
 // The defaults of the deployment keys, and the configured values kept as written.
 func TestValidate_DeploymentDefaults(t *testing.T) {
 	v := requireValid(t, validConfig())
@@ -311,8 +305,12 @@ func TestValidate_Profiles(t *testing.T) {
 	}
 }
 
-// Every static fault of a section is reported in one joined error.
+// Every static fault of a section is reported in one joined error; a nil
+// section is an error.
 func TestValidate_JoinsEveryFailure(t *testing.T) {
+	if _, err := Validate(nil); err == nil {
+		t.Error("Validate(nil) returned no error")
+	}
 	err := mustFail(t, edited(func(c *Config) {
 		c.Provider, c.MaxTTL, c.NetworkModes, c.Listen = "kubernetes", strPtr("soon"), []string{"none", ""}, "nonsense"
 		c.Profiles = append(c.Profiles, validProfile("Bad_Name"), profileWith("noimage", func(p *ProfileConfig) { p.Image = "" }))

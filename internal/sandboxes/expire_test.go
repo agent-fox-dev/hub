@@ -25,9 +25,8 @@ func (e *sweepEnv) seedActive(n int, boxID string) *Lease {
 }
 
 // The expiry path lapses a leased lease and destroys the box of an active one,
-// ending both with the reason expired, the token revoked and one
-// hub.sandbox.expire event by the system naming the box only when there was
-// one; a lease in another state is an error.
+// both with the reason expired, the token revoked and one hub.sandbox.expire by
+// the system naming the box only when there was one; another state is an error.
 func TestEndExpired_EndsLiveLeasesWithOneEvent(t *testing.T) {
 	env := newSweepEnv(t)
 	leased := env.lease(env.seed(1, "leased", seedFields{}))
@@ -88,10 +87,9 @@ func TestEndDestroyed_WithReason(t *testing.T) {
 	}
 }
 
-// An ending that lost the conditional update emits nothing and records no
-// metric; a failing Destroy still ends the lease and is logged with the lease,
-// the box and the error without URL userinfo; an ended context leaves the lease
-// active for the next start; a nil or failing emitter changes nothing.
+// A lost conditional update emits and records nothing; a failing Destroy still
+// ends the lease and is logged without URL userinfo; an ended context leaves the
+// lease active for the next start; a nil or failing emitter changes nothing.
 func TestEndExpired_LostUpdateDestroyFailureAndEndedContext(t *testing.T) {
 	env := newSweepEnv(t)
 	snapshot := env.seedActive(1, "box-1")

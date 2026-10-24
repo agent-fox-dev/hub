@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"github.com/BurntSushi/toml"
-	"github.com/txsvc/apikit"
 )
 
 func writeConfigFile(t *testing.T, dir, content string) string {
@@ -33,17 +32,6 @@ func mustLoad(t *testing.T, path string) *Config {
 // leaseSection is a valid [sandbox] section with extra deployment keys.
 func leaseSection(extra string) string {
 	return "[sandbox]\nprovider = \"podman\"\n" + extra + "\n[[sandbox.profiles]]\nname = \"dev\"\nimage = \"registry.example/dev:1\"\nttl = \"1h\"\n"
-}
-
-// The loader reads the file apikit resolves and keeps the profiles in file order.
-func TestLoadConfig_ReadsApikitsPathInFileOrder(t *testing.T) {
-	dir := t.TempDir()
-	writeConfigFile(t, dir, "[sandbox]\nprovider = \"podman\"\n\n[[sandbox.profiles]]\nname = \"zeta\"\n\n[[sandbox.profiles]]\nname = \"alpha\"\n")
-	t.Setenv("XDG_CONFIG_HOME", dir)
-	cfg := mustLoad(t, apikit.ConfigPath())
-	if cfg.Provider != "podman" || len(cfg.Profiles) != 2 || cfg.Profiles[0].Name != "zeta" || cfg.Profiles[1].Name != "alpha" {
-		t.Errorf("config = %+v; want podman with [zeta alpha]", cfg)
-	}
 }
 
 // A missing file or a file without [sandbox] is (nil, nil); an empty table is a

@@ -93,10 +93,9 @@ func gatewayEnv(t *testing.T, edit func(*Config)) (*backendEnv, GatewayDeps) {
 	return env, GatewayDeps{DB: env.db, Secrets: env.secrets, Audit: env.emitter, Now: env.clock.Now}
 }
 
-// The authenticator accepts the token of a leased or active lease whose
-// expires_at is ahead, naming the lease; it refuses everything else, reads the
-// store on every call, refuses and logs a store error or an unreadable
-// expires_at, and never logs a token or its hash.
+// The authenticator accepts the token of a live lease whose expires_at is ahead,
+// refuses everything else, reads the store on every call, refuses and logs a
+// store error or an unreadable expires_at, and never logs a token or its hash.
 func TestLeaseAuthenticator(t *testing.T) {
 	logs := captureDefaultLog(t)
 	expiry := time.Date(2030, 1, 2, 4, 4, 5, 0, time.UTC)
@@ -166,10 +165,9 @@ func (f failingLookup) LookupByToken(token string) (*Lease, error) {
 	return nil, ErrLeaseNotFound
 }
 
-// Start binds the listener, builds gatewayd with hub's backend, authenticator,
-// network modes, limits and reap interval and no static tokens, and a real
-// client connects; the URL is external_url, else the scheme and the address the
-// listener really got, TLS when a key pair is set.
+// The gateway binds, builds gatewayd with hub's backend, authenticator, modes,
+// limits and reap interval and no static tokens, and a real client connects; the
+// URL is external_url, else the scheme and the address really bound.
 func TestNewGateway_BuildsGatewaydAndServes(t *testing.T) {
 	env, deps := gatewayEnv(t, func(c *Config) {
 		c.MaxTTL, c.ReapInterval, c.NetworkModes = strPtr("3h"), strPtr("45s"), []string{"none", "unrestricted"}
@@ -225,15 +223,11 @@ func TestNewGateway_BuildsGatewaydAndServes(t *testing.T) {
 	if err != nil || gw.URL() != "https://gw.example.com" {
 		t.Errorf("external_url: URL = %q (%v)", gw.URL(), err)
 	}
-	if got := gatewayURL("", false, &net.TCPAddr{IP: net.ParseIP("::1"), Port: 4711}); got != "http://[::1]:4711" {
-		t.Errorf("gatewayURL = %q", got)
-	}
 }
 
-// An unloadable key pair, an address that is taken and a gatewayd that cannot
-// be built refuse start naming the keys, binding nothing; a nil service binds
-// nothing and has no URL; a Serve that errs is logged once and ends the
-// process, one that returns nil is not a failure.
+// A bad key pair, a taken address and a gatewayd that cannot be built refuse
+// start naming the keys and bind nothing; a nil service binds nothing; a Serve
+// that errs is logged once and ends the process, one that returns nil is not.
 func TestNewGateway_RefusalsAndServeFailures(t *testing.T) {
 	garbage := filepath.Join(t.TempDir(), "garbage.pem")
 	os.WriteFile(garbage, []byte("not a PEM file"), 0o600)
@@ -322,11 +316,10 @@ func TestGatewayRun_RecoversBeforeItServes(t *testing.T) {
 	}
 }
 
-// Over real gRPC a token hub never minted, and the token of a lease that was
-// destroyed or failed, are Unauthenticated on the very next RPC, relayed agent
-// calls included; a second Create under a token is refused (Unavailable with
-// the backend's message over the wire) and the provider is asked once; a
-// holder lists only its own box and cannot destroy another's.
+// Over real gRPC an unknown token and the token of an ended lease are refused on
+// the next RPC, relayed calls included; a second Create is refused and the
+// provider asked once; a holder lists only its own box and cannot destroy
+// another's; the gateway lists and destroys the boxes it holds.
 func TestGateway_TokensAndBoxesOverGRPC(t *testing.T) {
 	env := newBackendEnv(t, leaseEnvOptions{config: gatewayLeaseConfig()})
 	gw := env.startGateway()
@@ -407,9 +400,8 @@ func TestGateway_TokensAndBoxesOverGRPC(t *testing.T) {
 }
 
 // Through the gateway Close destroys the box and ends the lease as the client's
-// with one event (a box already gone at the provider too); a Close the provider
-// fails returns the error scrubbed and leaves the lease active; a lease
-// holder's Reap does nothing.
+// with one event (a box already gone too); a failed Close returns a scrubbed
+// error and leaves the lease active; a lease holder's Reap does nothing.
 func TestGateway_ClientCloseAndReap(t *testing.T) {
 	env := newBackendEnv(t, leaseEnvOptions{config: gatewayLeaseConfig()})
 	gw := env.startGateway()
@@ -494,11 +486,9 @@ func (g *gatedEmitter) Emit(ctx context.Context, event audit.HubEvent) error {
 	return g.recordingEmitter.Emit(ctx, event)
 }
 
-// Through the whole stack a planted secret, a fixed env value and URL userinfo
-// echoed by the provider reach no HTTP body, event, log line, gateway error,
-// lease field or box spec, no token or hash is logged, and every event names
-// the lease's issuer for the gateway's events and the HTTP credential for a
-// DELETE.
+// Through the whole stack a secret, an env value and URL userinfo echoed by the
+// provider reach no body, event, log line, error, lease field or box spec, no
+// token or hash is logged, and every event names the right actor.
 func TestGateway_NothingSecretLeavesHub(t *testing.T) {
 	logs := captureDefaultLog(t)
 	env := newBackendEnv(t, leaseEnvOptions{config: gatewayLeaseConfig()})

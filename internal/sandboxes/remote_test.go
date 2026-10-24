@@ -41,13 +41,11 @@ func refusalForms() map[string]error {
 	}
 }
 
-// The conformance table of the remote's errors: how hub reads them, and what a
-// not-found or a refusal does at every site a box is destroyed or made. A
-// not-found counts as destroyed for the caller's Close, DELETE and the sweep; a
-// refusal reaches the caller as Unavailable with the message scrubbed and logs
-// one error naming sandbox.gateway_token, a Create failing the lease, a destroy
-// leaving it active and DELETE answering 502; a provider that is not remote and
-// a remote that fails otherwise log nothing about the token.
+// How hub reads the remote's errors, and what they do at every site: a
+// not-found counts as destroyed for Close, DELETE and the sweep; a refusal
+// reaches the caller as Unavailable, scrubbed, logs one error naming
+// sandbox.gateway_token, fails a Create, leaves a destroy's lease active and
+// answers DELETE 502; other providers and other failures log nothing of it.
 func TestRemote_ErrorConformance(t *testing.T) {
 	for name, err := range notFoundForms() {
 		if !isNotFound(err) || isRemoteRefusal(err) {
@@ -175,12 +173,10 @@ func TestRemote_ErrorConformance(t *testing.T) {
 	}
 }
 
-// Against a real remote gatewayd: a lease, Dial and Create make one box on the
-// remote with the lease's image, TTL and merged env, through hub's own gateway
-// (never the configured remote), with only hub's token shown to the remote and
-// no Create ever retried; refusals and a token hub never minted cost the remote
-// nothing; DELETE and the caller's Close destroy the box on the remote and
-// revoke the lease token; no engine binary ever runs.
+// Against a real remote gatewayd a lease makes one box there with its spec,
+// through hub's own gateway and hub's token only, never retried; refusals cost
+// the remote nothing; DELETE and Close destroy the box and revoke the token; no
+// engine binary runs.
 func TestRemote_LeaseLifecycleOnTheRemote(t *testing.T) {
 	bin := t.TempDir()
 	marker := bin + "/podman-ran"
@@ -260,12 +256,10 @@ func TestRemote_LeaseLifecycleOnTheRemote(t *testing.T) {
 	}
 }
 
-// While the remote is down, leases are issued and profiles listed; a Create
-// fails the lease with a scrubbed Unavailable; DELETE answers 502 and changes
-// nothing; Close fails and leaves the lease active; the sweep ends an overdue
-// lease, logs the destroy it cannot make and tries the box again on the next
-// run, which destroys it once the remote is back; the next Create then works
-// without a redial. No surface names the token, the URL or the host.
+// With the remote down leases and profiles still work, a Create fails the lease
+// Unavailable, DELETE is 502 and Close fails leaving the lease active, the sweep
+// ends an overdue lease and keeps its box for the next run; once the remote is
+// back the boxes go and Creates work without a redial. Nothing names the remote.
 func TestRemote_OutageAndRecovery(t *testing.T) {
 	env := newRemoteEnv(t, leaseEnvOptions{metrics: audit.NewMetrics()})
 	secrets := []string{remoteToken, env.remote.url(), env.remote.host()}

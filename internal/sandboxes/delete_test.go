@@ -23,10 +23,9 @@ func shortenDestroyTimeout(t *testing.T, d time.Duration) {
 	t.Cleanup(func() { destroyTimeout = prev })
 }
 
-// DELETE of a leased lease ends it as destroyed with the reason api, clears the
-// token hash and answers 204 with an empty body; one destroy event names the
-// HTTP credential and no box. A terminal lease answers 204 and changes nothing;
-// a malformed, unknown or foreign id is 404 and changes nothing.
+// DELETE of a leased lease ends it as destroyed/api with the token hash cleared
+// and one destroy event naming the HTTP credential and no box; a terminal lease
+// is 204 and unchanged; a malformed, unknown or foreign id is 404 and unchanged.
 func TestDelete_EndsALiveLeaseOnce(t *testing.T) {
 	emitter := &recordingEmitter{}
 	env := newLeaseEnv(t, leaseEnvOptions{emitter: emitter})
@@ -115,10 +114,9 @@ func TestDelete_ActiveLeaseDestroysTheBox(t *testing.T) {
 	}
 }
 
-// A destroy that fails, or outlasts its deadline, answers 502
-// sandbox_provider_error with the message scrubbed of secrets and environment
-// values, and changes nothing, so the DELETE can be repeated. The handler
-// scrubs what the destroyer returns itself.
+// A destroy that fails or outlasts its deadline is 502 sandbox_provider_error
+// with the message scrubbed and changes nothing, so the DELETE can be repeated;
+// the handler scrubs what the destroyer returns itself.
 func TestDelete_ProviderFailureIsRetryable(t *testing.T) {
 	env := newBackendEnv(t, leaseEnvOptions{config: gatewayLeaseConfig()})
 	id, token := env.issueToken("")
@@ -173,10 +171,9 @@ type failingDestroyer struct{ err error }
 
 func (f failingDestroyer) DestroyBox(context.Context, *Lease) error { return f.err }
 
-// A lease that gets its box between DELETE's read and its update is read again
-// and the box destroyed; concurrent DELETEs, and a DELETE after the client
-// closed, end the lease once with one event; DELETE of a lease that has ended
-// calls no destroyer.
+// A box appearing between DELETE's read and its update is destroyed; concurrent
+// DELETEs, and a DELETE after the client closed, end the lease once with one
+// event; DELETE of an ended lease calls no destroyer.
 func TestDelete_RacesEndTheLeaseOnce(t *testing.T) {
 	env := newBackendEnv(t, leaseEnvOptions{config: gatewayLeaseConfig()})
 	gw := env.startGateway()
@@ -218,8 +215,7 @@ func TestDelete_RacesEndTheLeaseOnce(t *testing.T) {
 		t.Errorf("%d destroy events, live %v; want 3 and none", n, env.prov.live())
 	}
 
-	counting := &countingDestroyer{}
-	env.svc.boxes = counting
+	env.svc.boxes = failingDestroyer{errors.New("a destroyer that must not be called")}
 	for state, lid := range map[string]string{"destroyed": leaseID(1), "expired": leaseID(2), "failed": leaseID(3)} {
 		insertRawLease(t, env.db, lid, "widgets", state, nil)
 		testutil.Exec(t, env.db, `UPDATE sandbox_leases SET sandbox_id = 'box', ended_at = '2030-01-02T03:30:00Z', end_reason = 'api' WHERE id = ?`, lid)
@@ -228,19 +224,7 @@ func TestDelete_RacesEndTheLeaseOnce(t *testing.T) {
 			t.Errorf("DELETE of a %s lease: %d, changed %v", state, rec.Code, !reflect.DeepEqual(before, *env.lease(lid)))
 		}
 	}
-	if counting.calls != 0 || len(env.eventsOf(audit.EventSandboxDestroy)) != 3 {
-		t.Errorf("ended leases: %d destroyer calls, %d events", counting.calls, len(env.eventsOf(audit.EventSandboxDestroy)))
+	if len(env.eventsOf(audit.EventSandboxDestroy)) != 3 {
+		t.Errorf("ended leases: %d events", len(env.eventsOf(audit.EventSandboxDestroy)))
 	}
-}
-
-type countingDestroyer struct {
-	mu    sync.Mutex
-	calls int
-}
-
-func (c *countingDestroyer) DestroyBox(context.Context, *Lease) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.calls++
-	return nil
 }

@@ -28,10 +28,9 @@ func leaseRoutes(slug, id string) []leaseRoute {
 	}
 }
 
-// The checks of every lease route, in order: no credential is 401 whether or
-// not the feature is on; a hub without [sandbox] is 404 sandboxes_disabled for
-// every caller; a PAT without the scope is 403 before the workspace lookup,
-// write needing sandboxes:write and read either scope. Refusals change nothing.
+// Every lease route refuses in order: no credential 401, a hub without [sandbox]
+// 404 sandboxes_disabled, a PAT without the scope 403 before the workspace lookup
+// (write needs sandboxes:write, read either scope). Refusals change nothing.
 func TestAccess_RefusalsInOrder(t *testing.T) {
 	env := newLeaseEnv(t, leaseEnvOptions{})
 	id := env.issue("")
@@ -101,9 +100,8 @@ func TestAccess_ArchivedWorkspace(t *testing.T) {
 }
 
 // An org member reads leases with the owner's bodies and is refused writes with
-// 403 forbidden, which creates or ends nothing; a member's PAT without the
-// scope gets the same 403 for an existing and an unknown slug; a stranger gets
-// the unknown slug's 404 everywhere.
+// 403 forbidden; a member's PAT without the scope gets that 403 for an existing
+// and an unknown slug alike; a stranger gets the unknown slug's 404 everywhere.
 func TestAccess_OrgMemberAndStranger(t *testing.T) {
 	env := newBackendEnv(t, leaseEnvOptions{config: gatewayLeaseConfig()})
 	env.addWorkspace("team", "O", "active")
