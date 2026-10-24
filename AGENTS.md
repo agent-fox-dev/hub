@@ -28,9 +28,11 @@ Do not implement anything before completing these steps.
 ```
 cmd/af-hub/             # The hub server
 cmd/afc/                # The afc command-line client
-internal/               # Packages: audit, boundtoken, carrypatch, cli, forge, gitcmd,
-                        #   gitserver, merge, sandboxes, scrub, secrets, workspace,
-                        #   wsaccess, wslock (tests alongside)
+carrypatch/             # The carry-patch module (github.com/agent-fox-dev/carrypatch):
+                        #   routes, rebuild, rerere, push control, gitcmd/, cli/
+internal/               # Packages: audit, boundtoken, cli, cphost, forge, gitserver,
+                        #   merge, sandboxes, scrub, secrets, workspace, wsaccess,
+                        #   wslock (tests alongside)
 containers/             # Containerfiles: hub, sandbox, agents
 deploy/                 # Kubernetes manifests
 docs/                   # Documentation (openapi.yaml, permissions.md, ...)
@@ -45,7 +47,10 @@ Tests live next to the code as `*_test.go`. The hub builds on
 for sandboxes, expected at `../agentkit-go`, and on
 [aflib](https://github.com/agent-fox-dev/aflib) for the forge client
 (`issuex`) and the durable job queue (`jobqueue`), expected at `../aflib`
-(`replace` in `go.mod` for all three).
+(`replace` in `go.mod` for all three). The carry-patch module at `./carrypatch`
+is a fourth `replace` target; it has a `go.mod` of its own (replacing apikit and
+aflib at `../../apikit` and `../../aflib`) and imports nothing of the hub. The
+Go targets of the Makefile run over both modules.
 
 ## Spec-Driven Workflow
 

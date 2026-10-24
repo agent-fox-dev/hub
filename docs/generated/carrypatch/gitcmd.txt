@@ -1,0 +1,321 @@
+package gitcmd // import "github.com/agent-fox-dev/carrypatch/gitcmd"
+
+Package gitcmd provides a hardened wrapper around git CLI subprocess calls with
+safety defaults, uniform error handling, and typed convenience methods.
+
+CONSTANTS
+
+const (
+	DefaultIdentityName  = "af-hub"
+	DefaultIdentityEmail = "af-hub@localhost"
+)
+    Default committer identity used when neither the process environment
+    nor extraEnv provides one. Without it git refuses to create commits in
+    containers whose hostname has no domain part ("unable to auto-detect email
+    address"), which breaks carry-patch rebuilds and merge jobs.
+
+
+VARIABLES
+
+var DefaultTimeout = 10 * time.Minute
+    DefaultTimeout bounds every git invocation whose context carries no deadline
+    of its own. Job handlers normally pass a deadline-bearing context; this is
+    the safety net for the ones that do not, so a wedged git process (stuck
+    credential helper, hung remote) cannot pin a workspace lock forever.
+
+
+FUNCTIONS
+
+func ValidateRefName(name string) error
+    ValidateRefName reports whether name is acceptable as a git branch
+    or ref name passed positionally to git. It mirrors the rules of `git
+    check-ref-format --branch` and additionally rejects names that start with
+    '-' so that a value taken from an API request can never be parsed by git as
+    a command-line option (for example `--exec=<cmd>` for rebase or `--detach`
+    for checkout).
+
+    Every GitRunner helper that takes a ref name also passes `--end-of-options`
+    (or `--`) to git; this function is the first line of defence at the API
+    boundary so that invalid names are reported to the client as 400 instead of
+    surfacing as opaque git errors.
+
+
+TYPES
+
+type CherryPickConflictError struct {
+	ConflictingFiles []string
+}
+    CherryPickConflictError is returned by CherryPick when git cherry-pick
+    exits with conflicts. ConflictingFiles lists the file paths that have merge
+    conflicts, or ["(unresolved conflict)"] when parsing fails.
+
+func (e *CherryPickConflictError) Error() string
+    Error implements the error interface. The format is consistent with
+    RebaseConflictError's format.
+
+type GitError struct {
+	// Args is the full command-line arguments of the failed git invocation
+	// (e.g., ["rebase", "main"]).
+	Args []string
+	// ExitCode is the integer exit code returned by the failed git subprocess.
+	ExitCode int
+	// Stderr is the trimmed standard error output of the failed git subprocess.
+	Stderr string
+}
+    GitError is a structured error type returned by GitRunner on command
+    failure. It contains the full argument list, exit code, and trimmed stderr.
+
+func (e *GitError) Error() string
+    Error implements the error interface, formatting Args, ExitCode, and Stderr
+    into a human-readable message.
+
+type GitRunner struct {
+	// Has unexported fields.
+}
+    GitRunner wraps git CLI subprocess calls with safety defaults and uniform
+    error handling. Use New to construct an instance.
+
+    GitRunner holds only immutable state after construction (workDir and env).
+    It is safe for concurrent use by multiple goroutines.
+
+func New(workDir string, extraEnv []string) (*GitRunner, error)
+    New constructs a GitRunner that validates the working directory, checks that
+    the host git version is >= 2.38, and returns a fully initialized *GitRunner.
+
+    workDir must be an existing directory on the filesystem but is not
+    required to be a git repository. extraEnv provides optional additional
+    environment variables; the three safety variables (GIT_ALLOW_PROTOCOL,
+    GIT_TERMINAL_PROMPT, GIT_CONFIG_NOSYSTEM) are always appended last and take
+    precedence.
+
+func (r *GitRunner) Checkout(ctx context.Context, ref string) error
+    Checkout switches the working tree to the specified ref (branch name
+    or commit SHA). It runs `git checkout <ref>` with the standard safety
+    environment variables.
+
+    Returns nil on success. Returns a *GitError if git checkout exits with a
+    non-zero code. Returns ctx.Err() if the context is cancelled before the
+    subprocess completes.
+
+    If ref is empty, Checkout returns a *GitError without invoking the git
+    subprocess.
+
+func (r *GitRunner) Cherry(ctx context.Context, upstream, head string) (applied []string, pending []string, err error)
+    Cherry runs `git cherry <upstream> <head>` to identify commits in the <head>
+    branch that have NOT been applied to <upstream>.
+
+    git cherry outputs one line per commit:
+      - "+ <sha>" — commit has NOT been applied upstream (still needs
+        cherry-pick)
+      - "- <sha>" — commit HAS been applied upstream (content-equivalent exists)
+
+    Cherry returns two slices:
+      - applied: SHAs that have content-equivalent commits upstream ("- " lines)
+      - pending: SHAs that have NOT been applied upstream ("+ " lines)
+
+    If upstream or head is empty, returns an error without invoking git.
+
+func (r *GitRunner) CherryPick(ctx context.Context, sha string) (string, error)
+    CherryPick applies a single commit onto the current HEAD by running `git
+    cherry-pick <sha>` with the standard safety environment variables.
+
+    On success, returns the new HEAD SHA and nil error.
+
+    If the cherry-pick encounters a conflict, CherryPick automatically runs
+    `git cherry-pick --abort` to restore the repository to a clean state,
+    then returns ("", *CherryPickConflictError) with ConflictingFiles populated
+    via parseRebaseConflictFiles.
+
+    If the context is cancelled before git cherry-pick completes, CherryPick
+    returns ("", ctx.Err()) without running git cherry-pick --abort; the caller
+    is responsible for cleanup.
+
+    If sha is empty, CherryPick returns ("", *GitError) without invoking the git
+    subprocess.
+
+func (r *GitRunner) ConfigSet(ctx context.Context, key, value string) error
+    ConfigSet sets a repository-local git config value by running `git config
+    <key> <value>` with the standard safety environment variables.
+
+    Returns nil on success. Returns a *GitError if git config exits with a
+    non-zero code. Returns ctx.Err() if the context is cancelled before the
+    subprocess completes.
+
+    If key or value is an empty string, ConfigSet returns a *GitError without
+    invoking the git subprocess.
+
+func (r *GitRunner) CreateBranch(ctx context.Context, name, startPoint string) error
+    CreateBranch creates a new local branch at the specified startPoint
+    by running `git branch <name> <startPoint>` with the standard safety
+    environment variables.
+
+    Returns nil on success. Returns a *GitError if git branch exits with a
+    non-zero code (e.g. branch already exists). Returns ctx.Err() if the context
+    is cancelled before the subprocess completes.
+
+    If name or startPoint is empty, CreateBranch returns a *GitError without
+    invoking the git subprocess.
+
+func (r *GitRunner) IsAncestor(ctx context.Context, commitA, commitB string) (bool, error)
+    IsAncestor determines whether commitA is an ancestor of commitB by running
+    `git merge-base --is-ancestor <commitA> <commitB>` and performing three-way
+    exit code discrimination:
+      - exit 0: commitA IS an ancestor → returns (true, nil)
+      - exit 1: commitA is NOT an ancestor → returns (false, nil)
+      - other: unexpected error → returns (false, *GitError)
+
+    If either commitA or commitB is empty, returns (false, *GitError) without
+    invoking the git subprocess.
+
+func (r *GitRunner) MergeNoFF(ctx context.Context, branch, message string) (string, error)
+    MergeNoFF merges a branch with --no-ff and returns the resulting merge
+    commit SHA on success, or a typed error on conflict or failure.
+
+    On success, returns (mergeCommitSHA, nil) where mergeCommitSHA is the
+    40-character hex SHA of the new merge commit.
+
+    If the merge encounters a conflict, MergeNoFF automatically runs `git
+    merge --abort` to restore the repository to a clean state, then returns
+    ("", *MergeNoFFConflictError) with ConflictingFiles populated via
+    parseRebaseConflictFiles.
+
+    If the context is cancelled before git merge --no-ff completes, MergeNoFF
+    returns ("", ctx.Err()) without running git merge --abort; the caller is
+    responsible for cleanup.
+
+    message, when non-empty, is used as the merge commit message (-m); an empty
+    message keeps git's default.
+
+    If branch is empty, MergeNoFF returns ("", *GitError) without invoking the
+    git subprocess.
+
+func (r *GitRunner) MergeTree(ctx context.Context, base, head string) (string, error)
+    MergeTree executes git merge-tree --write-tree for read-only conflict
+    detection. Returns the tree SHA on a clean merge, or *MergeConflictError
+    when conflicts are detected. Callers must use errors.As to extract
+    *MergeConflictError from the returned error.
+
+    On non-zero exit without CONFLICT lines in stdout (e.g. invalid SHA
+    arguments), *GitError is returned instead.
+
+    Note: merge-tree --write-tree requires git >= 2.38, which is enforced at
+    construction time by New.
+
+    See parseConflictFiles in conflict.go for the CONFLICT line parsing rule and
+    representative sample output.
+
+func (r *GitRunner) Rebase(ctx context.Context, onto string) (string, error)
+    Rebase executes git rebase <onto> with automatic abort on conflict. Returns
+    the new HEAD SHA on success or *RebaseConflictError on conflict. Callers
+    must use errors.As to extract *RebaseConflictError from the returned error.
+
+    If the rebase encounters a conflict, git rebase --abort is called
+    automatically before returning, so the repository is never left in rebase
+    state when a *RebaseConflictError is returned (11-PROP-3).
+
+    Important distinction:
+      - Conflict: returns *RebaseConflictError — repository is cleaned up
+        automatically via internal abort.
+      - Context cancellation/timeout: returns the context error — the repository
+        may still be in rebase state. The caller must invoke RebaseAbort to
+        clean up (11-REQ-6.E1).
+      - Abort failure after conflict: returns an error wrapping both the
+        conflict information and the abort failure (11-REQ-6.E2).
+      - Invalid onto ref: returns *GitError with exit code and stderr
+        (11-REQ-6.E3).
+      - rev-parse failure after successful rebase: returns *GitError
+        (11-REQ-6.E4).
+
+func (r *GitRunner) RebaseAbort(ctx context.Context) error
+    RebaseAbort executes git rebase --abort to clean up a failed rebase state.
+
+    This method is intended for edge-case manual recovery when a context
+    cancellation interrupts a Rebase call mid-flight, leaving the repository in
+    an intermediate rebase state. In the normal conflict case, Rebase calls git
+    rebase --abort internally before returning *RebaseConflictError, so callers
+    do not need to invoke RebaseAbort themselves.
+
+    Usage pattern after context cancellation:
+
+        sha, err := runner.Rebase(ctx, "main")
+        if errors.Is(err, context.DeadlineExceeded) {
+            // Repository may be in rebase state — clean up.
+            _ = runner.RebaseAbort(context.Background())
+        }
+
+func (r *GitRunner) RemoteAdd(ctx context.Context, name, url string) error
+    RemoteAdd adds a named remote to the repository by running `git remote add
+    <name> <url>` with the standard safety environment variables.
+
+    Returns nil on success. Returns a *GitError if git remote add exits with a
+    non-zero code (e.g. remote already exists). Returns ctx.Err() if the context
+    is cancelled before the subprocess completes.
+
+    If name or url is an empty string, RemoteAdd returns a *GitError without
+    invoking the git subprocess.
+
+func (r *GitRunner) ResetInProgressState(ctx context.Context)
+    ResetInProgressState clears state a crashed or cancelled operation may have
+    left in the working tree: an in-progress rebase, cherry-pick, or merge,
+    plus uncommitted changes. Every step is best-effort; errors are ignored
+    because the state simply may not exist.
+
+func (r *GitRunner) RevParse(ctx context.Context, ref string) (string, error)
+    RevParse executes git rev-parse --verify to resolve a single ref to its
+    full SHA. --verify makes an unknown or option-like ref an error instead of
+    echoing it back, and --end-of-options prevents ref from being parsed as an
+    option.
+
+func (r *GitRunner) Run(ctx context.Context, args ...string) (string, error)
+    Run executes an arbitrary git subcommand with the given args. It returns the
+    trimmed stdout on success, or a *GitError on non-zero exit. If the context
+    is cancelled or times out, Run returns the context error.
+
+func (r *GitRunner) UpdateRef(ctx context.Context, ref, sha string) error
+    UpdateRef executes git update-ref to update a reference to point to a SHA.
+
+func (r *GitRunner) WorktreeAdd(ctx context.Context, path, commit string) error
+    WorktreeAdd creates a detached linked worktree at path, checked out at
+    commit: `git worktree add --detach <path> <commit>`.
+
+    git resolves a relative path against the runner's working directory,
+    so callers should pass an absolute path.
+
+func (r *GitRunner) WorktreePrune(ctx context.Context) error
+    WorktreePrune drops registrations of linked worktrees whose directories no
+    longer exist: `git worktree prune`.
+
+func (r *GitRunner) WorktreeRemove(ctx context.Context, path string) error
+    WorktreeRemove force-removes the linked worktree at path, discarding any
+    uncommitted or in-progress (cherry-pick, merge) state: `git worktree remove
+    --force <path>`.
+
+type MergeConflictError struct {
+	ConflictingFiles []string
+}
+    MergeConflictError is returned by MergeTree when the dry-run merge detects
+    conflicts. ConflictingFiles lists the file paths that have merge conflicts.
+
+func (e *MergeConflictError) Error() string
+    Error implements the error interface.
+
+type MergeNoFFConflictError struct {
+	ConflictingFiles []string
+}
+    MergeNoFFConflictError is returned by MergeNoFF when git merge --no-ff
+    exits with conflicts. ConflictingFiles lists the file paths that have merge
+    conflicts, or ["(unresolved conflict)"] when parsing fails.
+
+func (e *MergeNoFFConflictError) Error() string
+    Error implements the error interface. The format is consistent with
+    RebaseConflictError's format.
+
+type RebaseConflictError struct {
+	ConflictingFiles []string
+}
+    RebaseConflictError is returned by Rebase when the rebase encounters
+    conflicts. ConflictingFiles lists the file paths that have merge conflicts.
+
+func (e *RebaseConflictError) Error() string
+    Error implements the error interface.
+

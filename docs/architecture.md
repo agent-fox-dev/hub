@@ -397,7 +397,7 @@ The forge client is the `issuex` package of the sibling module
 [aflib](https://github.com/agent-fox-dev/aflib), expected at `../aflib` and replaced
 in `go.mod` like `../apikit` and `../agentkit-go`; the hub image build and the CI
 workflows supply the checkout in the same way. The durable job queue that
-`cmd/af-hub`, `internal/carrypatch` and `internal/merge` run their jobs on is the
+`cmd/af-hub`, the carry-patch module and `internal/merge` run their jobs on is the
 `jobqueue` package of the same module; hub keeps no copy of its own. Only the
 packages under `internal/forge` import `issuex`. `afc` stays a static `CGO_ENABLED=0` binary:
 neither `cmd/afc` nor `internal/cli` imports `internal/forge` in a build (a test
@@ -538,6 +538,43 @@ These are findings for aflib. The divergences from the spec are in
 The divergences from the spec are in
 `docs/errata/30_forge_client_reads_divergences.md`.
 
+## The carry-patch module
+
+Carry-patch is a Go module of its own, `github.com/agent-fox-dev/carrypatch`,
+nested at `./carrypatch` and replaced in the hub's `go.mod`
+([ADR 05](adr/05-move-carry-patch-to-its-own-module.md)). It holds everything
+carry-patch: the patch routes and store, the reset-to-origin handler, the
+rebuild job and its executor, rerere, the patch status dashboard, the sync
+extension, the push control of patch branches, the git runner
+(`carrypatch/gitcmd`, which `internal/merge` and `internal/workspace` also use
+for merge and rebase) and the `afc` commands `patch`, `rebuild`, `rerere` and
+`workspace patch-status` (`carrypatch/cli`, which `internal/cli` adds to the
+root command).
+
+The module imports nothing of the hub; the hub's packages are `internal`, so
+it cannot. What it needs from its host it declares in `host.go`:
+
+| Contract | What the module needs | What the hub supplies |
+|----------|----------------------|-----------------------|
+| `Host` (`SetHost`, once at start) | `Lock`, `TryLock`, `BeginRebuild`: the per-workspace locks and the rebuild guard; `Authorize`: the workspace access rule, answering a status and message or 0 | `cphost.Bind`: `wslock` and `wsaccess.AuthorizeWorkspace` |
+| `Emitter`, `Event` | Audit emission; the module's events (`hub.patch.*`, `hub.rebuild.*`) are `Event`s without identity or time | `cphost.Emitter`, which wraps `audit.Emitter` and fills `audit.HubEvent` |
+| `RefUpdate`, `PreReceiveHook`, `PostPushHook` | The git server's ref update and its two hook points | `cphost.PreReceive` and `cphost.PostPush` convert to `gitserver`'s types |
+| `APIConfig`, `SyncAPIConfig`, `RebuildHandler`, `RecoveryService` | The database, the job queue, the workspace root, the variable reader, the credential resolvers and the fetch functions | `cmd/af-hub/main.go` passes the hub's values |
+
+`internal/cphost` is the one place the hub and the module meet besides
+`cmd/af-hub/main.go`. The tests that drive the module's hooks through the hub's
+git server live there; the module's own tests run against doubles of the host
+(in-process locks, the access rule over the test database).
+
+The workspace core keeps the mode: the `workspace_mode`, `upstream_url` and
+`integration_branch` fields and their validation at creation, the clone of a
+carry-patch workspace with both remotes, the `patches` table DDL
+(`workspace.InitSchema`), the cascade delete of patches with their workspace,
+the refusal of the integration and patch branches in the branch push, and the
+sync extension point: `workspace.RegisterSyncExtension` takes a
+`SyncExtension` that `POST /workspaces/:slug/sync` calls for a `carry_patch`
+workspace, and `main.go` registers `carrypatch.NewCarryPatchSyncHook(...)`.
+
 ## Git Server
 
 The git server (`internal/gitserver`) provides smart HTTP git endpoints for
@@ -597,16 +634,11 @@ The receive-pack handler (`handleReceivePack`) processes `git push` requests:
 
 The pre-receive hook is registered via `gitserver.RegisterPreReceiveHook(fn)`,
 following the same pattern as `RegisterPostPushHook`. The git server imports
-no carry-patch code; the hook is wired in `cmd/af-hub/main.go`.
-
-A `RecoveryHook` is registered via `workspace.RegisterRecoveryHook(fn)`,
-following the same nil-default pattern. It carries three operations: reading
-the replaced SHA for a slug and branch, removing the backup ref for a slug
-and branch, and running a reset-to-origin for a patch. The workspace package
-defines the interface and its result and error types;
-`carrypatch.RecoveryService` implements it directly, and `cmd/af-hub/main.go`
-registers it. `carrypatch` imports `workspace`; `workspace` never imports
-`carrypatch`, so the core keeps no knowledge of the extension.
+no carry-patch code; `cmd/af-hub/main.go` registers the carry-patch module's
+hooks through `cphost.PreReceive` and `cphost.PostPush`, which convert the
+module's hook types (`carrypatch.RefUpdate`, `carrypatch.PreReceiveHook`,
+`carrypatch.PostPushHook`) to the git server's (see
+[The carry-patch module](#the-carry-patch-module)).
 
 ### Carry-Patch Push Control
 
@@ -684,26 +716,18 @@ inserted: `local`, then `origin_tracking`, then (with
 local `refs/heads/<name>` ref. Elements with `skip_branch_check` are not
 resolved.
 
-The resolver follows the same nil-default hook pattern as the recovery hook:
+The resolver is the `ResolveBranch` field of the module's `APIConfig`, a
+`BranchResolverFunc`, `func(ctx, slug, branchName) (method, error)`:
 
-- `workspace.RegisterBranchCheckHook(fn)` registers a `BranchResolverFunc`,
-  `func(ctx, slug, branchName) (method, error)`. The workspace package owns
-  the type, the classified error (`NewBranchResolveError`,
-  `BranchResolveKindOf`), the HTTP error mapping (`400` not found, `409`
-  workspace busy, `502` origin fetch or credentials, `500` anything
-  unclassified) and the `branch_resolution` audit metadata. With no hook
-  registered a branch is accepted without resolution.
-- `carrypatch.NewBranchResolverHook(...)` implements it: ref checks through
-  the git runner, a single-branch fetch from the fork, and
-  `wslock.TryLock` before anything is written. The hook releases the lock
-  before it returns, so the database insert never runs under it.
-- `cmd/af-hub/main.go` wires the two together.
-
-`internal/carrypatch` imports `internal/workspace` for the hook types, the
-upstream fetch (`FetchUpstream`, `UpstreamHeadRef`) and the credential
-resolvers; `internal/workspace` never imports `internal/carrypatch`. The
-tests that drive the patch routes with the real resolver therefore live in
-`internal/carrypatch`.
+- The patch handlers own the classified error, the HTTP error mapping (`400`
+  not found, `409` workspace busy, `502` origin fetch or credentials, `500`
+  anything unclassified) and the `branch_resolution` audit metadata. With no
+  resolver configured a branch is accepted without resolution.
+- `carrypatch.NewBranchResolverHook(...)` builds the resolver: ref checks
+  through the git runner, a single-branch fetch from the fork, and the host's
+  `TryLock` before anything is written. The hook releases the lock before it
+  returns, so the database insert never runs under it.
+- `cmd/af-hub/main.go` builds the resolver and passes it in `APIConfig`.
 
 ### Shared leaf package: `internal/wsaccess`
 
@@ -712,11 +736,8 @@ it. It holds:
 
 - The workspace access rule (spec 35, see below): `AuthorizeWorkspace`,
   `AuthorizeWorkspaceAt`, `ReadableSlugs` and `WriteRefusal`.
-  `workspace.AuthorizeWorkspace` delegates to it, and `carrypatch` calls it
-  directly.
-- A per-request scope, `WithRequestScope` and `RequestScoped`: a small
-  memo carried in the `context.Context`. It lets the handler pass
-  request-scoped state to the hook through the hook's fixed signature.
+  `workspace.AuthorizeWorkspace` delegates to it, and the carry-patch module
+  reaches it through `cphost.Bind`.
 - The token workspace binding (spec 33): the table, its lookup, both guards and
   the allowlist of routes bound tokens may call (see below).
 
@@ -863,7 +884,7 @@ that `internal/workspace` can use them.
 
 `handleAddPatch` installs a request scope on the request context before it
 dispatches to the single or batch path. The resolver hook reads
-`PATCH_BRANCH_SOURCE` through `wsaccess.RequestScoped`, so the first
+`PATCH_BRANCH_SOURCE` through the module's `requestScoped`, so the first
 resolution in a request reads the variable and every later one in the same
 request (the remaining batch elements) reuses that value. A change to the
 variable while a batch runs cannot mix modes within one request; it takes
