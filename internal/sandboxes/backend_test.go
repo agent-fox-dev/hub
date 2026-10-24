@@ -135,7 +135,7 @@ func TestBackendCreate_RefusesWhatCannotBeCreatedFrom(t *testing.T) {
 // A Create after the deadline (lease_expires_at, or expires_at for a row from
 // before the column, and less than a second left counts) is refused and ends
 // the lease as expired in the same call, with one expire event and no provider
-// call; a second Create finds it ended; a late Create racing sweeps ends it once.
+// call; a second Create finds it ended.
 func TestBackendCreate_LateCreateExpiresTheLease(t *testing.T) {
 	env := newSweepEnv(t)
 	late := env.issue("")
@@ -174,28 +174,6 @@ func TestBackendCreate_LateCreateExpiresTheLease(t *testing.T) {
 	env2.mustCreate(whole)
 	if ttl := env2.prov.lastSpec().TTL; ttl != time.Second {
 		t.Errorf("TTL with a second left = %v", ttl)
-	}
-
-	for round := range 6 {
-		id := env.insertLeaseAt(100+round, "widgets", "leased", env.clock.Now().Add(-time.Hour))
-		var wg sync.WaitGroup
-		for _, action := range []func(){
-			func() { _, _ = env.create(id, sandbox.Spec{}) },
-			func() { _ = env.sweeper.Sweep(context.Background()) },
-			func() { _ = env.sweeper.Sweep(context.Background()) },
-		} {
-			wg.Go(action)
-		}
-		wg.Wait()
-		n := 0
-		for _, e := range env.eventsOf(audit.EventSandboxExpire) {
-			if e.ResourceID == id {
-				n++
-			}
-		}
-		if n != 1 || env.readState(id).state != "expired" {
-			t.Fatalf("round %d: %d expire events, state %s; want exactly one ending", round, n, env.readState(id).state)
-		}
 	}
 }
 

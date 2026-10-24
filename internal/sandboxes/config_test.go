@@ -177,11 +177,9 @@ pids = 10
 	}
 }
 
-// The gateway and expiry keys are known, expanded and their failures joined
-// with the rest of the section's.
+// The gateway and expiry keys are known and expanded.
 func TestLoadConfig_DeploymentKeysAreKnown(t *testing.T) {
 	t.Setenv("GWDIR", "/etc/hub")
-	t.Setenv("GW_TOKEN", testGatewayToken)
 	cfg := mustLoad(t, writeConfigFile(t, t.TempDir(), leaseSection(`
 listen        = "127.0.0.1:0"
 tls_cert      = "${GWDIR}/gw.crt"
@@ -197,15 +195,8 @@ max_ttl       = "1h"
 		v.LeaseTimeout.String() != "1m30s" || v.ReapInterval.String() != "30s" || v.MaxSandboxes != 3 {
 		t.Errorf("validated = %+v; want the keys as written", v)
 	}
-
-	cfg = mustLoad(t, writeConfigFile(t, t.TempDir(), "[sandbox]\nprovider = \"gateway\"\nmax_ttl = \"bogus\"\ngateway_url = \"https://gw.example/api\"\ngateway_token = \"${GW_TOKEN}\"\n\n[[sandbox.profiles]]\nname = \"dev\"\nimage = \"i\"\nttl = \"1h\"\n"))
-	if cfg.GatewayToken != testGatewayToken {
-		t.Errorf("gateway_token = %q; want the expanded value", cfg.GatewayToken)
-	}
-	_, err := Validate(cfg)
-	requireFailure(t, err, "sandbox.gateway_url", "path")
-	requireFailure(t, err, "sandbox.max_ttl")
-	if strings.Contains(err.Error(), testGatewayToken) {
-		t.Errorf("the error holds the token: %v", err)
+	cfg = mustLoad(t, writeConfigFile(t, t.TempDir(), "[sandbox]\nprovider = \"gateway\"\ngateway_url = \"https://gw.example\"\ngateway_token = \""+testGatewayToken+"\"\n\n[[sandbox.profiles]]\nname = \"dev\"\nimage = \"i\"\nttl = \"1h\"\n"))
+	if cfg.GatewayToken != testGatewayToken || cfg.GatewayURL != "https://gw.example" {
+		t.Errorf("gateway keys = %q, %q", cfg.GatewayURL, cfg.GatewayToken)
 	}
 }

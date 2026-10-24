@@ -253,7 +253,6 @@ type recordingProvider struct {
 	closeErr    error
 	closeBlock  chan struct{}
 	block       chan struct{}
-	createDelay time.Duration
 	reapIDs     []string
 	reapErr     error
 	reaps       int
@@ -317,11 +316,8 @@ func (p *recordingProvider) Reap(ctx context.Context) ([]string, error) {
 func (p *recordingProvider) Create(ctx context.Context, spec sandbox.Spec) (sandbox.Sandbox, error) {
 	p.mu.Lock()
 	p.specs = append(p.specs, cloneSpec(spec))
-	failure, block, delay := p.createErr, p.block, p.createDelay
+	failure, block := p.createErr, p.block
 	p.mu.Unlock()
-	if delay > 0 {
-		time.Sleep(delay)
-	}
 	if block != nil {
 		p.entered <- struct{}{}
 		select {
@@ -855,30 +851,6 @@ func readState(t *testing.T, db *sql.DB, id string) leaseState {
 	}
 	s.endedAt, s.endReason = ended.String, reason.String
 	return s
-}
-
-// wholeRows returns every column of every lease row as one string.
-func wholeRows(t *testing.T, db *sql.DB) string {
-	t.Helper()
-	rows, err := db.Query(`SELECT * FROM sandbox_leases ORDER BY id`)
-	if err != nil {
-		t.Fatalf("reading the rows: %v", err)
-	}
-	defer rows.Close()
-	cols, _ := rows.Columns()
-	var out strings.Builder
-	for rows.Next() {
-		values := make([]any, len(cols))
-		ptrs := make([]any, len(cols))
-		for i := range values {
-			ptrs[i] = &values[i]
-		}
-		if err := rows.Scan(ptrs...); err != nil {
-			t.Fatalf("scanning a row: %v", err)
-		}
-		fmt.Fprintln(&out, values...)
-	}
-	return out.String()
 }
 
 // rowText returns every column of one lease row as text.
@@ -1477,14 +1449,13 @@ func (r *remoteGateway) restart() {
 }
 
 // remoteFactory is a GatewayFactory that records its calls and builds the
-// client with delegate, DialGateway when nil; the client counts its Lists.
+// client with delegate, DialGateway when nil.
 type remoteFactory struct {
 	delegate GatewayFactory
 	mu       sync.Mutex
 	calls    int
 	urls     []string
 	tokens   []string
-	lists    int
 }
 
 func (f *remoteFactory) dial(ctx context.Context, url string, opts gateway.Options) (RemoteClient, error) {
@@ -1497,42 +1468,13 @@ func (f *remoteFactory) dial(ctx context.Context, url string, opts gateway.Optio
 	if delegate == nil {
 		delegate = DialGateway
 	}
-	client, err := delegate(ctx, url, opts)
-	if err != nil || client == nil {
-		return client, err
-	}
-	return &countingRemote{RemoteClient: client, f: f}, nil
+	return delegate(ctx, url, opts)
 }
 
 func (f *remoteFactory) callCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.calls
-}
-
-func (f *remoteFactory) listCount() int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.lists
-}
-
-type countingRemote struct {
-	RemoteClient
-	f *remoteFactory
-}
-
-func (c *countingRemote) List(ctx context.Context) ([]gateway.Info, error) {
-	c.f.mu.Lock()
-	c.f.lists++
-	c.f.mu.Unlock()
-	return c.RemoteClient.List(ctx)
-}
-
-func (c *countingRemote) Close() error {
-	if closer, ok := c.RemoteClient.(interface{ Close() error }); ok {
-		return closer.Close()
-	}
-	return nil
 }
 
 // stubRemote is a RemoteClient that reaches nothing: a fakeProvider that lists.

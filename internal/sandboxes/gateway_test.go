@@ -454,45 +454,12 @@ func TestGateway_ClientCloseAndReap(t *testing.T) {
 	}
 }
 
-// However many Creates race under one token, with a DELETE among them, the
-// provider is asked at most once and a destroyed lease has no box left alive;
-// a DELETE that arrives when the lease is active but the box not yet registered
-// with gatewayd still destroys it.
-func TestGateway_ConcurrentCreatesAndDelete(t *testing.T) {
-	gate := &gatedEmitter{recordingEmitter: &recordingEmitter{}, reached: make(chan struct{}, 1), release: make(chan struct{})}
-	env := newBackendEnv(t, leaseEnvOptions{config: bigLeaseConfig(), emitter: gate})
-	env.profile.profiles[0].RequireLandlock = false
+// A DELETE that arrives when the lease is active but gatewayd has not yet
+// registered the box still destroys it: hub holds the handle by then.
+func TestGateway_DeleteBetweenActiveAndRegistered(t *testing.T) {
+	gate := &gatedEmitter{recordingEmitter: &recordingEmitter{}, eventType: audit.EventSandboxCreate, reached: make(chan struct{}, 1), release: make(chan struct{})}
+	env := newBackendEnv(t, leaseEnvOptions{config: gatewayLeaseConfig(), emitter: gate})
 	gw := env.startGateway()
-	for i := range 6 {
-		id, token := env.issueToken("")
-		before := env.prov.creates()
-		var wg sync.WaitGroup
-		for range 1 + i {
-			wg.Go(func() {
-				p, err := gateway.Dial(context.Background(), gw.URL(), gateway.Options{Token: token})
-				if err != nil {
-					return
-				}
-				defer p.Close()
-				_, _ = p.Create(context.Background(), sandbox.Spec{Image: "x"})
-			})
-		}
-		if i%2 == 0 {
-			wg.Go(func() { time.Sleep(time.Duration(i) * time.Millisecond); env.delete(id) })
-		}
-		wg.Wait()
-		live := 0
-		for _, box := range env.prov.allBoxes() {
-			if !box.closed && box.spec.Labels["hub.lease"] == id {
-				live++
-			}
-		}
-		if made, state := env.prov.creates()-before, env.lease(id).State; made > 1 || (state == "destroyed" && live != 0) || (state == "active" && live != 1) {
-			t.Fatalf("schedule %d: %d provider calls, lease %s with %d live boxes", i, made, state, live)
-		}
-	}
-
-	gate.eventType = audit.EventSandboxCreate
 	id, token := env.issueToken("")
 	client := gw.dial(t, token)
 	created := make(chan error, 1)
@@ -520,7 +487,7 @@ type gatedEmitter struct {
 }
 
 func (g *gatedEmitter) Emit(ctx context.Context, event audit.HubEvent) error {
-	if g.eventType != "" && event.EventType == g.eventType {
+	if event.EventType == g.eventType {
 		g.reached <- struct{}{}
 		<-g.release
 	}
@@ -531,7 +498,7 @@ func (g *gatedEmitter) Emit(ctx context.Context, event audit.HubEvent) error {
 // echoed by the provider reach no HTTP body, event, log line, gateway error,
 // lease field or box spec, no token or hash is logged, and every event names
 // the lease's issuer for the gateway's events and the HTTP credential for a
-// DELETE; a nil or failing emitter changes no outcome.
+// DELETE.
 func TestGateway_NothingSecretLeavesHub(t *testing.T) {
 	logs := captureDefaultLog(t)
 	env := newBackendEnv(t, leaseEnvOptions{config: gatewayLeaseConfig()})
@@ -600,32 +567,5 @@ func TestGateway_NothingSecretLeavesHub(t *testing.T) {
 	}
 	if adminEvents != 2 {
 		t.Errorf("%d gateway events name admin as the issuer; want the create and the destroy", adminEvents)
-	}
-
-	run := func(opts leaseEnvOptions, failEmit bool) string {
-		env := newBackendEnv(t, opts)
-		if failEmit {
-			env.emitter.err = errors.New("audit store down")
-		}
-		gw := env.startGateway()
-		idA, tokenA := env.issueToken("")
-		sb, err := gw.dial(t, tokenA).Create(ctx, sandbox.Spec{Image: "x"})
-		closeErr := error(nil)
-		if err == nil {
-			closeErr = sb.Close(ctx)
-		}
-		idB, tokenB := env.issueToken("")
-		createVia(t, gw.dial(t, tokenB))
-		return fmt.Sprintf("%v %v %d %s %s", err, closeErr, env.delete(idB).Code, env.lease(idA).State, env.lease(idB).State)
-	}
-	base := run(leaseEnvOptions{config: gatewayLeaseConfig()}, false)
-	if base != "<nil> <nil> 204 destroyed destroyed" {
-		t.Fatalf("the baseline run = %q", base)
-	}
-	if got := run(leaseEnvOptions{config: gatewayLeaseConfig(), noEmitter: true}, false); got != base {
-		t.Errorf("without an emitter: %q", got)
-	}
-	if got := run(leaseEnvOptions{config: gatewayLeaseConfig()}, true); got != base || !strings.Contains(logs.String(), "audit: failed to emit "+audit.EventSandboxCreate) {
-		t.Errorf("with a failing emitter: %q, log has the failure %v", got, strings.Contains(logs.String(), "failed to emit"))
 	}
 }

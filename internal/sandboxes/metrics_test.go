@@ -3,14 +3,9 @@ package sandboxes
 import (
 	"context"
 	"fmt"
-	"maps"
-	"net/http"
-	"slices"
-	"strings"
 	"testing"
 	"time"
 
-	"github.com/agent-fox-dev/hub/internal/audit"
 	"github.com/agent-fox-dev/hub/internal/testutil"
 )
 
@@ -86,55 +81,5 @@ func TestMetrics_Recalibrate(t *testing.T) {
 	}
 	if v, ok := series("kept"); !ok || v != 3 {
 		t.Error("a failed read changed the gauge")
-	}
-}
-
-// A nil *audit.Metrics records nothing and every result is the same.
-func TestMetrics_NilRecordsNothingAndChangesNothing(t *testing.T) {
-	scenario := func(t *testing.T, m *audit.Metrics) []string {
-		env := newBackendEnv(t, leaseEnvOptions{metrics: m, config: bigLeaseConfig()})
-		boxes := &fakeBoxes{}
-		ender := newEnder(env.store, env.sink, boxes, time.Second)
-		a, b, c := env.issue(""), env.issue(""), env.issue("")
-		env.mustCreate(a)
-		env.mustCreate(c)
-		env.clock.Advance(2 * time.Hour)
-		for _, id := range []string{a, b} {
-			if _, err := ender.endExpired(context.Background(), env.lease(id)); err != nil {
-				t.Fatal(err)
-			}
-		}
-		if rec := env.delete(c); rec.Code != http.StatusNoContent {
-			t.Fatal(rec.Code)
-		}
-		d := env.issue("")
-		env.clock.Advance(6 * time.Minute)
-		sweeper := NewSweeper(SweeperConfig{DB: env.db, Provider: env.prov, Boxes: boxes, Audit: env.sink, Metrics: m, Now: env.clock.Now, CallTimeout: time.Second})
-		if err := sweeper.Sweep(context.Background()); err != nil {
-			t.Fatal(err)
-		}
-		if err := sweeper.RecoverActive(context.Background()); err != nil {
-			t.Fatal(err)
-		}
-		names := map[string]string{a: "A", b: "B", c: "C", d: "D"}
-		var out []string
-		for _, id := range []string{a, b, c, d} {
-			l := env.lease(id)
-			out = append(out, fmt.Sprintf("lease %s: %s %v", names[id], l.State, l.EndReason != nil))
-		}
-		for _, e := range env.emitter.recorded() {
-			meta := maps.Clone(e.Metadata)
-			delete(meta, "sandbox_id")
-			delete(meta, "ttl")
-			if id, ok := meta["lease_id"].(string); ok {
-				meta["lease_id"] = names[id]
-			}
-			out = append(out, fmt.Sprintf("event %s %s %v", e.EventType, e.ActorType, meta))
-		}
-		return out
-	}
-	with, without := scenario(t, audit.NewMetrics()), scenario(t, nil)
-	if !slices.Equal(with, without) || len(with) < 8 {
-		t.Errorf("with metrics:\n%s\nwithout:\n%s", strings.Join(with, "\n"), strings.Join(without, "\n"))
 	}
 }

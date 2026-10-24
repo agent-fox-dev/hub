@@ -229,9 +229,9 @@ func TestGatewayShutdown(t *testing.T) {
 	if _, err := gateway.Dial(context.Background(), gw.URL(), gateway.Options{Token: "sbl_" + strings.Repeat("a", 44)}); err == nil {
 		t.Error("the gateway still answers")
 	}
-	rows, n := wholeRows(t, env.db), len(env.emitter.recorded())
-	if err := gw.Shutdown(context.Background()); err != nil || wholeRows(t, env.db) != rows || len(env.emitter.recorded()) != n {
-		t.Errorf("the second Shutdown: %v, changed %v", err, wholeRows(t, env.db) != rows)
+	row, n := rowText(t, env.db, leased), len(env.emitter.recorded())
+	if err := gw.Shutdown(context.Background()); err != nil || rowText(t, env.db, leased) != row || len(env.emitter.recorded()) != n {
+		t.Errorf("the second Shutdown: %v, changed %v", err, rowText(t, env.db, leased) != row)
 	}
 	if err := (*Gateway)(nil).Shutdown(context.Background()); err != nil {
 		t.Errorf("Shutdown of a nil gateway: %v", err)

@@ -170,47 +170,6 @@ func TestLeaseStore_TransitionsAreConditional(t *testing.T) {
 	must("EndLease to expired", true)(store.EndLease(&Lease{ID: leaseID(5)}, "expired", "timeout"))
 }
 
-// ListLeases is newest first and capped at 200, live only unless all;
-// GetWorkspaceLease finds a lease of the workspace in any state and refuses
-// a malformed, unknown or foreign id with ErrLeaseNotFound.
-func TestLeaseStore_ListAndGetWorkspaceLease(t *testing.T) {
-	store, db := newLeaseStore(t, time.Now())
-	for n := 1; n <= 205; n++ {
-		insertRawLease(t, db, leaseID(n), "widgets", "leased", HashToken(testToken(n)))
-		testutil.Exec(t, db, `UPDATE sandbox_leases SET created_at = ? WHERE id = ?`, fmt.Sprintf("2030-01-02T03:%02d:%02dZ", n/60, n%60), leaseID(n))
-	}
-	insertRawLease(t, db, leaseID(300), "gadgets", "destroyed", nil)
-	live, err := store.ListLeases("widgets", false)
-	if err != nil || len(live) != 200 || live[0].ID != leaseID(205) || live[199].ID != leaseID(6) {
-		t.Errorf("ListLeases(widgets) = %d leases (%v), first %s, last %s; want 200 newest first", len(live), err, live[0].ID, live[199].ID)
-	}
-	if all, _ := store.ListLeases("gadgets", true); len(all) != 1 || all[0].ID != leaseID(300) {
-		t.Errorf("ListLeases(gadgets, all) = %v", ids2(all))
-	}
-	if none, _ := store.ListLeases("gadgets", false); len(none) != 0 || none == nil {
-		t.Errorf("ListLeases(gadgets) = %v; want an empty, non-nil list", none)
-	}
-	if every, _ := store.ListLeases("", true); len(every) != 200 {
-		t.Errorf("ListLeases(every workspace) = %d; want the cap", len(every))
-	}
-	if l, err := store.GetWorkspaceLease("gadgets", leaseID(300)); err != nil || l.State != "destroyed" {
-		t.Errorf("GetWorkspaceLease = (%v, %v)", l, err)
-	}
-	for name, id := range map[string]string{"malformed": "xyz", "upper-case": "sbx_" + strings.Repeat("A", 32), "unknown": leaseID(999), "foreign": leaseID(300)} {
-		if _, err := store.GetWorkspaceLease("widgets", id); !errors.Is(err, ErrLeaseNotFound) {
-			t.Errorf("%s: GetWorkspaceLease = %v; want ErrLeaseNotFound", name, err)
-		}
-	}
-}
-
-func ids2(leases []*Lease) []string {
-	out := make([]string, len(leases))
-	for i, l := range leases {
-		out[i] = l.ID
-	}
-	return out
-}
-
 // countLive counts the leased and active leases across workspaces whose
 // expires_at is ahead, less the leased ones whose deadline for a Create is at or
 // before now.

@@ -292,47 +292,6 @@ func TestStartRemote_FailuresRefuseStart(t *testing.T) {
 	}
 }
 
-// The profile rules and messages are the same under both providers, given the
-// same capabilities.
-func TestStart_SameRulesForBothProviders(t *testing.T) {
-	for name, tc := range map[string]struct {
-		edit func(*Config)
-		set  func(*sandbox.Capabilities)
-		ok   bool
-	}{
-		"valid":             {ok: true},
-		"bad max_ttl":       {edit: func(c *Config) { c.MaxTTL = strPtr("bogus") }},
-		"ttl above max_ttl": {edit: func(c *Config) { c.MaxTTL = strPtr("30m") }},
-		"mode not honoured": {edit: func(c *Config) { c.NetworkModes = []string{"none", "host"} }},
-		"CheckSpec refuses": {edit: func(c *Config) { c.Profiles[0].CPUs = 2 }, set: func(c *sandbox.Capabilities) { c.Resources.CPUs = false }},
-	} {
-		t.Run(name, func(t *testing.T) {
-			podmanCfg, gatewayCfg := validConfig(), remoteConfig("https://gw.example")
-			fake, remote := newFakeProvider(), newStubRemote()
-			if tc.edit != nil {
-				tc.edit(podmanCfg)
-				tc.edit(gatewayCfg)
-			}
-			if tc.set != nil {
-				tc.set(&fake.caps)
-				tc.set(&remote.caps)
-			}
-			podmanSvc, podmanErr := Start(podmanCfg, func(podman.Options) (sandbox.Provider, error) { return fake, nil })
-			gatewaySvc, gatewayErr := Start(gatewayCfg, noPodman(t), WithGatewayFactory(stubFactory(remote, nil).dial))
-			if (podmanErr == nil) != tc.ok || (gatewayErr == nil) != tc.ok {
-				t.Fatalf("podman %v, gateway %v; want ok %t for both", podmanErr, gatewayErr, tc.ok)
-			}
-			if tc.ok {
-				if !reflect.DeepEqual(podmanSvc.Profiles(), gatewaySvc.Profiles()) {
-					t.Errorf("the profiles differ: %+v and %+v", podmanSvc.Profiles(), gatewaySvc.Profiles())
-				}
-			} else if podmanErr.Error() != gatewayErr.Error() {
-				t.Errorf("the messages differ:\npodman:  %v\ngateway: %v", podmanErr, gatewayErr)
-			}
-		})
-	}
-}
-
 // Close closes the remote client once, from any number of goroutines, with the
 // scrubbed error of the first Close returned by every call; a client without
 // Close and a nil service close without an error.

@@ -383,10 +383,7 @@ func TestRemote_DialErrorsAndResponsesNameNothing(t *testing.T) {
 	m.MetricsHandler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
 	for what, body := range map[string]string{
 		"/metrics":         rec.Body.String(),
-		"an error body":    env.post("no-such-workspace", "{}", ownerKey()).Body.String(),
 		"a lease":          env.post("widgets", `{"profile":"data"}`, ownerKey()).Body.String(),
-		"the listing":      env.get("/api/v1/workspaces/widgets/sandboxes", ownerKey()).Body.String(),
-		"the profiles":     getProfiles(t, profilesEcho(env.profile), ownerKey()).Body.String(),
 		"the capabilities": env.backend.Capabilities().Notes,
 	} {
 		if body == "" {

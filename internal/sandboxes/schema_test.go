@@ -24,11 +24,11 @@ func TestInitSchema_IdempotentWithConstraints(t *testing.T) {
 	if _, err := db.Exec(rawLeaseInsert, leaseID(300), "widgets", "leased", testToken(0)); err == nil {
 		t.Error("a second row with the same hash was accepted")
 	}
-	before := wholeRows(t, db)
+	before, rows := rowText(t, db, leaseID(1)), testutil.Count(t, db, `SELECT COUNT(*) FROM sandbox_leases`)
 	if err := InitSchema(db); err != nil {
 		t.Fatalf("second InitSchema: %v", err)
 	}
-	if wholeRows(t, db) != before {
+	if rowText(t, db, leaseID(1)) != before || testutil.Count(t, db, `SELECT COUNT(*) FROM sandbox_leases`) != rows {
 		t.Error("the second InitSchema changed the rows")
 	}
 }
@@ -89,9 +89,9 @@ func TestMigrateLeaseExpiry(t *testing.T) {
 
 	_, fresh := newLeaseStore(t, time.Now())
 	insertRawLease(t, fresh, leaseID(1), "widgets", "leased", testToken(1))
-	before := wholeRows(t, fresh)
-	if err := MigrateLeaseExpiry(fresh); err != nil || wholeRows(t, fresh) != before || leaseColumnCount(t, fresh, "lease_expires_at") != 1 {
-		t.Errorf("a new table: error %v, rows changed %v", err, wholeRows(t, fresh) != before)
+	before := rowText(t, fresh, leaseID(1))
+	if err := MigrateLeaseExpiry(fresh); err != nil || rowText(t, fresh, leaseID(1)) != before || leaseColumnCount(t, fresh, "lease_expires_at") != 1 {
+		t.Errorf("a new table: error %v, row changed %v", err, rowText(t, fresh, leaseID(1)) != before)
 	}
 	if err := MigrateLeaseExpiry(nil); err != nil {
 		t.Errorf("MigrateLeaseExpiry(nil) = %v", err)
