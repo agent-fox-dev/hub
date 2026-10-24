@@ -398,6 +398,7 @@ func TestSyncSchema_NullSyncFieldsCoalesced(t *testing.T) {
 		`ALTER TABLE workspaces ADD COLUMN workspace_mode TEXT NOT NULL DEFAULT 'standard'`,
 		`ALTER TABLE workspaces ADD COLUMN upstream_url TEXT`,
 		`ALTER TABLE workspaces ADD COLUMN integration_branch TEXT`,
+		`ALTER TABLE workspaces ADD COLUMN settings TEXT NOT NULL DEFAULT '{}'`,
 	}
 	for _, ddl := range legacyMigrations {
 		if _, err := db.Exec(ddl); err != nil {

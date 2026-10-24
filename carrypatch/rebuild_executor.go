@@ -551,7 +551,7 @@ type attemptedPatch struct {
 	SHA    string
 }
 
-// workspaceVarIsFalse reports whether the workspace variable key is set to
+// workspaceVarIsFalse reports whether the workspace setting key is set to
 // "false". An unset variable, a lookup error or a nil GetVariable all mean
 // the default (enabled).
 func (h *RebuildHandler) workspaceVarIsFalse(slug, key string) bool {

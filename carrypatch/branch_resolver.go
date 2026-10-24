@@ -55,7 +55,7 @@ func ParsePatchBranchSource(getVariable GetVariableFunc, slug string) string {
 // Parameters:
 //   - newRunner: factory for creating a GitRunner for a repo path
 //   - workspaceRoot: the root directory containing workspace directories
-//   - getVariable: reads workspace variables (PATCH_BRANCH_SOURCE)
+//   - getVariable: reads workspace settings (PATCH_BRANCH_SOURCE)
 //   - resolveAuth: resolves origin credentials for fork fetches
 //   - fetch: single-branch fetch function for origin mode
 func NewBranchResolverHook(

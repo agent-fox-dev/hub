@@ -24,7 +24,9 @@ type Config struct {
 	ResolveOriginAuth   func(slug string) (transport.AuthMethod, error)
 	ResolveUpstreamAuth func(slug string) (transport.AuthMethod, error)
 
-	// GetVariable reads a variable. A *secrets.NotFoundError means it is not set.
+	// GetVariable reads a workspace setting by the name it had as a variable
+	// (FORGE_API_URL, UPSTREAM_FORGE_API_URL). A *secrets.NotFoundError means
+	// it is not set.
 	GetVariable func(ownerType, ownerID, key string) (string, error)
 
 	// Transport replaces the base transport of the shared forge HTTP client; nil

@@ -54,7 +54,8 @@ CREATE TABLE IF NOT EXISTS workspaces (
 	sync_error        TEXT,
 	workspace_mode    TEXT NOT NULL DEFAULT 'standard',
 	upstream_url      TEXT,
-	integration_branch TEXT
+	integration_branch TEXT,
+	settings          TEXT NOT NULL DEFAULT '{}'
 )`
 
 // forgeRequestSeen is a request the forge stub received.
@@ -136,7 +137,7 @@ func newSmokeEnv(t *testing.T, base http.RoundTripper) *smokeEnv {
 		ResolveUpstreamAuth: func(slug string) (transport.AuthMethod, error) {
 			return workspace.ResolveUpstreamAuthMethod(e.store, slug)
 		},
-		GetVariable: e.store.GetVariableValue,
+		GetVariable: workspace.SettingsReader(db),
 		Transport:   base,
 		Secrets:     e.store,
 	})
@@ -175,9 +176,12 @@ func (e *smokeEnv) secret(slug, key, value string) {
 	}
 }
 
+// variable sets a forge API URL of the workspace: a workspace setting, named
+// here by the variable name the forge client reads it by.
 func (e *smokeEnv) variable(slug, key, value string) {
 	e.t.Helper()
-	if _, err := e.store.CreateVariables("workspace", slug, []secrets.EntryInput{{Key: key, Value: value}}); err != nil {
+	setting := map[string]string{"FORGE_API_URL": "forge_api_url", "UPSTREAM_FORGE_API_URL": "upstream_forge_api_url"}[key]
+	if _, err := e.db.Exec(`UPDATE workspaces SET settings = json_set(settings, '$.'||?, ?) WHERE slug = ?`, setting, value, slug); err != nil {
 		e.t.Fatal(err)
 	}
 }

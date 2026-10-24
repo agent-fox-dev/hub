@@ -252,7 +252,7 @@ func NewBranchResolverHook(
     Parameters:
       - newRunner: factory for creating a GitRunner for a repo path
       - workspaceRoot: the root directory containing workspace directories
-      - getVariable: reads workspace variables (PATCH_BRANCH_SOURCE)
+      - getVariable: reads workspace settings (PATCH_BRANCH_SOURCE)
       - resolveAuth: resolves origin credentials for fork fetches
       - fetch: single-branch fetch function for origin mode
 
@@ -330,7 +330,10 @@ func DefaultFetchOriginFunc() FetchFunc
     fork (20-REQ-2.1). An already-up-to-date result is success.
 
 type GetVariableFunc func(scope, slug, key string) (string, error)
-    GetVariableFunc retrieves a workspace variable.
+    GetVariableFunc reads a workspace setting of the host by the name the
+    setting had as a workspace variable (PATCH_BRANCH_SOURCE, REBUILD_STRATEGY,
+    ...); the hub serves it from the workspace's settings. A setting that is not
+    set answers an error the caller takes as "use the default".
 
 type GitRunner interface {
 	Run(ctx context.Context, args ...string) (string, error)
@@ -676,7 +679,7 @@ type RebuildHandler struct {
 	PatchStore    PatchStore
 
 	// PushIntegration, when non-nil, is invoked after a successful rebuild
-	// if the workspace variable REBUILD_PUSH_INTEGRATION_BRANCH is "true".
+	// if the workspace setting REBUILD_PUSH_INTEGRATION_BRANCH is "true".
 	PushIntegration PushIntegrationFunc
 
 	// Audit is the optional audit event emitter. When non-nil, rebuild
