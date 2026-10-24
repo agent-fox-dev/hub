@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"net/http"
 	"path/filepath"
-	"slices"
 	"sort"
 
 	"github.com/google/uuid"
@@ -25,16 +24,34 @@ import (
 // API configuration
 // ===========================================================================
 
-// RebuildAPIConfig holds dependencies for rebuild HTTP endpoints.
-type RebuildAPIConfig struct {
-	DB          *sql.DB
-	Queue       *jobqueue.Queue
-	GetVariable GetVariableFunc
+// APIConfig holds the dependencies of the carry-patch REST routes: rebuild
+// submission and history, rollback, rebuild preview, rerere and the
+// patch-status dashboard.
+type APIConfig struct {
+	DB            *sql.DB
+	Queue         *jobqueue.Queue
+	WorkspaceRoot string
+	NewGitRunner  func(repoPath string) (GitRunner, error)
+	PatchStore    PatchStore
+	GetVariable   GetVariableFunc
 
-	// Audit is the optional audit event emitter. When non-nil, rebuild
-	// handlers emit structured audit events on mutation. When nil,
-	// audit emission is silently skipped.
+	// Audit is the optional audit event emitter. When non-nil, the mutating
+	// handlers emit structured audit events; when nil, emission is skipped.
 	Audit audit.Emitter
+}
+
+// RegisterRoutes mounts every carry-patch REST route on the API group.
+func RegisterRoutes(api *echo.Group, cfg APIConfig) {
+	api.POST("/workspaces/:slug/rebuild", handleSubmitRebuild(cfg))
+	api.GET("/workspaces/:slug/rebuilds", handleListRebuilds(cfg))
+	api.GET("/workspaces/:slug/rebuilds/:id", handleGetRebuild(cfg))
+	api.DELETE("/workspaces/:slug/rebuilds/:id", handleCancelRebuild(cfg))
+	api.POST("/workspaces/:slug/rebuilds/:id/requeue", handleRequeueRebuild(cfg))
+	api.POST("/workspaces/:slug/rebuilds/:id/rollback", handleRollbackRebuild(cfg))
+	api.GET("/workspaces/:slug/rebuild-preview", handleRebuildPreview(cfg))
+	api.GET("/workspaces/:slug/rerere", handleListRerere(cfg))
+	api.DELETE("/workspaces/:slug/rerere/*", handleForgetRerere(cfg))
+	api.GET("/workspaces/:slug/patch-status", handlePatchStatus(cfg))
 }
 
 // RebuildJobResponse is the JSON response body for a rebuild job.
@@ -70,14 +87,6 @@ type RollbackResponse struct {
 	RolledBackTo string `json:"rolled_back_to"`
 }
 
-// RebuildPreviewAPIConfig holds dependencies for the rebuild-preview endpoint.
-type RebuildPreviewAPIConfig struct {
-	DB            *sql.DB
-	WorkspaceRoot string
-	NewGitRunner  func(repoPath string) (GitRunner, error)
-	PatchStore    PatchStore
-}
-
 // RebuildPreviewResponse is the JSON response for GET /rebuild-preview.
 type RebuildPreviewResponse struct {
 	PatchResults []RebuildPreviewPatchResult `json:"patch_results"`
@@ -91,13 +100,6 @@ type RebuildPreviewPatchResult struct {
 	Status        string   `json:"status"`
 	TreeSHA       string   `json:"tree_sha,omitempty"`
 	ConflictFiles []string `json:"conflict_files"`
-}
-
-// RerereAPIConfig holds dependencies for rerere HTTP endpoints.
-type RerereAPIConfig struct {
-	DB            *sql.DB
-	WorkspaceRoot string
-	NewGitRunner  func(repoPath string) (GitRunner, error)
 }
 
 // RerereListResponse is the JSON response for GET /rerere.
@@ -194,14 +196,6 @@ type PatchSyncedElement struct {
 	ReplacedSHA string `json:"replaced_sha,omitempty"`
 }
 
-// PatchStatusAPIConfig holds dependencies for patch-status endpoint.
-type PatchStatusAPIConfig struct {
-	DB            *sql.DB
-	Queue         *jobqueue.Queue
-	WorkspaceRoot string
-	PatchStore    PatchStore
-}
-
 // PatchStatusResponse is the JSON response for GET /patch-status.
 type PatchStatusResponse struct {
 	WorkspaceSlug      string              `json:"workspace_slug"`
@@ -255,23 +249,6 @@ type PatchStatusSummary struct {
 	PatchesMissingOnOrigin int `json:"patches_missing_on_origin"`
 }
 
-// ===========================================================================
-// Auth helpers (standalone functions per steering directives)
-// ===========================================================================
-
-func isPAT(auth *apikit.AuthInfo) bool {
-	return auth.CredentialType == "pat"
-}
-
-func hasScope(auth *apikit.AuthInfo, scopes ...string) bool {
-	for _, s := range scopes {
-		if slices.Contains(auth.Permissions, s) {
-			return true
-		}
-	}
-	return false
-}
-
 // authorizeWorkspace applies wsaccess.AuthorizeWorkspace with the endpoint's
 // need to a carry-patch endpoint: members of the workspace's org read, owners
 // and admin tokens also write, a member's write is 403 and anyone else gets
@@ -288,36 +265,6 @@ func authorizeWorkspace(c echo.Context, db *sql.DB, auth *apikit.AuthInfo, slug 
 // Rebuild route registration
 // ===========================================================================
 
-// RebuildRollbackAPIConfig holds dependencies for the rebuild rollback endpoint.
-type RebuildRollbackAPIConfig struct {
-	DB            *sql.DB
-	Queue         *jobqueue.Queue
-	WorkspaceRoot string
-	NewGitRunner  func(repoPath string) (GitRunner, error)
-
-	// Audit is the optional audit event emitter.
-	Audit audit.Emitter
-}
-
-// RegisterRebuildRoutes mounts rebuild endpoints on the API group.
-func RegisterRebuildRoutes(api *echo.Group, cfg RebuildAPIConfig) {
-	api.POST("/workspaces/:slug/rebuild", handleSubmitRebuild(cfg))
-	api.GET("/workspaces/:slug/rebuilds", handleListRebuilds(cfg))
-	api.GET("/workspaces/:slug/rebuilds/:id", handleGetRebuild(cfg))
-	api.DELETE("/workspaces/:slug/rebuilds/:id", handleCancelRebuild(cfg))
-	api.POST("/workspaces/:slug/rebuilds/:id/requeue", handleRequeueRebuild(cfg))
-}
-
-// RegisterRebuildRollbackRoutes mounts the rebuild rollback endpoint on the API group.
-func RegisterRebuildRollbackRoutes(api *echo.Group, cfg RebuildRollbackAPIConfig) {
-	api.POST("/workspaces/:slug/rebuilds/:id/rollback", handleRollbackRebuild(cfg))
-}
-
-// RegisterRebuildPreviewRoutes mounts the rebuild-preview endpoint on the API group.
-func RegisterRebuildPreviewRoutes(api *echo.Group, cfg RebuildPreviewAPIConfig) {
-	api.GET("/workspaces/:slug/rebuild-preview", handleRebuildPreview(cfg))
-}
-
 // ===========================================================================
 // GET /workspaces/:slug/rebuild-preview
 // ===========================================================================
@@ -325,14 +272,14 @@ func RegisterRebuildPreviewRoutes(api *echo.Group, cfg RebuildPreviewAPIConfig) 
 // handleRebuildPreview performs a read-only conflict prediction for each active
 // patch in position order using git merge-tree --write-tree. It does not modify
 // any git refs, branches, or patch statuses.
-func handleRebuildPreview(cfg RebuildPreviewAPIConfig) echo.HandlerFunc {
+func handleRebuildPreview(cfg APIConfig) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		// 1. Auth check.
 		auth := apikit.GetAuthInfo(c)
 		if auth == nil {
 			return apikit.WriteAPIError(c, http.StatusUnauthorized, "authentication required")
 		}
-		if isPAT(auth) && !hasScope(auth, "rebuilds:read") {
+		if wsaccess.IsPAT(auth) && !wsaccess.HasScope(auth, "rebuilds:read") {
 			return apikit.WriteAPIError(c, http.StatusForbidden, "missing required scope: rebuilds:read")
 		}
 
@@ -462,14 +409,14 @@ func handleRebuildPreview(cfg RebuildPreviewAPIConfig) echo.HandlerFunc {
 // POST /workspaces/:slug/rebuild
 // ===========================================================================
 
-func handleSubmitRebuild(cfg RebuildAPIConfig) echo.HandlerFunc {
+func handleSubmitRebuild(cfg APIConfig) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		// 1. Auth check.
 		auth := apikit.GetAuthInfo(c)
 		if auth == nil {
 			return apikit.WriteAPIError(c, http.StatusUnauthorized, "authentication required")
 		}
-		if isPAT(auth) && !hasScope(auth, "rebuilds:write") {
+		if wsaccess.IsPAT(auth) && !wsaccess.HasScope(auth, "rebuilds:write") {
 			return apikit.WriteAPIError(c, http.StatusForbidden, "missing required scope: rebuilds:write")
 		}
 
@@ -619,14 +566,14 @@ func handleSubmitRebuild(cfg RebuildAPIConfig) echo.HandlerFunc {
 // GET /workspaces/:slug/rebuilds
 // ===========================================================================
 
-func handleListRebuilds(cfg RebuildAPIConfig) echo.HandlerFunc {
+func handleListRebuilds(cfg APIConfig) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		// Auth check.
 		auth := apikit.GetAuthInfo(c)
 		if auth == nil {
 			return apikit.WriteAPIError(c, http.StatusUnauthorized, "authentication required")
 		}
-		if isPAT(auth) && !hasScope(auth, "rebuilds:read") {
+		if wsaccess.IsPAT(auth) && !wsaccess.HasScope(auth, "rebuilds:read") {
 			return apikit.WriteAPIError(c, http.StatusForbidden, "missing required scope: rebuilds:read")
 		}
 
@@ -656,14 +603,14 @@ func handleListRebuilds(cfg RebuildAPIConfig) echo.HandlerFunc {
 // GET /workspaces/:slug/rebuilds/:id
 // ===========================================================================
 
-func handleGetRebuild(cfg RebuildAPIConfig) echo.HandlerFunc {
+func handleGetRebuild(cfg APIConfig) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		// Auth check.
 		auth := apikit.GetAuthInfo(c)
 		if auth == nil {
 			return apikit.WriteAPIError(c, http.StatusUnauthorized, "authentication required")
 		}
-		if isPAT(auth) && !hasScope(auth, "rebuilds:read") {
+		if wsaccess.IsPAT(auth) && !wsaccess.HasScope(auth, "rebuilds:read") {
 			return apikit.WriteAPIError(c, http.StatusForbidden, "missing required scope: rebuilds:read")
 		}
 
@@ -697,14 +644,14 @@ func handleGetRebuild(cfg RebuildAPIConfig) echo.HandlerFunc {
 // It cancels a queued rebuild job. Returns 200 on success, 409 if the job is
 // not in a cancellable state, 404 if the job does not exist or belongs to a
 // different workspace.
-func handleCancelRebuild(cfg RebuildAPIConfig) echo.HandlerFunc {
+func handleCancelRebuild(cfg APIConfig) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		// Auth check.
 		auth := apikit.GetAuthInfo(c)
 		if auth == nil {
 			return apikit.WriteAPIError(c, http.StatusUnauthorized, "authentication required")
 		}
-		if isPAT(auth) && !hasScope(auth, "rebuilds:write") {
+		if wsaccess.IsPAT(auth) && !wsaccess.HasScope(auth, "rebuilds:write") {
 			return apikit.WriteAPIError(c, http.StatusForbidden, "missing required scope: rebuilds:write")
 		}
 
@@ -755,14 +702,14 @@ func handleCancelRebuild(cfg RebuildAPIConfig) echo.HandlerFunc {
 // It requeues a dead-lettered rebuild job. Returns 200 with the job record on
 // success, 409 if the job is not in dead_letter status or an active job already
 // exists, 404 if the job does not exist or belongs to a different workspace.
-func handleRequeueRebuild(cfg RebuildAPIConfig) echo.HandlerFunc {
+func handleRequeueRebuild(cfg APIConfig) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		// Auth check.
 		auth := apikit.GetAuthInfo(c)
 		if auth == nil {
 			return apikit.WriteAPIError(c, http.StatusUnauthorized, "authentication required")
 		}
-		if isPAT(auth) && !hasScope(auth, "rebuilds:write") {
+		if wsaccess.IsPAT(auth) && !wsaccess.HasScope(auth, "rebuilds:write") {
 			return apikit.WriteAPIError(c, http.StatusForbidden, "missing required scope: rebuilds:write")
 		}
 
@@ -812,14 +759,14 @@ func handleRequeueRebuild(cfg RebuildAPIConfig) echo.HandlerFunc {
 // rebuild result. Returns 200 on success, 409 if no previous SHA is available
 // (first-ever rebuild), 404 if the job does not exist or belongs to a different
 // workspace.
-func handleRollbackRebuild(cfg RebuildRollbackAPIConfig) echo.HandlerFunc {
+func handleRollbackRebuild(cfg APIConfig) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		// Auth check.
 		auth := apikit.GetAuthInfo(c)
 		if auth == nil {
 			return apikit.WriteAPIError(c, http.StatusUnauthorized, "authentication required")
 		}
-		if isPAT(auth) && !hasScope(auth, "rebuilds:write") {
+		if wsaccess.IsPAT(auth) && !wsaccess.HasScope(auth, "rebuilds:write") {
 			return apikit.WriteAPIError(c, http.StatusForbidden, "missing required scope: rebuilds:write")
 		}
 
@@ -943,17 +890,6 @@ func jobToRebuildRecord(j *jobqueue.Job) RebuildJobRecord {
 	return rec
 }
 
-// RegisterRerereRoutes mounts rerere management endpoints on the API group.
-func RegisterRerereRoutes(api *echo.Group, cfg RerereAPIConfig) {
-	api.GET("/workspaces/:slug/rerere", handleListRerere(cfg))
-	api.DELETE("/workspaces/:slug/rerere/*", handleForgetRerere(cfg))
-}
-
-// RegisterPatchStatusRoutes mounts patch-status dashboard endpoints on the API group.
-func RegisterPatchStatusRoutes(api *echo.Group, cfg PatchStatusAPIConfig) {
-	api.GET("/workspaces/:slug/patch-status", handlePatchStatus(cfg))
-}
-
 // ===========================================================================
 // GET /workspaces/:slug/patch-status
 // ===========================================================================
@@ -966,14 +902,14 @@ func RegisterPatchStatusRoutes(api *echo.Group, cfg PatchStatusAPIConfig) {
 // 16-REQ-6.E2: Returns 403 if PAT lacks 'workspaces:read' scope.
 // 16-REQ-6.E3: Returns empty patches array and zero summary if no patches.
 // 16-REQ-6.E4: Sets total_rerere_resolutions to 0 if rr-cache is inaccessible.
-func handlePatchStatus(cfg PatchStatusAPIConfig) echo.HandlerFunc {
+func handlePatchStatus(cfg APIConfig) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		// Auth check.
 		auth := apikit.GetAuthInfo(c)
 		if auth == nil {
 			return apikit.WriteAPIError(c, http.StatusUnauthorized, "authentication required")
 		}
-		if isPAT(auth) && !hasScope(auth, "workspaces:read") {
+		if wsaccess.IsPAT(auth) && !wsaccess.HasScope(auth, "workspaces:read") {
 			return apikit.WriteAPIError(c, http.StatusForbidden, "missing required scope: workspaces:read")
 		}
 

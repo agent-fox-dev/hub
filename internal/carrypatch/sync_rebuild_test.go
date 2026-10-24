@@ -124,12 +124,12 @@ func newRebuildSyncTestEnv(t *testing.T) *rebuildSyncTestEnv {
 	}
 	registerSyncRoutes(api, syncCfg)
 
-	rebuildCfg := RebuildAPIConfig{
+	rebuildCfg := APIConfig{
 		DB:          db,
 		Queue:       q,
 		GetVariable: getVar,
 	}
-	RegisterRebuildRoutes(api, rebuildCfg)
+	RegisterRoutes(api, rebuildCfg)
 
 	env.echo = e
 	return env

@@ -3,7 +3,6 @@ package carrypatch
 import (
 	"context"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -664,43 +663,6 @@ func TestSQLPatchStore_DeletePatchByIDIfDeleted_ReportsRows_Issue45(t *testing.T
 		db.QueryRow(`SELECT COUNT(*) FROM patches WHERE id = ?`, tc.id).Scan(&count)
 		if (count == 1) != tc.wantRowLeft {
 			t.Errorf("%s: row present = %v; want %v", tc.id, count == 1, tc.wantRowLeft)
-		}
-	}
-}
-
-// ===========================================================================
-// TS-23-58 (unit): cmd/af-hub/main.go adds no purge scheduler or purge call.
-//
-// Verifies: 23-REQ-8.8
-// ===========================================================================
-
-func TestNoPurgeSchedulerInMain_TS2358(t *testing.T) {
-	// Read all .go files in cmd/af-hub/.
-	entries, err := os.ReadDir("../../cmd/af-hub")
-	if err != nil {
-		t.Fatalf("failed to read cmd/af-hub: %v", err)
-	}
-
-	purgeNames := []string{
-		"PurgeExpiredDeletedPatches",
-		"PurgeDeletedPatches",
-		"PurgeExpiredDeletedPatchesWithRefs",
-	}
-
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") {
-			continue
-		}
-		path := filepath.Join("../../cmd/af-hub", entry.Name())
-		data, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatalf("failed to read %s: %v", path, err)
-		}
-		src := string(data)
-		for _, name := range purgeNames {
-			if strings.Contains(src, name) {
-				t.Errorf("cmd/af-hub/%s contains %q — no purge scheduler should be added", entry.Name(), name)
-			}
 		}
 	}
 }

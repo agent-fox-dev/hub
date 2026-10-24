@@ -62,12 +62,10 @@ func newAuditTestEnv(t *testing.T) *auditTestEnv {
 	api := e.Group("/api/v1")
 	api.Use(testAuthMiddleware())
 
-	cfg := HandlerConfig{
-		DB:    db,
-		Audit: mock,
-	}
-	if err := RegisterRoutesWithConfig(api, cfg); err != nil {
-		t.Fatalf("RegisterRoutesWithConfig() returned error: %v", err)
+	SetAuditDependencies(nil, mock, nil)
+	t.Cleanup(func() { SetAuditDependencies(nil, nil, nil) })
+	if err := RegisterRoutes(api, db); err != nil {
+		t.Fatalf("RegisterRoutes: %v", err)
 	}
 
 	env := &testEnv{echo: e, db: db}
@@ -137,32 +135,6 @@ func TestWorkspaceCreateAuditEmission(t *testing.T) {
 	}
 	if _, ok := event.Metadata["branch"]; !ok {
 		t.Error("metadata missing 'branch' key")
-	}
-}
-
-// ===========================================================================
-// TS-18-2: Workspace handler config exposes Audit field of type audit.Emitter
-// REQ: 18-REQ-1.2
-// ===========================================================================
-
-func TestWorkspaceHandlerConfigAuditField(t *testing.T) {
-	mock := newMockAuditEmitter()
-
-	cfg := HandlerConfig{Audit: mock}
-
-	// Verify the Audit field is set and implements the Emitter interface.
-	if cfg.Audit == nil {
-		t.Fatal("HandlerConfig.Audit should not be nil when set")
-	}
-
-	// Verify it's the correct emitter by emitting and checking.
-	_ = cfg.Audit.Emit(context.Background(), audit.HubEvent{EventType: "test"})
-	events := mock.Events()
-	if len(events) != 1 {
-		t.Fatalf("expected 1 event, got %d", len(events))
-	}
-	if events[0].EventType != "test" {
-		t.Errorf("event_type: want %q, got %q", "test", events[0].EventType)
 	}
 }
 
@@ -605,9 +577,10 @@ func TestWorkspaceAuditEmitErrorDoesNotAffectResponse(t *testing.T) {
 	api := e.Group("/api/v1")
 	api.Use(testAuthMiddleware())
 
-	cfg := HandlerConfig{DB: db, Audit: failEmitter}
-	if err := RegisterRoutesWithConfig(api, cfg); err != nil {
-		t.Fatalf("RegisterRoutesWithConfig() returned error: %v", err)
+	SetAuditDependencies(nil, failEmitter, nil)
+	t.Cleanup(func() { SetAuditDependencies(nil, nil, nil) })
+	if err := RegisterRoutes(api, db); err != nil {
+		t.Fatalf("RegisterRoutes: %v", err)
 	}
 	seedDefaultPersonalOrgs(t, db)
 

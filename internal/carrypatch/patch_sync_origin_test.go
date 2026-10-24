@@ -1106,7 +1106,7 @@ func TestSyncOriginIntegration_NewlyMergedPatchClearsOriginState_Finding5(t *tes
 	// patch-status counts only the patch that is still diverged.
 	api := env.echo.Group("/api/v1")
 	api.Use(rebuildTestAuthMiddleware())
-	RegisterPatchStatusRoutes(api, PatchStatusAPIConfig{
+	RegisterRoutes(api, APIConfig{
 		DB:            env.db,
 		Queue:         env.queue,
 		WorkspaceRoot: env.wsRoot,

@@ -17,6 +17,7 @@ import (
 	"github.com/agent-fox-dev/agentkit-go/sandbox"
 	"github.com/agent-fox-dev/agentkit-go/sandbox/gatewayd"
 	"github.com/agent-fox-dev/hub/internal/audit"
+	"github.com/agent-fox-dev/hub/internal/scrub"
 )
 
 // statusError is an error with a gRPC code and a plain message. status.Code
@@ -317,7 +318,7 @@ func (b *Backend) addSecrets(ctx context.Context, lease *Lease, spec *sandbox.Sp
 func (b *Backend) createBox(ctx context.Context, lease *Lease, spec sandbox.Spec, values []string) (sandbox.Sandbox, error) {
 	box, err := b.provider.Create(ctx, spec)
 	if err != nil {
-		msg := scrub(err.Error(), values)
+		msg := scrub.Text(err.Error(), values...)
 		return nil, b.failLease(ctx, lease, msg, b.service.remoteFailure("create", err, msg))
 	}
 	// The handle is held before the lease reads active: from then on a DELETE finds

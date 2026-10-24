@@ -417,49 +417,6 @@ func (s *Store) listVariablesRaw(ownerType, ownerID string) ([]VariableEntry, er
 	return s.ListVariables(ownerType, ownerID)
 }
 
-// cascadeDelete wraps parent resource deletion and child secrets/variables
-// deletion in a single database transaction.
-func (s *Store) cascadeDelete(parentSQL, ownerType, ownerID string) error {
-	tx, err := s.db.Begin()
-	if err != nil {
-		return fmt.Errorf("begin transaction: %w", err)
-	}
-	defer tx.Rollback()
-
-	// Delete the parent resource.
-	if _, err := tx.Exec(parentSQL, ownerID); err != nil {
-		return fmt.Errorf("delete parent: %w", err)
-	}
-
-	// Test hook — fires after parent is deleted but before children.
-	if s.TestHookAfterParentDelete != nil {
-		if err := s.TestHookAfterParentDelete(); err != nil {
-			return fmt.Errorf("hook after parent delete: %w", err)
-		}
-	}
-
-	// Delete child secrets.
-	if _, err := tx.Exec(
-		"DELETE FROM secrets WHERE owner_type = ? AND owner_id = ?",
-		ownerType, ownerID,
-	); err != nil {
-		return fmt.Errorf("delete secrets: %w", err)
-	}
-
-	// Delete child variables.
-	if _, err := tx.Exec(
-		"DELETE FROM variables WHERE owner_type = ? AND owner_id = ?",
-		ownerType, ownerID,
-	); err != nil {
-		return fmt.Errorf("delete variables: %w", err)
-	}
-
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit transaction: %w", err)
-	}
-	return nil
-}
-
 // ---------------------------------------------------------------------------
 // Error types
 // ---------------------------------------------------------------------------

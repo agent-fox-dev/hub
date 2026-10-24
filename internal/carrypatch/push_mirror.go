@@ -13,6 +13,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/transport"
 
 	"github.com/agent-fox-dev/hub/internal/audit"
+	"github.com/agent-fox-dev/hub/internal/scrub"
 )
 
 // PostPushMirrorDeps holds the optional dependencies for hub-mode mirroring
@@ -127,7 +128,7 @@ func mirrorBranches(
 	if authErr != nil {
 		// 22-REQ-7.1, 22-REQ-7.3: Every branch that could not be mirrored
 		// is a failed mirror: log once, and emit one event per branch.
-		safeErr := "failed to resolve origin credentials: " + sanitizeErrorText(authErr.Error())
+		safeErr := "failed to resolve origin credentials: " + scrub.Userinfo(authErr.Error())
 		logger.Warn("mirror: failed to resolve origin credentials",
 			"slug", slug,
 			"branches", applicable,
@@ -145,7 +146,7 @@ func mirrorBranches(
 		if mirrorErr != nil {
 			// The error is free text that may embed the remote URL, so
 			// remove userinfo with the text sanitiser.
-			safeErr := sanitizeErrorText(mirrorErr.Error())
+			safeErr := scrub.Userinfo(mirrorErr.Error())
 			logger.Warn("mirror: failed to push branch to origin",
 				"slug", slug,
 				"branch", branch,

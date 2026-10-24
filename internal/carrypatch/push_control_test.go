@@ -14,6 +14,7 @@ import (
 	"github.com/txsvc/apikit"
 
 	"github.com/agent-fox-dev/hub/internal/gitserver"
+	"github.com/agent-fox-dev/hub/internal/scrub"
 )
 
 // ===========================================================================
@@ -541,12 +542,12 @@ func TestSanitizeErrorText(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := sanitizeErrorText(tc.in)
+			got := scrub.Userinfo(tc.in)
 			if got != tc.want {
-				t.Errorf("sanitizeErrorText(%q)\n got: %q\nwant: %q", tc.in, got, tc.want)
+				t.Errorf("scrub.Userinfo(%q)\n got: %q\nwant: %q", tc.in, got, tc.want)
 			}
 			// Idempotent: a second pass changes nothing.
-			if again := sanitizeErrorText(got); again != got {
+			if again := scrub.Userinfo(got); again != got {
 				t.Errorf("sanitizeErrorText is not idempotent: %q -> %q", got, again)
 			}
 		})

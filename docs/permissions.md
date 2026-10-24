@@ -448,7 +448,7 @@ at startup.
 | **Source** | hub |
 | **Grants** | List and view the workspaces the authenticated user owns or whose org they belong to; list rerere resolutions; view patch-status dashboard |
 | **Endpoints** | `GET /api/v1/workspaces`, `GET /api/v1/workspaces/:slug`, `GET /api/v1/workspaces/:slug/rerere`, `GET /api/v1/workspaces/:slug/patch-status` |
-| **Implied by** | `workspaces:create`, `workspaces:write` -- but only for workspace CRUD endpoints (list, get). The rerere list and patch-status handlers check for the literal `workspaces:read` scope via `hasScope(auth, "workspaces:read")` and do NOT honor these implications. A PAT with `workspaces:create` or `workspaces:write` but without `workspaces:read` can list and get workspaces but cannot access rerere list or patch-status endpoints. |
+| **Implied by** | `workspaces:create`, `workspaces:write` -- but only for workspace CRUD endpoints (list, get). The rerere list and patch-status handlers check for the literal `workspaces:read` scope via `wsaccess.HasScope(auth, "workspaces:read")` and do NOT honor these implications. A PAT with `workspaces:create` or `workspaces:write` but without `workspaces:read` can list and get workspaces but cannot access rerere list or patch-status endpoints. |
 | **Ownership** | Enforced through `wsaccess` with the read level: the workspace's owner, a member of its org and an admin token may read; anyone else gets `404` (anti-enumeration, see [Workspace access levels](#workspace-access-levels)). The listing returns the caller's own workspaces and those of the caller's orgs. |
 
 ### workspaces:create
@@ -867,7 +867,7 @@ All 37 registered permission scopes, sorted alphabetically:
 ## Secrets and Variables Endpoint Access Matrix
 
 All secrets and variables endpoints follow the same credential-type
-authorization model. The scope checks (`isPAT`, `isAdmin`) are enforced at
+authorization model. The scope checks (`wsaccess.IsPAT`, `wsaccess.IsAdmin`, `wsaccess.HasScope`) are enforced at
 the handler level in `hub/internal/secrets/handlers.go`.
 
 ### Credential Access by Scope

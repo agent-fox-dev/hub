@@ -96,12 +96,10 @@ func newSmokeEnv(t *testing.T, slug, mode string) *smokeEnv {
 	api := e.Group("/api/v1")
 	api.Use(testAuthMiddleware())
 
-	cfg := HandlerConfig{
-		DB:    db,
-		Audit: emitter,
-	}
-	if err := RegisterRoutesWithConfig(api, cfg); err != nil {
-		t.Fatalf("RegisterRoutesWithConfig: %v", err)
+	SetAuditDependencies(nil, emitter, nil)
+	t.Cleanup(func() { SetAuditDependencies(nil, nil, nil) })
+	if err := RegisterRoutes(api, db); err != nil {
+		t.Fatalf("RegisterRoutes: %v", err)
 	}
 
 	// Register the carrypatch resolver hook — built exactly as main.go does.

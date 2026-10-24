@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/agent-fox-dev/aflib/issuex"
+	"github.com/agent-fox-dev/hub/internal/scrub"
 	"github.com/labstack/echo/v4"
 	"github.com/txsvc/apikit"
 )
@@ -135,10 +136,10 @@ func readIssue(ctx context.Context, fc *forgeClient, ref issuex.IssueRef) (any, 
 func scrubbedCommentsErr(err error, token string) error {
 	if he, ok := err.(*issuex.HTTPError); ok {
 		clean := *he
-		clean.Message = scrub(he.Message, token)
+		clean.Message = scrub.Text(he.Message, token)
 		return &clean
 	}
-	return errors.New(scrub(err.Error(), token))
+	return errors.New(scrub.Text(err.Error(), token))
 }
 
 // readComments is GET /workspaces/:slug/issues/:n/comments: the comments as a bare array.

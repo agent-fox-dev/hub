@@ -3,8 +3,9 @@ package carrypatch
 import (
 	"context"
 	"encoding/json"
-	"github.com/go-git/go-git/v5/plumbing/transport"
 	"testing"
+
+	"github.com/go-git/go-git/v5/plumbing/transport"
 )
 
 // ===========================================================================

@@ -152,13 +152,13 @@ func (env *smokeForkEnv) buildEchoWithAudit(t *testing.T) {
 	}
 	registerSyncRoutes(api, syncCfg)
 
-	patchStatusCfg := PatchStatusAPIConfig{
+	patchStatusCfg := APIConfig{
 		DB:            env.db,
 		Queue:         env.queue,
 		WorkspaceRoot: env.wsRoot,
 		PatchStore:    patchStore,
 	}
-	RegisterPatchStatusRoutes(api, patchStatusCfg)
+	RegisterRoutes(api, patchStatusCfg)
 
 	env.echo = e
 }

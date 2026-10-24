@@ -257,11 +257,11 @@ func handleCreateWorkspace(db *sql.DB) echo.HandlerFunc {
 			return respondError(c, http.StatusUnauthorized, "authentication required")
 		}
 
-		if isAdmin(auth) {
+		if wsaccess.IsAdmin(auth) {
 			return respondError(c, http.StatusForbidden, "admin tokens cannot create workspaces; a real user is required as owner")
 		}
 
-		if isPAT(auth) && !hasScope(auth, "workspaces:create") {
+		if wsaccess.IsPAT(auth) && !wsaccess.HasScope(auth, "workspaces:create") {
 			return respondError(c, http.StatusForbidden, "PAT requires workspaces:create scope to create workspaces")
 		}
 
@@ -682,7 +682,7 @@ func handleUpdateWorkspace(db *sql.DB) echo.HandlerFunc {
 			return respondError(c, http.StatusUnauthorized, "authentication required")
 		}
 
-		if isPAT(auth) && !hasWriteAccess(auth) {
+		if wsaccess.IsPAT(auth) && !hasWriteAccess(auth) {
 			return respondError(c, http.StatusNotFound, "workspace not found")
 		}
 
@@ -867,7 +867,7 @@ func handleListWorkspaces(db *sql.DB) echo.HandlerFunc {
 			return respondError(c, http.StatusUnauthorized, "authentication required")
 		}
 
-		if isPAT(auth) && !hasReadAccess(auth) {
+		if wsaccess.IsPAT(auth) && !hasReadAccess(auth) {
 			return respondError(c, http.StatusNotFound, "workspace not found")
 		}
 
@@ -914,7 +914,7 @@ func handleGetWorkspace(db *sql.DB) echo.HandlerFunc {
 			return respondError(c, http.StatusUnauthorized, "authentication required")
 		}
 
-		if isPAT(auth) && !hasReadAccess(auth) {
+		if wsaccess.IsPAT(auth) && !hasReadAccess(auth) {
 			return respondError(c, http.StatusNotFound, "workspace not found")
 		}
 
@@ -940,7 +940,7 @@ func handleArchiveWorkspace(db *sql.DB) echo.HandlerFunc {
 			return respondError(c, http.StatusUnauthorized, "authentication required")
 		}
 
-		if isPAT(auth) && !hasWriteAccess(auth) {
+		if wsaccess.IsPAT(auth) && !hasWriteAccess(auth) {
 			return respondError(c, http.StatusNotFound, "workspace not found")
 		}
 
@@ -1076,7 +1076,7 @@ func handleReactivateWorkspace(db *sql.DB) echo.HandlerFunc {
 			return respondError(c, http.StatusUnauthorized, "authentication required")
 		}
 
-		if isPAT(auth) && !hasWriteAccess(auth) {
+		if wsaccess.IsPAT(auth) && !hasWriteAccess(auth) {
 			return respondError(c, http.StatusNotFound, "workspace not found")
 		}
 
@@ -1130,7 +1130,7 @@ func handleDeleteWorkspace(db *sql.DB) echo.HandlerFunc {
 			return respondError(c, http.StatusUnauthorized, "authentication required")
 		}
 
-		if isPAT(auth) && !hasDeleteAccess(auth) {
+		if wsaccess.IsPAT(auth) && !hasDeleteAccess(auth) {
 			return respondError(c, http.StatusNotFound, "workspace not found")
 		}
 

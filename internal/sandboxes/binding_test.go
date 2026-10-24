@@ -80,11 +80,7 @@ func TestBoundTokenAllowlist_ExactlyTheTenRoutes_TS_33_21(t *testing.T) {
 	RegisterRoutes(api, nil)
 	RegisterLeaseRoutes(api, nil)
 	forge.RegisterRoutes(api, forge.Config{DB: db})
-	carrypatch.RegisterRebuildRoutes(api, carrypatch.RebuildAPIConfig{DB: db})
-	carrypatch.RegisterRerereRoutes(api, carrypatch.RerereAPIConfig{DB: db})
-	carrypatch.RegisterRebuildRollbackRoutes(api, carrypatch.RebuildRollbackAPIConfig{DB: db})
-	carrypatch.RegisterRebuildPreviewRoutes(api, carrypatch.RebuildPreviewAPIConfig{DB: db})
-	carrypatch.RegisterPatchStatusRoutes(api, carrypatch.PatchStatusAPIConfig{DB: db})
+	carrypatch.RegisterRoutes(api, carrypatch.APIConfig{DB: db})
 
 	var allowed []string
 	for _, r := range e.Routes() {

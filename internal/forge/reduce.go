@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/agent-fox-dev/hub/internal/audit"
+	"github.com/agent-fox-dev/hub/internal/scrub"
 )
 
 // delivery is a delivery that has been verified.
@@ -243,13 +244,13 @@ func capNames(names []string) []string {
 
 // title cuts a title from a payload to maxTitleBytes on a UTF-8 boundary.
 func title(s string) string {
-	return truncateUTF8(strings.ToValidUTF8(s, "\uFFFD"), maxTitleBytes)
+	return scrub.TruncateUTF8(strings.ToValidUTF8(s, "\uFFFD"), maxTitleBytes)
 }
 
 // payloadURL is a URL from a payload without its user information, which the audit log must
 // not hold.
 func payloadURL(s string) string {
-	return userinfoPattern.ReplaceAllString(s, "${1}")
+	return scrub.Userinfo(s)
 }
 
 // need turns a missing field into the error of a payload that lacks it.

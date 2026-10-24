@@ -126,12 +126,10 @@ func newBatchEnv(t *testing.T, slug, mode string) *batchEnv {
 	api := e.Group("/api/v1")
 	api.Use(testAuthMiddleware())
 
-	cfg := HandlerConfig{
-		DB:    db,
-		Audit: emitter,
-	}
-	if err := RegisterRoutesWithConfig(api, cfg); err != nil {
-		t.Fatalf("RegisterRoutesWithConfig: %v", err)
+	SetAuditDependencies(nil, emitter, nil)
+	t.Cleanup(func() { SetAuditDependencies(nil, nil, nil) })
+	if err := RegisterRoutes(api, db); err != nil {
+		t.Fatalf("RegisterRoutes: %v", err)
 	}
 
 	// Runner factory: the real one, optionally wrapped by the test.
@@ -511,9 +509,10 @@ func TestTS21_10_CASRaceReportsLocalLeavesRef(t *testing.T) {
 	e := echo.New()
 	api := e.Group("/api/v1")
 	api.Use(testAuthMiddleware())
-	cfgH := HandlerConfig{DB: db, Audit: emitter}
-	if err := RegisterRoutesWithConfig(api, cfgH); err != nil {
-		t.Fatalf("RegisterRoutesWithConfig: %v", err)
+	SetAuditDependencies(nil, emitter, nil)
+	t.Cleanup(func() { SetAuditDependencies(nil, nil, nil) })
+	if err := RegisterRoutes(api, db); err != nil {
+		t.Fatalf("RegisterRoutes: %v", err)
 	}
 	RegisterBranchCheckHook(hook)
 	t.Cleanup(func() { RegisterBranchCheckHook(nil) })

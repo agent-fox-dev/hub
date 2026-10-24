@@ -4,9 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"github.com/go-git/go-git/v5/plumbing/transport"
 	"testing"
 	"time"
+
+	"github.com/go-git/go-git/v5/plumbing/transport"
 
 	_ "modernc.org/sqlite"
 )

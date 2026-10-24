@@ -71,7 +71,7 @@ func requirePatchReadScope(c echo.Context) *apikit.AuthInfo {
 		_ = respondError(c, http.StatusUnauthorized, "authentication required")
 		return nil
 	}
-	if isPAT(auth) && !hasScope(auth, "patches:read", "patches:write") {
+	if wsaccess.IsPAT(auth) && !wsaccess.HasScope(auth, "patches:read", "patches:write") {
 		_ = respondError(c, http.StatusForbidden, "PAT requires patches:read scope")
 		return nil
 	}
@@ -87,7 +87,7 @@ func requirePatchWriteScope(c echo.Context) *apikit.AuthInfo {
 		_ = respondError(c, http.StatusUnauthorized, "authentication required")
 		return nil
 	}
-	if isPAT(auth) && !hasScope(auth, "patches:write") {
+	if wsaccess.IsPAT(auth) && !wsaccess.HasScope(auth, "patches:write") {
 		_ = respondError(c, http.StatusForbidden, "PAT requires patches:write scope")
 		return nil
 	}

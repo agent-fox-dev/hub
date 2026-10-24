@@ -198,8 +198,8 @@ func TestSmoke_RefusalAudited_TS_34_67(t *testing.T) {
 	}
 }
 
-// TS-34-68 (smoke, 34-PATH-5): The sweep started with go cleans up orphaned
-// bindings at once, and returns after cancel.
+// TS-34-68 (smoke, 34-PATH-5): A sweep pass, which main runs at boot and then
+// hourly, cleans up orphaned bindings.
 func TestSmoke_SweepAtBoot_TS_34_68(t *testing.T) {
 	h := newRealHub(t)
 	h.seed(t, "S", "active")
@@ -208,11 +208,10 @@ func TestSmoke_SweepAtBoot_TS_34_68(t *testing.T) {
 	if _, err := h.db.Exec(`INSERT INTO token_workspace_bindings (token_id, slug, created_at) VALUES ('no-such-token', 'S', 'x')`); err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() { StartBindingSweep(ctx, h.db); close(done) }()
-
-	if !eventually(2*time.Second, func() bool { return countBindings(h.db) == 1 }) {
+	if err := wsaccess.SweepBindings(context.Background(), h.db); err != nil {
+		t.Fatalf("SweepBindings: %v", err)
+	}
+	if countBindings(h.db) != 1 {
 		t.Fatalf("bindings = %d; want only the healthy one", countBindings(h.db))
 	}
 	var left string
@@ -220,11 +219,5 @@ func TestSmoke_SweepAtBoot_TS_34_68(t *testing.T) {
 	if left != healthyID || !isRevoked(t, h.db, orphanID) || isRevoked(t, h.db, healthyID) {
 		t.Errorf("left %s, orphan revoked %v, healthy revoked %v; want the healthy binding and only the orphan revoked",
 			left, isRevoked(t, h.db, orphanID), isRevoked(t, h.db, healthyID))
-	}
-	cancel()
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("the sweep did not return after cancel")
 	}
 }

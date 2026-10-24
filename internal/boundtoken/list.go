@@ -32,11 +32,11 @@ func handleList(cfg Config) echo.HandlerFunc {
 		if auth == nil {
 			return apikit.WriteAPIError(c, http.StatusUnauthorized, "authentication required")
 		}
-		if isPAT(auth) {
+		if wsaccess.IsPAT(auth) {
 			if refuseBoundToken(c, cfg.DB, auth) {
 				return nil
 			}
-			if !hasScope(auth, "tokens:read", "tokens:manage") {
+			if !wsaccess.HasScope(auth, "tokens:read", "tokens:manage") {
 				return apikit.WriteAPIError(c, http.StatusForbidden, "PAT requires tokens:read scope")
 			}
 		}

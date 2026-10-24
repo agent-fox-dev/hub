@@ -71,7 +71,7 @@ func TestRebuildEnqueueAuditEmission(t *testing.T) {
 	_ = RegisterRebuildJob(env.queue, &RebuildHandler{Audit: mock})
 
 	// Create a new echo instance with audit-aware config.
-	rebuildCfg := RebuildAPIConfig{
+	rebuildCfg := APIConfig{
 		DB:    env.db,
 		Queue: env.queue,
 		Audit: mock,
@@ -188,7 +188,7 @@ func TestRebuildFailAuditEmission(t *testing.T) {
 }
 
 // ===========================================================================
-// TS-18-16: All carrypatch config structs including RebuildAPIConfig expose
+// TS-18-16: All carrypatch config structs including APIConfig expose
 //           an Audit field of type audit.Emitter
 // REQ: 18-REQ-3.6
 // ===========================================================================
@@ -196,10 +196,10 @@ func TestRebuildFailAuditEmission(t *testing.T) {
 func TestRebuildAPIConfigAuditField(t *testing.T) {
 	mock := newCPAuditEmitter()
 
-	cfg := RebuildAPIConfig{Audit: mock}
+	cfg := APIConfig{Audit: mock}
 
 	if cfg.Audit == nil {
-		t.Fatal("RebuildAPIConfig.Audit should not be nil when set")
+		t.Fatal("APIConfig.Audit should not be nil when set")
 	}
 
 	// Verify it implements audit.Emitter by emitting.
@@ -207,16 +207,6 @@ func TestRebuildAPIConfigAuditField(t *testing.T) {
 	events := mock.Events()
 	if len(events) != 1 {
 		t.Fatalf("expected 1 event, got %d", len(events))
-	}
-}
-
-func TestRebuildRollbackAPIConfigAuditField(t *testing.T) {
-	mock := newCPAuditEmitter()
-
-	cfg := RebuildRollbackAPIConfig{Audit: mock}
-
-	if cfg.Audit == nil {
-		t.Fatal("RebuildRollbackAPIConfig.Audit should not be nil when set")
 	}
 }
 
@@ -280,7 +270,7 @@ func TestRebuildAuditEmitErrorDoesNotAffectResponse(t *testing.T) {
 	seedPatch(t, env.db, "p-1", "ws-1", "feature/a", 1, PatchStatusActive)
 
 	// Create a new echo with failing audit emitter.
-	rebuildCfg := RebuildAPIConfig{
+	rebuildCfg := APIConfig{
 		DB:    env.db,
 		Queue: env.queue,
 		Audit: failEmitter,
@@ -308,13 +298,13 @@ func TestRebuildAuditEmitErrorDoesNotAffectResponse(t *testing.T) {
 
 // setupRebuildEchoWithCfg creates an echo instance with rebuild routes
 // mounted using the provided config.
-func setupRebuildEchoWithCfg(t *testing.T, cfg RebuildAPIConfig) *echo.Echo {
+func setupRebuildEchoWithCfg(t *testing.T, cfg APIConfig) *echo.Echo {
 	t.Helper()
 
 	e := echo.New()
 	api := e.Group("/api/v1")
 	api.Use(rebuildTestAuthMiddleware())
-	RegisterRebuildRoutes(api, cfg)
+	RegisterRoutes(api, cfg)
 	return e
 }
 

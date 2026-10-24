@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+
+	"github.com/agent-fox-dev/hub/internal/scrub"
 )
 
 // RedactedString holds a secret that must never be printed: hub's token for the
@@ -31,19 +33,19 @@ func (r RedactedString) reveal() string {
 
 // Format writes [redacted] for every verb and flag, so %v, %+v, %#v, %s, %q and
 // the rest all agree.
-func (RedactedString) Format(f fmt.State, _ rune) { _, _ = io.WriteString(f, redactedMarker) }
+func (RedactedString) Format(f fmt.State, _ rune) { _, _ = io.WriteString(f, scrub.Redacted) }
 
 // String returns [redacted].
-func (RedactedString) String() string { return redactedMarker }
+func (RedactedString) String() string { return scrub.Redacted }
 
 // GoString returns [redacted].
-func (RedactedString) GoString() string { return redactedMarker }
+func (RedactedString) GoString() string { return scrub.Redacted }
 
 // LogValue makes slog log [redacted].
-func (RedactedString) LogValue() slog.Value { return slog.StringValue(redactedMarker) }
+func (RedactedString) LogValue() slog.Value { return slog.StringValue(scrub.Redacted) }
 
 // MarshalJSON encodes [redacted] as a JSON string.
-func (RedactedString) MarshalJSON() ([]byte, error) { return []byte(`"` + redactedMarker + `"`), nil }
+func (RedactedString) MarshalJSON() ([]byte, error) { return []byte(`"` + scrub.Redacted + `"`), nil }
 
 // MarshalText returns [redacted].
-func (RedactedString) MarshalText() ([]byte, error) { return []byte(redactedMarker), nil }
+func (RedactedString) MarshalText() ([]byte, error) { return []byte(scrub.Redacted), nil }

@@ -119,15 +119,15 @@ func (w wiring) firstPos(name string) token.Pos {
 	return token.NoPos
 }
 
-// TS-32-56: main initialises the delivery log with a fatal error path, then starts the retention
-// loop with go, mounts the ingress on the Echo root, and gives forge.Config the audit emitter, the
-// secrets store and the external URL.
+// TS-32-56: main initialises the delivery log with a fatal error path, prunes it in the
+// maintenance loop after that, mounts the ingress on the Echo root, and gives forge.Config the
+// audit emitter, the secrets store and the external URL.
 // Requirement: 32-REQ-9.7
 func TestMainWiresTheWebhookIngress_TS_32_56(t *testing.T) {
 	w := parseMainWiring(t)
 
-	initPos, startPos, mountPos := w.firstPos("InitSchema"), w.firstPos("StartDeliveryRetention"), w.firstPos("MountWebhookIngress")
-	for name, pos := range map[string]token.Pos{"forge.InitSchema": initPos, "forge.StartDeliveryRetention": startPos, "forge.MountWebhookIngress": mountPos} {
+	initPos, prunePos, mountPos := w.firstPos("InitSchema"), w.firstPos("PruneDeliveries"), w.firstPos("MountWebhookIngress")
+	for name, pos := range map[string]token.Pos{"forge.InitSchema": initPos, "forge.PruneDeliveries": prunePos, "forge.MountWebhookIngress": mountPos} {
 		if pos == token.NoPos {
 			t.Errorf("main.go never calls %s", name)
 		}
@@ -135,11 +135,8 @@ func TestMainWiresTheWebhookIngress_TS_32_56(t *testing.T) {
 	if !w.fatalOnError["InitSchema"] {
 		t.Errorf("main.go does not stop when forge.InitSchema fails")
 	}
-	if !w.goStarts["StartDeliveryRetention"] {
-		t.Errorf("main.go does not start forge.StartDeliveryRetention with go")
-	}
-	if initPos != token.NoPos && startPos != token.NoPos && initPos >= startPos {
-		t.Errorf("forge.InitSchema (at %d) is not called before forge.StartDeliveryRetention (at %d)", initPos, startPos)
+	if initPos != token.NoPos && prunePos != token.NoPos && initPos >= prunePos {
+		t.Errorf("forge.InitSchema (at %d) is not called before forge.PruneDeliveries (at %d)", initPos, prunePos)
 	}
 	if !w.mountsOnEcho {
 		t.Errorf("main.go does not mount the ingress on server.Echo()")
@@ -194,12 +191,12 @@ func packageCalls(t *testing.T, pkgs ...string) (calls []wiringStep, goStarts ma
 	return calls, goStarts
 }
 
-// TS-34-40: main starts the binding sweep with go after the binding table
-// exists, registers the bound-token routes right after
+// TS-34-40: main runs the binding sweep in the maintenance loop after the
+// binding table exists, registers the bound-token routes right after
 // MountWorkspaceHandlers, and registers the refusal reporter.
 // Requirement: 34-REQ-6.6
 func TestMainWiresBoundTokens_TS_34_40(t *testing.T) {
-	calls, goStarts := packageCalls(t, "boundtoken", "workspace")
+	calls, _ := packageCalls(t, "boundtoken", "workspace", "wsaccess")
 	pos := map[string]token.Pos{}
 	order := []string{}
 	for _, c := range calls {
@@ -208,18 +205,15 @@ func TestMainWiresBoundTokens_TS_34_40(t *testing.T) {
 			order = append(order, c.name)
 		}
 	}
-	for _, want := range []string{"workspace.MountWorkspaceHandlers", "boundtoken.RegisterRoutes", "boundtoken.Install", "boundtoken.StartBindingSweep"} {
+	for _, want := range []string{"workspace.MountWorkspaceHandlers", "boundtoken.RegisterRoutes", "boundtoken.Install", "wsaccess.SweepBindings"} {
 		if !pos[want].IsValid() {
 			t.Fatalf("main does not call %s (calls %v)", want, order)
 		}
 	}
-	if !goStarts["boundtoken.StartBindingSweep"] {
-		t.Error("StartBindingSweep is not started with go")
-	}
 	// MountWorkspaceHandlers creates the binding table (through the
-	// workspace schema), so the sweep must start after it.
-	if pos["workspace.MountWorkspaceHandlers"] >= pos["boundtoken.StartBindingSweep"] {
-		t.Error("the sweep starts before MountWorkspaceHandlers has created the binding table")
+	// workspace schema), so the sweep must run after it.
+	if pos["workspace.MountWorkspaceHandlers"] >= pos["wsaccess.SweepBindings"] {
+		t.Error("the sweep runs before MountWorkspaceHandlers has created the binding table")
 	}
 	i := slices.Index(order, "workspace.MountWorkspaceHandlers")
 	if i < 0 || i+1 >= len(order) || order[i+1] != "boundtoken.RegisterRoutes" {

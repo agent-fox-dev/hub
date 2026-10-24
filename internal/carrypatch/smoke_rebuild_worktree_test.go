@@ -137,8 +137,7 @@ func newSmokeHub(t *testing.T, grace time.Duration) *smokeHub {
 	s.cpAPI = echo.New()
 	api := s.cpAPI.Group("/api/v1")
 	api.Use(rebuildTestAuthMiddleware())
-	RegisterRebuildRoutes(api, RebuildAPIConfig{DB: s.db, Queue: q, GetVariable: getVar, Audit: s.audit})
-	RegisterRerereRoutes(api, RerereAPIConfig{DB: s.db, WorkspaceRoot: root, NewGitRunner: factory})
+	RegisterRoutes(api, APIConfig{DB: s.db, Queue: q, GetVariable: getVar, Audit: s.audit, WorkspaceRoot: root, NewGitRunner: factory})
 	registerSyncRoutes(api, SyncAPIConfig{
 		DB: s.db, Queue: q, WorkspaceRoot: root, NewGitRunner: factory,
 		Fetch: func(ctx context.Context, repoPath string, auth transport.AuthMethod) error {

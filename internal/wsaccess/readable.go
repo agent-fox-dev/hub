@@ -28,7 +28,7 @@ const readableQuery = `SELECT slug, CASE WHEN owner_id = ? THEN 'owner' ELSE 'me
 // workspace, and only if it is in the caller's set. A query error is
 // returned, with nothing granted.
 func ReadableSlugs(db *sql.DB, auth *apikit.AuthInfo) (slugs map[string]Access, all bool, err error) {
-	if auth != nil && isAdmin(auth) {
+	if auth != nil && IsAdmin(auth) {
 		return nil, true, nil
 	}
 	if auth == nil || auth.UserID == "" {

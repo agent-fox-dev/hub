@@ -1,4 +1,4 @@
-package forge
+package scrub
 
 import (
 	"math/rand/v2"
@@ -53,7 +53,7 @@ func TestScrubProperty_TS_30_45(t *testing.T) {
 		long := short + strings.Repeat(word(40)+token, 40)
 
 		for name, msg := range map[string]string{"short": short, "long": long} {
-			out := scrub(msg, token)
+			out := Text(msg, token)
 			switch {
 			case strings.Contains(out, token):
 				t.Fatalf("%d %s: the output holds the token: %q", i, name, out)
@@ -73,7 +73,7 @@ func TestScrubProperty_TS_30_45(t *testing.T) {
 		}
 		plain = append(plain, token)
 		in := strings.Join(plain, " ")
-		out := scrub(in, token)
+		out := Text(in, token)
 		if len(in) < 900 && (!strings.Contains(out, "[redacted]") || strings.Contains(out, token)) {
 			t.Fatalf("%d: the token is not replaced with [redacted]: %q -> %q", i, in, out)
 		}
@@ -101,8 +101,8 @@ func TestScrub(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := scrub(tc.text, tc.token); got != tc.want {
-				t.Errorf("scrub(%q, %q) = %q; want %q", tc.text, tc.token, got, tc.want)
+			if got := Text(tc.text, tc.token); got != tc.want {
+				t.Errorf("Text(%q, %q) = %q; want %q", tc.text, tc.token, got, tc.want)
 			}
 		})
 	}
@@ -112,23 +112,23 @@ func TestScrub(t *testing.T) {
 	// marker is returned. Either way the token is gone.
 	t.Run("a token the marker exposes again", func(t *testing.T) {
 		for _, text := range []string{"xaa[y", "xaaaa[y"} {
-			within := scrub(text, "a[")
+			within := Text(text, "a[")
 			if strings.Contains(within, "a[") || within == "[redacted]" || !strings.HasPrefix(within, "x[redacted]") {
-				t.Errorf("scrub(%q) = %q; want the text kept around the marker, without the token", text, within)
+				t.Errorf("Text(%q) = %q; want the text kept around the marker, without the token", text, within)
 			}
 		}
-		if past := scrub("xaaaaaaaaa[y", "a["); past != "[redacted]" {
+		if past := Text("x"+strings.Repeat("a", 2*maxPasses)+"[y", "a["); past != "[redacted]" {
 			t.Errorf("scrub past the passes = %q; want the marker alone", past)
 		}
 	})
 
 	t.Run("cut on a rune boundary", func(t *testing.T) {
 		text := strings.Repeat("é", 700) // 1400 bytes
-		got := scrub(text, "")
+		got := Text(text, "")
 		if len(got) != 1024 || !utf8.ValidString(got) {
 			t.Errorf("len %d, valid %v; want 1024 valid bytes", len(got), utf8.ValidString(got))
 		}
-		got = scrub("a"+text, "") // the cut falls inside a rune
+		got = Text("a"+text, "") // the cut falls inside a rune
 		if len(got) != 1023 || !utf8.ValidString(got) {
 			t.Errorf("len %d, valid %v; want 1023 valid bytes", len(got), utf8.ValidString(got))
 		}
@@ -137,7 +137,7 @@ func TestScrub(t *testing.T) {
 	t.Run("the cut does not leave part of the token", func(t *testing.T) {
 		token := "SECRET-TOKEN-VALUE"
 		text := strings.Repeat("x", 1020) + token + strings.Repeat("y", 50)
-		got := scrub(text, token)
+		got := Text(text, token)
 		if len(got) > 1024 || strings.Contains(got, token) || strings.Contains(got, "SECRET") {
 			t.Errorf("got %d bytes holding part of the token: ...%q", len(got), got[len(got)-30:])
 		}

@@ -757,13 +757,13 @@ func TestSyncResponse_PatchStatusOriginFields_TS2046(t *testing.T) {
 	api := e.Group("/api/v1")
 	api.Use(rebuildTestAuthMiddleware())
 
-	patchStatusCfg := PatchStatusAPIConfig{
+	patchStatusCfg := APIConfig{
 		DB:            db,
 		Queue:         q,
 		WorkspaceRoot: wsRoot,
 		PatchStore:    patchStore,
 	}
-	RegisterPatchStatusRoutes(api, patchStatusCfg)
+	RegisterRoutes(api, patchStatusCfg)
 
 	auth := rebuildUserAuth("alice")
 

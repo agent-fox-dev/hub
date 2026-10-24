@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/agent-fox-dev/agentkit-go/sandbox"
+	"github.com/agent-fox-dev/hub/internal/scrub"
 )
 
 // The remote's capabilities carry a note the gateway client writes, "Sandboxes run
@@ -58,7 +59,7 @@ func TestScrubSetHoldsTheBareHostName(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 	text := "lookup gw.example on 10.0.0.2:53: no such host; certificate is valid for other.example, not gw.example; dial gw.example:8443"
-	out := scrub(text, svc.scrubValues())
+	out := scrub.Text(text, svc.scrubValues()...)
 	for _, leaked := range []string{"gw.example"} {
 		if strings.Contains(out, leaked) {
 			t.Errorf("the scrubbed text still holds %q: %q", leaked, out)

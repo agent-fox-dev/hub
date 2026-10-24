@@ -1,4 +1,4 @@
-package sandboxes
+package scrub
 
 import (
 	"math/rand/v2"
@@ -12,21 +12,21 @@ import (
 // Requirement: 27-REQ-9.1
 func TestScrub_ReplacesRemovesAndTruncates_TS_27_54(t *testing.T) {
 	t.Run("a secret and URL user information", func(t *testing.T) {
-		got := scrub("pull https://u:tok@reg failed: -e K=s3cret", []string{"s3cret"})
+		got := Text("pull https://u:tok@reg failed: -e K=s3cret", "s3cret")
 		if want := "pull https://reg failed: -e K=[redacted]"; got != want {
 			t.Errorf("scrub = %q; want %q", got, want)
 		}
 	})
 
 	t.Run("an environment value", func(t *testing.T) {
-		got := scrub("starting with SECRET_ENV=envval now", []string{"s3cret", "envval"})
+		got := Text("starting with SECRET_ENV=envval now", "s3cret", "envval")
 		if want := "starting with SECRET_ENV=[redacted] now"; got != want {
 			t.Errorf("scrub = %q; want %q", got, want)
 		}
 	})
 
 	t.Run("every occurrence, and the longer value first", func(t *testing.T) {
-		got := scrub("abcdef abc abcdef", []string{"abc", "abcdef"})
+		got := Text("abcdef abc abcdef", "abc", "abcdef")
 		if want := "[redacted] [redacted] [redacted]"; got != want {
 			t.Errorf("scrub = %q; want %q", got, want)
 		}
@@ -34,25 +34,25 @@ func TestScrub_ReplacesRemovesAndTruncates_TS_27_54(t *testing.T) {
 
 	t.Run("empty values change nothing", func(t *testing.T) {
 		const text = "an engine error with no secret in it"
-		if got := scrub(text, []string{""}); got != text {
+		if got := Text(text, ""); got != text {
 			t.Errorf("scrub with an empty value = %q; want the text unchanged", got)
 		}
-		if got := scrub(text, nil); got != text {
+		if got := Text(text); got != text {
 			t.Errorf("scrub with no values = %q; want the text unchanged", got)
 		}
 	})
 
 	t.Run("a long text is cut to at most 1024 bytes", func(t *testing.T) {
-		got := scrub(strings.Repeat("x", 5000), nil)
+		got := Text(strings.Repeat("x", 5000))
 		if len(got) != 1024 {
-			t.Errorf("len(scrub(5000 bytes)) = %d; want 1024", len(got))
+			t.Errorf("len(Text(5000 bytes)) = %d; want 1024", len(got))
 		}
 	})
 
 	t.Run("a value on the cut is replaced before the cut", func(t *testing.T) {
 		const secret = "topsecretvalue"
 		text := strings.Repeat("x", 1020) + secret + strings.Repeat("y", 100)
-		got := scrub(text, []string{secret})
+		got := Text(text, secret)
 		if strings.Contains(got, secret) || strings.Contains(got, "topsec") {
 			t.Errorf("the output holds the value or a part of it: ...%s", got[len(got)-30:])
 		}
@@ -63,19 +63,19 @@ func TestScrub_ReplacesRemovesAndTruncates_TS_27_54(t *testing.T) {
 
 	t.Run("the cut keeps whole runes", func(t *testing.T) {
 		for pad := 1020; pad <= 1024; pad++ {
-			got := scrub(strings.Repeat("a", pad)+"日本語🙂", nil)
+			got := Text(strings.Repeat("a", pad) + "日本語🙂")
 			if !utf8.ValidString(got) || len(got) > 1024 {
 				t.Errorf("pad %d: valid UTF-8 = %v, len = %d; want valid and at most 1024", pad, utf8.ValidString(got), len(got))
 			}
 		}
-		if got := scrub(strings.Repeat("a", 1023)+"日", nil); got != strings.Repeat("a", 1023) {
+		if got := Text(strings.Repeat("a", 1023) + "日"); got != strings.Repeat("a", 1023) {
 			t.Errorf("a rune that straddles byte 1024 was kept in part: len %d", len(got))
 		}
 	})
 
 	t.Run("user information removed from a join cannot restore a value", func(t *testing.T) {
 		// "ps://reg" is not in the text, but it is once the user information is gone.
-		got := scrub("fetch https://u@reg failed", []string{"ps://reg"})
+		got := Text("fetch https://u@reg failed", "ps://reg")
 		if want := "fetch htt[redacted] failed"; got != want {
 			t.Errorf("scrub = %q; want %q: the value is replaced where taking out the user information made it appear", got, want)
 		}
@@ -127,7 +127,7 @@ func TestScrub_Property_TS_27_55(t *testing.T) {
 			in = in[:at] + v + in[at:]
 		}
 
-		out := scrub(in, values)
+		out := Text(in, values...)
 		if !utf8.ValidString(out) {
 			t.Fatalf("iteration %d: the output is not valid UTF-8: %q", i, out)
 		}

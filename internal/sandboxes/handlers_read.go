@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/agent-fox-dev/hub/internal/wsaccess"
 	"github.com/labstack/echo/v4"
 	"github.com/txsvc/apikit"
 )
@@ -96,7 +97,7 @@ func handleAdminListLeases(s *LeaseService) echo.HandlerFunc {
 		if auth == nil {
 			return err
 		}
-		if !isAdmin(auth) {
+		if !wsaccess.IsAdmin(auth) {
 			return apikit.WriteAPIError(c, http.StatusForbidden, "admin token required")
 		}
 		all, err := parseAll(c)

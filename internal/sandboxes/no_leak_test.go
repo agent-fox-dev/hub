@@ -15,6 +15,7 @@ import (
 	"github.com/agent-fox-dev/agentkit-go/sandbox"
 	"github.com/agent-fox-dev/agentkit-go/sandbox/podman"
 	"github.com/agent-fox-dev/hub/internal/audit"
+	"github.com/agent-fox-dev/hub/internal/scrub"
 )
 
 // TS-29-34: Under provider gateway the scrub set holds the token, the gateway_url
@@ -34,7 +35,7 @@ func TestScrubSet_HoldsTokenURLAndHost_TS_29_34(t *testing.T) {
 		}
 	}
 	text := "boom: token " + testGatewayToken + ", url " + url + ", host " + host + ", only the port :41234"
-	out := scrub(text, svc.scrubValues())
+	out := scrub.Text(text, svc.scrubValues()...)
 	for _, leaked := range []string{testGatewayToken, url, host} {
 		if strings.Contains(out, leaked) {
 			t.Errorf("the scrubbed text still holds %q: %q", leaked, out)
@@ -52,7 +53,7 @@ func TestScrubSet_HoldsTokenURLAndHost_TS_29_34(t *testing.T) {
 	if got := podmanSvc.scrubValues(); len(got) != 0 {
 		t.Errorf("the scrub set under podman = %q; want none", got)
 	}
-	if out := scrub(text, podmanSvc.scrubValues()); out != text {
+	if out := scrub.Text(text, podmanSvc.scrubValues()...); out != text {
 		t.Errorf("scrubbing under podman changed the text: %q", out)
 	}
 	if (*Service)(nil).scrubValues() != nil {

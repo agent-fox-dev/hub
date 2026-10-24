@@ -14,6 +14,7 @@ import (
 
 	"github.com/agent-fox-dev/agentkit-go/sandbox"
 	"github.com/agent-fox-dev/hub/internal/audit"
+	"github.com/agent-fox-dev/hub/internal/scrub"
 )
 
 // issueIn posts a lease of the body's profile in a workspace and returns its id.
@@ -363,7 +364,7 @@ func TestBackendCreate_ProviderErrorIsScrubbed_TS_27_37(t *testing.T) {
 	if err == nil {
 		t.Fatal("Create with a failing provider returned no error")
 	}
-	want := scrub(raw, []string{plantedSecret, "envval"})
+	want := scrub.Text(raw, plantedSecret, "envval")
 	if want == raw || strings.Contains(want, plantedSecret) || strings.Contains(want, "envval") || strings.Contains(want, "u:tok") {
 		t.Fatalf("the scrubbed text %q still holds a value", want)
 	}

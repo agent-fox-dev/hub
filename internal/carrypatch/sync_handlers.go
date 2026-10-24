@@ -103,7 +103,7 @@ func runCarryPatchSync(cfg SyncAPIConfig, c echo.Context) (*CarryPatchSyncRespon
 	if auth == nil {
 		return nil, apikit.WriteAPIError(c, http.StatusUnauthorized, "authentication required")
 	}
-	if isPAT(auth) && !hasScope(auth, "workspaces:sync", "workspaces:write") {
+	if wsaccess.IsPAT(auth) && !wsaccess.HasScope(auth, "workspaces:sync", "workspaces:write") {
 		return nil, apikit.WriteAPIError(c, http.StatusForbidden, "missing required scope: workspaces:sync")
 	}
 

@@ -12,6 +12,7 @@ import (
 	"database/sql"
 	"errors"
 	"net/http"
+	"slices"
 
 	"github.com/txsvc/apikit"
 )
@@ -132,7 +133,7 @@ func AuthorizeWorkspaceAt(db *sql.DB, auth *apikit.AuthInfo, slug string, need N
 // AccessMember when org_members has the row (orgID, user id), read on every
 // call; everyone else is AccessNone.
 func accessOf(db *sql.DB, auth *apikit.AuthInfo, ownerID, orgID string) (Access, error) {
-	if isAdmin(auth) {
+	if IsAdmin(auth) {
 		return AccessAdmin, nil
 	}
 	if auth.UserID == "" {
@@ -156,7 +157,23 @@ func accessOf(db *sql.DB, auth *apikit.AuthInfo, ownerID, orgID string) (Access,
 	return AccessNone, nil
 }
 
-// isAdmin reports whether the credential is an admin token.
-func isAdmin(auth *apikit.AuthInfo) bool {
+// IsAdmin reports whether the credential is an admin token.
+func IsAdmin(auth *apikit.AuthInfo) bool {
 	return auth.CredentialType == "admin_token"
+}
+
+// IsPAT reports whether the credential is a personal access token, the one
+// credential type whose scopes are checked.
+func IsPAT(auth *apikit.AuthInfo) bool {
+	return auth.CredentialType == "pat"
+}
+
+// HasScope reports whether the credential carries any of the scopes.
+func HasScope(auth *apikit.AuthInfo, scopes ...string) bool {
+	for _, s := range scopes {
+		if slices.Contains(auth.Permissions, s) {
+			return true
+		}
+	}
+	return false
 }

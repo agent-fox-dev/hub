@@ -35,10 +35,10 @@ func handleMint(cfg Config) echo.HandlerFunc {
 		if auth == nil {
 			return apikit.WriteAPIError(c, http.StatusUnauthorized, "authentication required")
 		}
-		if isPAT(auth) && refuseBoundToken(c, cfg.DB, auth) {
+		if wsaccess.IsPAT(auth) && refuseBoundToken(c, cfg.DB, auth) {
 			return nil
 		}
-		if isAdmin(auth) {
+		if wsaccess.IsAdmin(auth) {
 			return apikit.WriteAPIError(c, http.StatusForbidden,
 				"admin tokens cannot mint bound tokens; a real user is required as the token's owner")
 		}

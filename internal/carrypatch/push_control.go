@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"net/url"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"time"
 
@@ -18,6 +17,7 @@ import (
 	"github.com/txsvc/apikit"
 
 	"github.com/agent-fox-dev/hub/internal/gitserver"
+	"github.com/agent-fox-dev/hub/internal/scrub"
 )
 
 // PreReceiveHookDeps holds the dependencies for the carry-patch pre-receive hook.
@@ -174,7 +174,7 @@ func newPreReceiveHookCore(deps PreReceiveHookDeps, logger *slog.Logger, pushFn 
 			// update. Never accept silently. The error is free text that
 			// may embed the remote URL, so remove userinfo with the
 			// text sanitiser, not the URL helper.
-			safeErr := sanitizeErrorText(fwdErr.Error())
+			safeErr := scrub.Userinfo(fwdErr.Error())
 			logger.Warn("push control: forward to origin failed",
 				"slug", slug,
 				"branch", branchName,
@@ -247,36 +247,17 @@ func loadWorkspaceInfo(db *sql.DB, slug string) (*workspaceInfo, error) {
 	}, nil
 }
 
-// userinfoPattern matches the scheme and userinfo of a URL embedded anywhere
-// in a string: a scheme (RFC 3986), "://", then everything up to the last "@"
-// before the first "/", "?", "#" or whitespace. Matching up to the last "@"
-// removes passwords that themselves contain an unescaped "@". Group 1 is the
-// scheme and "://", which is kept.
-var userinfoPattern = regexp.MustCompile(`(?i)([a-z][a-z0-9+.\-]*://)[^/\s?#]*@`)
-
-// sanitizeErrorText removes URL userinfo (user:password@) from free-form text
-// such as an error message that may embed a remote URL. Everything else is
-// returned byte-for-byte: the text is never parsed or re-serialised as a URL,
-// so spaces are not percent-encoded. It is idempotent.
-//
-// Addresses without a scheme (user@host:path, e-mail addresses) are left
-// alone: they cannot be told apart from ordinary text, and an ssh login name
-// is not a secret.
-func sanitizeErrorText(s string) string {
-	return userinfoPattern.ReplaceAllString(s, "${1}")
-}
-
 // stripUserinfo removes the userinfo (user:password@) portion from a single
 // URL string such as a workspace git_url. It must not be used on free text:
 // a string that is not a URL fails to parse or is re-encoded by url.String(),
-// so use sanitizeErrorText for error messages.
+// so use scrub.Userinfo for error messages.
 //
-// If the URL cannot be parsed, the userinfo is removed with the same pattern
-// sanitizeErrorText uses rather than returning the string unchanged.
+// If the URL cannot be parsed, the userinfo is removed with scrub.Userinfo
+// rather than returning the string unchanged.
 func stripUserinfo(rawURL string) string {
 	u, err := url.Parse(rawURL)
 	if err != nil {
-		return sanitizeErrorText(rawURL)
+		return scrub.Userinfo(rawURL)
 	}
 	u.User = nil
 	return u.String()

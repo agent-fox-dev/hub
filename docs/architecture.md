@@ -22,7 +22,7 @@ engine on the hub's own host or a remote `agentkit-gateway` (below).
 | `service.go` | `Service`, `Start`, `New`: builds the provider (`startRemote` for provider `gateway`), probes it once, checks `network_modes` and turns each profile into a `sandbox.Spec` that `sandbox.CheckSpec` must accept. Keeps the provider, the capability snapshot of a remote gateway, the scrub values and the validated profiles in memory; `Close` closes the remote client. |
 | `errors_remote.go` | `isNotFound` and `isRemoteRefusal`, and `Service.remoteFailure`: a remote not-found counts as destroyed, and a remote that refuses the hub's token is answered `Unavailable`. |
 | `startup.go` | `Init`: the one call `cmd/af-hub` makes. Loads, validates, starts and logs. |
-| `permissions.go`, `auth.go` | The `sandboxes:read` and `sandboxes:write` scopes and the standalone auth helpers. |
+| `permissions.go`, `auth.go` | The `sandboxes:read` and `sandboxes:write` scopes and the `canRead`/`canWrite` helpers over `wsaccess.IsPAT` and `HasScope`. |
 | `handlers.go` | `RegisterRoutes` and `GET /api/v1/sandbox-profiles`, built from the in-memory profiles. |
 | `lease_schema.go`, `lease_migrate.go`, `lease.go`, `store_query.go`, `lease_transitions.go` | The `sandbox_leases` table (`InitSchema`), `MigrateLeaseExpiry` (adds `lease_expires_at` to a table from before it), the `Lease` type and the `LeaseStore`: insert, read, list, `LookupByToken`, and the conditional transitions `MarkActive`, `FailLease`, `ExpireLease`, `DestroyLease`, `EndLease`. |
 | `lease_service.go`, `lease_validate.go`, `token.go` | `LeaseService.Issue`: request validation, the required-secret check, id and token generation, the capacity count and the insert. |
@@ -30,7 +30,7 @@ engine on the hub's own host or a remote `agentkit-gateway` (below).
 | `routes.go`, `handlers_issue.go`, `handlers_read.go`, `handlers_delete.go`, `delete_destroy.go`, `render.go` | `RegisterLeaseRoutes`: the five lease routes, the checks they share (`begin`, `authorize`), the lease representation (with `gateway_url`) and how `DELETE` ends a lease and its sandbox. |
 | `gateway.go` | `NewGateway`: loads the key pair, binds `listen`, builds the `gatewayd.Server`, the backend and the sweeper without serving; `Gateway.Run` (start-up work, then serving), `Gateway.Shutdown`, `Gateway.DestroyBox`, and `List` and `Destroy`, which make the gateway the `Boxes` of the sweep. |
 | `gateway_auth.go` | `NewLeaseAuthenticator`: the function gatewayd calls for every RPC to turn a lease token into a principal. |
-| `backend.go`, `create_spec.go`, `secret_resolve.go`, `handle.go`, `events.go`, `scrub.go` | The wrapping backend, the `sandbox.Provider` hub gives gatewayd: `Create` and its outcomes, the spec built from the lease, the secrets read when the sandbox is created, the handle around the provider's sandbox, the audit events and the scrubber for provider errors. |
+| `backend.go`, `create_spec.go`, `secret_resolve.go`, `handle.go`, `events.go` | The wrapping backend, the `sandbox.Provider` hub gives gatewayd: `Create` and its outcomes, the spec built from the lease, the secrets read when the sandbox is created, the handle around the provider's sandbox and the audit events. Provider errors are scrubbed with `internal/scrub`. |
 | `expire.go`, `metrics.go` | The `Boxes` seam, and the `ender`: the expiry path, `endDestroyed` for shutdown and restart, and the events they emit; the recorder of the three sandbox metrics. |
 | `sweeper.go`, `reaper.go` | `Sweeper.Sweep` and its steps; restart recovery (`RecoverActive`), the reaper loop (`StartReaper`, `RunStartup`) and `Sweeper.Shutdown`. |
 
@@ -405,14 +405,14 @@ file of `internal/cli` imports it to run `afc` against the routes).
 
 | File | Responsibility |
 |------|----------------|
-| `permissions.go`, `auth.go` | The `forge:read` and `forge:write` scopes (`Permissions`, appended to `extraPerms` in `cmd/af-hub/main.go`) and the standalone auth helpers; `forge:write` implies `forge:read`. |
+| `permissions.go`, `auth.go` | The `forge:read` and `forge:write` scopes (`Permissions`, appended to `extraPerms` in `cmd/af-hub/main.go`) and `canReadForge`/`canWriteForge`; `forge:write` implies `forge:read`. |
 | `config.go` | `Config`: the database, the two credential resolvers (`workspace.ResolveCloneAuth` and `ResolveUpstreamAuthMethod`, as closures in `main.go`), `GetVariable`, an optional base `Transport`, an optional `NewClient`, the audit emitter `Audit` that `main.go` builds with `audit.NewEmitter`, the secrets store `Secrets` (the interface `SecretStore`, which `*secrets.Store` satisfies) and `ExternalURL` (`server.external_url`); and `webhookURL`, the ingress URL of a workspace. One value serves `RegisterRoutes` and `MountWebhookIngress`. |
 | `routes.go` | `RegisterRoutes`: the twenty-two routes under `/workspaces/:slug` (ten reads, nine writes, and the webhook secret and delivery routes), and `authorize`, the checks they share, in order: 401, 403 (the scope of the verb), 404, 400 for a write on a workspace that is not active, then the workspace's `git_url`, `workspace_mode` and `upstream_url`. |
 | `target.go`, `params.go` | `resolveTarget` (`?target=`), `parseNumber` (`:n`) and `parseIssueFilter` (the query of `GET .../issues`): the refusals that come before a client is built. |
 | `client.go` | `buildClient`: a fresh issuex client for one request, from the remote URL, the API URL variable and the credential; `credentialOf` (`pat`, `basic`, `none`); `parseRemote` and `redactRemote`; `describeRemote` for the diagnostic. |
 | `httpclient.go` | The one `*http.Client` of the process: `forgeTransport` (user agent, no environment token for a workspace without a credential), the redirect policy, and `callDeadline` (30 seconds). |
 | `handlers_read.go`, `handlers_forge.go` | `serve`, the handler the nine read routes share, and the routes themselves (`prepare*`, `numbered`, `valueOf`, `listOf`); `diagnostic`, `GET .../forge`. |
-| `errors.go`, `scrub.go` | `mapForgeError`: every issuex and transport failure to one status and `error_type`, with `Retry-After`; `mapCall`, which logs a 5xx or 429 answer once; `scrub`: the token and URL userinfo out of a message, cut to 1024 bytes. |
+| `errors.go` | `mapForgeError`: every issuex and transport failure to one status and `error_type`, with `Retry-After`; `mapCall`, which logs a 5xx or 429 answer once. Messages go through `scrub.Text`: the token and URL userinfo out, cut to 1024 bytes. |
 | `write.go` | `write`, the handler of the nine write routes and the steps they share (checks, target, request, client, body limit, call, event, answer); `writeRoute` and `writePlan`, which a route fills in; `writeRun.call`, through which every request to the forge goes; and the JSON field readers of a request body. |
 | `write_issues.go`, `write_labels.go`, `write_pulls.go` | The nine routes: what each reads of its request and what it sends. |
 | `write_limits.go` | The body limits (65,536 on GitHub, 1,000,000 on GitLab, in code points) and the `413 body_too_large` refusal. |
@@ -423,7 +423,7 @@ file of `internal/cli` imports it to run `afc` against the routes).
 | `deliveries_handler.go` | `GET .../forge/deliveries`: the delivery log, newest first. The `webhook` block of `GET .../forge` is `webhookInfo` in `handlers_forge.go`. |
 | `ingress.go` | `MountWebhookIngress` and `POST /hooks/forge/:slug`: lookup, the scheme and its verification, the 1 MiB body, the delivery identity, the insert that deduplicates, the 202 answer and the relay. |
 | `reduce.go`, `reduce_github.go`, `reduce_gitlab.go` | `reduceDelivery`: a verified payload to an outcome, a target and the events (hub never stores the payload); the GitHub and GitLab mappings. |
-| `retention.go` | `PruneDeliveries` and `StartDeliveryRetention`: rows older than 7 days and rows of deleted workspaces, pruned at start and every hour. |
+| `retention.go` | `PruneDeliveries`: rows older than 7 days and rows of deleted workspaces, which the maintenance loop of `cmd/af-hub` runs at start and every hour. |
 
 ### A forge read
 
@@ -489,10 +489,9 @@ check. The forge proves who it is with the signature of the workspace's `FORGE_W
    emitter stores them in `hub_audit_events` and puts them on the SSE stream, where
    `GET /events` and `GET /audit` find them. An emit error is logged and changes nothing.
 
-`forge.InitSchema` creates `forge_deliveries` at every start, and `main.go` starts
-`go forge.StartDeliveryRetention(ctx, db)` right after it: the pruner (rows older than 7 days
-and rows of deleted workspaces) runs once at start and then every hour, and is the only thing
-that prunes the table. The delivery log is SQLite, in the store where workspaces and secrets
+`forge.InitSchema` creates `forge_deliveries` at every start, and the maintenance loop of
+`main.go` runs `forge.PruneDeliveries` (rows older than 7 days and rows of deleted workspaces)
+once at start and then every hour; nothing else prunes the table. The delivery log is SQLite, in the store where workspaces and secrets
 live, so the insert that deduplicates is atomic; the audit store (DuckDB) stays the place of
 the events. The divergences from the spec are in
 `docs/errata/32_forge_webhook_ingress_divergences.md`.
@@ -663,8 +662,7 @@ deadline, synchronously in the handler, so a caller that goes away cancels
 nothing and the deferred unlock runs only after the push has ended. Each push
 attempt emits one `hub.branch.push` event through `emitHubAuditContext` on a
 context without cancellation, and each failed attempt logs one warning. All
-text that leaves the route goes through the package's own `scrubText`, which
-repeats internal/forge's userinfo pattern rather than importing it.
+text that leaves the route goes through `scrub.Text`.
 
 A push to hub's git server can move the trunk's checked-out branch while the
 branch push holds the lock: receive-pack writes refs without the lock, and
@@ -830,8 +828,8 @@ one connection.
 `internal/boundtoken` (spec 34) holds the two routes that mint and list bound
 tokens, the binding sweep and the refusal reporter. `cmd/af-hub/main.go` calls
 `RegisterRoutes(server.APIGroup(), Config{DB, APIKit: server.Echo(), Audit})`
-right after `MountWorkspaceHandlers`, registers the reporter with `Install` and
-starts `StartBindingSweep` with `go`.
+right after `MountWorkspaceHandlers` and registers the reporter with `Install`; the
+maintenance loop runs `wsaccess.SweepBindings` at start and then hourly.
 
 - **Minting by in-process delegation.** apikit's PAT handler is internal, so the
   mint handler serves `POST <mount>/user/tokens` through `Config.APIKit` with
@@ -844,7 +842,7 @@ starts `StartBindingSweep` with `go`.
   the token first (`wsaccess.RevokeToken`, which sets `pats.revoked_at` as
   apikit's own revocation does), so no live unbound token is left behind.
 - **Retiring.** `deleteWorkspace` calls `wsaccess.RevokeAndUnbindSlug` in its
-  transaction, before the workspace row goes; `StartBindingSweep` runs
+  transaction, before the workspace row goes; the maintenance loop runs
   `wsaccess.SweepBindings` at once and then hourly, for bindings whose
   workspace or token is gone.
 - **Refusal reporting.** Every refusal point of spec 33 (both guards, and

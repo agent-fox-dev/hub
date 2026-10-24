@@ -12,6 +12,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/agent-fox-dev/hub/internal/audit"
+	"github.com/agent-fox-dev/hub/internal/scrub"
 )
 
 // createIssue is POST /workspaces/:slug/issues.
@@ -203,7 +204,7 @@ func prepareCloseIssue(c echo.Context, data []byte) (*writePlan, *refusal) {
 			if err != nil {
 				return nil, err
 			}
-			w.set("comment_url", scrub(url, w.fc.token))
+			w.set("comment_url", scrub.Text(url, w.fc.token))
 		}
 		closed := "closed"
 		issue, err := w.changeIssue(n, issueUpdate{State: &closed})

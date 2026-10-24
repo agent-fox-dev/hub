@@ -570,7 +570,7 @@ func newRebuildTestEnv(t *testing.T) *rebuildTestEnv {
 	api := e.Group("/api/v1")
 	api.Use(rebuildTestAuthMiddleware())
 
-	cfg := RebuildAPIConfig{
+	cfg := APIConfig{
 		DB:    db,
 		Queue: q,
 		GetVariable: func(scope, slug, key string) (string, error) {
@@ -581,7 +581,7 @@ func newRebuildTestEnv(t *testing.T) *rebuildTestEnv {
 			return "", nil
 		},
 	}
-	RegisterRebuildRoutes(api, cfg)
+	RegisterRoutes(api, cfg)
 
 	return &rebuildTestEnv{
 		echo:  e,
@@ -621,7 +621,7 @@ func newRebuildTestEnvWithStrategy(t *testing.T, strategy string) *rebuildTestEn
 	api := e.Group("/api/v1")
 	api.Use(rebuildTestAuthMiddleware())
 
-	cfg := RebuildAPIConfig{
+	cfg := APIConfig{
 		DB:    db,
 		Queue: q,
 		GetVariable: func(scope, slug, key string) (string, error) {
@@ -631,7 +631,7 @@ func newRebuildTestEnvWithStrategy(t *testing.T, strategy string) *rebuildTestEn
 			return "", nil
 		},
 	}
-	RegisterRebuildRoutes(api, cfg)
+	RegisterRoutes(api, cfg)
 
 	return &rebuildTestEnv{
 		echo:  e,
@@ -842,21 +842,16 @@ func newFullTestEnv(t *testing.T) *fullTestEnv {
 	api := e.Group("/api/v1")
 	api.Use(rebuildTestAuthMiddleware())
 
-	rebuildCfg := RebuildAPIConfig{
-		DB:          db,
-		Queue:       q,
-		GetVariable: getVar,
-	}
-	RegisterRebuildRoutes(api, rebuildCfg)
-
-	rerereCfg := RerereAPIConfig{
+	RegisterRoutes(api, APIConfig{
 		DB:            db,
+		Queue:         q,
 		WorkspaceRoot: workspaceRoot,
 		NewGitRunner: func(_ string) (GitRunner, error) {
 			return mock, nil
 		},
-	}
-	RegisterRerereRoutes(api, rerereCfg)
+		PatchStore:  patches,
+		GetVariable: getVar,
+	})
 
 	syncCfg := SyncAPIConfig{
 		DB:            db,
@@ -871,34 +866,6 @@ func newFullTestEnv(t *testing.T) *fullTestEnv {
 		PatchStore:  patches,
 	}
 	registerSyncRoutes(api, syncCfg)
-
-	rebuildPreviewCfg := RebuildPreviewAPIConfig{
-		DB:            db,
-		WorkspaceRoot: workspaceRoot,
-		NewGitRunner: func(_ string) (GitRunner, error) {
-			return mock, nil
-		},
-		PatchStore: patches,
-	}
-	RegisterRebuildPreviewRoutes(api, rebuildPreviewCfg)
-
-	patchStatusCfg := PatchStatusAPIConfig{
-		DB:            db,
-		Queue:         q,
-		WorkspaceRoot: workspaceRoot,
-		PatchStore:    patches,
-	}
-	RegisterPatchStatusRoutes(api, patchStatusCfg)
-
-	rollbackCfg := RebuildRollbackAPIConfig{
-		DB:            db,
-		Queue:         q,
-		WorkspaceRoot: workspaceRoot,
-		NewGitRunner: func(_ string) (GitRunner, error) {
-			return mock, nil
-		},
-	}
-	RegisterRebuildRollbackRoutes(api, rollbackCfg)
 
 	return &fullTestEnv{
 		echo:          e,
@@ -945,12 +912,16 @@ func newFullTestEnvWithGetVariable(t *testing.T, getVar GetVariableFunc) *fullTe
 	api := e.Group("/api/v1")
 	api.Use(rebuildTestAuthMiddleware())
 
-	rebuildCfg := RebuildAPIConfig{
-		DB:          db,
-		Queue:       q,
+	RegisterRoutes(api, APIConfig{
+		DB:            db,
+		Queue:         q,
+		WorkspaceRoot: workspaceRoot,
+		NewGitRunner: func(_ string) (GitRunner, error) {
+			return mock, nil
+		},
+		PatchStore:  patches,
 		GetVariable: getVar,
-	}
-	RegisterRebuildRoutes(api, rebuildCfg)
+	})
 
 	syncCfg := SyncAPIConfig{
 		DB:            db,
@@ -965,24 +936,6 @@ func newFullTestEnvWithGetVariable(t *testing.T, getVar GetVariableFunc) *fullTe
 		PatchStore:  patches,
 	}
 	registerSyncRoutes(api, syncCfg)
-
-	rebuildPreviewCfg := RebuildPreviewAPIConfig{
-		DB:            db,
-		WorkspaceRoot: workspaceRoot,
-		NewGitRunner: func(_ string) (GitRunner, error) {
-			return mock, nil
-		},
-		PatchStore: patches,
-	}
-	RegisterRebuildPreviewRoutes(api, rebuildPreviewCfg)
-
-	patchStatusCfg := PatchStatusAPIConfig{
-		DB:            db,
-		Queue:         q,
-		WorkspaceRoot: workspaceRoot,
-		PatchStore:    patches,
-	}
-	RegisterPatchStatusRoutes(api, patchStatusCfg)
 
 	return &fullTestEnv{
 		echo:          e,
