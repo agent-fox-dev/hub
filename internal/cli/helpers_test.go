@@ -176,6 +176,16 @@ func decodeOneDocument(t *testing.T, stdout string) any {
 	return docs[0]
 }
 
+// marshalJSON encodes v as a JSON text.
+func marshalJSON(t *testing.T, v any) string {
+	t.Helper()
+	raw, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(raw)
+}
+
 // decodeJSON decodes raw, a JSON text of a test or a request body.
 func decodeJSON(t *testing.T, raw string) any {
 	t.Helper()
@@ -211,7 +221,7 @@ func assertEnvelopeOnly(t *testing.T, stdout string, err error, message string) 
 	if !ok || len(doc) != 1 || doc["error"] == nil {
 		t.Fatalf("stdout = %q; want the error envelope alone", stdout)
 	}
-	if got := errorMessage(stdout); got != message {
+	if got := errorMessage(t, stdout); got != message {
 		t.Errorf("error message = %q; want %q", got, message)
 	}
 }

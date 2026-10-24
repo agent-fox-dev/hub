@@ -1,295 +1,117 @@
 package cli
 
 import (
-	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"strings"
-	"sync/atomic"
+	"sync"
 	"testing"
+	"time"
 )
 
-// ===========================================================================
-// TS-NS-4: 'afc workspace sync --wait' blocks until the triggered rebuild
-// reaches a terminal state.
-//
-// Requirement: NS-REQ-4
-// ===========================================================================
-
-func TestWorkspaceCLI_Sync_Wait_Success(t *testing.T) {
-	// Mock server:
-	// POST /sync returns sync response with rebuild_triggered=true and rebuild_job_id
-	// GET /rebuilds/:id returns "completed" after first poll
-	var pollCount atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-
-		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/sync") {
-			w.WriteHeader(http.StatusOK)
-			json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
-				"patches_merged":    []string{},
-				"rebuild_triggered": true,
-				"rebuild_job_id":    "rebuild-uuid-1",
-			})
-			return
-		}
-
-		if r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/rebuilds/") {
-			pollCount.Add(1)
-			w.WriteHeader(http.StatusOK)
-			json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
-				"id":           "rebuild-uuid-1",
-				"status":       "completed",
-				"strategy":     "rebase",
-				"created_at":   "2025-01-01T00:00:00Z",
-				"completed_at": "2025-01-01T00:01:00Z",
-			})
-			return
-		}
-
-		w.WriteHeader(http.StatusMethodNotAllowed)
-	}))
-	defer server.Close()
-
-	stdout, _, err := runWorkspaceCmd(t, server.URL, "test-api-key",
-		"sync", "my-workspace", "--wait", "--poll-interval", "100ms")
-
-	if err != nil {
-		t.Fatalf("expected exit 0; got error: %v", err)
-	}
-
-	// Verify stdout includes both the sync response and the rebuild result.
-	if !strings.Contains(stdout, "rebuild_triggered") {
-		t.Errorf("stdout should contain sync response with 'rebuild_triggered'; got: %s", stdout)
-	}
-	if !strings.Contains(stdout, "completed") {
-		t.Errorf("stdout should contain rebuild status 'completed'; got: %s", stdout)
-	}
-
-	if pollCount.Load() < 1 {
-		t.Error("expected at least 1 poll request for rebuild status")
-	}
-}
-
-func TestWorkspaceCLI_Sync_Wait_NoRebuild(t *testing.T) {
-	// Mock server: sync response with rebuild_triggered=false (no rebuild_job_id).
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-
-		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/sync") {
-			w.WriteHeader(http.StatusOK)
-			json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
-				"patches_merged":    []string{},
-				"rebuild_triggered": false,
-			})
-			return
-		}
-
-		w.WriteHeader(http.StatusMethodNotAllowed)
-	}))
-	defer server.Close()
-
-	stdout, _, err := runWorkspaceCmd(t, server.URL, "test-api-key",
-		"sync", "my-workspace", "--wait", "--poll-interval", "100ms")
-
-	if err != nil {
-		t.Fatalf("expected exit 0; got error: %v", err)
-	}
-
-	// Should print the sync response and exit without polling.
-	if !strings.Contains(stdout, "rebuild_triggered") {
-		t.Errorf("stdout should contain sync response; got: %s", stdout)
-	}
-}
-
-// ===========================================================================
-// TS-NS-5 (workspace sync without --wait): Existing behavior is unchanged.
-// ===========================================================================
-
-func TestWorkspaceCLI_Sync_NoWait_Unchanged(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-
-		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/sync") {
-			w.WriteHeader(http.StatusOK)
-			json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
-				"patches_merged":    []string{},
-				"rebuild_triggered": true,
-				"rebuild_job_id":    "rebuild-uuid-1",
-			})
-			return
-		}
-
-		// If a GET comes in for status polling, this test should not do that.
-		t.Error("unexpected GET request — sync without --wait should not poll")
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer server.Close()
-
-	stdout, stderr, err := runWorkspaceCmd(t, server.URL, "test-api-key",
-		"sync", "my-workspace")
-
-	if err != nil {
-		t.Fatalf("expected exit 0; got error: %v", err)
-	}
-	if stderr != "" {
-		t.Errorf("expected empty stderr; got: %s", stderr)
-	}
-
-	// Verify the response is valid JSON.
-	var result map[string]any
-	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
-		t.Fatalf("stdout is not valid JSON: %v\nstdout: %s", err, stdout)
-	}
-}
-
-// ===========================================================================
-// TS-NS-5 (merge submit without --wait): Existing behavior is unchanged.
-// ===========================================================================
-
-func TestMergeCLI_Submit_NoWait_Unchanged(t *testing.T) {
-	server, records := mergeMockServer(t, nil)
-	defer server.Close()
-
-	stdout, stderr, err := runMergeCmd(t, server.URL, "test-api-key",
-		"submit", "ws1", "--target", "main", "--source", "feature/a")
-
-	if err != nil {
-		t.Fatalf("expected exit 0; got error: %v", err)
-	}
-	if stderr != "" {
-		t.Errorf("expected empty stderr; got: %s", stderr)
-	}
-
-	// Only one request (the POST submit), no polling GETs.
-	reqs := getMergeRecords(records)
-	if len(reqs) != 1 {
-		t.Fatalf("expected exactly 1 request without --wait; got %d", len(reqs))
-	}
-	if reqs[0].Method != "POST" {
-		t.Errorf("method = %q; want POST", reqs[0].Method)
-	}
-
-	var result map[string]any
-	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
-		t.Fatalf("stdout is not valid JSON: %v", err)
-	}
-	if _, ok := result["status"]; !ok {
-		t.Error("response JSON missing 'status' field")
-	}
-}
-
-// ===========================================================================
-// Merge submit --wait success
-// ===========================================================================
-
-func TestMergeCLI_Submit_Wait_Success(t *testing.T) {
-	var pollCount atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-
+// jobHub answers a submit with a queued job and each poll with the next of
+// statuses, the last one repeated; the job record is `{"id":"job-1",...}`.
+func jobHub(t *testing.T, statuses ...string) *hub {
+	t.Helper()
+	var mu sync.Mutex
+	polls := 0
+	return newHubFunc(t, func(w http.ResponseWriter, r request) {
 		if r.Method == http.MethodPost {
-			w.WriteHeader(http.StatusAccepted)
-			json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
-				"id":             "merge-uuid-1",
-				"workspace_slug": "ws1",
-				"target_branch":  "main",
-				"source_ref":     "feature/a",
-				"status":         "queued",
-			})
+			respond(w, http.StatusAccepted, `{"id":"job-1","status":"queued"}`)
 			return
 		}
+		mu.Lock()
+		i := min(polls, len(statuses)-1)
+		polls++
+		mu.Unlock()
+		respond(w, http.StatusOK, `{"id":"job-1","status":"`+statuses[i]+`"}`)
+	})
+}
 
-		if r.Method == http.MethodGet {
-			pollCount.Add(1)
-			w.WriteHeader(http.StatusOK)
-			json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
-				"id":             "merge-uuid-1",
-				"workspace_slug": "ws1",
-				"target_branch":  "main",
-				"source_ref":     "feature/a",
-				"status":         "completed",
-			})
-			return
-		}
-
-		w.WriteHeader(http.StatusMethodNotAllowed)
-	}))
-	defer server.Close()
-
-	stdout, _, err := runMergeCmd(t, server.URL, "test-api-key",
-		"submit", "ws1", "--target", "main", "--source", "feature/a",
-		"--wait", "--poll-interval", "100ms")
-
+// The --wait loop polls the job as soon as it is submitted, prints the submit
+// response and the final record, and stops at the first terminal status.
+func TestWait_PollsImmediatelyUntilTheJobCompletes(t *testing.T) {
+	h := jobHub(t, "running", "completed")
+	start := time.Now()
+	stdout, stderr, err := h.run(t, "merge", "submit", "ws", "--target", "main", "--source", "feat",
+		"--wait", "--poll-interval", "50ms", "--timeout", "10s")
 	if err != nil {
-		t.Fatalf("expected exit 0; got error: %v", err)
+		t.Fatalf("merge submit --wait: %v", err)
 	}
-
-	if !strings.Contains(stdout, "completed") {
-		t.Errorf("stdout should contain 'completed'; got: %s", stdout)
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Errorf("took %s; the first poll must not wait for the interval", elapsed)
 	}
-
-	if pollCount.Load() < 1 {
-		t.Error("expected at least 1 poll request")
+	reqs := h.requests()
+	if len(reqs) != 3 || reqs[1].Method != http.MethodGet || reqs[1].Path != "/api/v1/workspaces/ws/merges/job-1" {
+		t.Errorf("requests = %+v; want the submit and two polls of /api/v1/workspaces/ws/merges/job-1", reqs)
+	}
+	docs := decodeDocuments(t, stdout)
+	if len(docs) != 2 || docs[0].(map[string]any)["status"] != "queued" || docs[1].(map[string]any)["status"] != "completed" {
+		t.Errorf("stdout = %q; want the submit response then the completed record", stdout)
+	}
+	if stderr != "" {
+		t.Errorf("stderr = %q; want nothing", stderr)
 	}
 }
 
-// ===========================================================================
-// Workspace create --wait success (AC-4)
-// ===========================================================================
-
-func TestWorkspaceCLI_Create_Wait_Success(t *testing.T) {
-	var pollCount atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-
-		// POST /api/v1/workspaces — create workspace
-		if r.Method == http.MethodPost && r.URL.Path == "/api/v1/workspaces" {
-			w.WriteHeader(http.StatusCreated)
-			json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
-				"slug":         "new-ws",
-				"git_url":      "https://github.com/org/repo",
-				"status":       "active",
-				"clone_status": "cloning",
-			})
-			return
-		}
-
-		// GET /api/v1/workspaces/new-ws — poll workspace status
-		if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/workspaces/new-ws") {
-			count := pollCount.Add(1)
-			w.WriteHeader(http.StatusOK)
-			cloneStatus := "cloning"
-			if count >= 2 {
-				cloneStatus = "ready"
+// A job that ends failed, dead_letter or cancelled is printed and exits 1
+// with the status named on stderr.
+func TestWait_NonCompletedTerminalStatusExitsOne(t *testing.T) {
+	for _, status := range []string{"failed", "dead_letter", "cancelled"} {
+		t.Run(status, func(t *testing.T) {
+			h := jobHub(t, status)
+			stdout, stderr, err := h.run(t, "merge", "submit", "ws", "--target", "main", "--source", "feat",
+				"--wait", "--poll-interval", "50ms")
+			if code := ExitCode(err); code != 1 || IsDivergedError(err) {
+				t.Errorf("exit code = %d (%v); want 1", code, err)
 			}
-			json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
-				"slug":         "new-ws",
-				"git_url":      "https://github.com/org/repo",
-				"status":       "active",
-				"clone_status": cloneStatus,
-			})
+			if !strings.Contains(stdout, `"status": "`+status+`"`) {
+				t.Errorf("stdout = %q; want the final record", stdout)
+			}
+			if want := "Job ended with status " + status + "."; !strings.Contains(stderr, want) {
+				t.Errorf("stderr = %q; want %q", stderr, want)
+			}
+		})
+	}
+}
+
+// When the job stays non-terminal past --timeout the wait ends with exit 1
+// and a timeout message on stderr.
+func TestWait_TimesOut(t *testing.T) {
+	h := jobHub(t, "running")
+	_, stderr, err := h.run(t, "merge", "submit", "ws", "--target", "main", "--source", "feat",
+		"--wait", "--poll-interval", "20ms", "--timeout", "150ms")
+	if code := ExitCode(err); code != 1 {
+		t.Errorf("exit code = %d (%v); want 1", code, err)
+	}
+	if !strings.Contains(stderr, "Timed out waiting for job to complete after 150ms") {
+		t.Errorf("stderr = %q; want the timeout message", stderr)
+	}
+	if n := len(h.requests()); n < 2 {
+		t.Errorf("the hub received %d requests; want the submit and at least one poll", n)
+	}
+}
+
+// A hub error while polling ends the wait with that error; a submit response
+// without an id cannot be polled.
+func TestWait_StopsOnAPollErrorOrAMissingJobID(t *testing.T) {
+	h := newHubFunc(t, func(w http.ResponseWriter, r request) {
+		if r.Method == http.MethodPost {
+			respond(w, http.StatusAccepted, `{"id":"job-1","status":"queued"}`)
 			return
 		}
-
-		w.WriteHeader(http.StatusNotFound)
-	}))
-	defer server.Close()
-
-	stdout, _, err := runWorkspaceCmd(t, server.URL, "test-api-key",
-		"create", "--git-url", "https://github.com/org/repo", "--slug", "new-ws",
-		"--wait", "--poll-interval", "100ms")
-
-	if err != nil {
-		t.Fatalf("expected exit 0; got error: %v", err)
+		respond(w, http.StatusInternalServerError, errorBody(500, "boom"))
+	})
+	stdout, _, err := h.run(t, "merge", "submit", "ws", "--target", "main", "--source", "feat", "--wait")
+	if code := ExitCode(err); code != 1 || errorMessage(t, stdout) != "boom" {
+		t.Errorf("exit code = %d, stdout = %q; want 1 and the hub's message", code, stdout)
 	}
 
-	// Verify stdout includes the final workspace with clone_status: ready.
-	if !strings.Contains(stdout, "ready") {
-		t.Errorf("stdout should contain clone_status 'ready'; got: %s", stdout)
+	h = newHub(t, http.StatusAccepted, `{"status":"queued"}`)
+	stdout, _, err = h.run(t, "merge", "submit", "ws", "--target", "main", "--source", "feat", "--wait")
+	if err == nil || !strings.Contains(errorMessage(t, stdout), "missing 'id'") {
+		t.Errorf("err = %v, stdout = %q; want the missing id reported", err, stdout)
 	}
-
-	if pollCount.Load() < 1 {
-		t.Error("expected at least 1 poll request for workspace status")
+	if n := len(h.requests()); n != 1 {
+		t.Errorf("the hub received %d requests; want the submit only", n)
 	}
 }
