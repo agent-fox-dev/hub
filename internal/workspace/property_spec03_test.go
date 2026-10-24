@@ -503,7 +503,7 @@ func TestSpec03_Group5_ImmutableFieldsUnchanged(t *testing.T) {
 		GitURL:  "https://git.example.com/immut-repo",
 		Branch:  &branch,
 		OwnerID: "prop-u4",
-		Status:  "active",
+		Status:  "pending",
 	})
 
 	// Record pre-PATCH immutable field values from the database.
@@ -604,7 +604,7 @@ func TestSpec03_Group5_OtherScopePATNoReadAccess(t *testing.T) {
 			Slug:    slug,
 			GitURL:  fmt.Sprintf("https://git.example.com/del-only-%d", i),
 			OwnerID: "del-pat-user",
-			Status:  "active",
+			Status:  "pending",
 		})
 	}
 
@@ -656,7 +656,7 @@ func TestSpec03_Group5_ExistingScopesStable(t *testing.T) {
 		Slug:    "scope-stable-ws",
 		GitURL:  "https://git.example.com/scope-stable",
 		OwnerID: "scope-user",
-		Status:  "active",
+		Status:  "pending",
 	})
 
 	pats := []struct {

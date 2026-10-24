@@ -11,7 +11,7 @@ import (
 // admin tokens pass.
 func TestMergeEndpoints_RequireWorkspaceOwner(t *testing.T) {
 	env := newMergeTestEnv(t, map[string]bool{"main": true, "feature/a": true})
-	seedTestWorkspace(t, env.db, "ws1", "alice", "active", "ready")
+	seedTestWorkspace(t, env.db, "ws1", "alice", "ready")
 	seedMergeJob(t, env.db, "job-1", "queued", "ws1", "main", "feature/a", "alice", nil, nil)
 
 	bob := mergeUserAuth("bob")
@@ -38,7 +38,7 @@ func TestMergeEndpoints_RequireWorkspaceOwner(t *testing.T) {
 // command runs.
 func TestMergeEndpoints_RejectOptionLikeRefs(t *testing.T) {
 	env := newMergeTestEnv(t, map[string]bool{"main": true, "--detach": true, "--exec=touch pwned": true})
-	seedTestWorkspace(t, env.db, "ws1", "alice", "active", "ready")
+	seedTestWorkspace(t, env.db, "ws1", "alice", "ready")
 	alice := mergeUserAuth("alice")
 
 	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/ws1/merges",

@@ -60,7 +60,7 @@ func TestSmoke_OwnerPushesBranch_TS_38_53(t *testing.T) {
 	pushGit(t, trunk, "checkout", "-q", "-b", "fix/42-nil-map")
 	tip := pushCommit(t, trunk, "fix.go", "package fix")
 	pushGit(t, trunk, "checkout", "-q", "main")
-	if err := insertWorkspace(hub.db.SqlDB, &Workspace{Slug: "smoke38", GitURL: gitURL, OwnerID: "u1", Status: "active", CloneStatus: "ready"}); err != nil {
+	if err := insertWorkspace(hub.db.SqlDB, &Workspace{Slug: "smoke38", GitURL: gitURL, OwnerID: "u1", Status: "ready"}); err != nil {
 		t.Fatal(err)
 	}
 

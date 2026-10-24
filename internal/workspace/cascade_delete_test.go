@@ -190,7 +190,7 @@ func TestCascadeDelete_OnlyTargetWorkspaceSecrets(t *testing.T) {
 		Slug:    "ws-to-keep",
 		GitURL:  "https://github.com/acme/other",
 		OwnerID: "user-1",
-		Status:  "active",
+		Status:  "pending",
 	}
 	if err := insertWorkspace(db, ws1); err != nil {
 		t.Fatalf("insertWorkspace(ws1): %v", err)

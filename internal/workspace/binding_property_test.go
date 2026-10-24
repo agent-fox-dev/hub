@@ -123,7 +123,7 @@ func TestBinding_SingleConnectionNoDeadlock_TS_33_11(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, slug := range []string{"s", "x"} {
-		if err := insertWorkspace(db, &Workspace{Slug: slug, GitURL: "https://github.com/org/" + slug, OwnerID: "user-1", Status: "active"}); err != nil {
+		if err := insertWorkspace(db, &Workspace{Slug: slug, GitURL: "https://github.com/org/" + slug, OwnerID: "user-1", Status: "pending"}); err != nil {
 			t.Fatal(err)
 		}
 	}

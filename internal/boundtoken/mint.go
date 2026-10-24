@@ -49,8 +49,8 @@ func handleMint(cfg Config) echo.HandlerFunc {
 		if code != 0 {
 			return wsaccess.WriteRefusal(c, code, msg)
 		}
-		if ws.Status != "active" {
-			return apikit.WriteAPIError(c, http.StatusBadRequest, "workspace is not active")
+		if ws.Status == "archived" {
+			return apikit.WriteAPIError(c, http.StatusBadRequest, "workspace is archived")
 		}
 
 		answer, err := delegateMint(c, cfg.APIKit)

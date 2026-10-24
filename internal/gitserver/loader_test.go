@@ -10,17 +10,17 @@ import (
 )
 
 // TS-06-24: Loader.Load() extracts the workspace slug from the endpoint
-// path, verifies clone_status=ready, opens the repository via PlainOpen,
+// path, verifies status=ready, opens the repository via PlainOpen,
 // and returns (storer.Storer, nil).
 // Requirement: 06-REQ-7.1
 func TestLoader_HappyPath_ReadyWorkspace_ReturnsStorer(t *testing.T) {
 	env := newGitTestEnv(t)
 
-	// Seed org and workspace with matching org_id and clone_status='ready'.
+	// Seed org and workspace with matching org_id and status='ready'.
 	env.seedOrg(t, "org-1", "My Org", "myorg")
 	env.seedOrgMember(t, "org-1", "user-1")
-	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "active")
-	// clone_status defaults to 'ready' from schema.
+	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "ready")
+	// status defaults to 'ready' from schema.
 
 	// Create a real git repository at the expected filesystem path.
 	env.initWorkspaceRepo(t, "myws")
@@ -45,7 +45,7 @@ func TestLoader_HappyPath_StorerIsUsable(t *testing.T) {
 
 	env.seedOrg(t, "org-1", "My Org", "myorg")
 	env.seedOrgMember(t, "org-1", "user-1")
-	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "active")
+	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "ready")
 
 	env.initWorkspaceRepo(t, "myws")
 
@@ -91,15 +91,15 @@ func TestLoader_WorkspaceNotFound_ReturnsErrRepositoryNotFound(t *testing.T) {
 
 // TestLoader_WorkspaceNotReady_ReturnsErrRepositoryNotFound verifies
 // that the Loader returns ErrRepositoryNotFound when the workspace
-// exists but clone_status is not 'ready'.
+// exists but status is not 'ready'.
 // Requirement: 06-REQ-7.2
 func TestLoader_WorkspaceNotReady_ReturnsErrRepositoryNotFound(t *testing.T) {
 	env := newGitTestEnv(t)
 
 	env.seedOrg(t, "org-1", "My Org", "myorg")
 	env.seedOrgMember(t, "org-1", "user-1")
-	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "active")
-	env.setCloneStatus(t, "myws", "cloning")
+	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "ready")
+	env.setStatus(t, "myws", "cloning")
 
 	env.initWorkspaceRepo(t, "myws")
 
@@ -126,7 +126,7 @@ func TestLoader_OrgMismatch_ReturnsErrRepositoryNotFound(t *testing.T) {
 	env.seedOrg(t, "org-2", "Other Org", "otherorg")
 	env.seedOrgMember(t, "org-1", "user-1")
 	// Workspace belongs to org-1 (slug 'myorg'), but endpoint uses 'otherorg'.
-	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "active")
+	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "ready")
 
 	env.initWorkspaceRepo(t, "myws")
 
@@ -185,7 +185,7 @@ func TestLoader_PlainOpenFails_ReturnsWrappedError(t *testing.T) {
 
 	env.seedOrg(t, "org-1", "My Org", "myorg")
 	env.seedOrgMember(t, "org-1", "user-1")
-	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "active")
+	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "ready")
 	// Deliberately do NOT create a git repo at the expected path.
 	// The Loader should call PlainOpen and get an I/O error.
 
@@ -218,7 +218,7 @@ func TestLoader_LastStorerRecordedOnlyForRequestLoader(t *testing.T) {
 
 	env.seedOrg(t, "org-1", "My Org", "myorg")
 	env.seedOrgMember(t, "org-1", "user-1")
-	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "active")
+	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "ready")
 	env.initWorkspaceRepo(t, "myws")
 
 	ep := &transport.Endpoint{Path: "/git/myorg/myws.git"}
@@ -277,7 +277,7 @@ func TestLoader_ConcurrentBaseLoads(t *testing.T) {
 
 	env.seedOrg(t, "org-1", "My Org", "myorg")
 	env.seedOrgMember(t, "org-1", "user-1")
-	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "active")
+	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "ready")
 	env.initWorkspaceRepo(t, "myws")
 
 	base := NewWorkspaceLoader(env.db, env.workspaceRoot)
@@ -313,7 +313,7 @@ func TestLoader_SlugExtraction(t *testing.T) {
 
 	env.seedOrg(t, "org-1", "My Org", "myorg")
 	env.seedOrgMember(t, "org-1", "user-1")
-	env.seedWorkspace(t, "my-workspace", "https://github.com/org/repo", "user-1", "org-1", "active")
+	env.seedWorkspace(t, "my-workspace", "https://github.com/org/repo", "user-1", "org-1", "ready")
 
 	env.initWorkspaceRepo(t, "my-workspace")
 

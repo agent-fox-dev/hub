@@ -46,7 +46,7 @@ func useBranchPushEmitter(t *testing.T) *mockAuditEmitter {
 // owner, and returns it.
 func (e *branchPushEnv) seedReady(t *testing.T, slug, owner string) *Workspace {
 	t.Helper()
-	ws := &Workspace{Slug: slug, GitURL: "https://github.com/org/" + slug, OwnerID: owner, Status: "active", CloneStatus: "ready"}
+	ws := &Workspace{Slug: slug, GitURL: "https://github.com/org/" + slug, OwnerID: owner, Status: "ready"}
 	e.seedWorkspace(t, ws)
 	return ws
 }
@@ -235,7 +235,7 @@ func TestBranchPushOrgMember_TS_38_13(t *testing.T) {
 	env.seedOrgMember(t, "org-push", "user-a")
 	env.seedOrgMember(t, "org-push", "user-m")
 	org := "org-push"
-	env.seedWorkspace(t, &Workspace{Slug: "ws-org", GitURL: "https://github.com/org/ws-org", OwnerID: "user-a", OrgID: &org, Status: "active", CloneStatus: "ready"})
+	env.seedWorkspace(t, &Workspace{Slug: "ws-org", GitURL: "https://github.com/org/ws-org", OwnerID: "user-a", OrgID: &org, Status: "ready"})
 
 	for _, auth := range []*apikit.AuthInfo{userAuth("user-m"), patAuth("user-m", "workspaces:write")} {
 		rec := env.push(t, "ws-org", "feat", "", auth)
@@ -295,8 +295,8 @@ func TestBranchPushInvalidName_TS_38_16(t *testing.T) {
 // Requirement: 38-REQ-3.2, 38-REQ-3.3
 func TestBranchPushWorkspaceNotUsable_TS_38_17(t *testing.T) {
 	env := newBranchPushEnv(t)
-	env.seedWorkspace(t, &Workspace{Slug: "ws-archived", GitURL: "https://github.com/org/a", OwnerID: "user-a", Status: "archived", CloneStatus: "archived"})
-	env.seedWorkspace(t, &Workspace{Slug: "ws-cloning", GitURL: "https://github.com/org/c", OwnerID: "user-a", Status: "active", CloneStatus: "cloning"})
+	env.seedWorkspace(t, &Workspace{Slug: "ws-archived", GitURL: "https://github.com/org/a", OwnerID: "user-a", Status: "archived"})
+	env.seedWorkspace(t, &Workspace{Slug: "ws-cloning", GitURL: "https://github.com/org/c", OwnerID: "user-a", Status: "cloning"})
 	holdLock(t, "ws-archived")
 	holdLock(t, "ws-cloning")
 

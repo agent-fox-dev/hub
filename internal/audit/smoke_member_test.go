@@ -94,10 +94,10 @@ func startMemberHub(t *testing.T) *memberHub {
 	for _, stmt := range []string{
 		`INSERT INTO orgs (id, name, slug, status, created_at, updated_at) VALUES ('org-acme', 'Acme', 'acme', 'active', '` + now + `', '` + now + `')`,
 		`INSERT INTO org_members (org_id, user_id, created_at) VALUES ('org-acme', 'u1', '` + now + `'), ('org-acme', 'u2', '` + now + `')`,
-		`INSERT INTO workspaces (slug, git_url, owner_id, org_id, status, clone_status, created_at, updated_at)
-			VALUES ('team-w', 'https://github.com/acme/w', 'u1', 'org-acme', 'active', 'ready', '` + now + `', '` + now + `')`,
-		`INSERT INTO workspaces (slug, git_url, owner_id, status, clone_status, created_at, updated_at)
-			VALUES ('own-w', 'https://github.com/u2/w', 'u2', 'active', 'ready', '` + now + `', '` + now + `')`,
+		`INSERT INTO workspaces (slug, git_url, owner_id, org_id, status, created_at, updated_at)
+			VALUES ('team-w', 'https://github.com/acme/w', 'u1', 'org-acme', 'ready', '` + now + `', '` + now + `')`,
+		`INSERT INTO workspaces (slug, git_url, owner_id, status, created_at, updated_at)
+			VALUES ('own-w', 'https://github.com/u2/w', 'u2', 'ready', '` + now + `', '` + now + `')`,
 	} {
 		if _, err := database.SqlDB.Exec(stmt); err != nil {
 			t.Fatal(err)

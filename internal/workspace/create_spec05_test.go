@@ -141,7 +141,7 @@ func TestWorkspaceCreate_Spec05_DBInsertFailNoEnqueue(t *testing.T) {
 		Slug:    "spec05-dup-ws",
 		GitURL:  "https://github.com/example/repo.git",
 		OwnerID: "user-1",
-		Status:  "active",
+		Status:  "pending",
 	})
 
 	body := `{

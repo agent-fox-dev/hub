@@ -17,7 +17,7 @@ func TestPatchStore_SetAndClearOriginSyncState_SQL_TS2044(t *testing.T) {
 	createWorkspacesTable(t, db)
 	createPatchesTable(t, db)
 
-	seedWorkspace(t, db, "ws1", "alice", "active", "ready", "carry_patch", "integration")
+	seedWorkspace(t, db, "ws1", "alice", "ready", "carry_patch", "integration")
 	seedPatch(t, db, "p1", "ws1", "feature/a", 1, PatchStatusActive)
 	seedPatch(t, db, "p2", "ws1", "feature/b", 2, PatchStatusActive)
 
@@ -157,7 +157,7 @@ func TestPatchStore_ClearOriginSyncStateForPatch_SQL_TS2044(t *testing.T) {
 	createWorkspacesTable(t, db)
 	createPatchesTable(t, db)
 
-	seedWorkspace(t, db, "ws1", "alice", "active", "ready", "carry_patch", "integration")
+	seedWorkspace(t, db, "ws1", "alice", "ready", "carry_patch", "integration")
 	seedPatch(t, db, "p1", "ws1", "feature/a", 1, PatchStatusActive)
 	seedPatch(t, db, "p2", "ws1", "feature/b", 2, PatchStatusActive)
 

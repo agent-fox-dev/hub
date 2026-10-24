@@ -70,7 +70,7 @@ func legacyAnswer(r compatRequest, caller, status string) compatAnswer {
 		return compatAnswer{http.StatusConflict, "workspace is archived", "workspace_archived"}
 	case r.name == "ingest" && caller == "stranger":
 		return compatAnswer{http.StatusForbidden, "token owner does not have write access to this workspace", "workspace_access_denied"}
-	case sessionRead && (caller == "stranger" || status != "active"):
+	case sessionRead && (caller == "stranger" || status != "ready"):
 		return compatAnswer{http.StatusForbidden, "workspace access denied", ""}
 	case caller == "stranger":
 		return compatAnswer{http.StatusNotFound, "workspace not found", ""}
@@ -98,7 +98,7 @@ func newCompatEnv(t *testing.T, org, status string, members ...string) *auditTes
 	for _, u := range members {
 		seedOrgMember(t, env.sqliteDB, org, u)
 	}
-	env.seedWorkspaceInOrg(t, "w-x", "u3", "X", "active")
+	env.seedWorkspaceInOrg(t, "w-x", "u3", "X", "ready")
 	seedOrgMember(t, env.sqliteDB, "X", "u3")
 	env.seedSession(t, &Session{ID: "sess-w", WorkspaceSlug: "w", Status: "active", CredentialID: "u1", CredentialType: "pat"})
 	return env
@@ -127,7 +127,7 @@ func TestCompat_PropertyStrangerUnchanged_TS_36_43(t *testing.T) {
 	for seed := int64(1); seed <= 12; seed++ {
 		rng := rand.New(rand.NewSource(seed))
 		org := []string{"", "O", "P"}[rng.Intn(3)]
-		status := []string{"active", "archived"}[rng.Intn(2)]
+		status := []string{"ready", "archived"}[rng.Intn(2)]
 		var members []string
 		if org != "" {
 			members = []string{"u1"}
@@ -150,7 +150,7 @@ func TestCompat_PropertyStrangerUnchanged_TS_36_43(t *testing.T) {
 func TestCompat_PropertyPersonalAndNullOrg_TS_36_44(t *testing.T) {
 	callers := map[string]*apikit.AuthInfo{"owner": allScopes("u1"), "stranger": allScopes("u3"), "admin": adminAuth()}
 	for _, org := range []string{"", "personal-u1"} {
-		for _, status := range []string{"active", "archived"} {
+		for _, status := range []string{"ready", "archived"} {
 			for name, auth := range callers {
 				var members []string
 				if org != "" {

@@ -16,7 +16,7 @@ func TestStateMachine_IntegrationWithDB(t *testing.T) {
 		Slug:    "sm-test-ws",
 		GitURL:  "https://github.com/org/repo",
 		OwnerID: "user-1",
-		Status:  "active",
+		Status:  "pending",
 	}
 	if err := insertWorkspace(db, ws); err != nil {
 		t.Fatalf("seed workspace: %v", err)
@@ -34,8 +34,8 @@ func TestStateMachine_IntegrationWithDB(t *testing.T) {
 	}
 
 	for _, tr := range transitions {
-		if err := updateCloneStatus(db, ws.Slug, tr.to, tr.headSHA, tr.cloneErr); err != nil {
-			t.Fatalf("updateCloneStatus(%q -> %q): %v", ws.Slug, tr.to, err)
+		if err := setStatus(db, ws.Slug, tr.to, tr.headSHA, tr.cloneErr); err != nil {
+			t.Fatalf("setStatus(%q -> %q): %v", ws.Slug, tr.to, err)
 		}
 		cloneStatus, _, _, err := getCloneFields(db, ws.Slug)
 		if err != nil {
@@ -66,8 +66,8 @@ func TestStateMachine_ArchivedToPendingOnlyViaReactivate(t *testing.T) {
 	})
 
 	// Set clone_status to 'archived'.
-	if err := updateCloneStatus(env.db, "archived-ws", "archived", nil, nil); err != nil {
-		t.Fatalf("updateCloneStatus('archived'): %v", err)
+	if err := setStatus(env.db, "archived-ws", "archived", nil, nil); err != nil {
+		t.Fatalf("setStatus('archived'): %v", err)
 	}
 
 	// Reactivate the workspace via the HTTP endpoint.

@@ -42,7 +42,7 @@ func TestGitBinding_NoQueryForKeysAndAdmin_TS_33_52(t *testing.T) {
 // same answer. Requirement: 33-REQ-9.3
 func TestGitBinding_PropertyNeverWidens_TS_33_53(t *testing.T) {
 	env := newBindingGitEnv(t)
-	env.seedWorkspace(t, "o", "https://github.com/org/o", "user-b", "org-1", "active")
+	env.seedWorkspace(t, "o", "https://github.com/org/o", "user-b", "org-1", "ready")
 	env.initWorkspaceRepo(t, "o")
 
 	scopeSets := map[string][]string{"none": nil, "read": {"git:read"}, "write": {"git:write"}, "both": {"git:read", "git:write"}}

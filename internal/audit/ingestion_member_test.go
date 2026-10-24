@@ -104,13 +104,13 @@ func TestIngestion_PropertyOrder_TS_36_34(t *testing.T) {
 		}
 		return answer{http.StatusForbidden, "workspace_access_denied"}
 	}
-	for _, state := range []string{"missing", "archived", "active"} {
+	for _, state := range []string{"missing", "archived", "ready"} {
 		for name, auth := range callers {
 			env := newAuditTestEnvWithSQLite(t)
 			if state != "missing" {
 				env.seedWorkspaceInOrg(t, "w", "u1", "O", state)
 			}
-			env.seedWorkspaceInOrg(t, "w-else", "u1", "O", "active")
+			env.seedWorkspaceInOrg(t, "w-else", "u1", "O", "ready")
 			seedOrgMember(t, env.sqliteDB, "O", "u1")
 			seedOrgMember(t, env.sqliteDB, "O", "u2")
 			bindToken(t, env.sqliteDB, "tokE", "w-else")

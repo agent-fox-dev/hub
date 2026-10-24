@@ -438,7 +438,7 @@ func TestCarryPatch_UpdateImmutableWorkspaceMode(t *testing.T) {
 		Slug:    "immutable-cp-ws",
 		GitURL:  "https://github.com/org/repo",
 		OwnerID: "u1-id",
-		Status:  "active",
+		Status:  "pending",
 	})
 
 	immutableBodies := []struct {
@@ -496,7 +496,7 @@ func TestCarryPatch_UpdateImmutableSameValue(t *testing.T) {
 		Slug:    "immutable-same-ws",
 		GitURL:  "https://github.com/org/repo",
 		OwnerID: "u1-id",
-		Status:  "active",
+		Status:  "pending",
 	})
 
 	// workspace_mode is 'standard' by default; try setting it to 'standard'.
@@ -531,7 +531,7 @@ func TestCarryPatch_UpdateMixedMutableImmutableRejected(t *testing.T) {
 		Slug:        "mixed-fields-ws",
 		GitURL:      "https://github.com/org/repo",
 		OwnerID:     "u1-id",
-		Status:      "active",
+		Status:      "pending",
 		Description: "original description",
 	})
 
@@ -648,7 +648,7 @@ func TestCarryPatch_StandardResponseNullFields(t *testing.T) {
 		Slug:    "std-resp-ws",
 		GitURL:  "https://github.com/org/repo",
 		OwnerID: "u1-id",
-		Status:  "active",
+		Status:  "pending",
 	})
 
 	rec := env.doRequest(t, http.MethodGet, "/api/v1/workspaces/std-resp-ws", "", auth)

@@ -63,7 +63,7 @@ func TestCountLive_TS_26_31(t *testing.T) {
 // Requirement: 26-REQ-5.4
 func TestIssue_AtCapacity_TS_26_32(t *testing.T) {
 	env := newLeaseEnv(t, leaseEnvOptions{config: capacityConfig(2)})
-	env.addWorkspace("gadgets", leaseOwner, "", "active")
+	env.addWorkspace("gadgets", leaseOwner, "", "ready")
 	env.plantSecret("workspace", "gadgets", "GIT_PAT", "x")
 
 	first := env.mustIssue()

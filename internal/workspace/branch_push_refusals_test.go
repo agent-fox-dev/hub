@@ -27,8 +27,8 @@ func (e *branchPushEnv) seedPushWorkspace(t *testing.T, ws *Workspace, branches 
 	if ws.Status == "" {
 		ws.Status = "active"
 	}
-	if ws.CloneStatus == "" {
-		ws.CloneStatus = "ready"
+	if ws.Status == "" {
+		ws.Status = "ready"
 	}
 	e.seedWorkspace(t, ws)
 	return bare

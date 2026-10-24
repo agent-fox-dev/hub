@@ -67,8 +67,8 @@ func TestSmoke_MemberGetsStrangers404_TS_35_59(t *testing.T) {
 	for _, stmt := range []string{
 		`INSERT INTO orgs (id, name, slug, status, created_at, updated_at) VALUES ('org-acme', 'Acme', 'acme', 'active', '` + now + `', '` + now + `')`,
 		`INSERT INTO org_members (org_id, user_id, created_at) VALUES ('org-acme', 'u1', '` + now + `'), ('org-acme', 'u2', '` + now + `')`,
-		`INSERT INTO workspaces (slug, git_url, owner_id, org_id, status, display_name, description, clone_status, created_at, updated_at)
-			VALUES ('team-w', 'https://github.com/acme/w', 'u1', 'org-acme', 'active', 'team-w', '', 'ready', '` + now + `', '` + now + `')`,
+		`INSERT INTO workspaces (slug, git_url, owner_id, org_id, status, display_name, description, created_at, updated_at)
+			VALUES ('team-w', 'https://github.com/acme/w', 'u1', 'org-acme', 'ready', 'team-w', '', '` + now + `', '` + now + `')`,
 	} {
 		if _, err := db.Exec(stmt); err != nil {
 			t.Fatal(err)

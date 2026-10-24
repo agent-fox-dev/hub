@@ -88,7 +88,7 @@ func TestCarryPatchSync_Returns200WithSyncFields(t *testing.T) {
 func TestCarryPatchSync_StandardWorkspace_NoCarryPatchFields(t *testing.T) {
 	env := newFullTestEnv(t)
 
-	seedWorkspace(t, env.db, "ws-std", "alice", "active", "ready", "standard", "")
+	seedWorkspace(t, env.db, "ws-std", "alice", "ready", "standard", "")
 
 	auth := rebuildUserAuth("alice")
 	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/ws-std/sync", "", auth)
@@ -671,8 +671,8 @@ func TestCarryPatchSync_EmptyStoredSHA_ForcePushFalse(t *testing.T) {
 	// Seed workspace with NULL upstream_head_sha (first sync).
 	now := "2024-01-01T00:00:00Z"
 	_, err := env.db.Exec(
-		`INSERT INTO workspaces (slug, git_url, owner_id, status, clone_status, workspace_mode, integration_branch, upstream_url, created_at, updated_at)
-		 VALUES (?, ?, ?, 'active', 'ready', 'carry_patch', ?, ?, ?, ?)`,
+		`INSERT INTO workspaces (slug, git_url, owner_id, status, workspace_mode, integration_branch, upstream_url, created_at, updated_at)
+		 VALUES (?, ?, ?, 'ready', 'carry_patch', ?, ?, ?, ?)`,
 		"my-workspace", "https://github.com/example/repo", "alice", "integration", "https://github.com/example/upstream", now, now,
 	)
 	if err != nil {

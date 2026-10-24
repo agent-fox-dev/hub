@@ -55,7 +55,7 @@ func TestWorkspaceCreate_DuplicateSlug(t *testing.T) {
 		Slug:    "existing-ws",
 		GitURL:  "https://github.com/org/repo",
 		OwnerID: "user-1",
-		Status:  "active",
+		Status:  "pending",
 	})
 
 	auth := userAuth("user-1")

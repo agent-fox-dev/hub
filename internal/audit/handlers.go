@@ -532,7 +532,7 @@ func hasWorkspaceAccess(c echo.Context, sqliteDB *sql.DB, auth *apikit.AuthInfo,
 		return false
 	}
 	ws, status, _ := wsaccess.AuthorizeWorkspace(sqliteDB, auth, slug, wsaccess.NeedRead)
-	return status == 0 && ws.Status == "active"
+	return status == 0 && ws.Status != "archived"
 }
 
 // getAccessibleWorkspaces returns the active workspaces a non-admin caller
@@ -567,14 +567,14 @@ func getAccessibleWorkspaces(sqliteDB *sql.DB, auth *apikit.AuthInfo) ([]string,
 // activeSlugsChunk bounds the number of slugs one activeSlugs query binds.
 const activeSlugsChunk = 500
 
-// activeSlugs returns those of slugs whose workspace is active.
+// activeSlugs returns those of slugs whose workspace is not archived.
 func activeSlugs(sqliteDB *sql.DB, slugs []string) ([]string, error) {
 	args := make([]any, len(slugs))
 	for i, s := range slugs {
 		args[i] = s
 	}
 	rows, err := sqliteDB.Query(
-		"SELECT slug FROM workspaces WHERE status = 'active' AND slug IN (?"+strings.Repeat(", ?", len(slugs)-1)+")",
+		"SELECT slug FROM workspaces WHERE status != 'archived' AND slug IN (?"+strings.Repeat(", ?", len(slugs)-1)+")",
 		args...,
 	)
 	if err != nil {

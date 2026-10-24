@@ -16,10 +16,10 @@ import (
 // workspaceInfo holds the database state needed for workspace resolution
 // and authorization in the git server middleware.
 type workspaceInfo struct {
-	Slug        string
-	OwnerID     string
-	OrgID       string
-	CloneStatus string
+	Slug    string
+	OwnerID string
+	OrgID   string
+	Status  string
 }
 
 // resolveWorkspaceFromDB looks up a workspace by slug and verifies that it
@@ -33,9 +33,9 @@ func resolveWorkspaceFromDB(db *sql.DB, orgSlug, wsSlug string) (*workspaceInfo,
 	// Look up the workspace by slug. A NULL org_id reads as "no org".
 	var ws workspaceInfo
 	err := db.QueryRow(
-		`SELECT slug, owner_id, COALESCE(org_id, ''), clone_status FROM workspaces WHERE slug = ?`,
+		`SELECT slug, owner_id, COALESCE(org_id, ''), status FROM workspaces WHERE slug = ?`,
 		wsSlug,
-	).Scan(&ws.Slug, &ws.OwnerID, &ws.OrgID, &ws.CloneStatus)
+	).Scan(&ws.Slug, &ws.OwnerID, &ws.OrgID, &ws.Status)
 	if err == sql.ErrNoRows {
 		return nil, nil // workspace not found
 	}
@@ -132,8 +132,8 @@ func gitResolverMiddleware(db *sql.DB, wsRoot string) echo.MiddlewareFunc {
 				return writePktLineError(c, http.StatusNotFound, "repository not found")
 			}
 
-			// Verify clone_status is 'ready' (06-REQ-4.4).
-			if ws.CloneStatus != "ready" {
+			// Verify the workspace is ready (06-REQ-4.4).
+			if ws.Status != "ready" {
 				return writePktLineError(c, http.StatusNotFound, "repository not available")
 			}
 

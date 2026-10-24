@@ -47,20 +47,11 @@ func TestSyncPermissions_AllCredentialTypesSync(t *testing.T) {
 			env := newTestEnv(t)
 
 			env.seedWorkspace(t, &Workspace{
-				Slug:        cred.slug,
-				GitURL:      "https://github.com/example/repo.git",
-				OwnerID:     "alice-id",
-				Status:      "active",
-				CloneStatus: "ready",
+				Slug:    cred.slug,
+				GitURL:  "https://github.com/example/repo.git",
+				OwnerID: "alice-id",
+				Status:  "ready",
 			})
-
-			_, err := env.db.Exec(
-				`UPDATE workspaces SET sync_mode = 'pull_only', sync_status = 'idle' WHERE slug = ?`,
-				cred.slug,
-			)
-			if err != nil {
-				t.Fatalf("failed to set sync fields: %v", err)
-			}
 
 			auth := cred.auth()
 			rec := env.doRequest(t, http.MethodPost,
@@ -105,11 +96,10 @@ func TestSyncPermissions_AllCredentialTypesReclone(t *testing.T) {
 			env := newTestEnv(t)
 
 			env.seedWorkspace(t, &Workspace{
-				Slug:        cred.slug,
-				GitURL:      "https://github.com/example/repo.git",
-				OwnerID:     "alice-id",
-				Status:      "active",
-				CloneStatus: "ready",
+				Slug:    cred.slug,
+				GitURL:  "https://github.com/example/repo.git",
+				OwnerID: "alice-id",
+				Status:  "ready",
 			})
 
 			auth := cred.auth()
@@ -130,11 +120,10 @@ func TestSyncPermissions_ReadOnlyPATRejectedSync(t *testing.T) {
 	env := newTestEnv(t)
 
 	env.seedWorkspace(t, &Workspace{
-		Slug:        "perm-readonly-ws",
-		GitURL:      "https://github.com/example/repo.git",
-		OwnerID:     "alice-id",
-		Status:      "active",
-		CloneStatus: "ready",
+		Slug:    "perm-readonly-ws",
+		GitURL:  "https://github.com/example/repo.git",
+		OwnerID: "alice-id",
+		Status:  "ready",
 	})
 
 	auth := patAuth("alice-id", "workspaces:read")
@@ -158,11 +147,10 @@ func TestSyncPermissions_ReadOnlyPATRejectedReclone(t *testing.T) {
 	env := newTestEnv(t)
 
 	env.seedWorkspace(t, &Workspace{
-		Slug:        "perm-readonly-reclone-ws",
-		GitURL:      "https://github.com/example/repo.git",
-		OwnerID:     "alice-id",
-		Status:      "active",
-		CloneStatus: "ready",
+		Slug:    "perm-readonly-reclone-ws",
+		GitURL:  "https://github.com/example/repo.git",
+		OwnerID: "alice-id",
+		Status:  "ready",
 	})
 
 	auth := patAuth("alice-id", "workspaces:read")
@@ -181,11 +169,10 @@ func TestSyncPermissions_UnauthenticatedSyncRejected(t *testing.T) {
 	env := newTestEnv(t)
 
 	env.seedWorkspace(t, &Workspace{
-		Slug:        "perm-noauth-ws",
-		GitURL:      "https://github.com/example/repo.git",
-		OwnerID:     "alice-id",
-		Status:      "active",
-		CloneStatus: "ready",
+		Slug:    "perm-noauth-ws",
+		GitURL:  "https://github.com/example/repo.git",
+		OwnerID: "alice-id",
+		Status:  "ready",
 	})
 
 	rec := env.doRequest(t, http.MethodPost,
@@ -203,11 +190,10 @@ func TestSyncPermissions_UnauthenticatedRecloneRejected(t *testing.T) {
 	env := newTestEnv(t)
 
 	env.seedWorkspace(t, &Workspace{
-		Slug:        "perm-noauth-reclone-ws",
-		GitURL:      "https://github.com/example/repo.git",
-		OwnerID:     "alice-id",
-		Status:      "active",
-		CloneStatus: "ready",
+		Slug:    "perm-noauth-reclone-ws",
+		GitURL:  "https://github.com/example/repo.git",
+		OwnerID: "alice-id",
+		Status:  "ready",
 	})
 
 	rec := env.doRequest(t, http.MethodPost,
@@ -226,16 +212,14 @@ func TestSyncPermissions_SyncFieldsVisibleWithReadScope(t *testing.T) {
 	env := newTestEnv(t)
 
 	env.seedWorkspace(t, &Workspace{
-		Slug:        "read-fields-ws",
-		GitURL:      "https://github.com/example/repo.git",
-		OwnerID:     "alice-id",
-		Status:      "active",
-		CloneStatus: "ready",
+		Slug:    "read-fields-ws",
+		GitURL:  "https://github.com/example/repo.git",
+		OwnerID: "alice-id",
+		Status:  "ready",
 	})
 
 	_, err := env.db.Exec(
-		`UPDATE workspaces SET sync_mode = 'pull_only', sync_status = 'error',
-		 sync_error = 'test error', upstream_head_sha = 'abc123',
+		`UPDATE workspaces SET sync_error = 'test error', upstream_head_sha = 'abc123',
 		 last_sync_at = '2024-01-01T00:00:00Z'
 		 WHERE slug = ?`,
 		"read-fields-ws",
@@ -257,18 +241,15 @@ func TestSyncPermissions_SyncFieldsVisibleWithReadScope(t *testing.T) {
 		t.Fatalf("failed to decode response: %v", err)
 	}
 
-	syncFields := []string{"sync_mode", "sync_status", "upstream_head_sha", "last_sync_at", "sync_error"}
+	syncFields := []string{"upstream_head_sha", "last_sync_at", "sync_error"}
 	for _, field := range syncFields {
 		if _, ok := resp[field]; !ok {
 			t.Errorf("response missing %q field", field)
 		}
 	}
 
-	if resp["sync_mode"] != "pull_only" {
-		t.Errorf("sync_mode = %v; want %q", resp["sync_mode"], "pull_only")
-	}
-	if resp["sync_status"] != "error" {
-		t.Errorf("sync_status = %v; want %q", resp["sync_status"], "error")
+	if resp["upstream_head_sha"] != "abc123" {
+		t.Errorf("upstream_head_sha = %v; want %q", resp["upstream_head_sha"], "abc123")
 	}
 	if resp["sync_error"] != "test error" {
 		t.Errorf("sync_error = %v; want %q", resp["sync_error"], "test error")

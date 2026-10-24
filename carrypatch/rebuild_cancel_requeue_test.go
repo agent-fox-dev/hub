@@ -17,7 +17,7 @@ import (
 func TestCancelRebuild_QueuedJob_Returns200(t *testing.T) {
 	env := newRebuildTestEnv(t)
 
-	seedWorkspace(t, env.db, "ws1", "alice", "active", "ready", "carry_patch", "integration")
+	seedWorkspace(t, env.db, "ws1", "alice", "ready", "carry_patch", "integration")
 	seedRebuildJob(t, env.db, "job-cancel-1", "queued", "ws1", "rebase", "alice")
 
 	rec := env.doRequest(t, http.MethodDelete, "/api/v1/workspaces/ws1/rebuilds/job-cancel-1", "", rebuildUserAuth("alice"))
@@ -54,7 +54,7 @@ func TestCancelRebuild_QueuedJob_Returns200(t *testing.T) {
 func TestCancelRebuild_RunningJob_Returns409(t *testing.T) {
 	env := newRebuildTestEnv(t)
 
-	seedWorkspace(t, env.db, "ws1", "alice", "active", "ready", "carry_patch", "integration")
+	seedWorkspace(t, env.db, "ws1", "alice", "ready", "carry_patch", "integration")
 	seedRebuildJob(t, env.db, "job-running-1", "running", "ws1", "rebase", "alice")
 
 	rec := env.doRequest(t, http.MethodDelete, "/api/v1/workspaces/ws1/rebuilds/job-running-1", "", rebuildUserAuth("alice"))
@@ -83,7 +83,7 @@ func TestCancelRebuild_RunningJob_Returns409(t *testing.T) {
 func TestCancelRebuild_CompletedJob_Returns409(t *testing.T) {
 	env := newRebuildTestEnv(t)
 
-	seedWorkspace(t, env.db, "ws1", "alice", "active", "ready", "carry_patch", "integration")
+	seedWorkspace(t, env.db, "ws1", "alice", "ready", "carry_patch", "integration")
 	seedRebuildJob(t, env.db, "job-done-1", "completed", "ws1", "rebase", "alice")
 
 	rec := env.doRequest(t, http.MethodDelete, "/api/v1/workspaces/ws1/rebuilds/job-done-1", "", rebuildUserAuth("alice"))
@@ -97,7 +97,7 @@ func TestCancelRebuild_CompletedJob_Returns409(t *testing.T) {
 func TestCancelRebuild_FailedJob_Returns409(t *testing.T) {
 	env := newRebuildTestEnv(t)
 
-	seedWorkspace(t, env.db, "ws1", "alice", "active", "ready", "carry_patch", "integration")
+	seedWorkspace(t, env.db, "ws1", "alice", "ready", "carry_patch", "integration")
 	seedRebuildJob(t, env.db, "job-failed-1", "failed", "ws1", "rebase", "alice")
 
 	rec := env.doRequest(t, http.MethodDelete, "/api/v1/workspaces/ws1/rebuilds/job-failed-1", "", rebuildUserAuth("alice"))
@@ -111,7 +111,7 @@ func TestCancelRebuild_FailedJob_Returns409(t *testing.T) {
 func TestCancelRebuild_DeadLetterJob_Returns409(t *testing.T) {
 	env := newRebuildTestEnv(t)
 
-	seedWorkspace(t, env.db, "ws1", "alice", "active", "ready", "carry_patch", "integration")
+	seedWorkspace(t, env.db, "ws1", "alice", "ready", "carry_patch", "integration")
 	seedRebuildJob(t, env.db, "job-dl-1", "dead_letter", "ws1", "rebase", "alice")
 
 	rec := env.doRequest(t, http.MethodDelete, "/api/v1/workspaces/ws1/rebuilds/job-dl-1", "", rebuildUserAuth("alice"))
@@ -125,7 +125,7 @@ func TestCancelRebuild_DeadLetterJob_Returns409(t *testing.T) {
 func TestCancelRebuild_CancelledJob_Returns409(t *testing.T) {
 	env := newRebuildTestEnv(t)
 
-	seedWorkspace(t, env.db, "ws1", "alice", "active", "ready", "carry_patch", "integration")
+	seedWorkspace(t, env.db, "ws1", "alice", "ready", "carry_patch", "integration")
 	seedRebuildJob(t, env.db, "job-cancelled-1", "cancelled", "ws1", "rebase", "alice")
 
 	rec := env.doRequest(t, http.MethodDelete, "/api/v1/workspaces/ws1/rebuilds/job-cancelled-1", "", rebuildUserAuth("alice"))
@@ -139,7 +139,7 @@ func TestCancelRebuild_CancelledJob_Returns409(t *testing.T) {
 func TestCancelRebuild_NonexistentJob_Returns404(t *testing.T) {
 	env := newRebuildTestEnv(t)
 
-	seedWorkspace(t, env.db, "ws1", "alice", "active", "ready", "carry_patch", "integration")
+	seedWorkspace(t, env.db, "ws1", "alice", "ready", "carry_patch", "integration")
 
 	rec := env.doRequest(t, http.MethodDelete, "/api/v1/workspaces/ws1/rebuilds/nonexistent-id", "", rebuildUserAuth("alice"))
 
@@ -152,8 +152,8 @@ func TestCancelRebuild_NonexistentJob_Returns404(t *testing.T) {
 func TestCancelRebuild_DifferentWorkspaceJob_Returns404(t *testing.T) {
 	env := newRebuildTestEnv(t)
 
-	seedWorkspace(t, env.db, "ws1", "alice", "active", "ready", "carry_patch", "integration")
-	seedWorkspace(t, env.db, "ws2", "bob", "active", "ready", "carry_patch", "integration")
+	seedWorkspace(t, env.db, "ws1", "alice", "ready", "carry_patch", "integration")
+	seedWorkspace(t, env.db, "ws2", "bob", "ready", "carry_patch", "integration")
 
 	// Job belongs to ws2.
 	seedRebuildJob(t, env.db, "job-ws2-1", "queued", "ws2", "rebase", "bob")
@@ -170,7 +170,7 @@ func TestCancelRebuild_DifferentWorkspaceJob_Returns404(t *testing.T) {
 func TestCancelRebuild_PATWithoutWriteScope_Returns403(t *testing.T) {
 	env := newRebuildTestEnv(t)
 
-	seedWorkspace(t, env.db, "ws1", "alice", "active", "ready", "carry_patch", "integration")
+	seedWorkspace(t, env.db, "ws1", "alice", "ready", "carry_patch", "integration")
 	seedRebuildJob(t, env.db, "job-perm-1", "queued", "ws1", "rebase", "alice")
 
 	// PAT with only rebuilds:read scope (no rebuilds:write).
@@ -193,7 +193,7 @@ func TestCancelRebuild_PATWithoutWriteScope_Returns403(t *testing.T) {
 func TestRequeueRebuild_DeadLetterJob_Returns200(t *testing.T) {
 	env := newRebuildTestEnv(t)
 
-	seedWorkspace(t, env.db, "ws1", "alice", "active", "ready", "carry_patch", "integration")
+	seedWorkspace(t, env.db, "ws1", "alice", "ready", "carry_patch", "integration")
 	seedRebuildJob(t, env.db, "job-dl-requeue", jobqueue.StatusDeadLetter, "ws1", "rebase", "alice")
 
 	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/ws1/rebuilds/job-dl-requeue/requeue", "", rebuildUserAuth("alice"))
@@ -232,7 +232,7 @@ func TestRequeueRebuild_NonDeadLetterJob_Returns409(t *testing.T) {
 		t.Run(status, func(t *testing.T) {
 			env := newRebuildTestEnv(t)
 
-			seedWorkspace(t, env.db, "ws1", "alice", "active", "ready", "carry_patch", "integration")
+			seedWorkspace(t, env.db, "ws1", "alice", "ready", "carry_patch", "integration")
 			seedRebuildJob(t, env.db, "job-"+status, status, "ws1", "rebase", "alice")
 
 			rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/ws1/rebuilds/job-"+status+"/requeue", "", rebuildUserAuth("alice"))
@@ -253,7 +253,7 @@ func TestRequeueRebuild_NonDeadLetterJob_Returns409(t *testing.T) {
 func TestRequeueRebuild_ActiveJobExists_Returns409(t *testing.T) {
 	env := newRebuildTestEnv(t)
 
-	seedWorkspace(t, env.db, "ws1", "alice", "active", "ready", "carry_patch", "integration")
+	seedWorkspace(t, env.db, "ws1", "alice", "ready", "carry_patch", "integration")
 	// Dead-lettered job.
 	seedRebuildJob(t, env.db, "job-dl-dup", jobqueue.StatusDeadLetter, "ws1", "rebase", "alice")
 	// Active queued job with the same key.
@@ -280,7 +280,7 @@ func TestRequeueRebuild_ActiveJobExists_Returns409(t *testing.T) {
 func TestRequeueRebuild_NonexistentJob_Returns404(t *testing.T) {
 	env := newRebuildTestEnv(t)
 
-	seedWorkspace(t, env.db, "ws1", "alice", "active", "ready", "carry_patch", "integration")
+	seedWorkspace(t, env.db, "ws1", "alice", "ready", "carry_patch", "integration")
 
 	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/ws1/rebuilds/nonexistent-id/requeue", "", rebuildUserAuth("alice"))
 
@@ -293,8 +293,8 @@ func TestRequeueRebuild_NonexistentJob_Returns404(t *testing.T) {
 func TestRequeueRebuild_DifferentWorkspaceJob_Returns404(t *testing.T) {
 	env := newRebuildTestEnv(t)
 
-	seedWorkspace(t, env.db, "ws1", "alice", "active", "ready", "carry_patch", "integration")
-	seedWorkspace(t, env.db, "ws2", "bob", "active", "ready", "carry_patch", "integration")
+	seedWorkspace(t, env.db, "ws1", "alice", "ready", "carry_patch", "integration")
+	seedWorkspace(t, env.db, "ws2", "bob", "ready", "carry_patch", "integration")
 
 	seedRebuildJob(t, env.db, "job-ws2-dl", jobqueue.StatusDeadLetter, "ws2", "rebase", "bob")
 
@@ -309,7 +309,7 @@ func TestRequeueRebuild_DifferentWorkspaceJob_Returns404(t *testing.T) {
 func TestRequeueRebuild_PATWithoutWriteScope_Returns403(t *testing.T) {
 	env := newRebuildTestEnv(t)
 
-	seedWorkspace(t, env.db, "ws1", "alice", "active", "ready", "carry_patch", "integration")
+	seedWorkspace(t, env.db, "ws1", "alice", "ready", "carry_patch", "integration")
 	seedRebuildJob(t, env.db, "job-perm-dl", jobqueue.StatusDeadLetter, "ws1", "rebase", "alice")
 
 	auth := rebuildPATAuth("alice", "rebuilds:read")

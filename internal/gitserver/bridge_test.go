@@ -19,7 +19,7 @@ func TestBridge_InfoRefs_UploadPack_PktLineRefAdvertisement(t *testing.T) {
 
 	env.seedOrg(t, "org-1", "My Org", "myorg")
 	env.seedOrgMember(t, "org-1", "user-1")
-	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "active")
+	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "ready")
 
 	// Create a real git repository with at least one ref.
 	env.initWorkspaceRepo(t, "myws")
@@ -79,7 +79,7 @@ func TestBridge_InfoRefs_ReceivePack_PktLineRefAdvertisement(t *testing.T) {
 
 	env.seedOrg(t, "org-1", "My Org", "myorg")
 	env.seedOrgMember(t, "org-1", "user-1")
-	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "active")
+	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "ready")
 
 	env.initWorkspaceRepo(t, "myws")
 
@@ -123,7 +123,7 @@ func TestBridge_PostUploadPack_StreamsPackResponse(t *testing.T) {
 
 	env.seedOrg(t, "org-1", "My Org", "myorg")
 	env.seedOrgMember(t, "org-1", "user-1")
-	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "active")
+	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "ready")
 
 	env.initWorkspaceRepo(t, "myws")
 
@@ -179,7 +179,7 @@ func TestBridge_PostReceivePack_ContentType(t *testing.T) {
 
 	env.seedOrg(t, "org-1", "My Org", "myorg")
 	env.seedOrgMember(t, "org-1", "user-1")
-	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "active")
+	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "ready")
 
 	env.initWorkspaceRepo(t, "myws")
 
@@ -211,7 +211,7 @@ func TestBridge_SessionError_PktLineERR(t *testing.T) {
 
 	env.seedOrg(t, "org-1", "My Org", "myorg")
 	env.seedOrgMember(t, "org-1", "user-1")
-	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "active")
+	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "ready")
 
 	env.initWorkspaceRepo(t, "myws")
 
@@ -242,7 +242,7 @@ func TestBridge_EmptyPostBody_PktLineERR(t *testing.T) {
 
 	env.seedOrg(t, "org-1", "My Org", "myorg")
 	env.seedOrgMember(t, "org-1", "user-1")
-	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "active")
+	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "ready")
 
 	env.initWorkspaceRepo(t, "myws")
 
@@ -272,7 +272,7 @@ func TestBridge_InvalidService_Returns403(t *testing.T) {
 
 	env.seedOrg(t, "org-1", "My Org", "myorg")
 	env.seedOrgMember(t, "org-1", "user-1")
-	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "active")
+	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "ready")
 
 	env.initWorkspaceRepo(t, "myws")
 

@@ -34,11 +34,10 @@ func TestReclone_SuccessfulReclone(t *testing.T) {
 	defer func() { defaultWorkspaceRoot = oldRoot }()
 
 	env.seedWorkspace(t, &Workspace{
-		Slug:        "reclone-ws",
-		GitURL:      "https://github.com/example/repo.git",
-		OwnerID:     "alice-id",
-		Status:      "active",
-		CloneStatus: "ready",
+		Slug:    "reclone-ws",
+		GitURL:  "https://github.com/example/repo.git",
+		OwnerID: "alice-id",
+		Status:  "ready",
 	})
 
 	// Set sync fields to simulate a workspace with sync state.
@@ -124,11 +123,10 @@ func TestReclone_StatusRemainsActive(t *testing.T) {
 	defer func() { defaultWorkspaceRoot = oldRoot }()
 
 	env.seedWorkspace(t, &Workspace{
-		Slug:        "reclone-active-ws",
-		GitURL:      "https://github.com/example/repo.git",
-		OwnerID:     "alice-id",
-		Status:      "active",
-		CloneStatus: "ready",
+		Slug:    "reclone-active-ws",
+		GitURL:  "https://github.com/example/repo.git",
+		OwnerID: "alice-id",
+		Status:  "ready",
 	})
 
 	_, err := env.db.Exec(
@@ -196,11 +194,10 @@ func TestReclone_CLIRecloneWithConfirm(t *testing.T) {
 	defer func() { defaultWorkspaceRoot = oldRoot }()
 
 	env.seedWorkspace(t, &Workspace{
-		Slug:        "cli-reclone-ws",
-		GitURL:      "https://github.com/example/repo.git",
-		OwnerID:     "alice-id",
-		Status:      "active",
-		CloneStatus: "ready",
+		Slug:    "cli-reclone-ws",
+		GitURL:  "https://github.com/example/repo.git",
+		OwnerID: "alice-id",
+		Status:  "ready",
 	})
 
 	_, err := env.db.Exec(
@@ -256,11 +253,10 @@ func TestReclone_CloneJobEnqueued(t *testing.T) {
 	defer func() { defaultWorkspaceRoot = oldRoot }()
 
 	env.seedWorkspace(t, &Workspace{
-		Slug:        "reclone-lifecycle-ws",
-		GitURL:      "https://github.com/example/repo.git",
-		OwnerID:     "alice-id",
-		Status:      "active",
-		CloneStatus: "ready",
+		Slug:    "reclone-lifecycle-ws",
+		GitURL:  "https://github.com/example/repo.git",
+		OwnerID: "alice-id",
+		Status:  "ready",
 	})
 
 	_, err := env.db.Exec(
@@ -325,11 +321,10 @@ func TestReclone_ArchivePushFailureContinues(t *testing.T) {
 	defer func() { defaultWorkspaceRoot = oldRoot }()
 
 	env.seedWorkspace(t, &Workspace{
-		Slug:        "reclone-pushfail-ws",
-		GitURL:      "https://github.com/example/repo.git",
-		OwnerID:     "alice-id",
-		Status:      "active",
-		CloneStatus: "ready",
+		Slug:    "reclone-pushfail-ws",
+		GitURL:  "https://github.com/example/repo.git",
+		OwnerID: "alice-id",
+		Status:  "ready",
 	})
 
 	_, err := env.db.Exec(
@@ -382,11 +377,10 @@ func TestReclone_MissingSyncScopeRejected(t *testing.T) {
 	env := newTestEnv(t)
 
 	env.seedWorkspace(t, &Workspace{
-		Slug:        "reclone-noscope-ws",
-		GitURL:      "https://github.com/example/repo.git",
-		OwnerID:     "alice-id",
-		Status:      "active",
-		CloneStatus: "ready",
+		Slug:    "reclone-noscope-ws",
+		GitURL:  "https://github.com/example/repo.git",
+		OwnerID: "alice-id",
+		Status:  "ready",
 	})
 
 	auth := patAuth("alice-id", "workspaces:read")
@@ -431,11 +425,10 @@ func TestReclone_RejectedWhilePendingOrCloning(t *testing.T) {
 			env := newTestEnv(t)
 
 			env.seedWorkspace(t, &Workspace{
-				Slug:        "reclone-busy-ws",
-				GitURL:      "https://github.com/example/repo.git",
-				OwnerID:     "alice-id",
-				Status:      "active",
-				CloneStatus: cloneStatus,
+				Slug:    "reclone-busy-ws",
+				GitURL:  "https://github.com/example/repo.git",
+				OwnerID: "alice-id",
+				Status:  cloneStatus,
 			})
 
 			auth := adminAuth()
@@ -461,11 +454,10 @@ func TestReclone_UnauthenticatedRejected(t *testing.T) {
 	env := newTestEnv(t)
 
 	env.seedWorkspace(t, &Workspace{
-		Slug:        "reclone-noauth-ws",
-		GitURL:      "https://github.com/example/repo.git",
-		OwnerID:     "alice-id",
-		Status:      "active",
-		CloneStatus: "ready",
+		Slug:    "reclone-noauth-ws",
+		GitURL:  "https://github.com/example/repo.git",
+		OwnerID: "alice-id",
+		Status:  "ready",
 	})
 
 	rec := env.doRequest(t, http.MethodPost,

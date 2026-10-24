@@ -211,7 +211,7 @@ func TestArchiveReactivate_KeepTokens_TS_34_32(t *testing.T) {
 
 	env := newTestEnv(t)
 	createPatsTable(t, env.db)
-	env.seedWorkspace(t, &Workspace{Slug: "s", GitURL: "https://github.com/org/s", OwnerID: "user-1", Status: "active"})
+	env.seedWorkspace(t, &Workspace{Slug: "s", GitURL: "https://github.com/org/s", OwnerID: "user-1", Status: "pending"})
 	seedPAT(t, env.db, "live", "")
 	seedPAT(t, env.db, "old", "2026-01-01T00:00:00Z")
 	bindToken(t, env.db, "live", "s")

@@ -30,15 +30,15 @@ func handleResetPatchToOrigin(cfg APIConfig) echo.HandlerFunc {
 		}
 
 		// 23-REQ-2.3: Same 400 messages as handleRestorePatch.
-		if ws.Status != "active" {
-			return respondError(c, http.StatusBadRequest, "workspace is not active")
+		if ws.Status == "archived" {
+			return respondError(c, http.StatusBadRequest, "workspace is archived")
 		}
 		if ws.WorkspaceMode != "carry_patch" {
 			return respondError(c, http.StatusBadRequest, "workspace is not in carry_patch mode")
 		}
 
-		// 23-REQ-2.4: Clone must be ready.
-		if ws.CloneStatus != "ready" {
+		// 23-REQ-2.4: the clone must be ready.
+		if ws.Status != "ready" {
 			return respondError(c, http.StatusConflict, "workspace clone is not ready")
 		}
 

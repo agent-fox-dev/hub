@@ -20,7 +20,7 @@ import (
 // resolving a transport.Endpoint to a repository storer for the
 // requested workspace. It extracts the org slug and workspace slug from
 // the endpoint path, verifies the workspace exists, the org matches,
-// and clone_status is 'ready', then opens the repository via PlainOpen
+// and its status is 'ready', then opens the repository via PlainOpen
 // and returns its storer.Storer.
 type WorkspaceLoader struct {
 	db            *sql.DB
@@ -91,8 +91,8 @@ func (l *WorkspaceLoader) Load(ep *transport.Endpoint) (storer.Storer, error) {
 		return nil, transport.ErrRepositoryNotFound
 	}
 
-	// Verify clone_status is 'ready' (06-REQ-4.4).
-	if ws.CloneStatus != "ready" {
+	// Verify the workspace is ready (06-REQ-4.4).
+	if ws.Status != "ready" {
 		return nil, transport.ErrRepositoryNotFound
 	}
 

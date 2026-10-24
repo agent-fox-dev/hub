@@ -201,7 +201,7 @@ func TestPropWorkspace_DeleteOnlyFromArchived(t *testing.T) {
 			Slug:    "active-ws",
 			GitURL:  "https://github.com/org/repo-active",
 			OwnerID: "alice-id",
-			Status:  "active",
+			Status:  "pending",
 		})
 
 		rec := env.doRequest(t, http.MethodDelete, "/api/v1/workspaces/active-ws", "", auth)
@@ -266,7 +266,7 @@ func TestPropWorkspace_AccessScoping(t *testing.T) {
 			Slug:    u.slug,
 			GitURL:  fmt.Sprintf("https://github.com/org/%s", u.slug),
 			OwnerID: u.id,
-			Status:  "active",
+			Status:  "pending",
 		})
 	}
 
@@ -318,7 +318,7 @@ func TestPropWorkspace_ArchivedExcludedByDefault(t *testing.T) {
 		Slug:    "active-one",
 		GitURL:  "https://github.com/org/repo1",
 		OwnerID: "alice-id",
-		Status:  "active",
+		Status:  "pending",
 	})
 	env.seedWorkspace(t, &Workspace{
 		Slug:    "archived-one",
@@ -330,7 +330,7 @@ func TestPropWorkspace_ArchivedExcludedByDefault(t *testing.T) {
 		Slug:    "active-two",
 		GitURL:  "https://github.com/org/repo3",
 		OwnerID: "alice-id",
-		Status:  "active",
+		Status:  "pending",
 	})
 	env.seedWorkspace(t, &Workspace{
 		Slug:    "archived-two",
@@ -457,7 +457,7 @@ func TestPropWorkspace_SlugEnumerationPrevention(t *testing.T) {
 		Slug:    "bob-ws",
 		GitURL:  "https://github.com/org/bob-repo",
 		OwnerID: "bob-id",
-		Status:  "active",
+		Status:  "pending",
 	})
 
 	// Also seed an archived workspace for bob.

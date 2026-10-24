@@ -253,7 +253,7 @@ func authorizeMergeWorkspace(c echo.Context, db *sql.DB, auth *apikit.AuthInfo, 
 }
 
 // validateWorkspaceForMerge checks that the caller may write to the workspace
-// (NeedWrite), that it is active, and that its clone is ready. It writes the
+// (NeedWrite) and that it is ready. It writes the
 // error response and returns false if a check fails, true to proceed.
 //
 // It reports the refusal as its result rather than as an error, because the
@@ -264,12 +264,8 @@ func validateWorkspaceForMerge(c echo.Context, db *sql.DB, auth *apikit.AuthInfo
 		_ = wsaccess.WriteRefusal(c, code, msg)
 		return false
 	}
-	if ws.Status != "active" {
-		_ = apikit.WriteAPIError(c, http.StatusBadRequest, "workspace is not active")
-		return false
-	}
-	if ws.CloneStatus != "ready" {
-		_ = apikit.WriteAPIError(c, http.StatusBadRequest, "workspace clone is not ready")
+	if ws.Status != "ready" {
+		_ = apikit.WriteAPIError(c, http.StatusBadRequest, "workspace is not ready")
 		return false
 	}
 	return true

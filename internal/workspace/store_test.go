@@ -101,7 +101,7 @@ func TestWorkspaceStore_AllFields(t *testing.T) {
 		Branch:  &branch,
 		OwnerID: "user-uuid-1234",
 		OrgID:   nil,
-		Status:  "active",
+		Status:  "pending",
 	}
 
 	if err := insertWorkspace(db, ws); err != nil {
@@ -157,13 +157,13 @@ func TestWorkspaceStore_DuplicateGitURL(t *testing.T) {
 		Slug:    "ws-alice",
 		GitURL:  sharedURL,
 		OwnerID: "user-1",
-		Status:  "active",
+		Status:  "pending",
 	}
 	wsB := &Workspace{
 		Slug:    "ws-bob",
 		GitURL:  sharedURL,
 		OwnerID: "user-1",
-		Status:  "active",
+		Status:  "pending",
 	}
 
 	if err := insertWorkspace(db, wsA); err != nil {
@@ -251,7 +251,7 @@ func TestWorkspaceStore_RFC3339Timestamps(t *testing.T) {
 		Slug:    "ts-ws",
 		GitURL:  "https://github.com/org/repo",
 		OwnerID: "user-1",
-		Status:  "active",
+		Status:  "pending",
 	}
 
 	if err := insertWorkspace(db, ws); err != nil {

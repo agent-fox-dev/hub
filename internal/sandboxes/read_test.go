@@ -70,8 +70,8 @@ func (e *leaseEnv) insertLeaseAt(n int, workspace, state string, created time.Ti
 // Requirement: 26-REQ-7.1
 func TestList_TS_26_41(t *testing.T) {
 	env := newLeaseEnv(t, leaseEnvOptions{config: bigLeaseConfig()})
-	env.addWorkspace("gadgets", leaseOwner, "", "active")
-	env.addWorkspace("empty", leaseOwner, "", "active")
+	env.addWorkspace("gadgets", leaseOwner, "", "ready")
+	env.addWorkspace("empty", leaseOwner, "", "ready")
 	env.plantSecret("workspace", "gadgets", "GIT_PAT", "x")
 
 	var issued []string
@@ -210,7 +210,7 @@ func TestGetOne_AnyState_TS_26_45(t *testing.T) {
 // Requirement: 26-REQ-7.5
 func TestGetOne_NotFound_TS_26_46(t *testing.T) {
 	env := newLeaseEnv(t, leaseEnvOptions{})
-	env.addWorkspace("other", leaseOwner, "", "active")
+	env.addWorkspace("other", leaseOwner, "", "ready")
 	foreign := env.insertLeaseAt(1, "other", "leased", env.clock.Now())
 
 	for name, id := range map[string]string{
@@ -326,7 +326,7 @@ func TestRender_ExactFields_TS_26_47(t *testing.T) {
 // Requirement: 26-REQ-7.7
 func TestAdminList_TS_26_48(t *testing.T) {
 	env := newLeaseEnv(t, leaseEnvOptions{config: bigLeaseConfig()})
-	env.addWorkspace("gadgets", leaseOwner, "", "active")
+	env.addWorkspace("gadgets", leaseOwner, "", "ready")
 	env.plantSecret("workspace", "gadgets", "GIT_PAT", "x")
 
 	first := env.mustIssue()["id"].(string)

@@ -12,7 +12,7 @@ func TestOwnership_SyncRecloneAndPatchesRequireOwner(t *testing.T) {
 	env := newTestEnv(t)
 	env.seedWorkspace(t, &Workspace{
 		Slug: "owned-ws", GitURL: "https://github.com/org/repo", OwnerID: "alice",
-		Status: "active", CloneStatus: "ready", WorkspaceMode: "carry_patch",
+		Status: "ready", WorkspaceMode: "carry_patch",
 		UpstreamURL: strPtr("https://github.com/up/repo"), IntegrationBranch: strPtr("deploy"),
 	})
 
@@ -48,7 +48,7 @@ func TestPatchAdd_RejectsOptionLikeBranchName(t *testing.T) {
 	env := newTestEnv(t)
 	env.seedWorkspace(t, &Workspace{
 		Slug: "cp-ws", GitURL: "https://github.com/org/repo", OwnerID: "alice",
-		Status: "active", CloneStatus: "ready", WorkspaceMode: "carry_patch",
+		Status: "ready", WorkspaceMode: "carry_patch",
 		UpstreamURL: strPtr("https://github.com/up/repo"), IntegrationBranch: strPtr("deploy"),
 	})
 	for _, body := range []string{

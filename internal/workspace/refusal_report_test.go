@@ -21,7 +21,7 @@ func TestLookupWorkspaceForAuth_ReportsRefusal_TS_34_58(t *testing.T) {
 
 	db := openTestDB(t)
 	for _, slug := range []string{"s", "x"} {
-		if err := insertWorkspace(db, &Workspace{Slug: slug, GitURL: "https://github.com/org/" + slug, OwnerID: "u1", Status: "active"}); err != nil {
+		if err := insertWorkspace(db, &Workspace{Slug: slug, GitURL: "https://github.com/org/" + slug, OwnerID: "u1", Status: "pending"}); err != nil {
 			t.Fatal(err)
 		}
 	}

@@ -65,7 +65,7 @@ func TestArchiveDelete_KeepBindings_TS_33_6(t *testing.T) {
 	defaultWorkspaceRoot = t.TempDir()
 	defer func() { defaultWorkspaceRoot = oldRoot }()
 
-	env.seedWorkspace(t, &Workspace{Slug: "s", GitURL: "https://github.com/org/repo", OwnerID: "user-1", Status: "active"})
+	env.seedWorkspace(t, &Workspace{Slug: "s", GitURL: "https://github.com/org/repo", OwnerID: "user-1", Status: "pending"})
 	createPatsTable(t, env.db)
 	for _, id := range []string{"t1", "t2", "t3"} {
 		seedPAT(t, env.db, id, "")
@@ -202,7 +202,7 @@ func TestLookupWorkspaceForAuth_Binding_TS_33_18(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, slug := range []string{"s", "x"} {
-		if err := insertWorkspace(db, &Workspace{Slug: slug, GitURL: "https://github.com/org/r", OwnerID: "u1", Status: "active"}); err != nil {
+		if err := insertWorkspace(db, &Workspace{Slug: slug, GitURL: "https://github.com/org/r", OwnerID: "u1", Status: "pending"}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -232,7 +232,7 @@ func TestBindingLookupFailure_Is500_TS_33_19(t *testing.T) {
 	if err := wsaccess.InitBindingSchema(db); err != nil {
 		t.Fatal(err)
 	}
-	if err := insertWorkspace(db, &Workspace{Slug: "s", GitURL: "https://github.com/org/r", OwnerID: "u1", Status: "active"}); err != nil {
+	if err := insertWorkspace(db, &Workspace{Slug: "s", GitURL: "https://github.com/org/r", OwnerID: "u1", Status: "pending"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`DROP TABLE token_workspace_bindings`); err != nil {

@@ -21,7 +21,7 @@ func TestBoundPAT_OtherWorkspaceReported_TS_37_24(t *testing.T) {
 	reports := recordGitRefusals(t)
 	env := newBindingGitEnv(t) // user-a owns s and x in myorg
 	env.seedOrgMember(t, "org-1", "user-b")
-	env.seedWorkspace(t, "y", "https://github.com/org/y", "user-b", "org-1", "active")
+	env.seedWorkspace(t, "y", "https://github.com/org/y", "user-b", "org-1", "ready")
 	seedGitPAT(t, env.db, "tokOwnerS", "user-a", "git:read")
 	seedGitPAT(t, env.db, "tokMemberY", "user-b", "git:read")
 	bindGitToken(t, env.db, "tokOwnerS", "s")

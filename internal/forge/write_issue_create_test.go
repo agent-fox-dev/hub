@@ -71,7 +71,7 @@ func jsonOf(t *testing.T, s string) map[string]any {
 }
 
 // TS-31-1: A request that fails several checks receives the status of the earliest of
-// them, in the order no credential, no forge:write, no such workspace, not active, an
+// them, in the order no credential, no forge:write, no such workspace, archived, an
 // invalid request, an unresolvable client, a body over the limit; the forge sees nothing.
 // Requirement: 31-REQ-1.1
 func TestWriteChecksOrder_TS_31_1(t *testing.T) {
@@ -150,11 +150,11 @@ func TestCreateIssue_APIKeyAndAdminToken_TS_31_4(t *testing.T) {
 	}
 }
 
-// TS-31-8: A write ignores clone_status and the workspace lock.
+// TS-31-8: A write ignores a not-ready status and the workspace lock.
 // Requirement: 31-REQ-1.8
-func TestCreateIssue_IgnoresCloneStatusAndLock_TS_31_8(t *testing.T) {
+func TestCreateIssue_IgnoresStatusAndLock_TS_31_8(t *testing.T) {
 	e := newWriteEnv(t)
-	addWorkspace(t, e.db, "pending", func(r *workspaceRow) { r.cloneStatus = "pending" })
+	addWorkspace(t, e.db, "pending", func(r *workspaceRow) { r.status = "pending" })
 	e.setVar("pending", "FORGE_API_URL", e.stub.URL)
 	e.stub.setHandler(routes(map[string]http.HandlerFunc{
 		"POST /repos/acme/widgets/issues": respond(http.StatusCreated, issueBody(7, "t", "")),

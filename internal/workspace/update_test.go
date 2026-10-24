@@ -25,7 +25,7 @@ func TestSpec03_Group3_ValidPatchUpdatesFieldsAndTimestamp(t *testing.T) {
 		Slug:    "patch-ws",
 		GitURL:  "https://git.example.com/repo",
 		OwnerID: "u1-id",
-		Status:  "active",
+		Status:  "pending",
 	})
 
 	// Record initial updated_at.
@@ -99,7 +99,7 @@ func TestSpec03_Group3_PartialUpdateLeavesUnmentionedFieldsUnchanged(t *testing.
 		Slug:    "partial-ws",
 		GitURL:  "https://git.example.com/repo",
 		OwnerID: "u1-id",
-		Status:  "active",
+		Status:  "pending",
 	})
 
 	// First set description to a known value.
@@ -149,7 +149,7 @@ func TestSpec03_Group3_PatchDisplayNameNullNormalizesToSlug(t *testing.T) {
 		Slug:    "norm-ws",
 		GitURL:  "https://git.example.com/repo",
 		OwnerID: "u1-id",
-		Status:  "active",
+		Status:  "pending",
 	})
 
 	// First set display_name to a custom value so we can verify it resets.
@@ -201,7 +201,7 @@ func TestSpec03_Group3_PatchDescriptionNullNormalizesToEmpty(t *testing.T) {
 		Slug:    "desc-norm-ws",
 		GitURL:  "https://git.example.com/repo",
 		OwnerID: "u1-id",
-		Status:  "active",
+		Status:  "pending",
 	})
 
 	// First set description to a known value.
@@ -265,7 +265,7 @@ func TestSpec03_Group3_PatchOrgIDNullRemovesAssociation(t *testing.T) {
 		GitURL:  "https://git.example.com/repo",
 		OwnerID: "u1-id",
 		OrgID:   &orgID,
-		Status:  "active",
+		Status:  "pending",
 	})
 
 	// PATCH with org_id: null.
@@ -306,7 +306,7 @@ func TestSpec03_Group3_PatchOrgIDSetWithValidMembership(t *testing.T) {
 		Slug:    "orgset-ws",
 		GitURL:  "https://git.example.com/repo",
 		OwnerID: "u1-id",
-		Status:  "active",
+		Status:  "pending",
 	})
 
 	// PATCH with valid org_id.
@@ -343,7 +343,7 @@ func TestSpec03_Group3_PatchRejectsImmutableFields(t *testing.T) {
 		Slug:    "immutable-ws",
 		GitURL:  "https://git.example.com/repo",
 		OwnerID: "u1-id",
-		Status:  "active",
+		Status:  "pending",
 	})
 
 	auth := userAuth("u1-id")
@@ -405,7 +405,7 @@ func TestSpec03_Group3_PatchEmptyBodyReturns400(t *testing.T) {
 		Slug:    "empty-patch-ws",
 		GitURL:  "https://git.example.com/repo",
 		OwnerID: "u1-id",
-		Status:  "active",
+		Status:  "pending",
 	})
 
 	// Record initial updated_at.
@@ -489,7 +489,7 @@ func TestSpec03_Group3_PatchDisplayNameTooLongReturns400(t *testing.T) {
 		Slug:    "dn-limit-ws",
 		GitURL:  "https://git.example.com/repo",
 		OwnerID: "u1-id",
-		Status:  "active",
+		Status:  "pending",
 	})
 
 	// Record original display_name via API.
@@ -536,7 +536,7 @@ func TestSpec03_Group3_PatchDescriptionTooLongReturns400(t *testing.T) {
 		Slug:    "desc-limit-ws",
 		GitURL:  "https://git.example.com/repo",
 		OwnerID: "u1-id",
-		Status:  "active",
+		Status:  "pending",
 	})
 
 	// Record original description via API.
@@ -586,7 +586,7 @@ func TestSpec03_Group3_PatchOrgIDNonMemberReturns403(t *testing.T) {
 		Slug:    "non-member-org-ws",
 		GitURL:  "https://git.example.com/repo",
 		OwnerID: "u1-id",
-		Status:  "active",
+		Status:  "pending",
 	})
 
 	body := `{"org_id":"org-uuid-forbidden"}`
@@ -647,7 +647,7 @@ func TestSpec03_Group3_PatchNonOwnerReturns404AntiEnumeration(t *testing.T) {
 		Slug:    "owned-by-u1-ws",
 		GitURL:  "https://git.example.com/repo",
 		OwnerID: "u1-id",
-		Status:  "active",
+		Status:  "pending",
 	})
 
 	// u2 attempts to PATCH u1's workspace.
@@ -707,7 +707,7 @@ func TestSpec03_Group3_PatchOrgMembershipServiceErrorReturns500(t *testing.T) {
 		Slug:    "org-timeout-ws",
 		GitURL:  "https://git.example.com/repo",
 		OwnerID: "u1-id",
-		Status:  "active",
+		Status:  "pending",
 	})
 
 	body := `{"org_id":"org-uuid-timeout"}`
@@ -754,7 +754,7 @@ func TestSpec03_Group3_PatchOrgSlugResolvesToCanonicalID(t *testing.T) {
 		Slug:    "patch-slug-ws",
 		GitURL:  "https://git.example.com/repo",
 		OwnerID: "u1-id",
-		Status:  "active",
+		Status:  "pending",
 	})
 
 	body := `{"org_id":"mickume-patch"}`

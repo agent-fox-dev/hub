@@ -519,7 +519,7 @@ func TestCarryPatch_CloneSetup_StandardSkipsSetup(t *testing.T) {
 		Slug:    slug,
 		GitURL:  "https://github.com/org/repo.git",
 		OwnerID: "user-1",
-		Status:  "active",
+		Status:  "pending",
 	}
 	if err := insertWorkspace(db, ws); err != nil {
 		t.Fatalf("seed workspace: %v", err)

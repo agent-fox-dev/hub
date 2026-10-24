@@ -55,7 +55,7 @@ const okAnswer = `{"token_id":"T1","name":"svc","token":"ak_pat_T1_supersecret",
 func TestRegisterRoutes_TS_34_1(t *testing.T) {
 	stub := newStub(http.StatusCreated, okAnswer)
 	env := newTestEnv(t, Config{APIKit: stub})
-	seedWorkspace(t, env.db, "s", "u1", "active")
+	seedWorkspace(t, env.db, "s", "u1", "ready")
 	found := map[string]bool{}
 	for _, r := range env.e.Routes() {
 		if r.Path == "/api/v1/workspaces/:slug/tokens" {
@@ -80,7 +80,7 @@ func TestRegisterRoutes_TS_34_1(t *testing.T) {
 func TestMint_NoCredential_TS_34_2(t *testing.T) {
 	stub := newStub(http.StatusCreated, okAnswer)
 	env := newTestEnv(t, Config{APIKit: stub})
-	seedWorkspace(t, env.db, "s", "u1", "active")
+	seedWorkspace(t, env.db, "s", "u1", "ready")
 	rec := env.do(http.MethodPost, mintPath, nil, `{"name":"n"}`, nil)
 	if rec.Code != http.StatusUnauthorized || parseError(t, rec).Error.Message != "authentication required" || stub.calls != 0 {
 		t.Errorf("(%d, %s), apikit calls %d; want 401 authentication required and no call", rec.Code, rec.Body, stub.calls)
@@ -92,8 +92,8 @@ func TestMint_NoCredential_TS_34_2(t *testing.T) {
 func TestMint_BoundPAT_TS_34_3(t *testing.T) {
 	stub := newStub(http.StatusCreated, okAnswer)
 	env := newTestEnv(t, Config{APIKit: stub})
-	seedWorkspace(t, env.db, "S", "u1", "active")
-	seedWorkspace(t, env.db, "X", "u1", "active")
+	seedWorkspace(t, env.db, "S", "u1", "ready")
+	seedWorkspace(t, env.db, "X", "u1", "ready")
 	bind(t, env.db, "T", "S")
 	reports := recordRefusals(t)
 
@@ -119,7 +119,7 @@ func TestMint_BoundPAT_TS_34_3(t *testing.T) {
 func TestMint_LookupError_TS_34_4(t *testing.T) {
 	stub := newStub(http.StatusCreated, okAnswer)
 	env := newTestEnv(t, Config{APIKit: stub})
-	seedWorkspace(t, env.db, "s", "u1", "active")
+	seedWorkspace(t, env.db, "s", "u1", "ready")
 	if _, err := env.db.Exec(`DROP TABLE token_workspace_bindings`); err != nil {
 		t.Fatal(err)
 	}
@@ -133,7 +133,7 @@ func TestMint_LookupError_TS_34_4(t *testing.T) {
 func TestMint_Admin_TS_34_5(t *testing.T) {
 	stub := newStub(http.StatusCreated, okAnswer)
 	env := newTestEnv(t, Config{APIKit: stub})
-	seedWorkspace(t, env.db, "s", "u1", "active")
+	seedWorkspace(t, env.db, "s", "u1", "ready")
 	rec := env.do(http.MethodPost, mintPath, admin(), `{"name":"n"}`, nil)
 	const want = "admin tokens cannot mint bound tokens; a real user is required as the token's owner"
 	if rec.Code != http.StatusForbidden || parseError(t, rec).Error.Message != want || stub.calls != 0 {
@@ -148,8 +148,8 @@ func TestMint_Admin_TS_34_5(t *testing.T) {
 func TestMint_NotFound_TS_34_6(t *testing.T) {
 	stub := newStub(http.StatusCreated, okAnswer)
 	env := newTestEnv(t, Config{APIKit: stub})
-	seedWorkspace(t, env.db, "a", "u1", "active")
-	seedWorkspace(t, env.db, "b", "u2", "active")
+	seedWorkspace(t, env.db, "a", "u1", "ready")
+	seedWorkspace(t, env.db, "b", "u2", "ready")
 	for _, c := range []struct {
 		slug string
 		auth *apikit.AuthInfo
@@ -197,7 +197,7 @@ func TestMint_PropertyCheckOrder_TS_34_8(t *testing.T) {
 		{"pat without tokens:manage", pat("u1", "TU", "workspaces:read"), false, false},
 	}
 	workspaces := map[string]struct{ owner, status string }{
-		"missing": {}, "other": {"u2", "active"}, "archived": {"u1", "archived"}, "active": {"u1", "active"},
+		"missing": {}, "other": {"u2", "ready"}, "archived": {"u1", "archived"}, "ready": {"u1", "ready"},
 	}
 	for _, c := range callers {
 		for wsName, w := range workspaces {
@@ -249,7 +249,7 @@ type ctxMarker struct{}
 func TestMint_InnerRequest_TS_34_9(t *testing.T) {
 	stub := newStub(http.StatusCreated, okAnswer)
 	db := openTestDB(t)
-	seedWorkspace(t, db, "s", "u1", "active")
+	seedWorkspace(t, db, "s", "u1", "ready")
 	e := echo.New()
 	api := e.Group("/api/v1")
 	api.Use(testAuthMiddleware(), func(next echo.HandlerFunc) echo.HandlerFunc {
@@ -292,7 +292,7 @@ func TestMint_PropertyInnerPath_TS_34_10(t *testing.T) {
 	for _, prefix := range []string{"", "/api/v1", "/x", "/a/b/c"} {
 		stub := newStub(http.StatusCreated, okAnswer)
 		db := openTestDB(t)
-		seedWorkspace(t, db, "s", "u1", "active")
+		seedWorkspace(t, db, "s", "u1", "ready")
 		e := echo.New()
 		g := e.Group(prefix)
 		g.Use(testAuthMiddleware())

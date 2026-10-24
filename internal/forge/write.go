@@ -102,7 +102,7 @@ func (w *writeRun) call(f func(ctx context.Context) error) error {
 // write is the handler of a write route. It applies the checks that come first on every
 // write route, in this order: no credential is 401, a credential without forge:write is
 // 403, a workspace that does not exist or is not the caller's is 404, a workspace that
-// is not active is 400. Then the request itself is read and checked (400), the client is
+// is archived is 400. Then the request itself is read and checked (400), the client is
 // resolved (422 and the like), the route may refuse what this forge cannot take (400), the
 // body-like fields are measured against the forge's limit (413), and only then is the write
 // sent to the forge and recorded.

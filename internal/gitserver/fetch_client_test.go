@@ -42,8 +42,8 @@ func newGitClientServer(t *testing.T) (*gitTestEnv, string, string) {
 	env := newGitTestEnv(t)
 	env.seedOrg(t, "org-1", "My Org", "myorg")
 	env.seedOrgMember(t, "org-1", "user-1")
-	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "active")
-	env.setCloneStatus(t, "myws", "ready")
+	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "ready")
+	env.setStatus(t, "myws", "ready")
 	trunk := env.initWorkspaceRepo(t, "myws")
 
 	srv := httptest.NewServer(env.echo)

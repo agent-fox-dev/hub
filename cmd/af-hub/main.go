@@ -290,14 +290,6 @@ func main() {
 	// Register unified audit query, transcript, and SSE streaming routes (spec 18).
 	audit.RegisterAuditQueryRoutes(auditAPI, auditStore, sseMgr, database.SqlDB)
 
-	// Reconcile any workspaces stuck in 'syncing' state from a previous
-	// unclean shutdown. Must run after schema init and before the HTTP server
-	// starts accepting requests (13-REQ-5.1). Aborts startup on failure
-	// (13-REQ-5.E1).
-	if err := workspace.ReconcileStuckSyncs(database.SqlDB); err != nil {
-		log.Fatal(err)
-	}
-
 	// Initialise the secrets and variables tables and mount their API
 	// routes. Must run after MountWorkspaceHandlers (which creates the
 	// API group via MountHandlers) and before Start.

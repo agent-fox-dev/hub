@@ -43,8 +43,8 @@ func runAFC(t *testing.T, base, apiKey string, args ...string) (string, string, 
 // token reaches its workspace and nothing else.
 func TestSmoke_MintThroughAFC_TS_34_64(t *testing.T) {
 	h := newRealHub(t)
-	h.seed(t, "S", "active")
-	h.seed(t, "X", "active")
+	h.seed(t, "S", "ready")
+	h.seed(t, "X", "ready")
 	srv := httptest.NewServer(h.server.Echo())
 	defer srv.Close()
 
@@ -84,7 +84,7 @@ func TestSmoke_MintThroughAFC_TS_34_64(t *testing.T) {
 // through afc, a revoked one included, without any secret.
 func TestSmoke_ListThroughAFC_TS_34_65(t *testing.T) {
 	h := newRealHub(t)
-	h.seed(t, "S", "active")
+	h.seed(t, "S", "ready")
 	srv := httptest.NewServer(h.server.Echo())
 	defer srv.Close()
 
@@ -126,7 +126,7 @@ func TestSmoke_ListThroughAFC_TS_34_65(t *testing.T) {
 // records it in hub.workspace.delete, and the token then gets 401.
 func TestSmoke_DeleteRevokes_TS_34_66(t *testing.T) {
 	h := newRealHub(t)
-	h.seed(t, "S", "active")
+	h.seed(t, "S", "ready")
 	rec := h.do(http.MethodPost, "/api/v1/workspaces/S/tokens", h.apiKey, `{"name":"svc","permissions":["workspaces:read"]}`)
 	var m struct {
 		TokenID string `json:"token_id"`
@@ -166,8 +166,8 @@ func TestSmoke_DeleteRevokes_TS_34_66(t *testing.T) {
 // once per minute, with the held-back count.
 func TestSmoke_RefusalAudited_TS_34_67(t *testing.T) {
 	h := newRealHub(t)
-	h.seed(t, "S", "active")
-	h.seed(t, "X", "active")
+	h.seed(t, "S", "ready")
+	h.seed(t, "X", "ready")
 	token, id := h.mintBound(t, "S", "workspaces:read", "patches:read")
 	clock := &fakeClock{t: t0}
 	wsaccess.SetRefusalObserver(NewReporter(h.emitter, clock.now).Report)
@@ -202,7 +202,7 @@ func TestSmoke_RefusalAudited_TS_34_67(t *testing.T) {
 // hourly, cleans up orphaned bindings.
 func TestSmoke_SweepAtBoot_TS_34_68(t *testing.T) {
 	h := newRealHub(t)
-	h.seed(t, "S", "active")
+	h.seed(t, "S", "ready")
 	_, orphanID := h.mintBound(t, "gone", "workspaces:read")
 	_, healthyID := h.mintBound(t, "S", "workspaces:read")
 	if _, err := h.db.Exec(`INSERT INTO token_workspace_bindings (token_id, slug, created_at) VALUES ('no-such-token', 'S', 'x')`); err != nil {

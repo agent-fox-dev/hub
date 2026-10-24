@@ -22,7 +22,7 @@ func TestSmoke03_PATWriteUpdatesDisplayName(t *testing.T) {
 		Slug:        "my-project",
 		GitURL:      "https://github.com/org/repo",
 		OwnerID:     "alice-user-id",
-		Status:      "active",
+		Status:      "pending",
 		DisplayName: "my-project",
 		Description: "",
 	})

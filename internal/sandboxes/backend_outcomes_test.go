@@ -31,7 +31,7 @@ func (e *backendEnv) issueIn(slug, body string) string {
 // "org-1", of which the owner is a member when member is true.
 func (e *backendEnv) orgWorkspace(member bool) {
 	e.t.Helper()
-	e.addWorkspace("orgws", leaseOwner, "org-1", "active")
+	e.addWorkspace("orgws", leaseOwner, "org-1", "ready")
 	if member {
 		if _, err := e.db.Exec(`INSERT INTO org_members (org_id, user_id) VALUES ('org-1', ?)`, leaseOwner); err != nil {
 			e.t.Fatalf("adding the org member: %v", err)
@@ -216,7 +216,7 @@ func TestBackendCreate_EnvIsFixedPlusSecrets_TS_27_33(t *testing.T) {
 	cfg.Profiles[0].Env = map[string]string{"A": "1", "B": "2"}
 	cfg.Profiles[0].OptionalSecrets = nil
 	env := newBackendEnv(t, leaseEnvOptions{config: cfg})
-	env.addWorkspace("w2", leaseOwner, "", "active")
+	env.addWorkspace("w2", leaseOwner, "", "ready")
 	env.plantSecret("workspace", "w2", "git_pat", "V-1")
 
 	id := env.issueIn("w2", `{"profile":"tools"}`)

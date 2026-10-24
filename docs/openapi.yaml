@@ -308,9 +308,9 @@ paths:
       summary: Create a workspace
       description: |
         Creates a workspace and enqueues an asynchronous clone job. The
-        response is returned immediately with `clone_status` set to
-        `pending`; poll `GET /api/v1/workspaces/{slug}` to observe the
-        transition to `cloning` and then `ready` or `failed`.
+        response is returned immediately with `status` set to `pending`;
+        poll `GET /api/v1/workspaces/{slug}` to observe the transition to
+        `cloning` and then `ready` or `failed`.
 
         When `org_id` is omitted or empty the server assigns the caller's
         personal organization; if the caller has none, the request fails with
@@ -357,8 +357,7 @@ paths:
         "400":
           description: |
             Missing `slug` or `git_url`; `display_name` over 128 characters;
-            `description` over 1024 characters; invalid `sync_mode` or
-            `workspace_mode`; `upstream_url` missing for a carry-patch
+            `description` over 1024 characters; invalid `workspace_mode`; `upstream_url` missing for a carry-patch
             workspace or supplied for a standard one; git credentials that are
             empty, mutually exclusive, incompletely paired, used with a
             non-HTTPS `git_url`, or that fail the `ls-remote` check; or the
@@ -474,8 +473,9 @@ paths:
           description: >-
             Empty body; workspace is archived (reactivate first);
             `display_name` over 128 characters; `description` over 1024
-            characters; an immutable field was included; or `sync_mode` is
-            invalid or null.
+            characters; an immutable field or `sync_mode` (now the
+            `sync_enabled` setting) was included; or `settings` names an
+            unknown key or a value a setting cannot take.
           content:
             application/json:
               schema:
@@ -684,8 +684,7 @@ paths:
       operationId: reactivateWorkspace
       summary: Reactivate an archived workspace
       description: |
-        Restores `status` to `active`, resets `clone_status` to `pending`, and
-        enqueues a reclone job.
+        Resets `status` to `pending` and enqueues a reclone job.
       x-required-scopes: ["workspaces:write"]
       responses:
         "200":
@@ -721,12 +720,12 @@ paths:
         when possible. Ownership is **not** enforced: any authenticated caller
         holding the scope may sync any workspace.
 
-        Preconditions: `status` is `active`, `clone_status` is `ready`,
-        `sync_mode` is not `disabled`, and `sync_status` is not `syncing`.
+        Preconditions: `status` is `ready`, the `sync_enabled` setting is
+        `true`, and no other operation holds the workspace lock (a sync in
+        progress included: `409` `workspace_busy`).
 
-        `sync_status` follows a strict state machine
-        (`idle -> syncing -> idle|error`, `error -> syncing -> idle`); a
-        deferred cleanup guarantees it never remains stuck at `syncing`.
+        A sync in progress is not a stored state. A failed sync records its
+        error in `sync_error`; the next successful sync clears it.
 
         ### Response shape
 
@@ -778,9 +777,8 @@ paths:
                   summary: Standard workspace, fast-forwarded
                   value:
                     slug: my-project
-                    status: active
-                    clone_status: ready
-                    sync_status: idle
+                    status: ready
+                    sync_error: null
                     workspace_mode: standard
                     head_sha: fedcba9876543210fedcba9876543210fedcba98
                     upstream_head_sha: fedcba9876543210fedcba9876543210fedcba98
@@ -789,9 +787,8 @@ paths:
                   summary: Carry-patch workspace, rebuild enqueued
                   value:
                     slug: vendor-fork
-                    status: active
-                    clone_status: ready
-                    sync_status: idle
+                    status: ready
+                    sync_error: null
                     workspace_mode: carry_patch
                     upstream_url: https://github.com/upstream/repo.git
                     integration_branch: deploy
@@ -859,9 +856,9 @@ paths:
       description: |
         Runs the archive flow (attempting to push local commits upstream first;
         a failed push is logged and does not abort), deletes
-        `<WORKSPACE_ROOT>/<slug>/`, resets `clone_status` to `pending`, clears
-        `sync_error` and `upstream_head_sha`, and enqueues a clone job. The
-        workspace `status` stays `active` throughout.
+        `<WORKSPACE_ROOT>/<slug>/`, resets `status` to `pending`, clears
+        `sync_error` and `upstream_head_sha`, and enqueues a clone job. An
+        archived workspace is refused with `400`; reactivate it instead.
 
         Ownership is not enforced.
       x-required-scopes: ["workspaces:write"]
@@ -885,7 +882,7 @@ paths:
           $ref: "#/components/responses/WorkspaceNotFound"
         "409":
           description: >-
-            A clone is already in progress (`clone_status` is `pending` or
+            A clone is already in progress (`status` is `pending` or
             `cloning`), or another operation holds the workspace lock, or a
             carry-patch rebuild is running (`error_type: workspace_busy`;
             reclone is rejected for the whole rebuild).
@@ -928,7 +925,7 @@ paths:
         its scope is looked at.
 
         Before the workspace lock is taken: the scope, access, body and name
-        checks, `status` `active` and `clone_status` `ready`, and the branches
+        checks, `status` `ready`, and the branches
         this route does not push (on `carry_patch` the integration branch,
         `400 integration_branch`, and a registered patch, `400 patch_branch`;
         with `force`, the `branch` column, `400 protected_branch`). The lock is
@@ -1569,7 +1566,7 @@ paths:
         upstream HEAD plus every applicable patch, in position order.
 
         Preconditions: the workspace is in `carry_patch` mode, `status` is
-        `active`, `clone_status` is `ready`, at least one patch is `active` or
+        `ready`, at least one patch is `active` or
         `conflict`, and no rebuild job for this workspace is queued or running.
 
         With no body, `strategy` falls back to the `rebuild_strategy` workspace
@@ -7681,14 +7678,11 @@ components:
         - status
         - display_name
         - description
-        - clone_status
         - head_sha
         - clone_error
         - created_at
         - settings
         - updated_at
-        - sync_mode
-        - sync_status
         - upstream_head_sha
         - last_sync_at
         - sync_error
@@ -7734,7 +7728,11 @@ components:
             a PAT's scopes; the create response always says `owner`.
         status:
           type: string
-          enum: [active, archived]
+          enum: [pending, cloning, ready, failed, archived]
+          description: >-
+            The clone's state: `pending` (queued), `cloning`, `ready` (usable),
+            `failed` (see `clone_error`) or `archived`. A sync in progress does
+            not change it.
         display_name:
           type: string
           description: >-
@@ -7745,27 +7743,16 @@ components:
           type: string
           description: Free-form text. Defaults to an empty string; never null.
           maxLength: 1024
-        clone_status:
-          type: string
-          enum: [pending, cloning, ready, failed, archived]
         head_sha:
           oneOf:
             - $ref: "#/components/schemas/Sha"
             - type: "null"
           description: >-
-            HEAD commit of the local clone. Set when `clone_status` is `ready`
-            or `archived`.
+            HEAD commit of the local clone. Set when `status` is `ready` or
+            `archived`.
         clone_error:
           type: [string, "null"]
-          description: Failure detail when `clone_status` is `failed`.
-        sync_mode:
-          type: string
-          enum: [pull_only, disabled]
-          default: pull_only
-        sync_status:
-          type: string
-          enum: [idle, syncing, error]
-          default: idle
+          description: Failure detail when `status` is `failed`.
         upstream_head_sha:
           oneOf:
             - $ref: "#/components/schemas/Sha"
@@ -7777,7 +7764,8 @@ components:
           description: Timestamp of the last successful sync.
         sync_error:
           type: [string, "null"]
-          description: Failure detail from the most recent failed sync.
+          description: >-
+            The last sync's error; null when it succeeded or none ran.
         workspace_mode:
           type: string
           enum: [standard, carry_patch]
@@ -7829,10 +7817,6 @@ components:
           type: [string, "null"]
           maxLength: 1024
           description: Defaults to an empty string.
-        sync_mode:
-          type: [string, "null"]
-          enum: [pull_only, disabled, null]
-          default: pull_only
         workspace_mode:
           type: [string, "null"]
           enum: [standard, carry_patch, null]
@@ -7886,10 +7870,6 @@ components:
           description: >-
             Must reference an organization the owner belongs to (by UUID or slug).
             `null` removes the association.
-        sync_mode:
-          type: string
-          enum: [pull_only, disabled]
-          description: "`null` is rejected with `400`."
         settings:
           allOf: [{ $ref: "#/components/schemas/WorkspaceSettings" }]
           description: >-
@@ -9113,9 +9093,6 @@ components:
         - workspace_slug
         - workspace_mode
         - status
-        - clone_status
-        - sync_status
-        - sync_mode
         - head_sha
         - git_url
         - upstream_url
@@ -9133,18 +9110,13 @@ components:
           const: carry_patch
         status:
           type: string
-        clone_status:
-          type: string
+          enum: [pending, cloning, ready, failed, archived]
         clone_error:
           type: string
           description: Omitted when empty.
-        sync_status:
-          type: string
         sync_error:
           type: string
-          description: Omitted when empty.
-        sync_mode:
-          type: string
+          description: The last sync's error. Omitted when empty.
         head_sha:
           type: string
           description: Empty when the workspace has not been cloned yet.
@@ -9539,6 +9511,12 @@ components:
           description: >-
             The same for the `upstream_url` of a `carry_patch` workspace; it
             does not fall back to `forge_api_url`.
+        sync_enabled:
+          type: boolean
+          default: true
+          description: >-
+            Whether `POST .../sync` may fetch the workspace's origin; `false`
+            refuses every sync with `400`.
 
     # -- Sessions --------------------------------------------------------------
 

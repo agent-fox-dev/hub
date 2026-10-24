@@ -26,8 +26,7 @@ func openBindingDB(t *testing.T) *sql.DB {
 		slug TEXT PRIMARY KEY,
 		owner_id TEXT NOT NULL,
 		org_id TEXT,
-		status TEXT NOT NULL DEFAULT 'active',
-		clone_status TEXT NOT NULL DEFAULT 'ready'
+		status TEXT NOT NULL DEFAULT 'ready'
 	)`); err != nil {
 		t.Fatalf("creating workspaces: %v", err)
 	}

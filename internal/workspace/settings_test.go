@@ -56,7 +56,7 @@ func TestSettings_DefaultsAndApply(t *testing.T) {
 
 func TestSettingsReader(t *testing.T) {
 	env := newTestEnv(t)
-	env.seedWorkspace(t, &Workspace{Slug: "ws", GitURL: "https://github.com/a/b", OwnerID: "alice-id", Status: "active",
+	env.seedWorkspace(t, &Workspace{Slug: "ws", GitURL: "https://github.com/a/b", OwnerID: "alice-id", Status: "pending",
 		Settings: func() Settings {
 			s := DefaultSettings()
 			s.PatchBranchSource = "origin"
@@ -141,8 +141,8 @@ func TestMigrateVariableSettings(t *testing.T) {
 	if err := secrets.InitSchema(env.db); err != nil {
 		t.Fatal(err)
 	}
-	env.seedWorkspace(t, &Workspace{Slug: "old", GitURL: "https://github.com/a/b", OwnerID: "alice-id", Status: "active"})
-	env.seedWorkspace(t, &Workspace{Slug: "plain", GitURL: "https://github.com/a/c", OwnerID: "alice-id", Status: "active"})
+	env.seedWorkspace(t, &Workspace{Slug: "old", GitURL: "https://github.com/a/b", OwnerID: "alice-id", Status: "pending"})
+	env.seedWorkspace(t, &Workspace{Slug: "plain", GitURL: "https://github.com/a/c", OwnerID: "alice-id", Status: "pending"})
 	store := secrets.NewStore(env.db)
 	if _, err := store.CreateVariables("workspace", "old", []secrets.EntryInput{
 		{Key: "PATCH_BRANCH_SOURCE", Value: "origin"},

@@ -73,21 +73,7 @@ func respondWorkspaceWithExtras(c echo.Context, code int, ws *Workspace, db *sql
 // caller with the given access (spec 35). orgSlug is the slug of the
 // workspace's org, nil when it has none; it is rendered as org_slug and
 // builds the hub_url.
-//
-// sync_mode and sync_status are coalesced to their defaults ("pull_only" and
-// "idle" respectively) when empty, providing defensive handling for
-// pre-migration rows (13-REQ-1.E2).
 func workspaceResponse(ws *Workspace, orgSlug *string, access wsaccess.Access) map[string]any {
-	// 13-REQ-1.E2: Coalesce empty sync_mode/sync_status to defaults.
-	syncMode := ws.SyncMode
-	if syncMode == "" {
-		syncMode = "pull_only"
-	}
-	syncStatus := ws.SyncStatus
-	if syncStatus == "" {
-		syncStatus = "idle"
-	}
-
 	// 15-REQ-4: Coalesce empty workspace_mode to default.
 	wsMode := ws.WorkspaceMode
 	if wsMode == "" {
@@ -106,13 +92,10 @@ func workspaceResponse(ws *Workspace, orgSlug *string, access wsaccess.Access) m
 		"status":             ws.Status,
 		"display_name":       ws.DisplayName,
 		"description":        ws.Description,
-		"clone_status":       ws.CloneStatus,
 		"head_sha":           ws.HeadSHA,
 		"clone_error":        ws.CloneError,
 		"created_at":         ws.CreatedAt,
 		"updated_at":         ws.UpdatedAt,
-		"sync_mode":          syncMode,
-		"sync_status":        syncStatus,
 		"upstream_head_sha":  ws.UpstreamHeadSHA,
 		"last_sync_at":       ws.LastSyncAt,
 		"sync_error":         ws.SyncError,
@@ -166,13 +149,6 @@ func hubURLOf(ws *Workspace, orgSlug *string) *string {
 	return &url
 }
 
-// validSyncModes lists the accepted values for the sync_mode field.
-// Used by both the create and PATCH handlers for validation.
-var validSyncModes = map[string]bool{
-	"pull_only": true,
-	"disabled":  true,
-}
-
 // validWorkspaceModes lists the accepted values for the workspace_mode field.
 var validWorkspaceModes = map[string]bool{
 	"standard":    true,
@@ -187,7 +163,6 @@ type createWorkspaceRequest struct {
 	OrgID       *string `json:"org_id"`
 	DisplayName *string `json:"display_name"` // nullable: nil or empty → slug
 	Description *string `json:"description"`  // nullable: nil → ""
-	SyncMode    *string `json:"sync_mode"`    // nullable: nil → "pull_only" (13-REQ-2.1)
 
 	// Carry-patch fields (15-REQ-2).
 	WorkspaceMode     *string `json:"workspace_mode"`     // nullable: nil → "standard"
@@ -370,16 +345,6 @@ func handleCreateWorkspace(db *sql.DB) echo.HandlerFunc {
 			return respondError(c, http.StatusBadRequest, "description must not exceed 1024 characters")
 		}
 
-		// 13-REQ-2.1: Validate sync_mode if provided.
-		syncMode := "pull_only" // default
-		if req.SyncMode != nil {
-			if !validSyncModes[*req.SyncMode] {
-				return respondError(c, http.StatusBadRequest,
-					"invalid sync_mode value: must be 'pull_only' or 'disabled'")
-			}
-			syncMode = *req.SyncMode
-		}
-
 		// ---- Carry-patch workspace mode validation (15-REQ-2) ----
 
 		// 15-REQ-2.E1: Validate workspace_mode value if provided.
@@ -508,11 +473,9 @@ func handleCreateWorkspace(db *sql.DB) echo.HandlerFunc {
 			Branch:            req.Branch,
 			OwnerID:           auth.UserID,
 			OrgID:             req.OrgID,
-			Status:            "active",
+			Status:            "pending",
 			DisplayName:       displayName,
 			Description:       description,
-			CloneStatus:       "pending",
-			SyncMode:          syncMode,
 			WorkspaceMode:     workspaceMode,
 			UpstreamURL:       upstreamURL,
 			IntegrationBranch: integrationBranch,
@@ -680,9 +643,7 @@ type updatePatchFields struct {
 	SetDescription bool
 	Description    *string // nil = JSON null, non-nil = provided value
 	SetOrgID       bool
-	OrgID          *string // nil = JSON null, non-nil = provided value
-	SetSyncMode    bool
-	SyncMode       *string         // nil = JSON null, non-nil = provided value (13-REQ-2.2)
+	OrgID          *string         // nil = JSON null, non-nil = provided value
 	Settings       json.RawMessage // the settings object given, nil when absent
 }
 
@@ -718,6 +679,10 @@ func handleUpdateWorkspace(db *sql.DB) echo.HandlerFunc {
 			if _, present := rawBody[field]; present {
 				return respondError(c, http.StatusBadRequest, field+" is immutable and cannot be updated")
 			}
+		}
+		// The sync mode became the sync_enabled setting.
+		if _, present := rawBody["sync_mode"]; present {
+			return respondError(c, http.StatusBadRequest, "sync_mode is no longer a field; set the sync_enabled setting instead")
 		}
 
 		// Parse mutable fields from the raw body.
@@ -757,28 +722,6 @@ func handleUpdateWorkspace(db *sql.DB) echo.HandlerFunc {
 					return respondError(c, http.StatusBadRequest, "invalid org_id value")
 				}
 				fields.OrgID = &s
-			}
-		}
-
-		// 13-REQ-2.2: Parse sync_mode from the PATCH body.
-		if raw, ok := rawBody["sync_mode"]; ok {
-			fields.SetSyncMode = true
-			mutableCount++
-			if string(raw) != "null" {
-				var s string
-				if err := json.Unmarshal(raw, &s); err != nil {
-					return respondError(c, http.StatusBadRequest, "invalid sync_mode value")
-				}
-				// 13-REQ-2.E1: Validate sync_mode value before proceeding.
-				if !validSyncModes[s] {
-					return respondError(c, http.StatusBadRequest,
-						"invalid sync_mode value: must be 'pull_only' or 'disabled'")
-				}
-				fields.SyncMode = &s
-			} else {
-				// null sync_mode is not a valid value — reject it.
-				return respondError(c, http.StatusBadRequest,
-					"invalid sync_mode value: must be 'pull_only' or 'disabled'")
 			}
 		}
 
@@ -838,11 +781,6 @@ func handleUpdateWorkspace(db *sql.DB) echo.HandlerFunc {
 			}
 		}
 
-		// 13-REQ-2.2: Apply sync_mode if provided.
-		if fields.SetSyncMode {
-			ws.SyncMode = *fields.SyncMode
-		}
-
 		if fields.Settings != nil {
 			next, err := applySettings(ws.Settings, fields.Settings)
 			if err != nil {
@@ -853,7 +791,7 @@ func handleUpdateWorkspace(db *sql.DB) echo.HandlerFunc {
 
 		// Persist the update: write all mutable fields (unchanged ones retain
 		// their loaded values) and refresh updated_at.
-		updated, err := updateWorkspaceRow(db, slug, ws.DisplayName, ws.Description, ws.OrgID, ws.SyncMode, ws.Settings)
+		updated, err := updateWorkspaceRow(db, slug, ws.DisplayName, ws.Description, ws.OrgID, ws.Settings)
 		if err != nil {
 			return respondError(c, http.StatusInternalServerError, "failed to update workspace")
 		}
@@ -869,8 +807,8 @@ func handleUpdateWorkspace(db *sql.DB) echo.HandlerFunc {
 		if fields.SetOrgID {
 			updatedFields = append(updatedFields, "org_id")
 		}
-		if fields.SetSyncMode {
-			updatedFields = append(updatedFields, "sync_mode")
+		if fields.Settings != nil {
+			updatedFields = append(updatedFields, "settings")
 		}
 		emitHubAudit(c, audit.HubEvent{
 			EventType:    "hub.workspace.update",
@@ -957,7 +895,7 @@ func handleGetWorkspace(db *sql.DB) echo.HandlerFunc {
 }
 
 // handleArchiveWorkspace handles POST /api/v1/workspaces/:slug/archive.
-// The handler branches on clone_status to determine the archive strategy:
+// The handler branches on the status to determine the archive strategy:
 //   - ready:          push to origin, record head_sha, delete workspace dir
 //   - cloning:        reject with HTTP 409 (clone in progress)
 //   - pending/failed: clean up any partial directory, no git push
@@ -984,7 +922,7 @@ func handleArchiveWorkspace(db *sql.DB) echo.HandlerFunc {
 
 		var updated *Workspace
 
-		switch ws.CloneStatus {
+		switch ws.Status {
 		case "cloning":
 			// 05-REQ-6.3: Reject archive while clone is in progress.
 			return respondError(c, http.StatusConflict,
@@ -1043,26 +981,19 @@ func handleArchiveWorkspace(db *sql.DB) echo.HandlerFunc {
 				log.Printf("warning: failed to delete workspace directory %q: %v", wsDir, rmErr)
 			}
 
-			// Update DB: status='archived', clone_status='archived', head_sha recorded.
+			// Update DB: status='archived', head_sha recorded.
 			u, err := archiveWorkspaceDB(db, slug, &headSHA)
 			if err != nil {
 				return respondError(c, http.StatusInternalServerError, "failed to archive workspace")
 			}
 			updated = u
 
-		case "pending", "failed":
-			// 05-REQ-6.2: No git push; just clean up and archive.
+		default:
+			// 05-REQ-6.2: pending or failed. No git push; just clean up and
+			// archive.
 			wsDir := filepath.Join(defaultWorkspaceRoot, slug)
 			_ = os.RemoveAll(wsDir) // Ignore not-exist errors.
 
-			u, err := archiveWorkspaceDB(db, slug, nil)
-			if err != nil {
-				return respondError(c, http.StatusInternalServerError, "failed to archive workspace")
-			}
-			updated = u
-
-		default:
-			// Safety net for unexpected clone_status values.
 			u, err := archiveWorkspaceDB(db, slug, nil)
 			if err != nil {
 				return respondError(c, http.StatusInternalServerError, "failed to archive workspace")
@@ -1119,8 +1050,8 @@ func handleReactivateWorkspace(db *sql.DB) echo.HandlerFunc {
 			return respondError(c, http.StatusConflict, "workspace is not archived")
 		}
 
-		// 05-REQ-7.1: Set status='active', clone_status='pending',
-		// clear clone_error, and refresh updated_at.
+		// 05-REQ-7.1: Set status='pending', clear clone_error, and refresh
+		// updated_at.
 		updated, err := reactivateWorkspaceDB(db, slug)
 		if err != nil {
 			// 05-REQ-7.E4: DB failure returns 500 without enqueuing a job.

@@ -48,7 +48,7 @@ func newBindingGitEnv(t *testing.T) *gitTestEnv {
 	env.seedOrg(t, "org-1", "My Org", "myorg")
 	env.seedOrgMember(t, "org-1", "user-a")
 	for _, slug := range []string{"s", "x"} {
-		env.seedWorkspace(t, slug, "https://github.com/org/"+slug, "user-a", "org-1", "active")
+		env.seedWorkspace(t, slug, "https://github.com/org/"+slug, "user-a", "org-1", "ready")
 		env.initWorkspaceRepo(t, slug)
 	}
 	return env
@@ -87,7 +87,7 @@ func TestMountGitHandlers_CreatesBindingTable_TS_33_4(t *testing.T) {
 
 	env.seedOrg(t, "org-1", "My Org", "myorg")
 	env.seedOrgMember(t, "org-1", "user-1")
-	env.seedWorkspace(t, "ws", "https://github.com/org/ws", "user-1", "org-1", "active")
+	env.seedWorkspace(t, "ws", "https://github.com/org/ws", "user-1", "org-1", "ready")
 	env.initWorkspaceRepo(t, "ws")
 	rec := env.doRequest(t, http.MethodGet, "/git/myorg/ws.git/info/refs?service=git-upload-pack", "", withBasicAuth("x", "af_pat_abc123"))
 	if rec.Code != http.StatusOK {

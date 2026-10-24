@@ -81,20 +81,19 @@ func seedPatchWithStatus(t *testing.T, env *testEnv, id, slug, branch string, po
 	}
 }
 
-// seedWorkspaceWithCloneStatus inserts a carry_patch workspace with a specific clone_status.
-func seedWorkspaceWithCloneStatus(t *testing.T, env *testEnv, slug, cloneStatus string) {
+// seedWorkspaceWithStatus inserts a carry_patch workspace with a specific status.
+func seedWorkspaceWithStatus(t *testing.T, env *testEnv, slug, status string) {
 	t.Helper()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	_, err := env.db.Exec(
 		`INSERT INTO workspaces (slug, git_url, owner_id, status, display_name, description,
-		 clone_status, created_at, updated_at, sync_mode, sync_status,
-		 workspace_mode, upstream_url, integration_branch)
-		 VALUES (?, 'https://github.com/fork/repo.git', 'user-1', 'active', '', '', ?, ?, ?, 'pull_only', 'idle',
+		 created_at, updated_at, workspace_mode, upstream_url, integration_branch)
+		 VALUES (?, 'https://github.com/fork/repo.git', 'user-1', ?, '', '', ?, ?,
 		 'carry_patch', 'https://github.com/upstream/repo.git', 'main')`,
-		slug, cloneStatus, now, now,
+		slug, status, now, now,
 	)
 	if err != nil {
-		t.Fatalf("seedWorkspaceWithCloneStatus: %v", err)
+		t.Fatalf("seedWorkspaceWithStatus: %v", err)
 	}
 }
 
@@ -104,9 +103,8 @@ func seedArchivedWorkspace(t *testing.T, env *testEnv, slug string) {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	_, err := env.db.Exec(
 		`INSERT INTO workspaces (slug, git_url, owner_id, status, display_name, description,
-		 clone_status, created_at, updated_at, sync_mode, sync_status,
-		 workspace_mode, upstream_url, integration_branch)
-		 VALUES (?, 'https://github.com/fork/repo.git', 'user-1', 'archived', '', '', 'archived', ?, ?, 'pull_only', 'idle',
+		 created_at, updated_at, workspace_mode, upstream_url, integration_branch)
+		 VALUES (?, 'https://github.com/fork/repo.git', 'user-1', 'archived', '', '', ?, ?,
 		 'carry_patch', 'https://github.com/upstream/repo.git', 'main')`,
 		slug, now, now,
 	)
@@ -121,9 +119,8 @@ func seedStandardWorkspace(t *testing.T, env *testEnv, slug string) {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	_, err := env.db.Exec(
 		`INSERT INTO workspaces (slug, git_url, owner_id, status, display_name, description,
-		 clone_status, created_at, updated_at, sync_mode, sync_status,
-		 workspace_mode)
-		 VALUES (?, 'https://github.com/fork/repo.git', 'user-1', 'active', '', '', 'ready', ?, ?, 'pull_only', 'idle',
+		 created_at, updated_at, workspace_mode)
+		 VALUES (?, 'https://github.com/fork/repo.git', 'user-1', 'ready', '', '', ?, ?,
 		 'standard')`,
 		slug, now, now,
 	)
@@ -144,10 +141,10 @@ func TestResetPatchToOrigin_Success_TS239(t *testing.T) {
 	const stubSHA = "aabbccddee00112233445566778899aabbccddee"
 
 	env := newPatchTestEnv(t, slug, "main")
-	// Set clone_status to ready.
-	_, err := env.db.Exec(`UPDATE workspaces SET clone_status = 'ready' WHERE slug = ?`, slug)
+	// Set status to ready.
+	_, err := env.db.Exec(`UPDATE workspaces SET status = 'ready' WHERE slug = ?`, slug)
 	if err != nil {
-		t.Fatalf("update clone_status: %v", err)
+		t.Fatalf("update status: %v", err)
 	}
 	seedPatchRaw(t, env.db, patchID, slug, "feature/x", 1)
 
@@ -234,9 +231,9 @@ func TestResetPatchToOrigin_AuthRefused_TS2310(t *testing.T) {
 	const patchID = "patch-auth-1"
 
 	env := newPatchTestEnv(t, slug, "main")
-	_, err := env.db.Exec(`UPDATE workspaces SET clone_status = 'ready' WHERE slug = ?`, slug)
+	_, err := env.db.Exec(`UPDATE workspaces SET status = 'ready' WHERE slug = ?`, slug)
 	if err != nil {
-		t.Fatalf("update clone_status: %v", err)
+		t.Fatalf("update status: %v", err)
 	}
 	seedPatchRaw(t, env.db, patchID, slug, "feature/x", 1)
 
@@ -296,8 +293,8 @@ func TestResetPatchToOrigin_InactiveOrStandard_TS2311(t *testing.T) {
 			t.Fatalf("status = %d; want 400; body: %s", rec.Code, rec.Body.String())
 		}
 		resp := parseErrorEnvelope(t, rec)
-		if resp.Error.Message != "workspace is not active" {
-			t.Errorf("message = %q; want %q", resp.Error.Message, "workspace is not active")
+		if resp.Error.Message != "workspace is archived" {
+			t.Errorf("message = %q; want %q", resp.Error.Message, "workspace is archived")
 		}
 		if hook.resetCalls != 0 {
 			t.Errorf("RunReset called %d times; want 0", hook.resetCalls)
@@ -331,7 +328,7 @@ func TestResetPatchToOrigin_CloneNotReady_TS2312(t *testing.T) {
 	RegisterRecoveryHook(hook)
 
 	slug := "reset-cloning"
-	seedWorkspaceWithCloneStatus(t, env, slug, "cloning")
+	seedWorkspaceWithStatus(t, env, slug, "cloning")
 	seedPatchRaw(t, env.db, "p-cloning", slug, "feature/c", 1)
 
 	auth := userAuth("user-1")
@@ -355,9 +352,9 @@ func TestResetPatchToOrigin_UnknownAndIntegrationBranch_TS2313(t *testing.T) {
 	const slug = "reset-checks"
 
 	env := newPatchTestEnv(t, slug, "main")
-	_, err := env.db.Exec(`UPDATE workspaces SET clone_status = 'ready' WHERE slug = ?`, slug)
+	_, err := env.db.Exec(`UPDATE workspaces SET status = 'ready' WHERE slug = ?`, slug)
 	if err != nil {
-		t.Fatalf("update clone_status: %v", err)
+		t.Fatalf("update status: %v", err)
 	}
 
 	// Seed a patch whose branch_name equals the integration branch.
@@ -406,9 +403,9 @@ func TestResetPatchToOrigin_IneligibleStatus_TS2314(t *testing.T) {
 	const slug = "reset-status"
 
 	env := newPatchTestEnv(t, slug, "main")
-	_, err := env.db.Exec(`UPDATE workspaces SET clone_status = 'ready' WHERE slug = ?`, slug)
+	_, err := env.db.Exec(`UPDATE workspaces SET status = 'ready' WHERE slug = ?`, slug)
 	if err != nil {
-		t.Fatalf("update clone_status: %v", err)
+		t.Fatalf("update status: %v", err)
 	}
 
 	seedPatchWithStatus(t, env, "p-merged", slug, "feature/merged", 1, "merged_upstream")
@@ -488,9 +485,9 @@ func TestResetPatchToOrigin_NoHook_TS2316(t *testing.T) {
 	const patchID = "p-no-hook"
 
 	env := newPatchTestEnv(t, slug, "main")
-	_, err := env.db.Exec(`UPDATE workspaces SET clone_status = 'ready' WHERE slug = ?`, slug)
+	_, err := env.db.Exec(`UPDATE workspaces SET status = 'ready' WHERE slug = ?`, slug)
 	if err != nil {
-		t.Fatalf("update clone_status: %v", err)
+		t.Fatalf("update status: %v", err)
 	}
 	seedPatchRaw(t, env.db, patchID, slug, "feature/x", 1)
 
@@ -517,9 +514,9 @@ func TestResetPatchToOrigin_ClassifiedErrors_TS2360(t *testing.T) {
 	const patchID = "p-errors"
 
 	env := newPatchTestEnv(t, slug, "main")
-	_, err := env.db.Exec(`UPDATE workspaces SET clone_status = 'ready' WHERE slug = ?`, slug)
+	_, err := env.db.Exec(`UPDATE workspaces SET status = 'ready' WHERE slug = ?`, slug)
 	if err != nil {
-		t.Fatalf("update clone_status: %v", err)
+		t.Fatalf("update status: %v", err)
 	}
 	seedPatchRaw(t, env.db, patchID, slug, "feature/x", 1)
 
@@ -622,9 +619,9 @@ func TestResetPatchToOrigin_SharedAuthHelpers_TS2362(t *testing.T) {
 	const patchID = "p-unauth"
 
 	env := newPatchTestEnv(t, slug, "main")
-	_, err := env.db.Exec(`UPDATE workspaces SET clone_status = 'ready' WHERE slug = ?`, slug)
+	_, err := env.db.Exec(`UPDATE workspaces SET status = 'ready' WHERE slug = ?`, slug)
 	if err != nil {
-		t.Fatalf("update clone_status: %v", err)
+		t.Fatalf("update status: %v", err)
 	}
 	seedPatchRaw(t, env.db, patchID, slug, "feature/x", 1)
 
@@ -659,9 +656,9 @@ func TestResetPatchToOrigin_EmitterResilience_TS2369(t *testing.T) {
 	const stubSHA = "aabbccddee00112233445566778899aabbccddee"
 
 	env := newPatchTestEnv(t, slug, "main")
-	_, err := env.db.Exec(`UPDATE workspaces SET clone_status = 'ready' WHERE slug = ?`, slug)
+	_, err := env.db.Exec(`UPDATE workspaces SET status = 'ready' WHERE slug = ?`, slug)
 	if err != nil {
-		t.Fatalf("update clone_status: %v", err)
+		t.Fatalf("update status: %v", err)
 	}
 	seedPatchRaw(t, env.db, patchID, slug, "feature/x", 1)
 

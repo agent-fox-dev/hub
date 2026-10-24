@@ -38,12 +38,12 @@ func TestArchive_Spec05_ReadyRecordAndArchive(t *testing.T) {
 		Slug:    "ready-ws",
 		GitURL:  "https://github.com/org/repo",
 		OwnerID: "user-1",
-		Status:  "active",
+		Status:  "pending",
 	})
 
 	// Set clone_status to 'ready' (requires schema columns from group 5).
-	if err := updateCloneStatus(env.db, "ready-ws", "ready", nil, nil); err != nil {
-		t.Fatalf("updateCloneStatus('ready'): %v", err)
+	if err := setStatus(env.db, "ready-ws", "ready", nil, nil); err != nil {
+		t.Fatalf("setStatus('ready'): %v", err)
 	}
 
 	// Create workspace directory with trunk to simulate a cloned repo.
@@ -135,12 +135,12 @@ func TestArchive_Spec05_PendingOrFailedNoGitPush(t *testing.T) {
 				Slug:    slug,
 				GitURL:  "https://github.com/org/repo",
 				OwnerID: "user-1",
-				Status:  "active",
+				Status:  "pending",
 			})
 
 			// Set clone_status to the target state.
-			if err := updateCloneStatus(env.db, slug, cloneState, nil, nil); err != nil {
-				t.Fatalf("updateCloneStatus(%q): %v", cloneState, err)
+			if err := setStatus(env.db, slug, cloneState, nil, nil); err != nil {
+				t.Fatalf("setStatus(%q): %v", cloneState, err)
 			}
 
 			// Create a partial workspace directory (simulating partial clone).
@@ -211,12 +211,12 @@ func TestArchive_Spec05_CloningReturns409(t *testing.T) {
 		Slug:    "cloning-ws",
 		GitURL:  "https://github.com/org/repo",
 		OwnerID: "user-1",
-		Status:  "active",
+		Status:  "pending",
 	})
 
 	// Set clone_status to 'cloning'.
-	if err := updateCloneStatus(env.db, "cloning-ws", "cloning", nil, nil); err != nil {
-		t.Fatalf("updateCloneStatus('cloning'): %v", err)
+	if err := setStatus(env.db, "cloning-ws", "cloning", nil, nil); err != nil {
+		t.Fatalf("setStatus('cloning'): %v", err)
 	}
 
 	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/cloning-ws/archive", "",

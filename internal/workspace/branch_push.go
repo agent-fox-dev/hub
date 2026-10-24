@@ -87,13 +87,9 @@ func handleBranchPush(db *sql.DB) echo.HandlerFunc {
 		}
 
 		// 38-REQ-3.2, 38-REQ-3.3
-		if ws.Status != "active" {
+		if ws.Status != "ready" {
 			return respondError(c, http.StatusBadRequest,
-				"workspace is not active; push requires an active workspace")
-		}
-		if ws.CloneStatus != "ready" {
-			return respondError(c, http.StatusBadRequest,
-				"workspace clone is not ready; clone_status must be 'ready' to push")
+				"workspace is not ready; push requires a ready workspace")
 		}
 
 		// 38-REQ-4.1, 38-REQ-4.2, 38-REQ-4.4, 38-REQ-4.8: the refusals that

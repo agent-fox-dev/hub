@@ -37,7 +37,7 @@ func newMemberMergeEnv(t *testing.T) (*mergeTestEnv, *atomic.Int32) {
 			rebases.Add(1)
 			return nil, nil
 		})
-	seedTestWorkspace(t, env.db, "mw", mOwner, "active", "ready")
+	seedTestWorkspace(t, env.db, "mw", mOwner, "ready")
 	addOrgMember(t, env.db, "mw", "O", mMember)
 	seedMergeJob(t, env.db, "m-1", "queued", "mw", "main", "feature", mOwner, nil, nil)
 	return env, &rebases

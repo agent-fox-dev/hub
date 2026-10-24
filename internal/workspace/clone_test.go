@@ -147,7 +147,7 @@ func TestCloneWorker_SuccessfulClone(t *testing.T) {
 		Slug:    "test-ws-success",
 		GitURL:  repoURL,
 		OwnerID: "user-1",
-		Status:  "active",
+		Status:  "pending",
 	}
 	if err := insertWorkspace(db, ws); err != nil {
 		t.Fatalf("seed workspace: %v", err)
@@ -215,7 +215,7 @@ func TestCloneWorker_HeadSHARecorded(t *testing.T) {
 		Slug:    "test-ws-sha",
 		GitURL:  "https://github.com/example/repo.git",
 		OwnerID: "user-1",
-		Status:  "active",
+		Status:  "pending",
 	}
 	if err := insertWorkspace(db, ws); err != nil {
 		t.Fatalf("seed workspace: %v", err)
@@ -262,7 +262,7 @@ func TestCloneWorker_BranchCloneOptions(t *testing.T) {
 		GitURL:  "https://github.com/example/repo.git",
 		Branch:  &branch,
 		OwnerID: "user-1",
-		Status:  "active",
+		Status:  "pending",
 	}
 	if err := insertWorkspace(db, ws); err != nil {
 		t.Fatalf("seed workspace: %v", err)
@@ -312,7 +312,7 @@ func TestCloneWorker_DefaultBranchCloneOptions(t *testing.T) {
 		GitURL:  "https://github.com/example/repo.git",
 		Branch:  nil, // null = default branch
 		OwnerID: "user-1",
-		Status:  "active",
+		Status:  "pending",
 	}
 	if err := insertWorkspace(db, ws); err != nil {
 		t.Fatalf("seed workspace: %v", err)
@@ -362,7 +362,7 @@ func TestCloneWorker_FailedClone(t *testing.T) {
 		Slug:    "test-ws-fail",
 		GitURL:  "https://invalid.example.com/nonexistent.git",
 		OwnerID: "user-1",
-		Status:  "active",
+		Status:  "pending",
 	}
 	if err := insertWorkspace(db, ws); err != nil {
 		t.Fatalf("seed workspace: %v", err)
@@ -413,7 +413,7 @@ func TestCloneWorker_FailedClone_RemovesPartialDir(t *testing.T) {
 		Slug:    "test-ws-partial",
 		GitURL:  "https://github.com/example/repo.git",
 		OwnerID: "user-1",
-		Status:  "active",
+		Status:  "pending",
 	}
 	if err := insertWorkspace(db, ws); err != nil {
 		t.Fatalf("seed workspace: %v", err)
@@ -469,7 +469,7 @@ func TestCloneWorker_FailedClone_UnreachableURL(t *testing.T) {
 		Slug:    "test-ws-unreachable",
 		GitURL:  "https://invalid.example.com/nonexistent.git",
 		OwnerID: "user-1",
-		Status:  "active",
+		Status:  "pending",
 	}
 	if err := insertWorkspace(db, ws); err != nil {
 		t.Fatalf("seed workspace: %v", err)
@@ -511,7 +511,7 @@ func TestCloneWorker_FailedClone_BranchNotFound(t *testing.T) {
 		GitURL:  "https://github.com/example/repo.git",
 		Branch:  &branch,
 		OwnerID: "user-1",
-		Status:  "active",
+		Status:  "pending",
 	}
 	if err := insertWorkspace(db, ws); err != nil {
 		t.Fatalf("seed workspace: %v", err)
@@ -553,7 +553,7 @@ func TestCloneWorker_FailedClone_HeadError(t *testing.T) {
 		Slug:    "test-ws-head-err",
 		GitURL:  "https://github.com/example/repo.git",
 		OwnerID: "user-1",
-		Status:  "active",
+		Status:  "pending",
 	}
 	if err := insertWorkspace(db, ws); err != nil {
 		t.Fatalf("seed workspace: %v", err)
@@ -605,7 +605,7 @@ func TestCloneWorker_IdempotentSkip(t *testing.T) {
 		Slug:    "pre-existing-ws",
 		GitURL:  "https://github.com/example/repo.git",
 		OwnerID: "user-1",
-		Status:  "active",
+		Status:  "pending",
 	}
 	if err := insertWorkspace(db, ws); err != nil {
 		t.Fatalf("seed workspace: %v", err)
@@ -661,7 +661,7 @@ func TestCloneWorker_StatusTransition_PendingToCloning(t *testing.T) {
 		Slug:    "test-ws-transition",
 		GitURL:  "https://github.com/example/repo.git",
 		OwnerID: "user-1",
-		Status:  "active",
+		Status:  "pending",
 	}
 	if err := insertWorkspace(db, ws); err != nil {
 		t.Fatalf("seed workspace: %v", err)
@@ -705,7 +705,7 @@ func TestCloneWorker_StatusTransition_CloningToReady(t *testing.T) {
 		Slug:    "test-ws-ready-transition",
 		GitURL:  "https://github.com/example/repo.git",
 		OwnerID: "user-1",
-		Status:  "active",
+		Status:  "pending",
 	}
 	if err := insertWorkspace(db, ws); err != nil {
 		t.Fatalf("seed workspace: %v", err)
@@ -742,7 +742,7 @@ func TestCloneWorker_StatusTransition_CloningToFailed(t *testing.T) {
 		Slug:    "test-ws-fail-transition",
 		GitURL:  "https://github.com/example/repo.git",
 		OwnerID: "user-1",
-		Status:  "active",
+		Status:  "pending",
 	}
 	if err := insertWorkspace(db, ws); err != nil {
 		t.Fatalf("seed workspace: %v", err)

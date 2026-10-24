@@ -19,7 +19,7 @@ import (
 // TS-13-SMOKE-1: End-to-end sync smoke test.
 // Creates a workspace, waits for clone to complete, triggers sync via
 // POST /api/v1/workspaces/:slug/sync, and verifies the response contains
-// updated sync fields (sync_status, sync_mode, last_sync_at).
+// updated sync fields (sync_error, last_sync_at, upstream_head_sha).
 //
 // Real components: workspace create handler, sync handler, job queue,
 // SQLite database, WORKSPACE_ROOT filesystem.
@@ -92,14 +92,10 @@ func TestSmoke13_SyncEndToEnd(t *testing.T) {
 		t.Fatalf("decode sync response: %v", err)
 	}
 
-	// Verify sync_status is 'idle' after successful sync.
-	if resp["sync_status"] != "idle" {
-		t.Errorf("sync_status = %v; want %q", resp["sync_status"], "idle")
-	}
-
-	// Verify sync_mode is present and correct (default 'pull_only').
-	if resp["sync_mode"] != "pull_only" {
-		t.Errorf("sync_mode = %v; want %q", resp["sync_mode"], "pull_only")
+	// Verify the sync_enabled setting is present and at its default.
+	settings, _ := resp["settings"].(map[string]any)
+	if settings["sync_enabled"] != true {
+		t.Errorf("settings.sync_enabled = %v; want true", settings["sync_enabled"])
 	}
 
 	// Verify last_sync_at is set (non-null).
@@ -117,16 +113,16 @@ func TestSmoke13_SyncEndToEnd(t *testing.T) {
 		t.Errorf("sync_error = %v; want nil", resp["sync_error"])
 	}
 
-	// Verify workspace is still active.
-	if resp["status"] != "active" {
-		t.Errorf("status = %v; want %q", resp["status"], "active")
+	// Verify workspace is still ready.
+	if resp["status"] != "ready" {
+		t.Errorf("status = %v; want %q", resp["status"], "ready")
 	}
 }
 
 // TS-13-SMOKE-2: End-to-end reclone smoke test.
 // Creates a workspace, waits for clone to complete, triggers reclone via
 // POST /api/v1/workspaces/:slug/reclone, and verifies the response has
-// clone_status='pending' and workspace status='active'.
+// status='pending'.
 //
 // Real components: workspace create handler, reclone handler, job queue,
 // SQLite database, WORKSPACE_ROOT filesystem.
@@ -205,19 +201,9 @@ func TestSmoke13_RecloneEndToEnd(t *testing.T) {
 		t.Fatalf("decode reclone response: %v", err)
 	}
 
-	// 13-REQ-7.1: clone_status='pending' in reclone response.
-	if resp["clone_status"] != "pending" {
-		t.Errorf("clone_status = %v; want %q", resp["clone_status"], "pending")
-	}
-
-	// 13-PROP-5: workspace status remains 'active' throughout.
-	if resp["status"] != "active" {
-		t.Errorf("status = %v; want %q", resp["status"], "active")
-	}
-
-	// 13-REQ-7.1: sync_status='idle' after reclone.
-	if resp["sync_status"] != "idle" {
-		t.Errorf("sync_status = %v; want %q", resp["sync_status"], "idle")
+	// 13-REQ-7.1: status='pending' in reclone response.
+	if resp["status"] != "pending" {
+		t.Errorf("status = %v; want %q", resp["status"], "pending")
 	}
 
 	// 13-REQ-7.1: sync_error cleared.
@@ -249,13 +235,9 @@ func TestSmoke13_RecloneEndToEnd(t *testing.T) {
 		t.Fatalf("decode get response: %v", err)
 	}
 
-	if getResp["clone_status"] != "ready" {
-		t.Errorf("after reclone: clone_status = %v; want %q",
-			getResp["clone_status"], "ready")
-	}
-	if getResp["status"] != "active" {
+	if getResp["status"] != "ready" {
 		t.Errorf("after reclone: status = %v; want %q",
-			getResp["status"], "active")
+			getResp["status"], "ready")
 	}
 
 	// Verify trunk directory exists again after reclone.

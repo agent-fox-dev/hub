@@ -16,7 +16,7 @@ func TestWorkspaceArchive_Success(t *testing.T) {
 		Slug:    "alice-ws",
 		GitURL:  "https://github.com/org/repo",
 		OwnerID: "alice-id",
-		Status:  "active",
+		Status:  "pending",
 	})
 
 	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/alice-ws/archive", "",
@@ -91,7 +91,7 @@ func TestWorkspaceArchive_PATForbidden(t *testing.T) {
 		Slug:    "alice-ws",
 		GitURL:  "https://github.com/org/repo",
 		OwnerID: "alice-id",
-		Status:  "active",
+		Status:  "pending",
 	})
 
 	t.Run("PAT with workspaces:read", func(t *testing.T) {
@@ -147,7 +147,7 @@ func TestWorkspaceArchive_NotFound(t *testing.T) {
 			Slug:    "bob-ws",
 			GitURL:  "https://github.com/org/bob-repo",
 			OwnerID: "bob-id",
-			Status:  "active",
+			Status:  "pending",
 		})
 
 		rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/bob-ws/archive", "",
@@ -210,7 +210,7 @@ func TestWorkspaceReactivate_AlreadyActive(t *testing.T) {
 		Slug:    "alice-ws",
 		GitURL:  "https://github.com/org/repo",
 		OwnerID: "alice-id",
-		Status:  "active",
+		Status:  "pending",
 	})
 
 	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/alice-ws/reactivate", "",
@@ -335,7 +335,7 @@ func TestWorkspaceDelete_ActiveRejected(t *testing.T) {
 		Slug:    "alice-ws",
 		GitURL:  "https://github.com/org/repo",
 		OwnerID: "alice-id",
-		Status:  "active",
+		Status:  "pending",
 	})
 
 	rec := env.doRequest(t, http.MethodDelete, "/api/v1/workspaces/alice-ws", "",

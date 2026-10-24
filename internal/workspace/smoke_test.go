@@ -84,7 +84,7 @@ func TestSmoke_ArchiveThenDelete(t *testing.T) {
 		Slug:    "my-workspace",
 		GitURL:  "https://github.com/org/repo",
 		OwnerID: "alice-user-id",
-		Status:  "active",
+		Status:  "pending",
 	})
 
 	// Step 1: Archive the workspace.
@@ -149,7 +149,7 @@ func TestSmoke_ListWithIncludeArchived(t *testing.T) {
 		Slug:    "older-active",
 		GitURL:  "https://github.com/org/repo1",
 		OwnerID: "alice-user-id",
-		Status:  "active",
+		Status:  "pending",
 	})
 
 	// Slight delay to ensure different created_at for ordering.
@@ -168,7 +168,7 @@ func TestSmoke_ListWithIncludeArchived(t *testing.T) {
 		Slug:    "newest-active",
 		GitURL:  "https://github.com/org/repo3",
 		OwnerID: "alice-user-id",
-		Status:  "active",
+		Status:  "pending",
 	})
 
 	// Also seed a workspace for another user — should NOT appear.
@@ -176,7 +176,7 @@ func TestSmoke_ListWithIncludeArchived(t *testing.T) {
 		Slug:    "bob-ws",
 		GitURL:  "https://github.com/org/repo4",
 		OwnerID: "bob-user-id",
-		Status:  "active",
+		Status:  "pending",
 	})
 
 	// List with include_archived=true.
@@ -279,7 +279,7 @@ func TestSmoke_PATReadOwnWorkspacesOnly(t *testing.T) {
 		Slug:    "alice-active",
 		GitURL:  "https://github.com/alice/repo",
 		OwnerID: "alice-user-id",
-		Status:  "active",
+		Status:  "pending",
 	})
 	env.seedWorkspace(t, &Workspace{
 		Slug:    "alice-archived",
@@ -291,7 +291,7 @@ func TestSmoke_PATReadOwnWorkspacesOnly(t *testing.T) {
 		Slug:    "bob-active",
 		GitURL:  "https://github.com/bob/repo",
 		OwnerID: "bob-user-id",
-		Status:  "active",
+		Status:  "pending",
 	})
 
 	// Alice's PAT with workspaces:read scope.
@@ -403,7 +403,7 @@ func TestSmoke_ErrorPropagation(t *testing.T) {
 			Slug:    "existing-ws",
 			GitURL:  "https://github.com/org/repo",
 			OwnerID: "alice-user-id",
-			Status:  "active",
+			Status:  "pending",
 		})
 
 		// Attempt to create with the same slug.
@@ -439,7 +439,7 @@ func TestSmoke_ErrorPropagation(t *testing.T) {
 			Slug:    "active-ws",
 			GitURL:  "https://github.com/org/repo",
 			OwnerID: "alice-user-id",
-			Status:  "active",
+			Status:  "pending",
 		})
 
 		rec := env.doRequest(t, http.MethodDelete, "/api/v1/workspaces/active-ws", "", auth)

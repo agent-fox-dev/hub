@@ -14,7 +14,7 @@ import (
 // Requirement: 34-REQ-4.1
 func TestList_NoCredential_TS_34_21(t *testing.T) {
 	env := newTestEnv(t, Config{})
-	seedWorkspace(t, env.db, "s", "u1", "active")
+	seedWorkspace(t, env.db, "s", "u1", "ready")
 	rec := env.do(http.MethodGet, "/api/v1/workspaces/s/tokens", nil, "", nil)
 	if rec.Code != http.StatusUnauthorized || parseError(t, rec).Error.Message != "authentication required" {
 		t.Errorf("(%d, %s); want 401 authentication required", rec.Code, rec.Body)
@@ -25,7 +25,7 @@ func TestList_NoCredential_TS_34_21(t *testing.T) {
 // a binding lookup error answers 500. Requirement: 34-REQ-4.2
 func TestList_BoundPAT_TS_34_22(t *testing.T) {
 	env := newTestEnv(t, Config{})
-	seedWorkspace(t, env.db, "s", "u1", "active")
+	seedWorkspace(t, env.db, "s", "u1", "ready")
 	bind(t, env.db, "tokB", "s")
 	reports := recordRefusals(t)
 
@@ -53,7 +53,7 @@ func TestList_BoundPAT_TS_34_22(t *testing.T) {
 // refused; the control PATs pass. Requirement: 34-REQ-4.3
 func TestList_PATScope_TS_34_23(t *testing.T) {
 	env := newTestEnv(t, Config{})
-	seedWorkspace(t, env.db, "s", "u1", "active")
+	seedWorkspace(t, env.db, "s", "u1", "ready")
 	rec := env.do(http.MethodGet, "/api/v1/workspaces/s/tokens", pat("u1", "tokU", "workspaces:read"), "", nil)
 	if rec.Code != http.StatusForbidden || parseError(t, rec).Error.Message != "PAT requires tokens:read scope" {
 		t.Errorf("(%d, %s); want 403 PAT requires tokens:read scope", rec.Code, rec.Body)
@@ -69,7 +69,7 @@ func TestList_PATScope_TS_34_23(t *testing.T) {
 // 404. Requirement: 34-REQ-4.4
 func TestList_NotFound_TS_34_24(t *testing.T) {
 	env := newTestEnv(t, Config{})
-	seedWorkspace(t, env.db, "b", "u2", "active")
+	seedWorkspace(t, env.db, "b", "u2", "ready")
 	for _, c := range []struct{ name, slug string }{
 		{"u1 missing", "missing"}, {"u1 other's", "b"}, {"admin missing", "missing"},
 	} {
@@ -107,7 +107,7 @@ func listOf(t *testing.T, env *testEnv, slug string, auth any) []map[string]any 
 func TestList_JoinedOrderedComplete_TS_34_25(t *testing.T) {
 	env := newTestEnv(t, Config{})
 	seedWorkspace(t, env.db, "s", "u1", "archived")
-	seedWorkspace(t, env.db, "e", "u1", "active")
+	seedWorkspace(t, env.db, "e", "u1", "ready")
 	seedPAT(t, env.db, patRow{id: "c-live", name: "live", createdAt: "2026-09-01T10:00:02Z"})
 	seedPAT(t, env.db, patRow{id: "b-revoked", name: "revoked", revokedAt: "2026-09-02T00:00:00Z", createdAt: "2026-09-01T10:00:01Z"})
 	seedPAT(t, env.db, patRow{id: "a-expired", name: "expired", expiresAt: "2026-09-01T11:00:00Z", createdAt: "2026-09-01T10:00:01Z"})
@@ -135,7 +135,7 @@ func TestList_JoinedOrderedComplete_TS_34_25(t *testing.T) {
 // Requirement: 34-REQ-4.6
 func TestList_Rendering_TS_34_26(t *testing.T) {
 	env := newTestEnv(t, Config{})
-	seedWorkspace(t, env.db, "s", "u1", "active")
+	seedWorkspace(t, env.db, "s", "u1", "ready")
 	seedPAT(t, env.db, patRow{id: "t1", name: "good", perms: `["a","b"]`, createdAt: "2026-09-01T10:00:00Z"})
 	seedPAT(t, env.db, patRow{id: "t2", name: "corrupt", perms: `not json`, expiresAt: "2026-12-01T00:00:00Z", revokedAt: "2026-10-01T00:00:00Z", createdAt: "2026-09-01T10:00:01Z"})
 	bind(t, env.db, "t1", "s")
@@ -184,7 +184,7 @@ func TestList_Rendering_TS_34_26(t *testing.T) {
 // Requirement: 34-REQ-4.7
 func TestList_QueryError_TS_34_27(t *testing.T) {
 	env := newTestEnv(t, Config{})
-	seedWorkspace(t, env.db, "s", "u1", "active")
+	seedWorkspace(t, env.db, "s", "u1", "ready")
 	if _, err := env.db.Exec(`DROP TABLE pats`); err != nil {
 		t.Fatal(err)
 	}

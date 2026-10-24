@@ -115,7 +115,7 @@ func TestMint_PassThroughRefusals_TS_34_11(t *testing.T) {
 		}
 		em := &recordingEmitter{}
 		env := newTestEnv(t, Config{APIKit: stub, Audit: em})
-		seedWorkspace(t, env.db, "s", "u1", "active")
+		seedWorkspace(t, env.db, "s", "u1", "ready")
 		rec := env.do(http.MethodPost, mintPath, apiKey("u1"), `{"name":"n"}`, nil)
 		if rec.Code != a.status || rec.Header().Get("Content-Type") != a.contentType || rec.Body.String() != a.body {
 			t.Errorf("(%d, %q, %q); want apikit's (%d, %q, %q)", rec.Code, rec.Header().Get("Content-Type"), rec.Body, a.status, a.contentType, a.body)
@@ -145,7 +145,7 @@ func TestMint_UndecodableCreated_TS_34_12(t *testing.T) {
 	for _, c := range cases {
 		logs := captureLogs(t)
 		db := openTestDB(t)
-		seedWorkspace(t, db, "s", "u1", "active")
+		seedWorkspace(t, db, "s", "u1", "ready")
 		env := newTestEnv(t, Config{DB: db, APIKit: mintingStub(db, c.tokenID, "", nil, c.body)})
 		rec := env.do(http.MethodPost, mintPath, apiKey("u1"), `{"name":"n"}`, nil)
 		if rec.Code != http.StatusInternalServerError || parseError(t, rec).Error.Message != "failed to bind the token to the workspace" {
@@ -170,7 +170,7 @@ func TestMint_UndecodableCreated_TS_34_12(t *testing.T) {
 // workspace. Requirement: 34-REQ-3.1
 func TestMint_WritesBinding_TS_34_13(t *testing.T) {
 	db := openTestDB(t)
-	seedWorkspace(t, db, "s", "u1", "active")
+	seedWorkspace(t, db, "s", "u1", "ready")
 	env := newTestEnv(t, Config{DB: db, APIKit: mintingStub(db, "T1", "ak_pat_T1_secret", nil, "")})
 	if rec := env.do(http.MethodPost, mintPath, apiKey("u1"), `{"name":"svc"}`, nil); rec.Code != http.StatusCreated {
 		t.Fatalf("mint: (%d, %s); want 201", rec.Code, rec.Body)
@@ -193,7 +193,7 @@ func TestMint_WritesBinding_TS_34_13(t *testing.T) {
 // documented body. Requirement: 34-REQ-3.2
 func TestMint_SuccessBody_TS_34_15(t *testing.T) {
 	db := openTestDB(t)
-	seedWorkspace(t, db, "s", "u1", "active")
+	seedWorkspace(t, db, "s", "u1", "ready")
 	env := newTestEnv(t, Config{DB: db, APIKit: mintingStub(db, "T1", "ak_pat_T1_secret", nil, "")})
 	rec := env.do(http.MethodPost, mintPath, apiKey("u1"), `{"name":"svc"}`, nil)
 	if rec.Code != http.StatusCreated || rec.Header().Get("Cache-Control") != "no-store" {
@@ -224,7 +224,7 @@ func TestMint_SuccessBody_TS_34_15(t *testing.T) {
 // 404 and a revoked token. Requirement: 34-REQ-3.3
 func TestMint_WorkspaceVanished_TS_34_16(t *testing.T) {
 	db := openTestDB(t)
-	seedWorkspace(t, db, "s", "u1", "active")
+	seedWorkspace(t, db, "s", "u1", "ready")
 	vanish := func() { _, _ = db.Exec(`DELETE FROM workspaces WHERE slug = 's'`) }
 	env := newTestEnv(t, Config{DB: db, APIKit: mintingStub(db, "T1", "ak_pat_T1_secret", vanish, "")})
 	rec := env.do(http.MethodPost, mintPath, apiKey("u1"), `{"name":"svc"}`, nil)
@@ -250,7 +250,7 @@ func TestMint_InsertFails_TS_34_17(t *testing.T) {
 		},
 	} {
 		db := openTestDB(t)
-		seedWorkspace(t, db, "s", "u1", "active")
+		seedWorkspace(t, db, "s", "u1", "ready")
 		env := newTestEnv(t, Config{DB: db, APIKit: mintingStub(db, "T1", "ak_pat_T1_secret", setup(db), "")})
 		rec := env.do(http.MethodPost, mintPath, apiKey("u1"), `{"name":"svc"}`, nil)
 		if rec.Code != http.StatusInternalServerError || parseError(t, rec).Error.Message != "failed to bind the token to the workspace" {
@@ -290,7 +290,7 @@ func TestMint_RevocationFails_TS_34_18(t *testing.T) {
 	} {
 		logs := captureLogs(t)
 		db := openTestDB(t)
-		seedWorkspace(t, db, "s", "u1", "active")
+		seedWorkspace(t, db, "s", "u1", "ready")
 		env := newTestEnv(t, Config{DB: db, APIKit: mintingStub(db, "T1", "ak_pat_T1_secret", func() { v.inject(db) }, v.body)})
 		rec := env.do(http.MethodPost, mintPath, apiKey("u1"), `{"name":"svc"}`, nil)
 		if rec.Code != v.status || parseError(t, rec).Error.Message != v.msg {
@@ -339,7 +339,7 @@ func TestMint_NothingSecretLogged_TS_34_19(t *testing.T) {
 	for name, stub := range paths {
 		logs := captureLogs(t)
 		db := openTestDB(t)
-		seedWorkspace(t, db, "s", "u1", "active")
+		seedWorkspace(t, db, "s", "u1", "ready")
 		cfg := Config{DB: db, APIKit: stub(db)}
 		if name == "audit emit error" {
 			cfg.Audit = &recordingEmitter{err: errors.New("emit failed")}
@@ -387,7 +387,7 @@ func TestMint_PropertyRollback_TS_34_20(t *testing.T) {
 		for i, name := range names {
 			id := fmt.Sprintf("T%d", i)
 			db := openTestDB(t)
-			seedWorkspace(t, db, "s", "u1", "active")
+			seedWorkspace(t, db, "s", "u1", "ready")
 			var before func()
 			if f.inject != nil {
 				before = func() { f.inject(db, id) }

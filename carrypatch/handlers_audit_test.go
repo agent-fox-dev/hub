@@ -61,7 +61,7 @@ func TestRebuildEnqueueAuditEmission(t *testing.T) {
 	env := newRebuildTestEnv(t)
 
 	// Seed a carry_patch workspace with active patches.
-	seedWorkspace(t, env.db, "ws-1", "user-1", "active", "ready", "carry_patch", "integration")
+	seedWorkspace(t, env.db, "ws-1", "user-1", "ready", "carry_patch", "integration")
 	seedPatch(t, env.db, "p-1", "ws-1", "feature/a", 1, PatchStatusActive)
 	seedPatch(t, env.db, "p-2", "ws-1", "feature/b", 2, PatchStatusActive)
 
@@ -228,7 +228,7 @@ func TestRebuildEnqueueNilAuditDoesNotPanic(t *testing.T) {
 	env := newRebuildTestEnv(t)
 
 	// Seed a carry_patch workspace with active patches.
-	seedWorkspace(t, env.db, "ws-1", "user-1", "active", "ready", "carry_patch", "integration")
+	seedWorkspace(t, env.db, "ws-1", "user-1", "ready", "carry_patch", "integration")
 	seedPatch(t, env.db, "p-1", "ws-1", "feature/a", 1, PatchStatusActive)
 
 	auth := rebuildUserAuth("user-1")
@@ -264,7 +264,7 @@ func TestRebuildAuditEmitErrorDoesNotAffectResponse(t *testing.T) {
 
 	env := newRebuildTestEnv(t)
 
-	seedWorkspace(t, env.db, "ws-1", "user-1", "active", "ready", "carry_patch", "integration")
+	seedWorkspace(t, env.db, "ws-1", "user-1", "ready", "carry_patch", "integration")
 	seedPatch(t, env.db, "p-1", "ws-1", "feature/a", 1, PatchStatusActive)
 
 	// Create a new echo with failing audit emitter.

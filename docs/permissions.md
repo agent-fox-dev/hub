@@ -260,7 +260,7 @@ other users' workspaces beyond their orgs'.
 | Endpoint | Access | Ownership |
 |----------|--------|-----------|
 | `GET /api/v1/sandbox-profiles` | allowed | none; every authorised caller sees the same list |
-| `POST /api/v1/workspaces/:slug/sandboxes` | allowed | write: must own the workspace (org member 403, 404 otherwise), which must be active |
+| `POST /api/v1/workspaces/:slug/sandboxes` | allowed | write: must own the workspace (org member 403, 404 otherwise), which must not be archived |
 | `GET /api/v1/workspaces/:slug/sandboxes`, `GET .../sandboxes/:id` | allowed | read: owner or org member (404 otherwise) |
 | `DELETE /api/v1/workspaces/:slug/sandboxes/:id` | allowed | write: must own the workspace (org member 403, 404 otherwise) |
 | `GET /api/v1/sandboxes` | **admin tokens only** (403 for an API key) | all workspaces |
@@ -270,9 +270,9 @@ other users' workspaces beyond their orgs'.
 | Endpoint | Access | Ownership |
 |----------|--------|-----------|
 | `GET /api/v1/workspaces/:slug/forge` and the nine read routes (`.../forge/repository`, `.../issues`, `.../issues/:n`, `.../issues/:n/comments`, `.../pulls/:n`, `.../pulls/:n/state`, `.../pulls/:n/files`, `.../pulls/:n/checks`, `.../pulls/:n/reviews`) | allowed | read: owner or org member (404 otherwise); an admin token may read any workspace |
-| the nine write routes (`POST .../issues`, `PATCH .../issues/:n`, `POST .../issues/:n/close`, `POST .../issues/:n/comments`, `POST .../issues/:n/labels`, `DELETE .../issues/:n/labels/:name`, `POST .../labels`, `POST .../pulls`, `POST .../pulls/:n/comments`) | allowed | write: must own the workspace (org member 403, 404 otherwise), which must be active (400 if not); an admin token may write to any workspace |
+| the nine write routes (`POST .../issues`, `PATCH .../issues/:n`, `POST .../issues/:n/close`, `POST .../issues/:n/comments`, `POST .../issues/:n/labels`, `DELETE .../issues/:n/labels/:name`, `POST .../labels`, `POST .../pulls`, `POST .../pulls/:n/comments`) | allowed | write: must own the workspace (org member 403, 404 otherwise), which must not be archived (400 if it is); an admin token may write to any workspace |
 | `GET /api/v1/workspaces/:slug/forge/deliveries` | allowed | as the reads: owner or org member (404 otherwise); works on archived workspaces |
-| `PUT /api/v1/workspaces/:slug/forge/webhook` | allowed | as the writes: must own the workspace (org member 403, 404 otherwise), which must be active (400 if not) |
+| `PUT /api/v1/workspaces/:slug/forge/webhook` | allowed | as the writes: must own the workspace (org member 403, 404 otherwise), which must not be archived (400 if it is) |
 | `DELETE /api/v1/workspaces/:slug/forge/webhook` | allowed | write: must own the workspace (org member 403, 404 otherwise); works on archived workspaces |
 | `POST /hooks/forge/:slug` | **no credential** | none: outside the API group; the forge proves who it is with the HMAC signature or the token of the workspace's `FORGE_WEBHOOK_SECRET` |
 
@@ -283,7 +283,7 @@ not read is 404. For a write: no credential is 401; a PAT without `forge:write`,
 `forge:read` alone included, is 403 (`PAT requires forge:write scope`), and so is an
 unknown credential type, before the workspace is looked up; a workspace that is missing
 or that the caller may not read is 404; a member of its org is 403 `forbidden`; one
-that is not active is 400. The hub reads and writes the forge with the workspace's own
+that is archived is 400. The hub reads and writes the forge with the workspace's own
 stored git credential, never with the caller's, a member's reads included; the
 diagnostic names only the credential's kind.
 
@@ -714,7 +714,7 @@ at startup via the `extraPerms` parameter, on every start.
 | **Grants** | Change a workspace's repository on its forge: create, update and close issues, comment on issues and pull requests, add and remove issue labels, make sure a repository label exists, and open pull requests. Also set and remove the secret the forge signs its webhook deliveries with. The hub uses the workspace's own stored git credential, never the caller's. |
 | **Endpoints** | `POST /api/v1/workspaces/:slug/issues`, `PATCH .../issues/:n`, `POST .../issues/:n/close`, `POST .../issues/:n/comments`, `POST .../issues/:n/labels`, `DELETE .../issues/:n/labels/:name`, `POST .../labels`, `POST .../pulls`, `POST .../pulls/:n/comments`, `PUT .../forge/webhook`, `DELETE .../forge/webhook`; and every `forge:read` endpoint |
 | **Implies** | `forge:read` |
-| **Ownership** | `wsaccess` with the write level: the workspace's owner or an admin token; a member of its org gets `403` with `error_type: forbidden`; anyone else gets `404`. A write also needs the workspace to be active: an archived one is `400 workspace is not active`, after the access check. This holds for the nine write routes and for `PUT .../forge/webhook`; `DELETE .../forge/webhook` works on a workspace of any status. |
+| **Ownership** | `wsaccess` with the write level: the workspace's owner or an admin token; a member of its org gets `403` with `error_type: forbidden`; anyone else gets `404`. A write also needs the workspace not to be archived: an archived one is `400 workspace is archived`, after the access check. This holds for the nine write routes and for `PUT .../forge/webhook`; `DELETE .../forge/webhook` works on a workspace of any status. |
 | **Note** | `forge:read` does not grant a write: a PAT holding only `forge:read` gets `403 PAT requires forge:write scope` on every write route, before the workspace is looked up. API keys and admin tokens are not scope-checked. A write that reaches the forge is recorded as a `hub.forge.*` audit event naming the caller; a request the hub refuses on its own is not. `PUT` and `DELETE .../forge/webhook` record `hub.forge.webhook.set` and `.unset` (never the secret). Neither scope is needed for the ingress, which is authenticated by the signature. |
 
 ---

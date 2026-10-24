@@ -168,7 +168,7 @@ func TestWorkerCredential_ProcessCloneJob_PassesAuth(t *testing.T) {
 		Slug:    "auth-ws",
 		GitURL:  "https://github.com/acme/private",
 		OwnerID: "clone-user-001",
-		Status:  "active",
+		Status:  "pending",
 	}
 	if err := insertWorkspace(db, ws); err != nil {
 		t.Fatalf("seed workspace: %v", err)
@@ -277,11 +277,10 @@ func TestWorkerCredential_Reclone_UsesCredentials(t *testing.T) {
 
 	// Seed an archived workspace that was previously created with a PAT.
 	ws := &Workspace{
-		Slug:        "reclone-ws",
-		GitURL:      "https://github.com/acme/private",
-		OwnerID:     "clone-user-001",
-		Status:      "active",
-		CloneStatus: "pending",
+		Slug:    "reclone-ws",
+		GitURL:  "https://github.com/acme/private",
+		OwnerID: "clone-user-001",
+		Status:  "pending",
 	}
 	if err := insertWorkspace(db, ws); err != nil {
 		t.Fatalf("seed workspace: %v", err)
@@ -344,7 +343,7 @@ func TestWorkerCredential_CloneAuthError(t *testing.T) {
 		Slug:    "auth-fail-ws",
 		GitURL:  "https://github.com/acme/private",
 		OwnerID: "clone-user-001",
-		Status:  "active",
+		Status:  "pending",
 	}
 	if err := insertWorkspace(db, ws); err != nil {
 		t.Fatalf("seed workspace: %v", err)

@@ -70,9 +70,9 @@ func TestResetAudit_HubPatchResetPerAction_TS2364(t *testing.T) {
 			const branch = "feature/audit"
 
 			env := newPatchTestEnv(t, slug, "main")
-			_, err := env.db.Exec(`UPDATE workspaces SET clone_status = 'ready' WHERE slug = ?`, slug)
+			_, err := env.db.Exec(`UPDATE workspaces SET status = 'ready' WHERE slug = ?`, slug)
 			if err != nil {
-				t.Fatalf("update clone_status: %v", err)
+				t.Fatalf("update status: %v", err)
 			}
 			seedPatchRaw(t, env.db, patchID, slug, branch, 1)
 
@@ -200,9 +200,9 @@ func TestResetAudit_MetadataLocalAndReplacedSHA_TS2365(t *testing.T) {
 			const branch = "feature/meta"
 
 			env := newPatchTestEnv(t, slug, "main")
-			_, err := env.db.Exec(`UPDATE workspaces SET clone_status = 'ready' WHERE slug = ?`, slug)
+			_, err := env.db.Exec(`UPDATE workspaces SET status = 'ready' WHERE slug = ?`, slug)
 			if err != nil {
-				t.Fatalf("update clone_status: %v", err)
+				t.Fatalf("update status: %v", err)
 			}
 			seedPatchRaw(t, env.db, patchID, slug, branch, 1)
 
@@ -283,9 +283,9 @@ func TestResetAudit_ReplacedEmitsHubPatchReplace_TS2366(t *testing.T) {
 	const originSHA = "2222222222222222222222222222222222222222"
 
 	env := newPatchTestEnv(t, slug, "main")
-	_, err := env.db.Exec(`UPDATE workspaces SET clone_status = 'ready' WHERE slug = ?`, slug)
+	_, err := env.db.Exec(`UPDATE workspaces SET status = 'ready' WHERE slug = ?`, slug)
 	if err != nil {
-		t.Fatalf("update clone_status: %v", err)
+		t.Fatalf("update status: %v", err)
 	}
 	seedPatchRaw(t, env.db, patchID, slug, branch, 1)
 
@@ -379,9 +379,9 @@ func TestResetAudit_FailedResetNoEvents_TS2368(t *testing.T) {
 	const patchID = "p-fail"
 
 	env := newPatchTestEnv(t, slug, "main")
-	_, err := env.db.Exec(`UPDATE workspaces SET clone_status = 'ready' WHERE slug = ?`, slug)
+	_, err := env.db.Exec(`UPDATE workspaces SET status = 'ready' WHERE slug = ?`, slug)
 	if err != nil {
-		t.Fatalf("update clone_status: %v", err)
+		t.Fatalf("update status: %v", err)
 	}
 	seedPatchRaw(t, env.db, patchID, slug, "feature/fail", 1)
 
@@ -495,8 +495,8 @@ func TestResetAudit_RereadFailureStillEmits(t *testing.T) {
 			const branch = "feature/reread"
 
 			env := newPatchTestEnv(t, slug, "main")
-			if _, err := env.db.Exec(`UPDATE workspaces SET clone_status = 'ready' WHERE slug = ?`, slug); err != nil {
-				t.Fatalf("update clone_status: %v", err)
+			if _, err := env.db.Exec(`UPDATE workspaces SET status = 'ready' WHERE slug = ?`, slug); err != nil {
+				t.Fatalf("update status: %v", err)
 			}
 			seedPatchRaw(t, env.db, patchID, slug, branch, 1)
 

@@ -55,7 +55,7 @@ func TestListRerereEntries_UnlabelledImagesAndMergeRR(t *testing.T) {
 // its path (the state after a completed rebuild).
 func TestRerereForget_ByEntryID(t *testing.T) {
 	env := newFullTestEnv(t)
-	seedWorkspace(t, env.db, "my-workspace", "alice", "active", "ready", "carry_patch", "integration")
+	seedWorkspace(t, env.db, "my-workspace", "alice", "ready", "carry_patch", "integration")
 	setupRRCacheDir(t, env.workspaceRoot, "my-workspace", []rrCacheEntry{
 		{hash: "0123abcd", preimage: "a\n<<<<<<<\nours\n=======\ntheirs\n>>>>>>>\n", postimage: "a\nresolved\n"},
 	})

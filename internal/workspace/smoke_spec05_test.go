@@ -122,11 +122,10 @@ func TestSmoke05_ArchiveReadyWorkspace(t *testing.T) {
 
 	// Seed workspace with clone_status='ready'.
 	env.seedWorkspace(t, &Workspace{
-		Slug:        slug,
-		GitURL:      "https://github.com/org/repo",
-		OwnerID:     "alice-user-id",
-		Status:      "active",
-		CloneStatus: "ready",
+		Slug:    slug,
+		GitURL:  "https://github.com/org/repo",
+		OwnerID: "alice-user-id",
+		Status:  "ready",
 	})
 
 	// Inject mock git functions.
@@ -199,11 +198,10 @@ func TestSmoke05_ReactivateAndReclone(t *testing.T) {
 
 	// Seed an archived workspace.
 	env.seedWorkspace(t, &Workspace{
-		Slug:        "reactivate-ws",
-		GitURL:      "https://github.com/org/repo",
-		OwnerID:     "alice-user-id",
-		Status:      "archived",
-		CloneStatus: "archived",
+		Slug:    "reactivate-ws",
+		GitURL:  "https://github.com/org/repo",
+		OwnerID: "alice-user-id",
+		Status:  "archived",
 	})
 
 	auth := userAuth("alice-user-id")
@@ -274,11 +272,10 @@ func TestSmoke05_DeleteArchivedCleanup(t *testing.T) {
 
 	// Seed an archived workspace.
 	env.seedWorkspace(t, &Workspace{
-		Slug:        slug,
-		GitURL:      "https://github.com/org/repo",
-		OwnerID:     "alice-user-id",
-		Status:      "archived",
-		CloneStatus: "archived",
+		Slug:    slug,
+		GitURL:  "https://github.com/org/repo",
+		OwnerID: "alice-user-id",
+		Status:  "archived",
 	})
 
 	origRoot := defaultWorkspaceRoot
@@ -560,7 +557,7 @@ func TestSmoke05_AllEndpointsIncludeCloneFields(t *testing.T) {
 	})
 
 	// Set clone_status to 'ready' so archive can push.
-	_ = updateCloneStatus(env.db, slug, "ready", nil, nil)
+	_ = setStatus(env.db, slug, "ready", nil, nil)
 	trunkDir := filepath.Join(defaultWorkspaceRoot, slug, "trunk")
 	_ = os.MkdirAll(trunkDir, 0o755)
 

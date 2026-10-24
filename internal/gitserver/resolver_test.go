@@ -8,17 +8,17 @@ import (
 )
 
 // TS-06-12: Repository resolver extracts org and slug from the URL, verifies
-// org_id, verifies clone_status=ready, opens the repository via PlainOpen,
+// org_id, verifies status=ready, opens the repository via PlainOpen,
 // and returns the storer to the transport.
 // Requirement: 06-REQ-4.1
 func TestResolver_HappyPath_ReadyWorkspace_ReturnsOK(t *testing.T) {
 	env := newGitTestEnv(t)
 
-	// Seed org and workspace with matching org_id and clone_status='ready'.
+	// Seed org and workspace with matching org_id and status='ready'.
 	env.seedOrg(t, "org-1", "My Org", "myorg")
 	env.seedOrgMember(t, "org-1", "user-1")
-	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "active")
-	// clone_status defaults to 'ready' from schema.
+	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "ready")
+	// status defaults to 'ready' from schema.
 
 	// Create a real git repository at the expected filesystem path.
 	env.initWorkspaceRepo(t, "myws")
@@ -51,8 +51,8 @@ func TestResolver_CorrectOrgAndSlugExtraction(t *testing.T) {
 	env.seedOrg(t, "org-2", "Org Two", "orgtwo")
 	env.seedOrgMember(t, "org-1", "user-1")
 	env.seedOrgMember(t, "org-2", "user-2")
-	env.seedWorkspace(t, "ws-alpha", "https://github.com/org/alpha", "user-1", "org-1", "active")
-	env.seedWorkspace(t, "ws-beta", "https://github.com/org/beta", "user-2", "org-2", "active")
+	env.seedWorkspace(t, "ws-alpha", "https://github.com/org/alpha", "user-1", "org-1", "ready")
+	env.seedWorkspace(t, "ws-beta", "https://github.com/org/beta", "user-2", "org-2", "ready")
 
 	env.initWorkspaceRepo(t, "ws-alpha")
 
@@ -105,7 +105,7 @@ func TestResolver_OrgMismatch_Returns404(t *testing.T) {
 	env.seedOrg(t, "org-2", "Wrong Org", "wrongorg")
 	env.seedOrgMember(t, "org-1", "user-1")
 	env.seedOrgMember(t, "org-2", "user-1")
-	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "active")
+	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "ready")
 
 	env.initWorkspaceRepo(t, "myws")
 
@@ -131,17 +131,17 @@ func TestResolver_OrgMismatch_Returns404(t *testing.T) {
 }
 
 // TS-06-15: Repository resolver returns transport.ErrRepositoryNotFound and
-// HTTP 404 when the workspace clone_status is not 'ready'.
+// HTTP 404 when the workspace status is not 'ready'.
 // Requirement: 06-REQ-4.4
-func TestResolver_CloneStatusNotReady_Returns404(t *testing.T) {
+func TestResolver_StatusNotReady_Returns404(t *testing.T) {
 	env := newGitTestEnv(t)
 
 	env.seedOrg(t, "org-1", "My Org", "myorg")
 	env.seedOrgMember(t, "org-1", "user-1")
-	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "active")
+	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "ready")
 
-	// Override clone_status to 'cloning' (not ready).
-	env.setCloneStatus(t, "myws", "cloning")
+	// Override status to 'cloning' (not ready).
+	env.setStatus(t, "myws", "cloning")
 
 	env.initWorkspaceRepo(t, "myws")
 
@@ -150,7 +150,7 @@ func TestResolver_CloneStatusNotReady_Returns404(t *testing.T) {
 		withBasicAuth("x-token-auth", "af_key_user1"))
 
 	if rec.Code != http.StatusNotFound {
-		t.Errorf("GET info/refs with clone_status='cloning': status = %d; want %d",
+		t.Errorf("GET info/refs with status='cloning': status = %d; want %d",
 			rec.Code, http.StatusNotFound)
 	}
 
@@ -162,50 +162,50 @@ func TestResolver_CloneStatusNotReady_Returns404(t *testing.T) {
 	}
 }
 
-// TestResolver_CloneStatusFailed_Returns404 verifies that a workspace with
-// clone_status='failed' is also rejected with HTTP 404.
+// TestResolver_StatusFailed_Returns404 verifies that a workspace with
+// status='failed' is also rejected with HTTP 404.
 // Requirement: 06-REQ-4.4
-func TestResolver_CloneStatusFailed_Returns404(t *testing.T) {
+func TestResolver_StatusFailed_Returns404(t *testing.T) {
 	env := newGitTestEnv(t)
 
 	env.seedOrg(t, "org-1", "My Org", "myorg")
 	env.seedOrgMember(t, "org-1", "user-1")
-	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "active")
-	env.setCloneStatus(t, "myws", "failed")
+	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "ready")
+	env.setStatus(t, "myws", "failed")
 
 	rec := env.doRequest(t, http.MethodGet,
 		"/git/myorg/myws.git/info/refs?service=git-upload-pack", "",
 		withBasicAuth("x-token-auth", "af_key_user1"))
 
 	if rec.Code != http.StatusNotFound {
-		t.Errorf("GET info/refs with clone_status='failed': status = %d; want %d",
+		t.Errorf("GET info/refs with status='failed': status = %d; want %d",
 			rec.Code, http.StatusNotFound)
 	}
 
-	assertPktLineErrorBody(t, rec.Body.String(), "clone_status=failed response")
+	assertPktLineErrorBody(t, rec.Body.String(), "status=failed response")
 }
 
-// TestResolver_CloneStatusArchived_Returns404 verifies that a workspace with
-// clone_status='archived' is rejected with HTTP 404.
+// TestResolver_StatusArchived_Returns404 verifies that a workspace with
+// status='archived' is rejected with HTTP 404.
 // Requirement: 06-REQ-4.4
-func TestResolver_CloneStatusArchived_Returns404(t *testing.T) {
+func TestResolver_StatusArchived_Returns404(t *testing.T) {
 	env := newGitTestEnv(t)
 
 	env.seedOrg(t, "org-1", "My Org", "myorg")
 	env.seedOrgMember(t, "org-1", "user-1")
-	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "active")
-	env.setCloneStatus(t, "myws", "archived")
+	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "ready")
+	env.setStatus(t, "myws", "archived")
 
 	rec := env.doRequest(t, http.MethodGet,
 		"/git/myorg/myws.git/info/refs?service=git-upload-pack", "",
 		withBasicAuth("x-token-auth", "af_key_user1"))
 
 	if rec.Code != http.StatusNotFound {
-		t.Errorf("GET info/refs with clone_status='archived': status = %d; want %d",
+		t.Errorf("GET info/refs with status='archived': status = %d; want %d",
 			rec.Code, http.StatusNotFound)
 	}
 
-	assertPktLineErrorBody(t, rec.Body.String(), "clone_status=archived response")
+	assertPktLineErrorBody(t, rec.Body.String(), "status=archived response")
 }
 
 // TestResolver_PlainOpenFails_Returns500 verifies that when the repository
@@ -216,7 +216,7 @@ func TestResolver_PlainOpenFails_Returns500(t *testing.T) {
 
 	env.seedOrg(t, "org-1", "My Org", "myorg")
 	env.seedOrgMember(t, "org-1", "user-1")
-	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "active")
+	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "ready")
 	// Deliberately do NOT create a git repo at the expected path.
 	// The resolver should call PlainOpen and get an error.
 
@@ -240,7 +240,7 @@ func TestResolver_NonOwnerNonAdmin_Returns404(t *testing.T) {
 	env.seedOrg(t, "org-1", "My Org", "myorg")
 	env.seedOrgMember(t, "org-1", "user-1")
 	// Workspace owned by user-1, not user-2.
-	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "active")
+	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "ready")
 
 	env.initWorkspaceRepo(t, "myws")
 
@@ -271,7 +271,7 @@ func TestResolver_ReceivePack_HappyPath(t *testing.T) {
 
 	env.seedOrg(t, "org-1", "My Org", "myorg")
 	env.seedOrgMember(t, "org-1", "user-1")
-	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "active")
+	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "ready")
 
 	env.initWorkspaceRepo(t, "myws")
 
@@ -299,8 +299,8 @@ func TestResolver_NotReady_AllEndpoints_Return404(t *testing.T) {
 
 	env.seedOrg(t, "org-1", "My Org", "myorg")
 	env.seedOrgMember(t, "org-1", "user-1")
-	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "active")
-	env.setCloneStatus(t, "myws", "cloning")
+	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "ready")
+	env.setStatus(t, "myws", "cloning")
 
 	endpoints := []struct {
 		method string
@@ -318,7 +318,7 @@ func TestResolver_NotReady_AllEndpoints_Return404(t *testing.T) {
 				withBasicAuth("x-token-auth", "af_key_user1"))
 
 			if rec.Code != http.StatusNotFound {
-				t.Errorf("%s %s with clone_status='cloning': status = %d; want %d",
+				t.Errorf("%s %s with status='cloning': status = %d; want %d",
 					ep.method, ep.path, rec.Code, http.StatusNotFound)
 			}
 
@@ -335,7 +335,7 @@ func (env *gitTestEnv) seedNoOrgWorkspace(t *testing.T, slug, ownerID string) {
 	t.Helper()
 	now := time.Now().UTC().Format(time.RFC3339)
 	if _, err := env.db.Exec(
-		`INSERT INTO workspaces (slug, git_url, owner_id, org_id, status, created_at, updated_at) VALUES (?, ?, ?, NULL, 'active', ?, ?)`,
+		`INSERT INTO workspaces (slug, git_url, owner_id, org_id, status, created_at, updated_at) VALUES (?, ?, ?, NULL, 'ready', ?, ?)`,
 		slug, "https://github.com/org/"+slug, ownerID, now, now,
 	); err != nil {
 		t.Fatalf("seedNoOrgWorkspace(%q): %v", slug, err)

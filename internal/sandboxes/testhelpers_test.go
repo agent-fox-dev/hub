@@ -30,7 +30,7 @@ import (
 func createWorkspaceTables(t *testing.T, db *sql.DB) {
 	t.Helper()
 	for _, stmt := range []string{
-		`CREATE TABLE IF NOT EXISTS workspaces (slug TEXT PRIMARY KEY, owner_id TEXT NOT NULL, org_id TEXT, status TEXT NOT NULL DEFAULT 'active', clone_status TEXT NOT NULL DEFAULT 'ready')`,
+		`CREATE TABLE IF NOT EXISTS workspaces (slug TEXT PRIMARY KEY, owner_id TEXT NOT NULL, org_id TEXT, status TEXT NOT NULL DEFAULT 'ready')`,
 		`CREATE TABLE IF NOT EXISTS org_members (org_id TEXT NOT NULL, user_id TEXT NOT NULL, PRIMARY KEY (org_id, user_id))`,
 	} {
 		if _, err := db.Exec(stmt); err != nil {
@@ -203,7 +203,7 @@ func newLeaseEnv(t *testing.T, opts leaseEnvOptions) *leaseEnv {
 	RegisterLeaseRoutes(api, svc)
 
 	env := &leaseEnv{t: t, db: db, store: NewLeaseStore(db, clock.Now).WithMetrics(opts.metrics), svc: svc, profile: profileSvc, secrets: store, clock: clock, echo: e}
-	env.addWorkspace("widgets", leaseOwner, "", "active")
+	env.addWorkspace("widgets", leaseOwner, "", "ready")
 	env.plantSecret("workspace", "widgets", "GIT_PAT", "PLANTED-VALUE-123")
 	return env
 }

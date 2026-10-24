@@ -85,7 +85,7 @@ func (e *pushHookNotFoundErr) Error() string { return "not found" }
 func TestPostPushHook_RegisteredPatchBranch_EnqueuesRebuild(t *testing.T) {
 	env := newPushHookTestEnv(t)
 
-	seedWorkspace(t, env.db, "myws", "user-1", "active", "ready", "carry_patch", "main")
+	seedWorkspace(t, env.db, "myws", "user-1", "ready", "carry_patch", "main")
 	seedPatch(t, env.db, "patch-1", "myws", "feature/my-patch", 1, "active")
 
 	// Verify no rebuild jobs exist before.
@@ -108,7 +108,7 @@ func TestPostPushHook_RegisteredPatchBranch_EnqueuesRebuild(t *testing.T) {
 func TestPostPushHook_AutoRebuildDisabled_NoRebuild(t *testing.T) {
 	env := newPushHookTestEnv(t)
 
-	seedWorkspace(t, env.db, "myws", "user-1", "active", "ready", "carry_patch", "main")
+	seedWorkspace(t, env.db, "myws", "user-1", "ready", "carry_patch", "main")
 	seedPatch(t, env.db, "patch-1", "myws", "feature/my-patch", 1, "active")
 
 	// GetVariable that returns "false" for AUTO_REBUILD_AFTER_PUSH.
@@ -133,7 +133,7 @@ func TestPostPushHook_AutoRebuildDisabled_NoRebuild(t *testing.T) {
 func TestPostPushHook_UnregisteredBranch_NoRebuild(t *testing.T) {
 	env := newPushHookTestEnv(t)
 
-	seedWorkspace(t, env.db, "myws", "user-1", "active", "ready", "carry_patch", "main")
+	seedWorkspace(t, env.db, "myws", "user-1", "ready", "carry_patch", "main")
 	seedPatch(t, env.db, "patch-1", "myws", "feature/my-patch", 1, "active")
 
 	// Push to a branch that is NOT a registered patch.
@@ -151,7 +151,7 @@ func TestPostPushHook_UnregisteredBranch_NoRebuild(t *testing.T) {
 func TestPostPushHook_DuplicateJob_Suppressed(t *testing.T) {
 	env := newPushHookTestEnv(t)
 
-	seedWorkspace(t, env.db, "myws", "user-1", "active", "ready", "carry_patch", "main")
+	seedWorkspace(t, env.db, "myws", "user-1", "ready", "carry_patch", "main")
 	seedPatch(t, env.db, "patch-1", "myws", "feature/my-patch", 1, "active")
 
 	// First push — should enqueue a rebuild.
@@ -174,7 +174,7 @@ func TestPostPushHook_DuplicateJob_Suppressed(t *testing.T) {
 func TestPostPushHook_StandardWorkspace_NoRebuild(t *testing.T) {
 	env := newPushHookTestEnv(t)
 
-	seedWorkspace(t, env.db, "myws", "user-1", "active", "ready", "standard", "main")
+	seedWorkspace(t, env.db, "myws", "user-1", "ready", "standard", "main")
 	// Even if a branch name matches a patch row, no rebuild for standard workspaces.
 	seedPatch(t, env.db, "patch-1", "myws", "feature/my-patch", 1, "active")
 
