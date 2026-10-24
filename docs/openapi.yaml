@@ -1909,9 +1909,6 @@ paths:
         `target_branch`. Jobs are serialised per target through the durable
         job queue's group key, so at most one merge per target runs at a time.
 
-        If the `CHECK_COMMAND` workspace variable is set, it runs via `sh -c`
-        after the rebase; a non-zero exit rolls the rebase back.
-
         Ownership is not enforced.
       x-required-scopes: ["merges:write"]
       requestBody:
@@ -9285,7 +9282,6 @@ components:
         - base_sha
         - merged_sha
         - conflict_files
-        - check_output
         - error
         - retry_count
         - submitted_by
@@ -9317,9 +9313,6 @@ components:
           type: array
           items:
             type: string
-        check_output:
-          type: [string, "null"]
-          description: Output of the `CHECK_COMMAND` if one ran.
         error:
           type: [string, "null"]
         retry_count:
@@ -9514,11 +9507,6 @@ components:
             `ancestry_only` uses `git merge-base --is-ancestor`;
             `content_based` uses `git cherry` plus PR-number scanning; `both`
             uses all of them and treats either signal as sufficient.
-        CHECK_COMMAND:
-          type: string
-          description: >-
-            Shell command run through `sh -c` after a merge rebase. A non-zero
-            exit rolls the rebase back.
 
     # -- Sessions --------------------------------------------------------------
 

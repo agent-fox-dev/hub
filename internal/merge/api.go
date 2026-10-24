@@ -55,7 +55,7 @@ type MergeAPIConfig struct {
 // MergeJobResponse is the JSON response body for merge job records.
 // It projects job queue fields into merge-specific vocabulary by extracting
 // target_branch, source_ref, submitted_by from the job payload and
-// base_sha, merged_sha, conflict_files, check_output from the job result.
+// base_sha, merged_sha and conflict_files from the job result.
 type MergeJobResponse struct {
 	ID            string   `json:"id"`
 	WorkspaceSlug string   `json:"workspace_slug"`
@@ -65,7 +65,6 @@ type MergeJobResponse struct {
 	BaseSHA       *string  `json:"base_sha"`
 	MergedSHA     *string  `json:"merged_sha"`
 	ConflictFiles []string `json:"conflict_files"`
-	CheckOutput   *string  `json:"check_output"`
 	Error         *string  `json:"error"`
 	RetryCount    int      `json:"retry_count"`
 	SubmittedBy   string   `json:"submitted_by"`
@@ -76,9 +75,8 @@ type MergeJobResponse struct {
 // mergeJobResult is the JSON structure stored in the job result field
 // for completed merge jobs.
 type mergeJobResult struct {
-	BaseSHA     string `json:"base_sha"`
-	MergedSHA   string `json:"merged_sha"`
-	CheckOutput string `json:"check_output,omitempty"`
+	BaseSHA   string `json:"base_sha"`
+	MergedSHA string `json:"merged_sha"`
 }
 
 // mergeJobError is the JSON structure stored in the job error field
@@ -86,7 +84,6 @@ type mergeJobResult struct {
 type mergeJobError struct {
 	Reason        string   `json:"reason"`
 	ConflictFiles []string `json:"conflict_files,omitempty"`
-	CheckOutput   string   `json:"check_output,omitempty"`
 }
 
 // ProjectMergeJobResponse converts a job queue record into a MergeJobResponse
@@ -114,7 +111,7 @@ func ProjectMergeJobResponse(j *jobqueue.Job) MergeJobResponse {
 		}
 	}
 
-	// Extract result fields (base_sha, merged_sha, check_output).
+	// Extract result fields (base_sha, merged_sha).
 	if len(j.Result) > 0 {
 		var result mergeJobResult
 		if err := json.Unmarshal(j.Result, &result); err == nil {
@@ -124,21 +121,15 @@ func ProjectMergeJobResponse(j *jobqueue.Job) MergeJobResponse {
 			if result.MergedSHA != "" {
 				resp.MergedSHA = &result.MergedSHA
 			}
-			if result.CheckOutput != "" {
-				resp.CheckOutput = &result.CheckOutput
-			}
 		}
 	}
 
-	// Extract error fields (conflict_files, check_output, error message).
+	// Extract error fields (conflict_files, error message).
 	if j.Error != "" {
 		var jobErr mergeJobError
 		if err := json.Unmarshal([]byte(j.Error), &jobErr); err == nil {
 			if len(jobErr.ConflictFiles) > 0 {
 				resp.ConflictFiles = jobErr.ConflictFiles
-			}
-			if jobErr.CheckOutput != "" {
-				resp.CheckOutput = &jobErr.CheckOutput
 			}
 			errMsg := j.Error
 			resp.Error = &errMsg

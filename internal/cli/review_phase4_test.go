@@ -143,8 +143,8 @@ func TestCLI_PatchUpdate_RequiresAChange(t *testing.T) {
 	}
 }
 
-// jobServer serves a job record whose status changes after the given number
-// of GET requests.
+// jobServer serves a job record whose status advances through statuses, one
+// per request.
 func jobServer(t *testing.T, statuses ...string) (*httptest.Server, func() int) {
 	t.Helper()
 	var mu sync.Mutex
@@ -164,27 +164,29 @@ func jobServer(t *testing.T, statuses ...string) (*httptest.Server, func() int) 
 	return srv, func() int { mu.Lock(); defer mu.Unlock(); return polls }
 }
 
-func TestCLI_WaitSubcommands_PollImmediatelyAndReportStatus(t *testing.T) {
-	// The job is already complete: with an immediate first poll the command
-	// returns well before the (deliberately long) poll interval elapses.
+func TestCLI_SubmitWait_PollsImmediatelyAndReportsStatus(t *testing.T) {
+	// The job completes at once: with an immediate first poll the command
+	// returns well before the (deliberately long) poll interval elapses. The
+	// server answers the submit and every poll alike.
 	srv, polls := jobServer(t, "completed")
 	start := time.Now()
-	stdout, _, err := runAfc(t, srv.URL, "", "rebuild", "wait", "ws", "job-1", "--poll-interval", "30s")
+	stdout, _, err := runAfc(t, srv.URL, "", "rebuild", "submit", "ws", "--wait", "--poll-interval", "30s")
 	if err != nil {
-		t.Fatalf("rebuild wait: %v", err)
+		t.Fatalf("rebuild submit --wait: %v", err)
 	}
 	if time.Since(start) > 5*time.Second {
-		t.Errorf("rebuild wait took %s; the first poll must not wait for the interval", time.Since(start))
+		t.Errorf("rebuild submit --wait took %s; the first poll must not wait for the interval", time.Since(start))
 	}
-	if polls() != 1 || !strings.Contains(stdout, "completed") {
-		t.Errorf("polls = %d stdout = %s", polls(), stdout)
+	if polls() != 2 || !strings.Contains(stdout, "completed") {
+		t.Errorf("requests = %d (want the submit and one poll) stdout = %s", polls(), stdout)
 	}
 
-	// Running -> dead_letter: exits non-zero after printing the record.
-	srv2, _ := jobServer(t, "running", "dead_letter")
-	stdout, stderr, err := runAfc(t, srv2.URL, "", "merge", "wait", "ws", "job-1", "--poll-interval", "50ms")
+	// queued -> running -> dead_letter: exits non-zero after printing the record.
+	srv2, _ := jobServer(t, "queued", "running", "dead_letter")
+	stdout, stderr, err := runAfc(t, srv2.URL, "", "merge", "submit", "ws", "--target", "main", "--source", "feat",
+		"--wait", "--poll-interval", "50ms")
 	if err == nil {
-		t.Fatal("merge wait on a dead_letter job should exit non-zero")
+		t.Fatal("merge submit --wait on a dead_letter job should exit non-zero")
 	}
 	if !strings.Contains(stdout, `"dead_letter"`) || !strings.Contains(stderr, "dead_letter") {
 		t.Errorf("stdout = %s stderr = %s", stdout, stderr)

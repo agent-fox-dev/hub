@@ -17,8 +17,8 @@ API.
   non-zero code (1 for API and network errors, 2 for usage errors).
 - Network timeouts and connection failures result in exit code 1 with a
   descriptive error message on stderr.
-- Commands that wait for a job (`--wait`, `merge wait`, `rebuild wait`)
-  poll immediately and then every `--poll-interval`. They print the final
+- Commands that wait for a job (`--wait` on `merge submit`, `rebuild submit`,
+  `workspace sync` and `workspace create`) poll immediately and then every `--poll-interval`. They print the final
   record and exit 0 only when the job `completed` (or the clone is `ready`);
   `failed`, `dead_letter`, `cancelled`, and a failed clone exit non-zero.
 - Every user-supplied path element (slugs, keys, ids) is percent-encoded
@@ -1228,33 +1228,6 @@ afc merge requeue <workspace-slug> <merge-id>
 
 ---
 
-### afc merge wait
-
-Wait for an existing merge job to reach a terminal state.
-
-**Usage:**
-
-```
-afc merge wait <workspace-slug> <merge-id> [--timeout <duration>] [--poll-interval <duration>]
-```
-
-**Behavior:**
-
-- Polls `GET /api/v1/workspaces/<slug>/merges/<merge-id>` immediately and
-  then every `--poll-interval` (default `5s`) until the job is `completed`,
-  `failed`, `dead_letter`, or `cancelled`, or `--timeout` (default `5m0s`)
-  elapses.
-- Prints the final job record to stdout.
-
-**Exit Codes:**
-
-| Code | Condition |
-|------|-----------|
-| 0 | Job completed |
-| 1 | Job ended `failed`, `dead_letter`, or `cancelled`; timeout; job not found; API or network error |
-
----
-
 ## Rebase Commands
 
 All rebase commands are subcommands of `afc rebase`. They manage batch rebase
@@ -1549,34 +1522,6 @@ afc rebuild rollback <workspace-slug> <rebuild-id>
 |------|-----------|
 | 0 | Rollback completed successfully |
 | 1 | Rebuild not found, rollback not possible, workspace busy, API error, network error, or timeout |
-
----
-
-### afc rebuild wait
-
-Wait for an existing rebuild job to reach a terminal state.
-
-**Usage:**
-
-```
-afc rebuild wait <workspace-slug> <rebuild-id> [--timeout <duration>] [--poll-interval <duration>]
-```
-
-**Behavior:**
-
-- Polls `GET /api/v1/workspaces/<slug>/rebuilds/<rebuild-id>` immediately
-  and then every `--poll-interval` (default `5s`) until the job is
-  `completed`, `failed`, `dead_letter`, or `cancelled`, or `--timeout`
-  (default `5m0s`) elapses. Useful after `afc workspace sync` or a push that
-  auto-triggered a rebuild.
-- Prints the final job record to stdout.
-
-**Exit Codes:**
-
-| Code | Condition |
-|------|-----------|
-| 0 | Job completed |
-| 1 | Job ended `failed`, `dead_letter`, or `cancelled`; timeout; job not found; API or network error |
 
 ---
 

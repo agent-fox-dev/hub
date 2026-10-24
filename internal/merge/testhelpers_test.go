@@ -65,13 +65,6 @@ func (tw testWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// rollbackCall records a call to the RollbackFunc.
-type rollbackCall struct {
-	trunkDir string
-	branch   string
-	sha      string
-}
-
 // ===========================================================================
 // Git repo setup helpers for handler tests
 // ===========================================================================
