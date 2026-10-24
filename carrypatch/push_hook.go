@@ -18,7 +18,7 @@ import (
 //
 // When mirror dependencies are supplied (non-nil ResolveAuth, non-empty
 // WorkspaceRoot, non-nil Audit), the hook also mirrors registered patch
-// branches to the fork in hub mode after the rebuild enqueue (22-REQ-6).
+// branches to the fork in hub mode after the rebuild enqueue.
 //
 // The hook is called asynchronously after a successful push; errors are logged
 // but do not affect the push response.
@@ -41,8 +41,8 @@ func newPostPushRebuildHookWithLogger(
 	return func(db *sql.DB, slug string, branches []string) {
 		postPushRebuildHook(db, slug, branches, queue, getVariable)
 
-		// 22-REQ-6.2: After the rebuild enqueue (always executed first),
-		// run the mirror in the same goroutine.
+		// After the rebuild enqueue (always executed first), run the mirror
+		// in the same goroutine.
 		mirrorBranches(db, slug, branches, mirrorDeps, getVariable, logger)
 	}
 }
@@ -50,10 +50,10 @@ func newPostPushRebuildHookWithLogger(
 // postPushRebuildHook implements the post-push auto-rebuild logic.
 //
 // Steps:
-//  1. Load workspace mode — skip if not carry_patch (NS-REQ-5).
-//  2. Check if any pushed branch matches a registered patch (NS-REQ-3).
-//  3. Check AUTO_REBUILD_AFTER_PUSH variable — skip if "false" (NS-REQ-2).
-//  4. Enqueue rebuild job with duplicate suppression (NS-REQ-1, NS-REQ-4).
+//  1. Load workspace mode — skip if not carry_patch.
+//  2. Check if any pushed branch matches a registered patch.
+//  3. Check AUTO_REBUILD_AFTER_PUSH variable — skip if "false".
+//  4. Enqueue rebuild job with duplicate suppression.
 func postPushRebuildHook(
 	db *sql.DB,
 	slug string,
@@ -75,12 +75,12 @@ func postPushRebuildHook(
 		return
 	}
 
-	// NS-REQ-5: standard workspaces never trigger a rebuild.
+	// Standard workspaces never trigger a rebuild.
 	if workspaceMode != "carry_patch" {
 		return
 	}
 
-	// 2. Check if any pushed branch is a registered patch (NS-REQ-3).
+	// 2. Check if any pushed branch is a registered patch.
 	matched := false
 	for _, branch := range branches {
 		var count int
@@ -101,7 +101,7 @@ func postPushRebuildHook(
 		return
 	}
 
-	// 3. Check AUTO_REBUILD_AFTER_PUSH variable (NS-REQ-2).
+	// 3. Check AUTO_REBUILD_AFTER_PUSH variable.
 	// Default is true (rebuild) when the variable is unset.
 	if getVariable != nil {
 		val, _ := getVariable("workspace", slug, "AUTO_REBUILD_AFTER_PUSH")
@@ -110,7 +110,7 @@ func postPushRebuildHook(
 		}
 	}
 
-	// 4. Enqueue rebuild job with duplicate suppression (NS-REQ-1, NS-REQ-4).
+	// 4. Enqueue rebuild job with duplicate suppression.
 	// Capture strategy and fail mode at enqueue time, consistent with the
 	// submit endpoint and sync auto-rebuild.
 	ib := ""
@@ -134,6 +134,6 @@ func postPushRebuildHook(
 	if enqErr != nil {
 		log.Printf("post-push hook: failed to enqueue rebuild for %q: %v", slug, enqErr)
 	}
-	// NS-REQ-4: If duplicate key is already queued or running, Enqueue returns
+	// If a job with the same key is already queued or running, Enqueue returns
 	// (existingID, true, nil) — the duplicate is silently suppressed.
 }

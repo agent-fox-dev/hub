@@ -52,7 +52,6 @@ func main() {
 		log.Fatal(err)
 	}
 
-	// Load, validate and probe the [sandbox] section of config.toml (spec 25).
 	// Stored PATs may name scopes from before the read/write collapse
 	// (ADR 06); they are rewritten once, before any request is served.
 	if n, err := wsaccess.MigrateScopes(database.SqlDB); err != nil {
@@ -61,6 +60,7 @@ func main() {
 		slog.Info("rewrote PAT scopes to read/write", "tokens", n)
 	}
 
+	// Load, validate and probe the [sandbox] section of config.toml.
 	// This runs after apikit.Bootstrap, so that first-boot admin-token
 	// generation never depends on the sandbox configuration, and before the
 	// workspace root, the queues, the workers and the routes exist, so that an
@@ -87,11 +87,11 @@ func main() {
 	workspace.InitSyncFunctions()
 
 	// ---------------------------------------------------------------------------
-	// Durable job queue: merge operations (spec 12)
+	// Durable job queue: merge operations
 	// ---------------------------------------------------------------------------
 
 	// Initialise the durable job queue schema and apply the group_key
-	// migration for merge job serialization (12-REQ-1.1).
+	// migration for merge job serialization.
 	if err := jobqueue.InitSchema(database.SqlDB); err != nil {
 		log.Fatal(err)
 	}
@@ -178,7 +178,7 @@ func main() {
 	// ---------------------------------------------------------------------------
 
 	// ---------------------------------------------------------------------------
-	// Prometheus metrics (spec 19)
+	// Prometheus metrics
 	// ---------------------------------------------------------------------------
 
 	metrics := audit.NewMetrics()
@@ -210,8 +210,8 @@ func main() {
 	auditStore := audit.NewStore(auditDB)
 
 	// Create SSE connection manager and audit emitter for hub event
-	// broadcasting (spec 18) and session force-close audit events (spec 19).
-	// Read AF_SSE_MAX_CONNECTIONS from environment, default to 100 (18-REQ-9.3).
+	// broadcasting and session force-close audit events.
+	// Read AF_SSE_MAX_CONNECTIONS from environment, default to 100.
 	sseMaxConns := audit.DefaultMaxConnections
 	if envMax := os.Getenv("AF_SSE_MAX_CONNECTIONS"); envMax != "" {
 		if n, parseErr := strconv.Atoi(envMax); parseErr != nil || n <= 0 {
@@ -230,8 +230,8 @@ func main() {
 	server := apikit.NewServer(cfg, func() error { return database.Ping(context.Background()) })
 
 	// Register the personal org hook before MountWorkspaceHandlers so that
-	// the hook is captured when MountHandlers wires up user creation paths
-	// (04-REQ-10.1). MountWorkspaceHandlers calls MountHandlers internally.
+	// the hook is captured when MountHandlers wires up user creation paths.
+	// MountWorkspaceHandlers calls MountHandlers internally.
 	server.OnAfterUserCreate(workspace.CreatePersonalOrg)
 
 	// Collect extra permission scopes from all modules.
@@ -242,9 +242,9 @@ func main() {
 	extraPerms = append(extraPerms, carrypatch.CarryPatchPermissions()...)
 	extraPerms = append(extraPerms, audit.Permissions()...)
 	// Registered whether or not sandboxes are configured, so PATs can be issued
-	// with the sandbox scopes ahead of time (25-REQ-6.1).
+	// with the sandbox scopes ahead of time.
 	extraPerms = append(extraPerms, sandboxes.Permissions()...)
-	// Likewise the forge scopes (30-REQ-2.1): forge:write is registered although no
+	// Likewise the forge scopes: forge:write is registered although no
 	// route needs it yet, so that PATs are issued once.
 	extraPerms = append(extraPerms, forge.Permissions()...)
 
@@ -255,7 +255,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	// Mount the routes that mint and list workspace-bound tokens (spec 34).
+	// Mount the routes that mint and list workspace-bound tokens.
 	// A mint is served by apikit's own POST /user/tokens through server.Echo(),
 	// in-process, and hub adds the binding.
 	boundtoken.RegisterRoutes(server.APIGroup(), boundtoken.Config{
@@ -268,11 +268,11 @@ func main() {
 	boundtoken.Install(auditEmitter)
 
 	// Wire audit dependencies into workspace package for force-close on
-	// archive/delete (19-REQ-8, 19-REQ-9).
+	// archive/delete.
 	workspace.SetAuditDependencies(auditStore, auditEmitter, metrics)
 
 	// Wire audit emitter into merge and rebuild job handlers so that
-	// complete/fail events are emitted (18-REQ-2, 18-REQ-3).
+	// complete/fail events are emitted.
 	mergeHandler.Audit = auditEmitter
 	rebuildHandler.Audit = cphost.Emitter(auditEmitter)
 
@@ -280,14 +280,14 @@ func main() {
 	// Audit routes (specs 17-19)
 	// ---------------------------------------------------------------------------
 
-	// Register session lifecycle, token usage, and cost routes (spec 19).
+	// Register session lifecycle, token usage, and cost routes.
 	auditAPI := server.APIGroup()
 	audit.RegisterSessionRoutes(auditAPI, auditStore, database.SqlDB, metrics)
 
-	// Register audit ingestion and per-run query routes (spec 17).
+	// Register audit ingestion and per-run query routes.
 	audit.RegisterRoutes(auditAPI, auditStore, auditEmitter, database.SqlDB)
 
-	// Register unified audit query, transcript, and SSE streaming routes (spec 18).
+	// Register unified audit query, transcript, and SSE streaming routes.
 	audit.RegisterAuditQueryRoutes(auditAPI, auditStore, sseMgr, database.SqlDB)
 
 	// Initialise the secrets and variables tables and mount their API
@@ -310,19 +310,18 @@ func main() {
 		slog.Info("moved workspace variables into workspace settings", "workspaces", n)
 	}
 
-	// Create the table of the forge deliveries at every start (spec 32); the
+	// Create the table of the forge deliveries at every start; the
 	// maintenance loop below keeps it small.
 	if err := forge.InitSchema(database.SqlDB); err != nil {
 		log.Fatal(err)
 	}
 
 	// Create the sandbox lease table at every start, whether or not sandboxes
-	// are enabled, so that turning them off and on again keeps the history
-	// (spec 26).
+	// are enabled, so that turning them off and on again keeps the history.
 	if err := sandboxes.InitSchema(database.SqlDB); err != nil {
 		log.Fatal(err)
 	}
-	// Add lease_expires_at to a lease table that predates it (spec 28). This too
+	// Add lease_expires_at to a lease table that predates it. This too
 	// runs at every start, whether or not sandboxes are enabled.
 	if err := sandboxes.MigrateLeaseExpiry(database.SqlDB); err != nil {
 		log.Fatal(err)
@@ -349,7 +348,7 @@ func main() {
 
 	// Mount merge REST API routes (POST/GET/DELETE /merges, POST /rebase).
 	// Uses NewMergeAPIConfig to wire BatchRebase to the real GitRunner-backed
-	// implementation (12-REQ-12).
+	// implementation.
 	mergeCfg := merge.NewMergeAPIConfig(
 		database.SqlDB,
 		mergeQueue,
@@ -363,17 +362,17 @@ func main() {
 	// are not configured (a nil service) and then answers sandboxes_disabled.
 	sandboxes.RegisterRoutes(server.APIGroup(), sandboxSvc)
 
-	// Mount the lease routes (spec 26). The lease service needs the validated
+	// Mount the lease routes. The lease service needs the validated
 	// profiles, the database, the secrets store (for secret names only), the audit
 	// emitter and the address of the gateway to show on every lease. A hub without
 	// sandboxes passes a nil service, and the routes answer sandboxes_disabled.
 	//
-	// With sandboxes on, the sandbox gateway (spec 27) is built first, on its own
+	// With sandboxes on, the sandbox gateway is built first, on its own
 	// listener and before the HTTP server serves anything: a lease is worth
 	// nothing unless a gateway serves it. A key pair that cannot be loaded or an
 	// address that cannot be bound stops the start.
 	//
-	// Run (spec 28) then ends the leases a crashed process left active, does one
+	// Run then ends the leases a crashed process left active, does one
 	// sweep, starts the reaper, and only then lets the gateway accept connections.
 	// It needs the lease table and its migration, the audit emitter and the
 	// metrics, which all exist by now. What fails in it is logged and never stops
@@ -477,7 +476,7 @@ func main() {
 		},
 	)))
 
-	// Set the audit emitter for git server push events (18-REQ-5.2).
+	// Set the audit emitter for git server push events.
 	gitserver.SetAuditEmitter(auditEmitter)
 
 	// Mount git smart HTTP handlers on the Echo instance. The git server
@@ -487,13 +486,13 @@ func main() {
 		log.Fatal(err)
 	}
 
-	// Mount the webhook ingress of the forges (spec 32) the same way: POST /hooks/forge/:slug
+	// Mount the webhook ingress of the forges the same way: POST /hooks/forge/:slug
 	// is outside the API group and its authentication, and a delivery proves who it is with the
 	// signature of the workspace's webhook secret.
 	forge.MountWebhookIngress(server.Echo(), forgeConfig)
 
 	// Mount Prometheus middleware on the Echo instance for HTTP request
-	// metrics and expose GET /metrics outside the API auth group (19-REQ-10).
+	// metrics and expose GET /metrics outside the API auth group.
 	server.Echo().Use(metrics.PrometheusMiddleware())
 	server.Echo().GET("/metrics", echo.WrapHandler(metrics.MetricsHandler()))
 

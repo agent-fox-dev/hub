@@ -69,8 +69,8 @@ func AuthorizeWorkspace(db *sql.DB, auth *apikit.AuthInfo, slug string, need Nee
 //  2. a slug that names no workspace is 404;
 //  3. a caller with AccessNone (see accessOf) is 404, with no binding lookup
 //     and no refusal report;
-//  4. a PAT bound to another workspace is 404 (spec 33), and the refusal is
-//     reported once with site (spec 34);
+//  4. a PAT bound to another workspace is 404, and the refusal is reported
+//     once with site;
 //  5. a member is 403 on NeedWrite and 404 on NeedPrivate.
 //
 // On success it returns the workspace access record, with the caller's
@@ -99,7 +99,7 @@ func AuthorizeWorkspaceAt(db *sql.DB, auth *apikit.AuthInfo, slug string, need N
 	if ws.Access == AccessNone {
 		return nil, http.StatusNotFound, "workspace not found"
 	}
-	// A PAT bound to another workspace must not see this one (spec 33),
+	// A PAT bound to another workspace must not see this one,
 	// whatever its access and need. The workspace row is closed by now, so
 	// the lookup can run on a single-connection pool; a failed lookup denies
 	// access.

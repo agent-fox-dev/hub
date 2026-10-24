@@ -11,13 +11,10 @@ func PatchCmd() *cobra.Command
     PatchCmd returns the 'patch' parent cobra.Command with subcommands for add,
     list, remove, reorder, and update.
 
-    Requirements: 15-REQ-14
-
 func PatchStatusCmd() *cobra.Command
     PatchStatusCmd returns the 'workspace patch-status' subcommand,
     which the hub adds under its workspace command. It sends GET
     /api/v1/workspaces/:slug/patch-status and prints the full status dashboard.
-    Requirements: 16-REQ-9.1
 
 func RebuildCmd() *cobra.Command
     RebuildCmd returns the 'rebuild' parent cobra.Command with subcommands for

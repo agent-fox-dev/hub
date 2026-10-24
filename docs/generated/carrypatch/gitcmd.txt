@@ -211,20 +211,18 @@ func (r *GitRunner) Rebase(ctx context.Context, onto string) (string, error)
 
     If the rebase encounters a conflict, git rebase --abort is called
     automatically before returning, so the repository is never left in rebase
-    state when a *RebaseConflictError is returned (11-PROP-3).
+    state when a *RebaseConflictError is returned.
 
     Important distinction:
       - Conflict: returns *RebaseConflictError — repository is cleaned up
         automatically via internal abort.
       - Context cancellation/timeout: returns the context error — the repository
         may still be in rebase state. The caller must invoke RebaseAbort to
-        clean up (11-REQ-6.E1).
+        clean up.
       - Abort failure after conflict: returns an error wrapping both the
-        conflict information and the abort failure (11-REQ-6.E2).
-      - Invalid onto ref: returns *GitError with exit code and stderr
-        (11-REQ-6.E3).
-      - rev-parse failure after successful rebase: returns *GitError
-        (11-REQ-6.E4).
+        conflict information and the abort failure.
+      - Invalid onto ref: returns *GitError with exit code and stderr.
+      - rev-parse failure after successful rebase: returns *GitError.
 
 func (r *GitRunner) RebaseAbort(ctx context.Context) error
     RebaseAbort executes git rebase --abort to clean up a failed rebase state.

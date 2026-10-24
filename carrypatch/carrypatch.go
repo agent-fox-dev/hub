@@ -115,7 +115,7 @@ type PatchResult struct {
 	NewHeadSHA    *string  `json:"new_head_sha"`
 	ConflictFiles []string `json:"conflict_files,omitempty"`
 	// SourceSHA is the commit the patch branch resolved to at
-	// refs/heads/<branch> when patch application began (01-REQ-6.6). It is
+	// refs/heads/<branch> when patch application began. It is
 	// the only reference to the branch used during the run.
 	SourceSHA string `json:"source_sha,omitempty"`
 }
@@ -245,9 +245,8 @@ type RebuildHandler struct {
 }
 
 // emitRebuildAudit emits a hub-internal audit event for rebuild operations.
-// If the Audit emitter is nil, emission is silently skipped (18-REQ-3.7,
-// 18-PROP-7). If Emit returns an error, the error is logged and the caller
-// is unaffected (18-REQ-3.E1, 18-PROP-1).
+// If the Audit emitter is nil, emission is silently skipped. If Emit
+// returns an error, the error is logged and the caller is unaffected.
 func (h *RebuildHandler) emitRebuildAudit(ctx context.Context, workspace, eventType string, metadata map[string]any) {
 	if h.Audit == nil {
 		return

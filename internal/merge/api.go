@@ -88,14 +88,13 @@ type mergeJobError struct {
 
 // ProjectMergeJobResponse converts a job queue record into a MergeJobResponse
 // by extracting merge-specific fields from the job payload and result.
-// Returns null for missing fields rather than returning an error, per
-// 12-REQ-14.E1.
+// Returns null for missing fields rather than returning an error.
 func ProjectMergeJobResponse(j *jobqueue.Job) MergeJobResponse {
 	resp := MergeJobResponse{
 		ID:            j.ID,
 		Status:        j.Status,
 		RetryCount:    j.RetryCount,
-		ConflictFiles: []string{}, // Always non-nil per spec.
+		ConflictFiles: []string{}, // Always non-nil, never null.
 		CreatedAt:     apikit.FormatUTC(j.CreatedAt),
 		UpdatedAt:     apikit.FormatUTC(j.UpdatedAt),
 	}
@@ -364,7 +363,6 @@ func handleSubmitMerge(cfg MergeAPIConfig) echo.HandlerFunc {
 			return apikit.WriteAPIError(c, http.StatusInternalServerError, "internal server error")
 		}
 
-		// 18-REQ-2.1: Emit hub.merge.enqueue audit event.
 		if cfg.Audit != nil {
 			event := audit.HubEvent{
 				EventType:    "hub.merge.enqueue",
@@ -432,7 +430,7 @@ func handleListMerges(cfg MergeAPIConfig) echo.HandlerFunc {
 			results = append(results, ProjectMergeJobResponse(j))
 		}
 
-		// Return non-nil empty array per spec (12-REQ-10.E1).
+		// Return a non-nil empty array, never null.
 		if results == nil {
 			results = []MergeJobResponse{}
 		}
@@ -521,7 +519,7 @@ func handleCancelMerge(cfg MergeAPIConfig) echo.HandlerFunc {
 			return apikit.WriteAPIError(c, http.StatusNotFound, "merge job not found")
 		}
 
-		// The merge API requires 409 for any non-queued status (12-REQ-11.2),
+		// The merge API requires 409 for any non-queued status,
 		// including cancelled — even though the jobqueue's CancelJob is
 		// idempotent for already-cancelled jobs (returns nil).
 		if job.Status != jobqueue.StatusQueued {

@@ -17,7 +17,7 @@ import (
 
 // handleListRerere handles GET /api/v1/workspaces/:slug/rerere.
 //
-// 16-REQ-4.1: Reads the rr-cache directory in the workspace's .git directory,
+// It reads the rr-cache directory in the workspace's .git directory,
 // enumerates subdirectories, derives the path from preimage/postimage files,
 // and derives recorded_at from file modification time.
 func handleListRerere(cfg APIConfig) echo.HandlerFunc {
@@ -38,8 +38,7 @@ func handleListRerere(cfg APIConfig) echo.HandlerFunc {
 			return nil
 		}
 
-		// Read rr-cache directory (16-REQ-4.E1: missing directory is an
-		// empty list).
+		// Read the rr-cache directory; a missing directory is an empty list.
 		gitDir := filepath.Join(cfg.WorkspaceRoot, slug, "trunk", ".git")
 		return c.JSON(http.StatusOK, RerereListResponse{Resolutions: listRerereEntries(gitDir)})
 	}
@@ -51,9 +50,10 @@ func handleListRerere(cfg APIConfig) echo.HandlerFunc {
 
 // handleForgetRerere handles DELETE /api/v1/workspaces/:slug/rerere/*pathspec.
 //
-// 16-REQ-4.2: Executes 'git rerere forget <pathspec>' via GitRunner.
-// 16-REQ-4.E2: Uses Echo wildcard route parameter to capture the full path
-// including slashes without requiring URL encoding.
+// The pathspec is either an rr-cache entry id, whose directory is removed
+// directly, or a file path, which is forgotten via 'git rerere forget'. The
+// Echo wildcard route parameter captures the full path including slashes
+// without requiring URL encoding.
 func handleForgetRerere(cfg APIConfig) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		// Auth check.
@@ -67,7 +67,7 @@ func handleForgetRerere(cfg APIConfig) echo.HandlerFunc {
 
 		slug := c.Param("slug")
 
-		// 16-REQ-4.E2: Echo wildcard captures the full path including slashes.
+		// The Echo wildcard captures the full path including slashes.
 		pathspec := c.Param("*")
 		pathspec = strings.TrimPrefix(pathspec, "/")
 
@@ -90,8 +90,8 @@ func handleForgetRerere(cfg APIConfig) echo.HandlerFunc {
 		}
 		defer unlock()
 
-		// 16-REQ-4.2 / 16-ERR-7: the argument is either an rr-cache entry id
-		// (from GET /rerere) or a file path with a recorded resolution.
+		// The argument is either an rr-cache entry id (from GET /rerere) or a
+		// file path with a recorded resolution.
 		gitDir := filepath.Join(cfg.WorkspaceRoot, slug, "trunk", ".git")
 		rrCacheDir := filepath.Join(gitDir, "rr-cache")
 		if isRerereEntryID(rrCacheDir, pathspec) {
@@ -128,8 +128,7 @@ func handleForgetRerere(cfg APIConfig) echo.HandlerFunc {
 // ===========================================================================
 
 // listRerereEntries enumerates the rr-cache of the repository whose .git
-// directory is gitDir. Entries without a preimage or postimage are skipped
-// (16-REQ-4.E3).
+// directory is gitDir. Entries without a preimage or postimage are skipped.
 func listRerereEntries(gitDir string) []RerereResolution {
 	rrCacheDir := filepath.Join(gitDir, "rr-cache")
 	resolutions := make([]RerereResolution, 0)

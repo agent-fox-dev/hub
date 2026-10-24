@@ -26,7 +26,6 @@ import (
 // If branch is empty, MergeNoFF returns ("", *GitError) without invoking
 // the git subprocess.
 func (r *GitRunner) MergeNoFF(ctx context.Context, branch, message string) (string, error) {
-	// 14-REQ-9.E1: empty branch returns *GitError without invoking subprocess.
 	if branch == "" {
 		return "", &GitError{
 			Args:     []string{"merge", "--no-ff"},
@@ -43,8 +42,8 @@ func (r *GitRunner) MergeNoFF(ctx context.Context, branch, message string) (stri
 	args = append(args, endOfOptions, branch)
 	stdout, exitCode, stderr, err := r.runWithExitCode(ctx, args...)
 	if err != nil {
-		// 14-REQ-9.3, 14-REQ-9.E4: context cancellation or deadline exceeded —
-		// return the context error without running git merge --abort.
+		// Context cancellation or deadline exceeded: return the context error
+		// without running git merge --abort.
 		return "", err
 	}
 
@@ -63,13 +62,12 @@ func (r *GitRunner) MergeNoFF(ctx context.Context, branch, message string) (stri
 		}
 
 		if isConflict {
-			// 14-REQ-9.2: parse conflicting files with fallback (14-REQ-9.E2, 14-PROP-6).
 			files := parseConflictFilesWithFallback(combinedOutput)
 
-			// 14-PROP-2: auto-abort to restore clean state before returning.
+			// Abort to restore a clean working tree before returning.
 			_, abortErr := r.Run(ctx, "merge", "--abort")
 			if abortErr != nil {
-				// 14-REQ-9.E3: log abort failure, still return MergeNoFFConflictError.
+				// An abort failure is only logged; the conflict error is still returned.
 				log.Printf("gitcmd: merge --abort failed after conflict: %v", abortErr)
 			}
 
@@ -84,7 +82,7 @@ func (r *GitRunner) MergeNoFF(ctx context.Context, branch, message string) (stri
 		}
 	}
 
-	// 14-REQ-9.1: merge succeeded — read the new HEAD SHA (the merge commit).
+	// The merge succeeded; read the new HEAD SHA (the merge commit).
 	newSHA, err := r.RevParse(ctx, "HEAD")
 	if err != nil {
 		return "", err

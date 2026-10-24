@@ -183,7 +183,7 @@ func (g *Gateway) serve() {
 
 // Run does the start-up work of the expiry and then lets the gateway serve, so
 // that no connection is accepted before the leases an earlier process left active
-// have been ended and the first sweep is done (28-REQ-5.1). It returns what failed
+// have been ended and the first sweep is done. It returns what failed
 // in that work, which is logged where it happens and never stops the gateway from
 // serving. The reaper it starts runs until ctx ends.
 func (g *Gateway) Run(ctx context.Context) error {

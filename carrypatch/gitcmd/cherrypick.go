@@ -24,7 +24,6 @@ import (
 // If sha is empty, CherryPick returns ("", *GitError) without invoking the
 // git subprocess.
 func (r *GitRunner) CherryPick(ctx context.Context, sha string) (string, error) {
-	// 14-REQ-4.E1: empty SHA returns *GitError without invoking subprocess.
 	if sha == "" {
 		return "", &GitError{
 			Args:     []string{"cherry-pick"},
@@ -37,8 +36,8 @@ func (r *GitRunner) CherryPick(ctx context.Context, sha string) (string, error) 
 	args := []string{"cherry-pick", endOfOptions, sha}
 	stdout, exitCode, stderr, err := r.runWithExitCode(ctx, args...)
 	if err != nil {
-		// 14-REQ-4.3, 14-REQ-4.E4: context cancellation or deadline exceeded —
-		// return the context error without running cherry-pick --abort.
+		// Context cancellation or deadline exceeded: return the context error
+		// without running cherry-pick --abort.
 		return "", err
 	}
 
@@ -57,13 +56,12 @@ func (r *GitRunner) CherryPick(ctx context.Context, sha string) (string, error) 
 		}
 
 		if isConflict {
-			// 14-REQ-4.2: parse conflicting files with fallback (14-REQ-4.E2, 14-PROP-6).
 			files := parseConflictFilesWithFallback(combinedOutput)
 
-			// 14-PROP-1: auto-abort to restore clean state before returning.
+			// Abort to restore a clean working tree before returning.
 			_, abortErr := r.Run(ctx, "cherry-pick", "--abort")
 			if abortErr != nil {
-				// 14-REQ-4.E3: log abort failure, still return CherryPickConflictError.
+				// An abort failure is only logged; the conflict error is still returned.
 				log.Printf("gitcmd: cherry-pick --abort failed after conflict: %v", abortErr)
 			}
 
@@ -78,7 +76,7 @@ func (r *GitRunner) CherryPick(ctx context.Context, sha string) (string, error) 
 		}
 	}
 
-	// 14-REQ-4.1: cherry-pick succeeded — read the new HEAD SHA.
+	// The cherry-pick succeeded; read the new HEAD SHA.
 	newSHA, err := r.RevParse(ctx, "HEAD")
 	if err != nil {
 		return "", err

@@ -12,14 +12,14 @@ import (
 // txExecutor abstracts the subset of *sql.Tx methods used by the personal org
 // hook. *sql.Tx satisfies this interface. Tests can inject a recording spy to
 // verify that all INSERT statements execute on the passed transaction, not on
-// a separate database connection (TS-04-28).
+// a separate database connection.
 type txExecutor interface {
 	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
 
 // uuidGenFn generates a new UUID string for org IDs.
-// Tests can replace this to inject UUID generation failures (TS-04-E13).
+// Tests can replace this to inject UUID generation failures.
 // Restore after each test to avoid cross-test contamination.
 var uuidGenFn = func() (string, error) {
 	id, err := uuid.NewRandom()
@@ -31,7 +31,7 @@ var uuidGenFn = func() (string, error) {
 
 // slugCheckFn checks whether a slug already exists in the orgs table within
 // the given transaction context. Tests can replace this for loop-count
-// instrumentation (TS-04-E10) or fault injection (TS-04-E9).
+// instrumentation or fault injection.
 // Restore after each test to avoid cross-test contamination.
 var slugCheckFn = func(ctx context.Context, tx txExecutor, slug string) (bool, error) {
 	var count int
@@ -44,7 +44,7 @@ var slugCheckFn = func(ctx context.Context, tx txExecutor, slug string) (bool, e
 // maxSlugCollisionAttempts is the maximum number of numeric suffixes (-1
 // through -10) to try when resolving slug collisions. If all attempts collide
 // with existing org slugs, the hook returns an error. The retry loop never
-// exceeds this count regardless of table state (04-REQ-6.E2).
+// exceeds this count regardless of table state.
 const maxSlugCollisionAttempts = 10
 
 // CreatePersonalOrg is the AfterUserCreateFunc hook that creates a personal
@@ -70,8 +70,8 @@ func createPersonalOrg(ctx context.Context, tx *sql.Tx, userID, username, email 
 
 // doCreatePersonalOrg is the internal implementation accepting a txExecutor
 // interface. This indirection allows tests to call the hook logic with a spy
-// transaction wrapper that records executed SQL statements (TS-04-28), or a
-// faulty wrapper that injects errors on specific queries (TS-04-E11, E12).
+// transaction wrapper that records executed SQL statements, or a faulty
+// wrapper that injects errors on specific queries.
 func doCreatePersonalOrg(ctx context.Context, tx txExecutor, userID, username, email string) error {
 	slug := sanitizeSlug(username, userID)
 
@@ -91,7 +91,7 @@ func doCreatePersonalOrg(ctx context.Context, tx txExecutor, userID, username, e
 
 	if baseExists {
 		// Base slug collides — try suffixed alternatives via slugCheckFn.
-		// The loop runs at most maxSlugCollisionAttempts iterations (04-REQ-6.E2).
+		// The loop runs at most maxSlugCollisionAttempts iterations.
 		found := false
 		for i := 1; i <= maxSlugCollisionAttempts; i++ {
 			candidate := fmt.Sprintf("%s-%d", slug, i)
@@ -111,19 +111,19 @@ func doCreatePersonalOrg(ctx context.Context, tx txExecutor, userID, username, e
 		}
 	} else {
 		// Base slug appears unique via the inline query. Call slugCheckFn to
-		// allow test-injectable error propagation (04-REQ-6.E1 / TS-04-E9).
+		// allow test-injectable error propagation.
 		if _, err := slugCheckFn(ctx, tx, slug); err != nil {
 			return fmt.Errorf("checking slug uniqueness: %w", err)
 		}
 	}
 
-	// Generate a UUID for the new org (04-REQ-7.E3: return error if gen fails).
+	// Generate a UUID for the new org; a generation failure is an error.
 	orgID, err := uuidGenFn()
 	if err != nil {
 		return fmt.Errorf("generating org UUID: %w", err)
 	}
 
-	// INSERT org row with all required fields (04-REQ-7.1).
+	// INSERT org row with all required fields.
 	now := time.Now().UTC().Format(time.RFC3339)
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO orgs (id, name, slug, url, owner_id, status, created_at, updated_at)
@@ -132,7 +132,7 @@ func doCreatePersonalOrg(ctx context.Context, tx txExecutor, userID, username, e
 		return fmt.Errorf("inserting org: %w", err)
 	}
 
-	// INSERT org_members row linking user to new org (04-REQ-7.2).
+	// INSERT org_members row linking user to new org.
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO org_members (org_id, user_id, created_at)
 		 VALUES (?, ?, ?)`,

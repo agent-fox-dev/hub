@@ -23,7 +23,7 @@ type listEntry struct {
 }
 
 // handleList serves GET /workspaces/:slug/tokens: every token bound to the
-// workspace, revoked and expired ones included (34-REQ-4). The checks run in
+// workspace, revoked and expired ones included. The checks run in
 // order: a credential, not a bound token, a PAT's tokens:read or
 // tokens:manage, and an admin token or the workspace's owner.
 func handleList(cfg Config) echo.HandlerFunc {

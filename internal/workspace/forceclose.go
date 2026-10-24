@@ -68,7 +68,7 @@ func forceCloseWorkspaceSessions(ctx context.Context, workspaceSlug, reason, tim
 				},
 			}
 			if emitErr := defaultAuditEmitter.Emit(ctx, event); emitErr != nil {
-				// 19-REQ-8.E3: Log emitter error and continue.
+				// Log the emitter error and continue.
 				slog.Error("force-close: failed to emit hub.session.force_closed",
 					"session_id", r.SessionID,
 					"workspace", workspaceSlug,

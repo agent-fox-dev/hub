@@ -25,11 +25,11 @@ import (
 // ===========================================================================
 
 // errPatchBranchNotFound indicates a patch branch does not exist in the
-// repository. The rebuild executor skips the patch (16-REQ-1.6).
+// repository. The rebuild executor skips the patch.
 var errPatchBranchNotFound = errors.New("patch branch not found")
 
 // rebuildConflictError wraps unresolved conflict file paths for fail-fast
-// reporting (16-REQ-1.5).
+// reporting.
 type rebuildConflictError struct {
 	files []string
 }
@@ -77,7 +77,7 @@ func (h *RebuildHandler) HandleRebuildJob(ctx context.Context, rawPayload json.R
 		return nil, false, fmt.Errorf("invalid rebuild payload: %w", err)
 	}
 
-	// 18-REQ-3.5: Emit hub.rebuild.fail on any error return from this function.
+	// Emit hub.rebuild.fail on any error return from this function.
 	defer func() {
 		if retErr != nil {
 			// The job context may already be cancelled; the event must still
@@ -88,7 +88,7 @@ func (h *RebuildHandler) HandleRebuildJob(ctx context.Context, rawPayload json.R
 		}
 	}()
 
-	// 2. Resolve upstream auth (16-REQ-1.2, 16-REQ-1.E9).
+	// 2. Resolve upstream auth.
 	var auth transport.AuthMethod
 	if h.ResolveAuth != nil {
 		resolved, err := h.ResolveAuth(payload.WorkspaceSlug)
@@ -108,19 +108,18 @@ func (h *RebuildHandler) HandleRebuildJob(ctx context.Context, rawPayload json.R
 
 	// acquire takes the blocking workspace lock and returns a release
 	// function that is safe to call more than once, so every early return
-	// releases the lock exactly once (01-REQ-4.6).
+	// releases the lock exactly once.
 	acquire := func() func() {
 		release := host.Lock(slug)
 		var once sync.Once
 		return func() { once.Do(release) }
 	}
 
-	// Phase one runs under the workspace lock (01-REQ-4.1, 4.3): the
+	// Phase one runs under the workspace lock: the
 	// blocking Lock, then, still under it, the rebuild-active guard so that
 	// archive and reclone cannot slip in between. The guard is ended by a
 	// defer registered before the worktree removal defer below, so it is
-	// cleared after the worktree has been removed on every exit path
-	// (01-REQ-5.4).
+	// cleared after the worktree has been removed on every exit path.
 	unlock := acquire()
 	defer unlock()
 	endGuard, guarded := host.BeginRebuild(slug)
@@ -129,7 +128,7 @@ func (h *RebuildHandler) HandleRebuildJob(ctx context.Context, rawPayload json.R
 		return nil, true, &TransientError{Err: fmt.Errorf("a rebuild is already active for workspace %q", slug)}
 	}
 
-	// 4. Fetch from upstream (16-REQ-1.2, 16-REQ-1.E5).
+	// 4. Fetch from upstream.
 	if h.Fetch != nil {
 		if err := h.Fetch(ctx, repoPath, auth); err != nil {
 			var te *TransientError
@@ -149,28 +148,27 @@ func (h *RebuildHandler) HandleRebuildJob(ctx context.Context, rawPayload json.R
 
 	// 6. Resolve the upstream base: the upstream default branch recorded by
 	// the fetch (refs/remotes/upstream/HEAD), falling back to the workspace
-	// branch tracking ref and finally FETCH_HEAD (16-REQ-1.2).
+	// branch tracking ref and finally FETCH_HEAD.
 	upstreamHead, err := resolveUpstreamBase(ctx, trunk, workspaceBranch(h.DB, payload.WorkspaceSlug))
 	if err != nil {
 		return nil, true, &TransientError{Err: err}
 	}
 
 	// 8. Remove worktrees left behind by a crashed run and prune their
-	// registrations, before this run creates its own (01-REQ-8.2).
+	// registrations, before this run creates its own.
 	h.cleanStaleRebuildDirs(ctx, trunk, slug, repoPath)
 
 	// 9. Configure rerere (repository level, shared with every worktree) for
-	// conflict resolution replay (16-REQ-1.5, 01-REQ-3.1). This happens
+	// conflict resolution replay. This happens
 	// before the worktree is created.
 	_, _ = trunk.Run(ctx, "config", "rerere.enabled", "true")
 	_, _ = trunk.Run(ctx, "config", "rerere.autoupdate", "true")
 
 	// End of phase one: worktree creation and patch application hold no
-	// lock (01-REQ-4.4).
+	// lock.
 	unlock()
 
-	// 10. Create the detached per-run worktree at the upstream base
-	// (01-REQ-1.1, 01-REQ-1.2).
+	// 10. Create the detached per-run worktree at the upstream base.
 	jobID := jobqueue.JobIDFromContext(ctx)
 	worktreePath, err := h.rebuildWorktreePath(payload.WorkspaceSlug, repoPath, jobID)
 	if err != nil {
@@ -192,7 +190,7 @@ func (h *RebuildHandler) HandleRebuildJob(ctx context.Context, rawPayload json.R
 	defer removeWT()
 
 	// Patch application runs through a runner rooted in the worktree; it is
-	// built after the directory exists (01-REQ-1.3).
+	// built after the directory exists.
 	wt, err := h.NewGitRunner(worktreePath)
 	if err != nil {
 		return nil, true, &TransientError{Err: err}
@@ -200,7 +198,7 @@ func (h *RebuildHandler) HandleRebuildJob(ctx context.Context, rawPayload json.R
 
 	// cancelled reports whether err (or the job context) signals
 	// cancellation, in which case the run ends as a retryable failure
-	// instead of being recorded as a skip, conflict or success (01-REQ-8.1).
+	// instead of being recorded as a skip, conflict or success.
 	cancelled := func(err error) bool {
 		return ctx.Err() != nil || isContextErr(err)
 	}
@@ -211,13 +209,13 @@ func (h *RebuildHandler) HandleRebuildJob(ctx context.Context, rawPayload json.R
 		return nil, true, &TransientError{Err: err}
 	}
 
-	// 10. Sort patches by position (16-REQ-1.2: position order).
+	// 10. Sort patches by position.
 	sort.Slice(patches, func(i, j int) bool {
 		return patches[i].Position < patches[j].Position
 	})
 
-	// Snapshot the tip of every patch that will be attempted as a SHA
-	// (01-REQ-6.1). With the lock released, branch names can move; from here
+	// Snapshot the tip of every patch that will be attempted as a SHA.
+	// With the lock released, branch names can move; from here
 	// on only the SHAs are used. An unresolvable branch gets no snapshot and
 	// is recorded as skipped / branch_not_found when its turn comes.
 	snapshots := make(map[string]string, len(patches))
@@ -254,7 +252,7 @@ func (h *RebuildHandler) HandleRebuildJob(ctx context.Context, rawPayload json.R
 	var mergedPatchIDs []string
 
 	// attempted records every snapshotted patch that was applied or hit a
-	// conflict, for the stale-input check (01-REQ-7.1). It is kept apart
+	// conflict, for the stale-input check. It is kept apart
 	// from result.PatchResults because a fail-fast conflict returns no
 	// result.
 	var attempted []attemptedPatch
@@ -271,7 +269,7 @@ func (h *RebuildHandler) HandleRebuildJob(ctx context.Context, rawPayload json.R
 			Position:   patch.Position,
 		}
 
-		// 16-REQ-1.7: skip merged_upstream, disabled, and deleted patches.
+		// Skip merged_upstream, disabled, and deleted patches.
 		if patch.Status == PatchStatusMergedUpstream || patch.Status == PatchStatusDisabled || patch.Status == PatchStatusDeleted {
 			pr.Status = "skipped"
 			pr.SkippedReason = patch.Status // "merged_upstream", "disabled", or "deleted"
@@ -280,12 +278,12 @@ func (h *RebuildHandler) HandleRebuildJob(ctx context.Context, rawPayload json.R
 			if patch.Status == PatchStatusMergedUpstream {
 				mergedPatchIDs = append(mergedPatchIDs, patch.ID)
 			}
-			// Write progress after each patch completes (NS-REQ-4).
+			// Write progress after each patch completes.
 			h.writeProgress(jobID, result.PatchResults)
 			continue
 		}
 
-		// A branch that did not resolve is skipped (16-REQ-1.6, 01-REQ-6.4).
+		// A branch that did not resolve is skipped.
 		sourceSHA, snapshotted := snapshots[patch.ID]
 		if !snapshotted {
 			pr.Status = "skipped"
@@ -323,18 +321,18 @@ func (h *RebuildHandler) HandleRebuildJob(ctx context.Context, rawPayload json.R
 				return nil, true, &TransientError{Err: applyErr}
 			}
 
-			// 16-REQ-1.6: branch not found -> skip.
+			// Branch not found: skip.
 			if errors.Is(applyErr, errPatchBranchNotFound) {
 				pr.Status = "skipped"
 				pr.SkippedReason = "branch_not_found"
 				result.PatchResults = append(result.PatchResults, pr)
 				result.PatchesSkipped++
-				// Write progress after each patch completes (NS-REQ-4).
+				// Write progress after each patch completes.
 				h.writeProgress(jobID, result.PatchResults)
 				continue
 			}
 
-			// 16-REQ-1.5 / NS-REQ-1: unresolved conflict handling.
+			// Unresolved conflict handling.
 			var ce *rebuildConflictError
 			if errors.As(applyErr, &ce) {
 				_ = h.PatchStore.UpdatePatchStatus(ctx, patch.ID, PatchStatusConflict, ce.files)
@@ -354,7 +352,7 @@ func (h *RebuildHandler) HandleRebuildJob(ctx context.Context, rawPayload json.R
 						return result, true, &TransientError{Err: err}
 					}
 
-					// Write progress after each patch completes (NS-REQ-4).
+					// Write progress after each patch completes.
 					h.writeProgress(jobID, result.PatchResults)
 					continue
 				}
@@ -362,7 +360,7 @@ func (h *RebuildHandler) HandleRebuildJob(ctx context.Context, rawPayload json.R
 				// Default fail_fast: abort immediately. A push that fixes
 				// the conflicting patch while the run was applying must not
 				// be lost, so the stale-input check still runs, after the
-				// worktree is removed (01-REQ-7.1).
+				// worktree is removed.
 				attempted = append(attempted, attemptedPatch{Branch: patch.BranchName, SHA: sourceSHA})
 				conflictErr := fmt.Errorf("conflict in patch %q: %s",
 					patch.BranchName, strings.Join(ce.files, ", "))
@@ -387,11 +385,11 @@ func (h *RebuildHandler) HandleRebuildJob(ctx context.Context, rawPayload json.R
 		result.PatchesApplied++
 		attempted = append(attempted, attemptedPatch{Branch: patch.BranchName, SHA: sourceSHA})
 
-		// Write progress after each patch completes (NS-REQ-4).
+		// Write progress after each patch completes.
 		h.writeProgress(jobID, result.PatchResults)
 	}
 
-	// === Success path (16-REQ-1.2) ===
+	// === Success path ===
 
 	// A cancellation that arrived after the last git call must not publish
 	// a half-finished result.
@@ -407,9 +405,9 @@ func (h *RebuildHandler) HandleRebuildJob(ctx context.Context, rawPayload json.R
 	result.IntegrationHeadSHA = finalHead
 
 	// Phase two: re-acquire the workspace lock for the integration-ref
-	// update, patch bookkeeping and the optional push (01-REQ-4.5). The
-	// unlock defer runs before the worktree removal defer, so every early
-	// return releases the lock first (01-REQ-4.6).
+	// update, patch bookkeeping and the optional push. The unlock defer
+	// runs before the worktree removal defer, so every early return
+	// releases the lock first.
 	unlock2 := acquire()
 	defer unlock2()
 	if err := ctx.Err(); err != nil {
@@ -423,7 +421,7 @@ func (h *RebuildHandler) HandleRebuildJob(ctx context.Context, rawPayload json.R
 	// empty and PreviousIntegrationHeadSHA stays at its zero value.
 	// The read happens under the phase-two lock, immediately before the
 	// update, so a rollback that ran during patch application is what gets
-	// recorded (01-REQ-2.4, 01-REQ-4.7).
+	// recorded.
 	integrationRef := "refs/heads/" + integrationBranch
 	previousHead, _ := trunk.Run(ctx, "rev-parse", "--verify", integrationRef)
 	if previousHead != "" {
@@ -431,13 +429,13 @@ func (h *RebuildHandler) HandleRebuildJob(ctx context.Context, rawPayload json.R
 	}
 
 	// update-ref (not branch -f, which refuses a checked-out branch). On
-	// failure nothing below runs: no soft-deletion, compaction or push
-	// (01-REQ-2.8); the deferred unlock releases the lock.
+	// failure nothing below runs: no soft-deletion, compaction or push;
+	// the deferred unlock releases the lock.
 	if err := trunk.UpdateRef(ctx, integrationRef, finalHead); err != nil {
 		return nil, true, &TransientError{Err: fmt.Errorf("update %s: %w", integrationRef, err)}
 	}
 
-	// Exception A (01-REQ-2.5): moving a ref under a checked-out branch
+	// Moving a ref under a checked-out branch
 	// leaves the trunk's index and files at the old commit, so the checkout
 	// is brought to the new tip. Only in that case is the trunk reset.
 	h.syncTrunkCheckout(ctx, trunk, slug, integrationBranch)
@@ -468,14 +466,14 @@ func (h *RebuildHandler) HandleRebuildJob(ctx context.Context, rawPayload json.R
 		}
 	}
 
-	// End of phase two (01-REQ-4.8): release the lock, remove the worktree,
+	// End of phase two: release the lock, remove the worktree,
 	// check whether the run's inputs moved, emit the completion event; the
 	// guard is ended last by its defer.
 	unlock2()
 	removeWT()
 	h.checkStaleInputs(ctx, trunk, payload, integrationBranch, upstreamHead, attempted)
 
-	// 18-REQ-3.4: Emit hub.rebuild.complete audit event.
+	// Emit the hub.rebuild.complete audit event.
 	h.emitRebuildAudit(ctx, payload.WorkspaceSlug, "hub.rebuild.complete", map[string]any{
 		"patches_applied": result.PatchesApplied,
 	})
@@ -514,13 +512,14 @@ func isContextErr(err error) bool {
 const rebuildCleanupTimeout = 2 * time.Minute
 
 // cleanupContext returns a context for cleanup that survives cancellation of
-// ctx (01-REQ-1.6): the job context is dead when a run is cancelled, and git
+// ctx: the job context is dead when a run is cancelled, and git
 // would not start under it.
 func cleanupContext(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.WithoutCancel(ctx), rebuildCleanupTimeout)
 }
 
-// syncTrunkCheckout is Exception A (01-REQ-2.5). It runs under the phase-two
+// syncTrunkCheckout is the one case in which the trunk's checkout is
+// touched by a rebuild. It runs under the phase-two
 // lock right after the integration ref was moved. When the trunk's HEAD is
 // the integration branch, the ref move left its index and files at the old
 // commit, so `reset --hard HEAD` brings the checkout to the new tip. In every
@@ -564,7 +563,7 @@ func (h *RebuildHandler) workspaceVarIsFalse(slug, key string) bool {
 
 // checkStaleInputs compares the run's patch tips and upstream base with the
 // current refs after the run and enqueues one follow-up rebuild when they
-// moved (01-REQ-7). It runs after the worktree is removed and the phase-two
+// moved. It runs after the worktree is removed and the phase-two
 // lock is released, only for a successful run and a fail-fast conflict. It
 // never changes the job outcome: failures are logged.
 //
@@ -674,7 +673,7 @@ func (h *RebuildHandler) rebuildDir(slug, trunkPath string) string {
 
 // cleanStaleRebuildDirs removes every directory under the workspace's
 // rebuild directory (left by a crashed run) and prunes the worktree
-// registrations in the trunk (01-REQ-8.2, 8.6). It runs in phase one, under
+// registrations in the trunk. It runs in phase one, under
 // the lock and the guard, and never fails the run: errors are logged.
 func (h *RebuildHandler) cleanStaleRebuildDirs(ctx context.Context, trunk GitRunner, slug, trunkPath string) {
 	dir := h.rebuildDir(slug, trunkPath)
@@ -701,7 +700,7 @@ func (h *RebuildHandler) cleanStaleRebuildDirs(ctx context.Context, trunk GitRun
 // rebuildWorktreePath returns the absolute path of this run's worktree:
 // <workspace_root>/<slug>/rebuild/<job id>. When no job ID is available a
 // random one is used; when WorkspaceRoot is empty the path is derived from
-// the parent directory of the trunk path (01-REQ-1.1, 01-REQ-1.2).
+// the parent directory of the trunk path.
 func (h *RebuildHandler) rebuildWorktreePath(slug, trunkPath, jobID string) (string, error) {
 	if jobID == "" {
 		var b [8]byte
@@ -724,7 +723,7 @@ func (h *RebuildHandler) rebuildWorktreePath(slug, trunkPath, jobID string) (str
 // (which also discards any in-progress cherry-pick or merge) followed by
 // `git worktree prune`. If git cannot remove it the directory is deleted
 // directly. It is best-effort, runs with a non-cancelled bounded context and
-// never changes the job outcome (01-REQ-1.4, 1.5, 1.6).
+// never changes the job outcome.
 func (h *RebuildHandler) removeWorktree(ctx context.Context, trunk GitRunner, slug, path string) {
 	cctx, cancel := cleanupContext(ctx)
 	defer cancel()
@@ -744,7 +743,7 @@ func (h *RebuildHandler) removeWorktree(ctx context.Context, trunk GitRunner, sl
 }
 
 // discardFailedWorktree cleans up after a failed `git worktree add`: nothing
-// may be left under rebuild/ for this run (01-REQ-1.8).
+// may be left under rebuild/ for this run.
 func (h *RebuildHandler) discardFailedWorktree(ctx context.Context, trunk GitRunner, slug, path string) {
 	cctx, cancel := cleanupContext(ctx)
 	defer cancel()
@@ -774,11 +773,11 @@ func (h *RebuildHandler) writeProgress(jobID string, patchResults []PatchResult)
 //
 // For each unique commit on the patch branch (determined via git log --reverse),
 // cherry-picks it onto the worktree's HEAD. sha is the snapshot of the
-// branch tip (01-REQ-6.1); the branch name is never used. If the commit
+// branch tip; the branch name is never used. If the commit
 // list is empty, returns errPatchBranchNotFound. If an unresolvable
 // conflict occurs, returns *rebuildConflictError.
 func (h *RebuildHandler) applyRebasePatch(ctx context.Context, git GitRunner, sha, upstreamHead string) error {
-	// 16-REQ-1.3: determine the commits to replay: those on the patch branch
+	// Determine the commits to replay: those on the patch branch
 	// that are not in upstream, skipping merge commits (as git rebase does)
 	// and commits whose patch-id already exists upstream (already
 	// cherry-picked or squash-merged content), which would otherwise stop
@@ -803,7 +802,7 @@ func (h *RebuildHandler) applyRebasePatch(ctx context.Context, git GitRunner, sh
 		if err := git.CherryPick(ctx, commit); err != nil {
 			var cpErr *CherryPickConflictError
 			if errors.As(err, &cpErr) {
-				// Attempt rerere resolution (16-REQ-1.5).
+				// Attempt rerere resolution.
 				if conflictErr := h.handleConflictWithRerere(ctx, git, "cherry-pick"); conflictErr != nil {
 					return conflictErr
 				}
@@ -820,15 +819,14 @@ func (h *RebuildHandler) applyRebasePatch(ctx context.Context, git GitRunner, sh
 // applyMergePatch applies a patch using the merge (--no-ff) strategy.
 //
 // Merges the snapshot SHA of the patch branch into the worktree's HEAD with
-// --no-ff (01-REQ-6.3). The commit message names the branch, which a bare
+// --no-ff. The commit message names the branch, which a bare
 // SHA merge would lose. If an unresolvable conflict occurs, returns
 // *rebuildConflictError.
 func (h *RebuildHandler) applyMergePatch(ctx context.Context, git GitRunner, sha, branchName string) error {
-	// 16-REQ-1.4: merge with --no-ff.
 	if err := git.MergeNoFF(ctx, sha, "Merge branch '"+branchName+"'"); err != nil {
 		var mergeErr *MergeNoFFConflictError
 		if errors.As(err, &mergeErr) {
-			// Attempt rerere resolution (16-REQ-1.5).
+			// Attempt rerere resolution.
 			if conflictErr := h.handleConflictWithRerere(ctx, git, "merge"); conflictErr != nil {
 				return conflictErr
 			}
@@ -867,7 +865,7 @@ func (h *RebuildHandler) handleConflictWithRerere(ctx context.Context, git GitRu
 		return ctx.Err()
 	}
 
-	// 16-REQ-1.5: allow git rerere with autoupdate to stage resolved files.
+	// Let git rerere with autoupdate stage the resolved files.
 	_, err := git.Run(ctx, "rerere")
 	if cerr := ctxFailure(err); cerr != nil {
 		return cerr

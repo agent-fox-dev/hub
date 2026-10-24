@@ -11,21 +11,20 @@ import (
 )
 
 // emitHubAudit emits a hub-internal audit event using the package-level
-// defaultAuditEmitter. If the emitter is nil, emission is silently skipped
-// (18-REQ-1.3, 18-PROP-7). If Emit returns an error, the error is logged
-// and the caller is unaffected (18-REQ-1.E1, 18-PROP-1).
+// defaultAuditEmitter. If the emitter is nil, emission is silently skipped.
+// If Emit returns an error, the error is logged and the caller is unaffected.
 //
 // The caller provides a partially-filled HubEvent; this function populates
 // ActorID and ActorType from the request's auth context. When auth info is
 // unavailable (unauthenticated context), ActorID is empty and ActorType is
-// "system" (18-REQ-1.E2).
+// "system".
 func emitHubAudit(c echo.Context, event audit.HubEvent) {
 	emitHubAuditContext(c.Request().Context(), c, event)
 }
 
 // emitHubAuditContext is emitHubAudit emitting on ctx rather than on the
 // request's context, for an event that must be recorded when the caller has
-// gone away (38-REQ-8.5).
+// gone away.
 func emitHubAuditContext(ctx context.Context, c echo.Context, event audit.HubEvent) {
 	if defaultAuditEmitter == nil {
 		return

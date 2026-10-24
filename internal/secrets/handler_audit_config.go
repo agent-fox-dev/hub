@@ -12,7 +12,7 @@ import (
 
 // defaultAuditEmitter is the package-level audit emitter set during route
 // registration. When nil, audit emission is silently skipped in all CRUD
-// handlers (18-REQ-4.E2, 18-PROP-7).
+// handlers.
 var defaultAuditEmitter audit.Emitter
 
 // SecretsRouteConfig holds the dependencies for secrets and variables
@@ -29,16 +29,15 @@ type SecretsRouteConfig struct {
 
 // RegisterRoutesWithAudit mounts secrets and variables API handlers on the
 // given echo group using the provided SecretsRouteConfig. This is the
-// audit-aware variant of RegisterRoutes (18-REQ-4.7).
+// audit-aware variant of RegisterRoutes.
 func RegisterRoutesWithAudit(api *echo.Group, cfg SecretsRouteConfig) error {
 	defaultAuditEmitter = cfg.Audit
 	return RegisterRoutes(api, cfg.DB)
 }
 
 // emitSecretAudit emits a hub-internal audit event for a secret mutation.
-// If the emitter is nil, emission is silently skipped (18-REQ-4.E2).
-// If Emit returns an error, the error is logged and the caller is
-// unaffected (18-REQ-4.E1, 18-PROP-1).
+// If the emitter is nil, emission is silently skipped. If Emit returns an
+// error, the error is logged and the caller is unaffected.
 func emitSecretAudit(c echo.Context, eventType, scope, key string) {
 	if defaultAuditEmitter == nil {
 		return
@@ -67,9 +66,8 @@ func emitSecretAudit(c echo.Context, eventType, scope, key string) {
 }
 
 // emitVarAudit emits a hub-internal audit event for a variable mutation.
-// If the emitter is nil, emission is silently skipped (18-REQ-4.E2).
-// If Emit returns an error, the error is logged and the caller is
-// unaffected (18-REQ-4.E1, 18-PROP-1).
+// If the emitter is nil, emission is silently skipped. If Emit returns an
+// error, the error is logged and the caller is unaffected.
 func emitVarAudit(c echo.Context, eventType, scope, key string) {
 	if defaultAuditEmitter == nil {
 		return

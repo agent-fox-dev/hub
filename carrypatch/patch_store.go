@@ -10,7 +10,7 @@ import (
 )
 
 // patchRow is a row of the patches table, as the patch routes read and write it;
-// Patch is the rebuild's view of one. patchRow represents a row in the patches table (15-REQ-7).
+// Patch is the rebuild's view of one.
 type patchRow struct {
 	ID              string   // TEXT PRIMARY KEY (UUID)
 	WorkspaceSlug   string   // TEXT NOT NULL
@@ -23,9 +23,9 @@ type patchRow struct {
 	DeletedAt       *string  // TEXT (nullable, RFC 3339)
 	AddedAt         string   // TEXT NOT NULL (RFC 3339)
 	UpdatedAt       string   // TEXT NOT NULL (RFC 3339)
-	OriginSyncState *string  // TEXT (nullable, 20-REQ-7)
-	OriginSHA       *string  // TEXT (nullable, 20-REQ-7)
-	OriginSyncedAt  *string  // TEXT (nullable, 20-REQ-7)
+	OriginSyncState *string  // TEXT (nullable)
+	OriginSHA       *string  // TEXT (nullable)
+	OriginSyncedAt  *string  // TEXT (nullable)
 }
 
 // patchResponse converts a patchRow to a JSON-serializable map for API responses.
@@ -57,7 +57,7 @@ func patchResponse(p *patchRow) map[string]any {
 	} else {
 		resp["deleted_at"] = nil
 	}
-	// Origin sync state fields (20-REQ-7.5): omitted when null.
+	// Origin sync state fields: omitted when null.
 	if p.OriginSyncState != nil {
 		resp["origin_sync_state"] = *p.OriginSyncState
 	}
@@ -110,7 +110,7 @@ func getPatch(db *sql.DB, workspaceSlug, patchID string) (*patchRow, error) {
 }
 
 // listPatches retrieves all non-deleted patches for a workspace, ordered by position ASC.
-// Returns an empty slice (not nil) if no patches exist (15-REQ-9.1).
+// Returns an empty slice (not nil) if no patches exist.
 func listPatches(db *sql.DB, workspaceSlug string) ([]*patchRow, error) {
 	rows, err := db.Query(
 		`SELECT `+patchSelectColumns+` FROM patches WHERE workspace_slug = ? AND (status != 'deleted' OR status IS NULL) ORDER BY position ASC`,
@@ -282,7 +282,7 @@ func addPatchesBatch(db *sql.DB, patches []*patchRow) ([]*patchRow, error) {
 
 // updatePatch updates mutable fields of a patch (status, description,
 // upstream_pr_url, position) and refreshes updated_at.
-// branch_name is immutable and ignored even if set on the input (15-REQ-10.E1).
+// branch_name is immutable and ignored even if set on the input.
 // Returns the updated patch.
 func updatePatch(db *sql.DB, p *patchRow) (*patchRow, error) {
 	now := time.Now().UTC().Format(time.RFC3339)
@@ -302,7 +302,7 @@ func updatePatch(db *sql.DB, p *patchRow) (*patchRow, error) {
 
 // patchCount returns the number of non-deleted patches for a workspace.
 // Soft-deleted patches (status='deleted') are excluded so position validation
-// matches the visible patch set returned by listPatches (15-PROP-1).
+// matches the visible patch set returned by listPatches.
 func patchCount(db *sql.DB, workspaceSlug string) (int, error) {
 	var count int
 	err := db.QueryRow(
@@ -331,7 +331,7 @@ func branchExistsInPatches(db *sql.DB, workspaceSlug, branchName string) (bool, 
 
 // shiftPositionsDown increments the position of all patches at or after
 // fromPosition for the given workspace. This is used when inserting a patch
-// at a specific position to make room (15-REQ-8.2).
+// at a specific position to make room.
 func shiftPositionsDown(tx *sql.Tx, workspaceSlug string, fromPosition int) error {
 	_, err := tx.Exec(
 		`UPDATE patches SET position = position + 1
@@ -357,7 +357,7 @@ func parkPositions(tx *sql.Tx, workspaceSlug, now string) (sql.Result, error) {
 
 // compactPositions reassigns sequential 1-based positions to all non-deleted
 // patches in a workspace after a deletion, ordered by their current position.
-// Must be called within a transaction (15-REQ-11.1).
+// Must be called within a transaction.
 func compactPositions(tx *sql.Tx, workspaceSlug string) error {
 	rows, err := tx.Query(
 		`SELECT id FROM patches WHERE workspace_slug = ? AND (status != 'deleted' OR status IS NULL) ORDER BY position ASC`,
@@ -399,7 +399,7 @@ func compactPositions(tx *sql.Tx, workspaceSlug string) error {
 
 // addPatchWithPosition inserts a patch with position handling within a
 // transaction. If position is 0 or exceeds max+1, it appends. Otherwise,
-// it shifts existing patches to make room (15-REQ-8.1, 15-REQ-8.2).
+// it shifts existing patches to make room.
 func addPatchWithPosition(db *sql.DB, p *patchRow) (*patchRow, error) {
 	tx, err := db.Begin()
 	if err != nil {
@@ -422,12 +422,12 @@ func addPatchWithPosition(db *sql.DB, p *patchRow) (*patchRow, error) {
 		currentMax = int(maxPos.Int64)
 	}
 
-	// Clamp position (15-REQ-8.E2).
+	// Clamp the position.
 	if p.Position <= 0 || p.Position > currentMax+1 {
 		p.Position = currentMax + 1
 	}
 
-	// Shift existing patches if inserting in the middle (15-REQ-8.2).
+	// Shift existing patches if inserting in the middle.
 	if p.Position <= currentMax {
 		if err := shiftPositionsDown(tx, p.WorkspaceSlug, p.Position); err != nil {
 			return nil, err
@@ -462,7 +462,7 @@ func addPatchWithPosition(db *sql.DB, p *patchRow) (*patchRow, error) {
 }
 
 // deletePatchAndCompact removes a patch and compacts positions atomically
-// within a single transaction (15-REQ-11.1, 15-REQ-11.E2).
+// within a single transaction.
 func deletePatchAndCompact(db *sql.DB, workspaceSlug, patchID string) error {
 	tx, err := db.Begin()
 	if err != nil {
@@ -497,7 +497,7 @@ func deletePatchAndCompact(db *sql.DB, workspaceSlug, patchID string) error {
 
 // reorderPatches reassigns positions based on the provided ordered list of
 // patch IDs within a single transaction. Validates completeness, uniqueness,
-// and workspace membership (15-REQ-12.1-12.4, 15-REQ-12.E1-E3).
+// and workspace membership.
 func reorderPatches(db *sql.DB, workspaceSlug string, orderedIDs []string) ([]*patchRow, error) {
 	tx, err := db.Begin()
 	if err != nil {
@@ -507,7 +507,7 @@ func reorderPatches(db *sql.DB, workspaceSlug string, orderedIDs []string) ([]*p
 
 	// Get existing non-deleted patches for the workspace. Soft-deleted patches
 	// (status='deleted') are excluded so the reorder only considers the visible
-	// set returned by listPatches (15-PROP-1, 15-PROP-7).
+	// set returned by listPatches.
 	rows, err := tx.Query(
 		`SELECT id FROM patches WHERE workspace_slug = ? AND (status != 'deleted' OR status IS NULL) ORDER BY position ASC`,
 		workspaceSlug,
@@ -531,12 +531,12 @@ func reorderPatches(db *sql.DB, workspaceSlug string, orderedIDs []string) ([]*p
 
 	existingCount := len(existingIDs)
 
-	// 15-REQ-12.E1: Empty list when workspace has patches.
+	// An empty list when the workspace has patches is an error.
 	if len(orderedIDs) == 0 && existingCount > 0 {
 		return nil, fmt.Errorf("patch_ids list is empty but workspace has %d patches", existingCount)
 	}
 
-	// 15-REQ-12.3: Check for duplicates.
+	// Check for duplicates.
 	seen := make(map[string]bool, len(orderedIDs))
 	for _, id := range orderedIDs {
 		if seen[id] {
@@ -545,19 +545,19 @@ func reorderPatches(db *sql.DB, workspaceSlug string, orderedIDs []string) ([]*p
 		seen[id] = true
 	}
 
-	// 15-REQ-12.4: Check all IDs belong to this workspace.
+	// Check that all IDs belong to this workspace.
 	for _, id := range orderedIDs {
 		if !existingIDs[id] {
 			return nil, fmt.Errorf("patch ID %q does not belong to workspace %q", id, workspaceSlug)
 		}
 	}
 
-	// 15-REQ-12.2: Check completeness.
+	// Check completeness.
 	if len(orderedIDs) != existingCount {
 		return nil, fmt.Errorf("patch_ids list has %d entries but workspace has %d patches", len(orderedIDs), existingCount)
 	}
 
-	// Reassign positions (15-REQ-12.1).
+	// Reassign positions.
 	// Park all rows at unique negative positions first to avoid unique
 	// constraint violations, then set the final values.
 	now := time.Now().UTC().Format(time.RFC3339)
@@ -586,7 +586,7 @@ func reorderPatches(db *sql.DB, workspaceSlug string, orderedIDs []string) ([]*p
 }
 
 // updatePatchPosition moves a patch to a new position, shifting other patches
-// to maintain contiguity, within a single transaction (15-REQ-10.1).
+// to maintain contiguity, within a single transaction.
 // Uses a two-pass approach (all affected rows → negative temps → final positions)
 // to avoid UNIQUE(workspace_slug, position) constraint violations.
 func updatePatchPosition(db *sql.DB, workspaceSlug, patchID string, newPosition int) error {
@@ -614,7 +614,7 @@ func updatePatchPosition(db *sql.DB, workspaceSlug, patchID string, newPosition 
 
 	// Collect all non-deleted patches for this workspace in current position
 	// order. Soft-deleted patches are excluded to maintain position contiguity
-	// among the visible set (15-PROP-1).
+	// among the visible set.
 	rows, err := tx.Query(
 		`SELECT id, position FROM patches WHERE workspace_slug = ? AND (status != 'deleted' OR status IS NULL) ORDER BY position ASC`,
 		workspaceSlug,

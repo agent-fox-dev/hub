@@ -17,7 +17,7 @@ import "strings"
 // rename/delete conflict or an unexpected format from a future git version),
 // the last space-delimited token is used as a best-effort file path. If the
 // line is empty after trimming, an empty string is included so no CONFLICT
-// line is silently dropped (11-REQ-5.E3).
+// line is silently dropped.
 //
 // Returns a deduplicated slice of file paths. Returns an empty (non-nil)
 // slice if no CONFLICT lines are found.
@@ -56,7 +56,7 @@ func parseRebaseConflictFiles(output string) []string {
 // using parseRebaseConflictFiles. If no CONFLICT lines are found, it returns
 // a single-element slice containing the fallback string "(unresolved conflict)"
 // so that ConflictingFiles is never empty when the caller knows a conflict
-// occurred (14-REQ-13.E1, 14-PROP-6).
+// occurred.
 func parseConflictFilesWithFallback(combinedOutput string) []string {
 	files := parseRebaseConflictFiles(combinedOutput)
 	if len(files) == 0 {
@@ -91,7 +91,7 @@ func extractConflictPaths(output string) []string {
 				path = parts[len(parts)-1]
 			}
 			// If Fields returns empty (line was only whitespace after
-			// trimming), path stays "" — included per 11-REQ-5.E3.
+			// trimming), path stays "" and is still included.
 		}
 
 		// Deduplicate: skip paths we have already recorded.

@@ -10,7 +10,7 @@ import (
 )
 
 // BindingGuard returns the post-authentication middleware that confines a
-// bound token (spec 33). Install it on the API group after apikit's auth
+// bound token to its workspace. Install it on the API group after apikit's auth
 // middleware and before any hub route is registered: echo copies group
 // middleware into every route and subgroup added later, so every hub route,
 // including ones added in the future, is covered.

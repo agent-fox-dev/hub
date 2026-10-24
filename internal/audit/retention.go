@@ -141,7 +141,7 @@ func RunRetention(ctx context.Context, duckDB *sql.DB, sqliteDB *sql.DB, cfg Ret
 		return RetentionStep3_DeleteAgedHubEvents(ctx, duckDB, cfg.MaxAgeDays)
 	})
 
-	// Pre-step before step 4: Force-close orphaned active sessions (19-REQ-13.11).
+	// Pre-step before step 4: Force-close orphaned active sessions.
 	runStep(0, "force_close_orphaned", func() (int64, error) {
 		return RetentionPreStep_ForceCloseOrphanedSessions(ctx, duckDB, cfg.SessionMaxActiveAgeDays)
 	})
@@ -519,7 +519,7 @@ func RetentionStep9_RecalibrateGauges(ctx context.Context, db *sql.DB, m *Metric
 	}
 
 	// Recalibrate afhub_agent_sessions_active gauge.
-	// Reset to clear stale label combinations (19-REQ-13.9).
+	// Reset to clear stale label combinations.
 	m.AgentSessionsActive.Reset()
 
 	rows, err := db.QueryContext(ctx,

@@ -9,8 +9,6 @@ import (
 // ExitCodeDiverged is the process exit code of 'afc workspace sync
 // --fail-on-diverged' when the sync response lists diverged patch branches.
 // Exit codes 1 (API / wait failure) and 2 (client error) keep their meaning.
-//
-// Requirements: 20-REQ-6.5
 const ExitCodeDiverged = 3
 
 // ExitCode maps an error returned by the command tree to the process exit
@@ -18,8 +16,6 @@ const ExitCodeDiverged = 3
 // carrying ExitCodeDiverged exits 3. apikit collapses every CLIError code
 // other than 1 and >= 400 to 2, so without this mapping the documented
 // --fail-on-diverged exit code 3 never reaches the shell.
-//
-// Requirements: 20-REQ-6.5
 func ExitCode(err error) int {
 	if IsDivergedError(err) {
 		return ExitCodeDiverged

@@ -39,7 +39,6 @@ func RebuildCmd() *cobra.Command {
 // newRebuildSubmitCmd returns the 'rebuild submit' subcommand.
 // It sends POST /api/v1/workspaces/:slug/rebuild and prints the job record.
 // With --wait, it polls the rebuild status until a terminal state is reached.
-// Requirements: 16-REQ-7.1
 func newRebuildSubmitCmd() *cobra.Command {
 	var wf waitFlags
 	var strategy string
@@ -103,7 +102,6 @@ func newRebuildSubmitCmd() *cobra.Command {
 
 // newRebuildListCmd returns the 'rebuild list' subcommand.
 // It sends GET /api/v1/workspaces/:slug/rebuilds and prints the list.
-// Requirements: 16-REQ-7.2
 func newRebuildListCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:           "list <workspace-slug>",
@@ -130,7 +128,6 @@ func newRebuildListCmd() *cobra.Command {
 
 // newRebuildStatusCmd returns the 'rebuild status' subcommand.
 // It sends GET /api/v1/workspaces/:slug/rebuilds/:id and prints job details.
-// Requirements: 16-REQ-7.3
 func newRebuildStatusCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:           "status <workspace-slug> <rebuild-id>",
@@ -247,7 +244,6 @@ func newRebuildRequeueCmd() *cobra.Command {
 // newRebuildRollbackCmd returns the 'rebuild rollback' subcommand.
 // It sends POST /api/v1/workspaces/:slug/rebuilds/:id/rollback and prints
 // the JSON response to stdout on success, or an error to stderr on failure.
-// Requirements: NS-REQ-4
 func newRebuildRollbackCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:           "rollback <workspace-slug> <rebuild-id>",

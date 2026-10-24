@@ -25,7 +25,7 @@ import (
 //	GET    /workspaces/:slug/cost - Workspace cost summary
 func RegisterSessionRoutes(api *echo.Group, store Store, sqliteDB *sql.DB, metrics *Metrics) {
 	// A token bound to a workspace may use the session routes; each handler
-	// confines it to its own workspace (spec 33).
+	// confines it to its own workspace.
 	wsaccess.AllowBoundTokens(
 		api.POST("/sessions", handleCreateSession(store, metrics, sqliteDB)),
 		api.POST("/sessions/:id/complete", handleCompleteSession(store, metrics, sqliteDB)),

@@ -10,12 +10,10 @@ import (
 )
 
 // TokensCmd returns apikit's 'tokens' command with --workspace added to its
-// create and list subcommands (spec 34). Without the flag both behave
+// create and list subcommands. Without the flag both behave
 // exactly as apikit's do; with it, create mints a token bound to the
 // workspace (POST /workspaces/<slug>/tokens) and list lists the workspace's
 // bound tokens (GET /workspaces/<slug>/tokens).
-//
-// Requirements: 34-REQ-7, 34-REQ-8
 func TokensCmd() *cobra.Command {
 	cmd, err := wrapTokensCmd(apikit.TokensCmd())
 	if err != nil {

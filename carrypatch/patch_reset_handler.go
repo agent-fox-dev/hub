@@ -9,12 +9,11 @@ import (
 	"github.com/labstack/echo/v4"
 )
 
-// handleResetPatchToOrigin handles POST /api/v1/workspaces/:slug/patches/:id/reset-to-origin (23-REQ-2).
+// handleResetPatchToOrigin handles POST /api/v1/workspaces/:slug/patches/:id/reset-to-origin.
 // It moves a patch branch to the fork's current tip regardless of PATCH_DIVERGENCE_POLICY.
 func handleResetPatchToOrigin(cfg APIConfig) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		db := cfg.DB
-		// 23-REQ-9.4: Use only the shared auth helpers.
 		auth := requirePatchWriteScope(c)
 		if auth == nil {
 			return nil
@@ -29,7 +28,7 @@ func handleResetPatchToOrigin(cfg APIConfig) echo.HandlerFunc {
 			return nil
 		}
 
-		// 23-REQ-2.3: Same 400 messages as handleRestorePatch.
+		// The same 400 messages as handleRestorePatch.
 		if ws.Status == "archived" {
 			return respondError(c, http.StatusBadRequest, "workspace is archived")
 		}
@@ -37,18 +36,17 @@ func handleResetPatchToOrigin(cfg APIConfig) echo.HandlerFunc {
 			return respondError(c, http.StatusBadRequest, "workspace is not in carry_patch mode")
 		}
 
-		// 23-REQ-2.4: the clone must be ready.
+		// The clone must be ready.
 		if ws.Status != "ready" {
 			return respondError(c, http.StatusConflict, "workspace clone is not ready")
 		}
 
-		// 23-REQ-2.8: Check for nil hook before any git operation.
+		// Check for a nil hook before any git operation.
 		hook := cfg.Recovery
 		if hook == nil {
 			return respondError(c, http.StatusInternalServerError, "patch reset is not configured")
 		}
 
-		// 23-REQ-2.5: Unknown patch id → 404.
 		p, err := getPatch(db, slug, patchID)
 		if err != nil {
 			return respondError(c, http.StatusInternalServerError, "internal server error")
@@ -57,12 +55,12 @@ func handleResetPatchToOrigin(cfg APIConfig) echo.HandlerFunc {
 			return respondError(c, http.StatusNotFound, "patch not found")
 		}
 
-		// 23-REQ-2.5: Integration branch check.
+		// The integration branch cannot be reset.
 		if ws.IntegrationBranch != nil && p.BranchName == *ws.IntegrationBranch {
 			return respondError(c, http.StatusBadRequest, "patch branch is the integration branch")
 		}
 
-		// 23-REQ-2.6: Only active, conflict and disabled patches are eligible.
+		// Only active, conflict and disabled patches are eligible.
 		switch p.Status {
 		case "active", "conflict", "disabled":
 			// eligible
@@ -83,13 +81,13 @@ func handleResetPatchToOrigin(cfg APIConfig) echo.HandlerFunc {
 			IntegrationBranch: integrationBranch,
 		}
 
-		// 23-REQ-2.7: The hook takes the workspace lock internally.
+		// The hook takes the workspace lock internally.
 		result, resetErr := hook.RunReset(c.Request().Context(), slug, patchInfo, auth)
 		if resetErr != nil {
 			return mapResetError(c, resetErr, p.BranchName)
 		}
 
-		// 23-REQ-10.1: Emit hub.patch.reset audit event on success. The events
+		// Emit the hub.patch.reset audit event on success. The events
 		// are emitted as soon as the reset has succeeded, before the patch is
 		// re-read below: the branch has already moved, so a failure to read
 		// the row back (which still answers 500) must not drop the audit
@@ -100,11 +98,11 @@ func handleResetPatchToOrigin(cfg APIConfig) echo.HandlerFunc {
 			"action":      string(result.Action),
 			"origin_sha":  result.OriginSHA,
 		}
-		// 23-REQ-10.2: Omit local_sha when there was no local branch.
+		// Omit local_sha when there was no local branch.
 		if result.LocalSHA != "" {
 			resetMeta["local_sha"] = result.LocalSHA
 		}
-		// 23-REQ-10.2: Include replaced_sha only when action is replaced.
+		// Include replaced_sha only when the action is replaced.
 		if result.Action == ResetActionReplaced {
 			resetMeta["replaced_sha"] = result.ReplacedSHA
 		}
@@ -118,7 +116,7 @@ func handleResetPatchToOrigin(cfg APIConfig) echo.HandlerFunc {
 			Metadata:     resetMeta,
 		})
 
-		// 23-REQ-10.3: For action replaced, also emit hub.patch.replace with trigger.
+		// For action replaced, also emit hub.patch.replace with the trigger.
 		if result.Action == ResetActionReplaced {
 			emitAudit(c, cfg.Audit, Event{
 				EventType:    EventPatchReplace,
@@ -166,7 +164,7 @@ func handleResetPatchToOrigin(cfg APIConfig) echo.HandlerFunc {
 }
 
 // mapResetError maps a classified ResetError to the appropriate HTTP response.
-// 23-REQ-9.2: Each error kind maps to a specific status code, error type and message.
+// Each error kind maps to a specific status code, error type and message.
 func mapResetError(c echo.Context, err error, branchName string) error {
 	var resetErr *ResetError
 	if !errors.As(err, &resetErr) {

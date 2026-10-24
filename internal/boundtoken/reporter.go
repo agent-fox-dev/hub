@@ -15,7 +15,7 @@ import (
 const refusalWindow = time.Minute
 
 // Reporter turns binding refusals into hub.token.bound_refused events,
-// rate-limited per token (34-REQ-10.4 to 10.8). Register it with Install.
+// rate-limited per token. Register it with Install.
 type Reporter struct {
 	emitter audit.Emitter
 	now     func() time.Time

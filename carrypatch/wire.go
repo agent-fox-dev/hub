@@ -26,7 +26,7 @@ import (
 //
 //   - CherryPick and MergeNoFF do NOT auto-abort on conflict. This allows the
 //     rebuild executor to run git rerere before deciding whether to abort or
-//     continue (16-REQ-3.1).
+//     continue.
 //   - Return signatures are adapted: CherryPick/MergeNoFF/HardReset return
 //     only error (no string).
 type GitRunnerAdapter struct {
@@ -45,7 +45,7 @@ func (a *GitRunnerAdapter) Run(ctx context.Context, args ...string) (string, err
 
 // CherryPick applies a single commit via cherry-pick. Unlike gitcmd.CherryPick,
 // it does NOT auto-abort on conflict — the repository is left in a conflicted
-// state so that the rebuild executor can invoke rerere (16-REQ-1.5, 16-REQ-3.1).
+// state so that the rebuild executor can invoke rerere.
 func (a *GitRunnerAdapter) CherryPick(ctx context.Context, commitSHA string) error {
 	_, err := a.runner.Run(ctx, "cherry-pick", "--end-of-options", commitSHA)
 	if err != nil {
@@ -255,7 +255,7 @@ func (s *SQLPatchStore) PurgeDeletedPatches(_ context.Context, olderThan string)
 	return result.RowsAffected()
 }
 
-// SetOriginSyncState writes the origin sync state for a single patch (20-REQ-7.4).
+// SetOriginSyncState writes the origin sync state for a single patch.
 func (s *SQLPatchStore) SetOriginSyncState(_ context.Context, patchID, state string, originSHA *string, syncedAt string) error {
 	_, err := s.DB.Exec(
 		`UPDATE patches SET origin_sync_state = ?, origin_sha = ?, origin_synced_at = ? WHERE id = ?`,
@@ -264,7 +264,7 @@ func (s *SQLPatchStore) SetOriginSyncState(_ context.Context, patchID, state str
 	return err
 }
 
-// ClearOriginSyncState clears the origin sync state for all patches of a workspace (20-REQ-7.4).
+// ClearOriginSyncState clears the origin sync state for all patches of a workspace.
 func (s *SQLPatchStore) ClearOriginSyncState(_ context.Context, workspaceSlug string) error {
 	_, err := s.DB.Exec(
 		`UPDATE patches SET origin_sync_state = NULL, origin_sha = NULL, origin_synced_at = NULL WHERE workspace_slug = ?`,
@@ -273,7 +273,7 @@ func (s *SQLPatchStore) ClearOriginSyncState(_ context.Context, workspaceSlug st
 	return err
 }
 
-// ClearOriginSyncStateForPatch clears the origin sync state for a single patch (20-REQ-7.4).
+// ClearOriginSyncStateForPatch clears the origin sync state for a single patch.
 func (s *SQLPatchStore) ClearOriginSyncStateForPatch(_ context.Context, patchID string) error {
 	_, err := s.DB.Exec(
 		`UPDATE patches SET origin_sync_state = NULL, origin_sha = NULL, origin_synced_at = NULL WHERE id = ?`,
@@ -283,7 +283,7 @@ func (s *SQLPatchStore) ClearOriginSyncStateForPatch(_ context.Context, patchID 
 }
 
 // ClearOriginSyncStateForMergedDeleted clears the origin sync state for all
-// patches of a workspace whose status is merged_upstream or deleted (20-REQ-7.2).
+// patches of a workspace whose status is merged_upstream or deleted.
 func (s *SQLPatchStore) ClearOriginSyncStateForMergedDeleted(_ context.Context, workspaceSlug string) error {
 	_, err := s.DB.Exec(
 		`UPDATE patches SET origin_sync_state = NULL, origin_sha = NULL, origin_synced_at = NULL
@@ -440,8 +440,8 @@ func DefaultSingleBranchFetch() SingleBranchFetchFunc {
 		if err == nil || errors.Is(err, git.NoErrAlreadyUpToDate) {
 			return nil
 		}
-		// 21-REQ-3.6: Classify "branch not found on origin" from a typed
-		// go-git error, never from error text alone.
+		// Classify "branch not found on origin" from a typed go-git error,
+		// never from error text alone.
 		var noMatch git.NoMatchingRefSpecError
 		if errors.As(err, &noMatch) {
 			return ErrBranchNotOnOrigin
@@ -453,7 +453,7 @@ func DefaultSingleBranchFetch() SingleBranchFetchFunc {
 // DefaultFetchOriginFunc returns a FetchFunc that fetches the 'origin' remote
 // of the trunk repository with refspec +refs/heads/*:refs/remotes/origin/*,
 // no tags, and pruning of tracking refs whose branch no longer exists on the
-// fork (20-REQ-2.1). An already-up-to-date result is success.
+// fork. An already-up-to-date result is success.
 func DefaultFetchOriginFunc() FetchFunc {
 	return func(ctx context.Context, repoPath string, auth transport.AuthMethod) error {
 		repo, err := git.PlainOpen(repoPath)
@@ -545,7 +545,8 @@ func workspaceBranch(db *sql.DB, slug string) string {
 }
 
 // BuildRebuildPayload assembles the rebuild job payload, capturing the
-// rebuild strategy and fail mode at enqueue time (16-PROP-3). Explicit
+// rebuild strategy and fail mode at enqueue time, so a later change of
+// the workspace variables does not affect a job already queued. Explicit
 // overrides win over the REBUILD_STRATEGY / REBUILD_FAIL_MODE workspace
 // variables; unset or invalid variables fall back to the defaults.
 func BuildRebuildPayload(slug, integrationBranch, submittedBy string, getVariable GetVariableFunc, strategyOverride, failModeOverride string) RebuildPayload {

@@ -2,8 +2,8 @@ package wsaccess
 
 import "sync/atomic"
 
-// BoundRefusal describes one request refused because of a token binding
-// (spec 34): which bound token, which workspace it is bound to, what it asked
+// BoundRefusal describes one request refused because of a token binding:
+// which bound token, which workspace it is bound to, what it asked
 // for and how it was answered. It never carries the token itself.
 type BoundRefusal struct {
 	// TokenID is the PAT's token id.

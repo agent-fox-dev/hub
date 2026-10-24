@@ -11,7 +11,6 @@ import (
 // hub adds under its workspace command.
 // It sends GET /api/v1/workspaces/:slug/patch-status and prints the
 // full status dashboard.
-// Requirements: 16-REQ-9.1
 func PatchStatusCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:           "patch-status <workspace-slug>",

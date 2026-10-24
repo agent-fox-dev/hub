@@ -98,7 +98,6 @@ func forgeSend(cmd *cobra.Command, method, path string, body any, print func() a
 // newIssueCreateCmd returns the 'issue create' subcommand.
 // It sends POST /api/v1/workspaces/:slug/issues with the flags that are set and prints the
 // issue the hub answers.
-// Requirements: 31-REQ-10.1, 31-REQ-10.3, 31-REQ-10.4, 31-REQ-10.5
 func newIssueCreateCmd() *cobra.Command {
 	var title, target string
 	var labels, assignees []string
@@ -141,7 +140,6 @@ func newIssueCreateCmd() *cobra.Command {
 // newIssueUpdateCmd returns the 'issue update' subcommand.
 // It sends PATCH /api/v1/workspaces/:slug/issues/:n with only the flags that are set, so
 // that --body "" clears the body, and prints the issue the hub answers.
-// Requirements: 31-REQ-10.1, 31-REQ-10.3, 31-REQ-10.4, 31-REQ-10.5
 func newIssueUpdateCmd() *cobra.Command {
 	var title, state, target string
 	var labels, assignees []string
@@ -195,7 +193,6 @@ func newIssueUpdateCmd() *cobra.Command {
 // newIssueCloseCmd returns the 'issue close' subcommand.
 // It sends POST /api/v1/workspaces/:slug/issues/:n/close, with {"comment": ...} when
 // --comment is given, and prints the closed issue the hub answers.
-// Requirements: 31-REQ-10.1, 31-REQ-10.4, 31-REQ-10.5
 func newIssueCloseCmd() *cobra.Command {
 	var comment, target string
 	cmd := &cobra.Command{
@@ -223,7 +220,6 @@ func newIssueCloseCmd() *cobra.Command {
 
 // newIssueCommentCmd returns the 'issue comment' subcommand.
 // It sends POST /api/v1/workspaces/:slug/issues/:n/comments and prints {"url": ...}.
-// Requirements: 31-REQ-10.1, 31-REQ-10.3, 31-REQ-10.4
 func newIssueCommentCmd() *cobra.Command {
 	return newCommentCmd("issue", "issues", "Comment on an issue on a workspace's forge")
 }
@@ -277,7 +273,6 @@ type unlabeledIssue struct {
 // newIssueLabelCmd returns the 'issue label' subcommand.
 // It sends POST /api/v1/workspaces/:slug/issues/:n/labels with the labels as a bare JSON
 // array. The hub answers 204, so the command prints a status document.
-// Requirements: 31-REQ-10.2, 31-REQ-10.4
 func newIssueLabelCmd() *cobra.Command {
 	var target string
 	cmd := &cobra.Command{
@@ -304,7 +299,6 @@ func newIssueLabelCmd() *cobra.Command {
 // It sends DELETE /api/v1/workspaces/:slug/issues/:n/labels/:label, the label
 // percent-encoded as a path segment. The hub answers 204, so the command prints a status
 // document.
-// Requirements: 31-REQ-10.2, 31-REQ-10.4
 func newIssueUnlabelCmd() *cobra.Command {
 	var target string
 	cmd := &cobra.Command{
@@ -330,7 +324,6 @@ func newIssueUnlabelCmd() *cobra.Command {
 // newPRCreateCmd returns the 'pr create' subcommand.
 // It sends POST /api/v1/workspaces/:slug/pulls and prints the pull request the hub answers.
 // The head is sent as given, so that owner:branch opens a pull request from a fork.
-// Requirements: 31-REQ-10.1, 31-REQ-10.3, 31-REQ-10.4, 31-REQ-10.5
 func newPRCreateCmd() *cobra.Command {
 	var title, head, base, target string
 	var draft bool
@@ -372,7 +365,6 @@ func newPRCreateCmd() *cobra.Command {
 
 // newPRCommentCmd returns the 'pr comment' subcommand.
 // It sends POST /api/v1/workspaces/:slug/pulls/:n/comments and prints {"url": ...}.
-// Requirements: 31-REQ-10.1, 31-REQ-10.3, 31-REQ-10.4
 func newPRCommentCmd() *cobra.Command {
 	return newCommentCmd("pull request", "pulls", "Comment on a pull request on a workspace's forge")
 }

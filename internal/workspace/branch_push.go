@@ -40,19 +40,17 @@ import (
 // most {"force": true}.
 const maxBranchPushBody = 64 << 10
 
-// branchPushDeadline is how long a push to origin may run (38-REQ-6.3). It is
+// branchPushDeadline is how long a push to origin may run. It is
 // fixed; tests shorten it.
 var branchPushDeadline = 2 * time.Minute
 
 // handleBranchPush handles POST /api/v1/workspaces/:slug/branches/:name/push:
 // it pushes one branch of the workspace's trunk to its origin.
-//
-// Requirements: 38-REQ-1 to 38-REQ-8
 func handleBranchPush(db *sql.DB) echo.HandlerFunc {
 	return func(c echo.Context) error {
-		// 38-REQ-2.1, 38-REQ-2.3: the scope is checked before the workspace
-		// is looked up. A PAT bound to another workspace never gets here: the
-		// binding guard answers 404 first (38-REQ-2.2).
+		// The scope is checked before the workspace is looked up. A PAT bound
+		// to another workspace never gets here: the binding guard answers 404
+		// first.
 		auth := apikit.GetAuthInfo(c)
 		if auth == nil {
 			return respondError(c, http.StatusUnauthorized, "authentication required")
@@ -62,20 +60,19 @@ func handleBranchPush(db *sql.DB) echo.HandlerFunc {
 				"PAT requires workspaces:write scope to push branches")
 		}
 
-		// 38-REQ-2.4 to 38-REQ-2.6: write access, as for every workspace write.
+		// Write access, as for every workspace write.
 		slug := c.Param("slug")
 		ws, _ := lookupWorkspaceForAuth(c, db, slug, auth, wsaccess.NeedWrite)
 		if ws == nil {
 			return nil // Response already written by lookupWorkspaceForAuth.
 		}
 
-		// 38-REQ-1.4, 38-REQ-1.5
 		force, err := parseBranchPushBody(c.Request().Body)
 		if err != nil {
 			return respondError(c, http.StatusBadRequest, scrub.Text("invalid request body: "+err.Error(), ""))
 		}
 
-		// 38-REQ-1.2, 38-REQ-3.1: the name is the segment as sent, decoded
+		// The name is the segment as sent, decoded
 		// once; a name git would not accept names no branch of the trunk.
 		name, err := branchPushName(c.Request())
 		if err == nil {
@@ -86,13 +83,12 @@ func handleBranchPush(db *sql.DB) echo.HandlerFunc {
 				scrub.Text(fmt.Sprintf("branch_not_found: %q is not a valid branch name: %v", name, err), ""), "branch_not_found")
 		}
 
-		// 38-REQ-3.2, 38-REQ-3.3
 		if ws.Status != "ready" {
 			return respondError(c, http.StatusBadRequest,
 				"workspace is not ready; push requires a ready workspace")
 		}
 
-		// 38-REQ-4.1, 38-REQ-4.2, 38-REQ-4.4, 38-REQ-4.8: the refusals that
+		// The refusals that
 		// read only the database and the workspace row come before the lock,
 		// so they answer the same whether the workspace is busy or not.
 		refusal, err := ownedBranchRefusal(db, ws, name, force)
@@ -103,7 +99,7 @@ func handleBranchPush(db *sql.DB) echo.HandlerFunc {
 			return refusal.write(c, "")
 		}
 
-		// 38-REQ-5.1, 38-REQ-5.2: every read of the trunk is serialized with
+		// Every read of the trunk is serialized with
 		// the other trunk operations; a rebuild between its phases does not
 		// hold the lock and does not block the push.
 		unlock, locked := wslock.TryLock(slug)
@@ -126,7 +122,7 @@ func pushBranchLocked(c echo.Context, db *sql.DB, ws *Workspace, name string, fo
 		return branchPushInternalError(c, slug, "opening the trunk", err, "")
 	}
 
-	// 38-REQ-5.6, 38-REQ-5.7: a push to hub's git server can move the
+	// A push to hub's git server can move the
 	// checked-out branch while the lock is held, and skips its worktree
 	// reset because of the lock; the lock holder restores the tree.
 	var secret string
@@ -134,7 +130,7 @@ func pushBranchLocked(c echo.Context, db *sql.DB, ws *Workspace, name string, fo
 		defer func() { restoreMovedWorktree(repo, slug, head.Hash(), secret) }()
 	}
 
-	// 38-REQ-4.5, 38-REQ-4.6: with no branch column the workspace's own
+	// With no branch column the workspace's own
 	// branch is the one HEAD points to, read under the lock, because a merge
 	// checks out another branch while it holds the lock.
 	own, err := ownBranch(repo, ws)
@@ -145,7 +141,6 @@ func pushBranchLocked(c echo.Context, db *sql.DB, ws *Workspace, name string, fo
 		return protectedBranchRefusal(name).write(c, "")
 	}
 
-	// 38-REQ-5.3, 38-REQ-5.4
 	ref, err := repo.Reference(plumbing.NewBranchReferenceName(name), true)
 	if errors.Is(err, plumbing.ErrReferenceNotFound) {
 		return respondErrorWithType(c, http.StatusNotFound,
@@ -156,7 +151,7 @@ func pushBranchLocked(c echo.Context, db *sql.DB, ws *Workspace, name string, fo
 	}
 	sha := ref.Hash().String()
 
-	// 38-REQ-6.1, 38-REQ-6.2: the credential the archive's push uses; a
+	// The credential the archive's push uses; a
 	// failure of the secrets store is hub's own and sends nothing.
 	gitAuth, err := resolveCloneAuth(secrets.NewStore(db), slug)
 	if err != nil {
@@ -168,7 +163,7 @@ func pushBranchLocked(c echo.Context, db *sql.DB, ws *Workspace, name string, fo
 	if force {
 		refSpec = "+" + refSpec
 	}
-	// 38-REQ-6.3, 38-REQ-8.5: the push, and the listing of a refused one,
+	// The push, and the listing of a refused one,
 	// run to their end when the caller goes away, within the deadline; the
 	// handler, and the lock with it, waits for them.
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(c.Request().Context()), branchPushDeadline)
@@ -177,7 +172,7 @@ func pushBranchLocked(c echo.Context, db *sql.DB, ws *Workspace, name string, fo
 	err = pushToOriginFn(ctx, repoPath, ws.GitURL, gitAuth, []config.RefSpec{refSpec}, force, progress)
 	var te *trunkError
 	if errors.As(err, &te) {
-		// 38-REQ-6.8: hub's own failure, not a push attempt.
+		// Hub's own failure, not a push attempt.
 		return branchPushInternalError(c, slug, "opening the trunk or finding its origin", err, secret)
 	}
 
@@ -191,7 +186,7 @@ func pushBranchLocked(c echo.Context, db *sql.DB, ws *Workspace, name string, fo
 		if failure.errorType == "non_fast_forward" {
 			failure.message = nonFastForwardMessage(ctx, ws.GitURL, gitAuth, name, own, force)
 		}
-		// 38-REQ-7.3: one warning per failed push attempt.
+		// One warning per failed push attempt.
 		slog.Warn("branch push: push to origin failed", "workspace", slug, "branch", name,
 			"error_type", failure.errorType, "error", scrub.Text(err.Error(), secret))
 		attempt.emit(c, "", failure.errorType)
@@ -213,7 +208,7 @@ type branchPushEvent struct {
 	secret          string
 }
 
-// emit records the push attempt (38-REQ-8.2, 38-REQ-8.3): result when it
+// emit records the push attempt: result when it
 // succeeded, errorType when it failed. It emits on the request's context with
 // its cancellation removed, so the event is recorded when the caller has gone
 // away. Every value is scrubbed; no message of the forge is recorded.
@@ -317,7 +312,7 @@ func (m *remoteMessages) String() string {
 	return strings.Join(strings.Fields(m.buf.String()), " ")
 }
 
-// classifyPushError maps a failed push attempt to its answer (38-REQ-6). go-git
+// classifyPushError maps a failed push attempt to its answer. go-git
 // marks authentication, authorization and a missing repository with transport
 // errors; its own fast-forward check and the forge's per-ref statuses are only
 // text, so those are matched on the text. messages are what the remote reported

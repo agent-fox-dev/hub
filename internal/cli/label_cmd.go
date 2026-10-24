@@ -27,7 +27,6 @@ func LabelCmd() *cobra.Command {
 // It sends POST /api/v1/workspaces/:slug/labels with the name and the flags that are set,
 // and prints the label the hub answers: the label as the forge holds it, 200, when it
 // exists already, which the hub never changes, and the label it created, 201.
-// Requirements: 31-REQ-10.1, 31-REQ-10.4, 31-REQ-10.5
 func newLabelCreateCmd() *cobra.Command {
 	var color, description, target string
 	cmd := &cobra.Command{

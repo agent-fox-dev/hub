@@ -10,7 +10,7 @@ import (
 	"github.com/txsvc/apikit"
 )
 
-// RevokeAndUnbindSlug retires the tokens bound to slug inside tx (spec 34):
+// RevokeAndUnbindSlug retires the tokens bound to slug inside tx:
 // it revokes those whose pats row is still live (revoked_at = apikit.NowUTC())
 // and deletes every binding row of slug. It returns the ids it revoked,
 // sorted, and an empty, non-nil slice when it revoked none. A slug without
@@ -132,7 +132,7 @@ func RevokeToken(db *sql.DB, tokenID string) error {
 	return err
 }
 
-// SweepBindings is one pass of the binding sweep (spec 34), in one
+// SweepBindings is one pass of the binding sweep, in one
 // transaction: for every slug with bindings but no workspaces row it revokes
 // the live tokens and deletes the bindings (as RevokeAndUnbindSlug does),
 // then it deletes the bindings whose token has no pats row. Bindings of

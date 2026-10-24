@@ -20,13 +20,13 @@ import (
 //
 // Returns the upstream HEAD SHA, the comparison outcome, and any error.
 func defaultSyncFetchAndCompareFn(ctx context.Context, repoPath string, auth transport.AuthMethod, branch *string, localHeadSHA string) (string, string, error) {
-	// Step 1: Open the local repository (13-REQ-4.E4).
+	// Step 1: Open the local repository.
 	repo, err := git.PlainOpen(repoPath)
 	if err != nil {
 		return "", "", fmt.Errorf("open repository at %s: %w", repoPath, err)
 	}
 
-	// Step 2: Fetch from upstream (13-REQ-4.1).
+	// Step 2: Fetch from upstream.
 	remote, err := repo.Remote("origin")
 	if err != nil {
 		return "", "", fmt.Errorf("get remote 'origin': %w", err)
@@ -39,7 +39,7 @@ func defaultSyncFetchAndCompareFn(ctx context.Context, repoPath string, auth tra
 
 	fetchErr := remote.FetchContext(ctx, fetchOpts)
 	if fetchErr != nil && !errors.Is(fetchErr, git.NoErrAlreadyUpToDate) {
-		// 13-REQ-4.E1: Check for shallow clone issues and retry with unshallow.
+		// Check for shallow clone issues and retry with unshallow.
 		if isShallowError(fetchErr) {
 			log.Printf("WARNING: fetch failed due to shallow clone for %s, retrying with full history", repoPath)
 			fetchOpts.Depth = 0 // full history (unshallow)
@@ -60,7 +60,7 @@ func defaultSyncFetchAndCompareFn(ctx context.Context, repoPath string, auth tra
 	}
 	upstreamHeadSHA := upstreamRef.Hash().String()
 
-	// Step 4: Compare upstream HEAD with local HEAD (13-REQ-4.2, 4.3, 4.4).
+	// Step 4: Compare upstream HEAD with local HEAD.
 	if localHeadSHA == "" || localHeadSHA == upstreamHeadSHA {
 		// No local HEAD or they're equal → up to date.
 		return upstreamHeadSHA, "up_to_date", nil
@@ -124,11 +124,11 @@ func defaultSyncUpdateLocalRefFn(repoPath string, branch *string, newSHA string)
 		return fmt.Errorf("update ref %s: %w", refName, err)
 	}
 
-	// Best-effort working tree reset (14-REQ-14.1, 14-REQ-14.2).
+	// Best-effort working tree reset.
 	// After the ref is advanced, reset the on-disk working tree to match
 	// the new HEAD so that tools reading files see the latest content.
 	// If the reset fails, the ref update is already committed — log the
-	// error and return nil (14-PROP-4).
+	// error and return nil.
 	wt, wtErr := repo.Worktree()
 	if wtErr != nil {
 		log.Printf("ERROR: worktree reset after sync fast-forward: failed to get worktree for %s: %v", repoPath, wtErr)

@@ -35,7 +35,7 @@ CREATE TABLE IF NOT EXISTS workspaces (
 // syncFieldDDL contains ALTER TABLE statements that add the sync-related
 // columns to an existing workspaces table. Each statement is executed
 // individually; "duplicate column name" errors are logged and treated as
-// no-ops so the migration is idempotent (13-REQ-1.E1).
+// no-ops so the migration is idempotent.
 var syncFieldDDL = []string{
 	`ALTER TABLE workspaces ADD COLUMN upstream_head_sha TEXT`,
 	`ALTER TABLE workspaces ADD COLUMN last_sync_at TEXT`,
@@ -45,7 +45,7 @@ var syncFieldDDL = []string{
 // carryPatchFieldDDL contains ALTER TABLE statements that add the three
 // carry-patch columns to an existing workspaces table. Each statement is
 // executed individually; existing columns are skipped so the migration is
-// idempotent (15-REQ-1.E1).
+// idempotent.
 var carryPatchFieldDDL = []string{
 	`ALTER TABLE workspaces ADD COLUMN workspace_mode TEXT NOT NULL DEFAULT 'standard'`,
 	`ALTER TABLE workspaces ADD COLUMN upstream_url TEXT`,
@@ -54,7 +54,7 @@ var carryPatchFieldDDL = []string{
 	`ALTER TABLE workspaces ADD COLUMN settings TEXT NOT NULL DEFAULT '{}'`,
 }
 
-// createPatchesTableSQL is the DDL for the patches table (15-REQ-7.1).
+// createPatchesTableSQL is the DDL for the patches table.
 const createPatchesTableSQL = `
 CREATE TABLE IF NOT EXISTS patches (
 	id              TEXT PRIMARY KEY,
@@ -90,7 +90,7 @@ var patchFieldDDL = []string{
 // The ALTER TABLE statements are idempotent: if a column already exists
 // (e.g., because the table was freshly created with the column, or the
 // migration was previously applied), the DDL error is logged and startup
-// continues (13-REQ-1.E1).
+// continues.
 func InitSchema(db *sql.DB) error {
 	if db == nil {
 		return fmt.Errorf("database is nil")
@@ -102,7 +102,7 @@ func InitSchema(db *sql.DB) error {
 
 	// Apply sync field migrations idempotently. Query existing columns first
 	// so we only run ALTER TABLE for genuinely missing columns, avoiding
-	// noisy "duplicate column" errors on every startup (13-REQ-1.E1).
+	// noisy "duplicate column" errors on every startup.
 	existing, err := existingColumns(db, "workspaces")
 	if err != nil {
 		return fmt.Errorf("sync schema migration: %w", err)
@@ -120,7 +120,7 @@ func InitSchema(db *sql.DB) error {
 		}
 	}
 
-	// Apply carry-patch field migrations idempotently (15-REQ-1.1).
+	// Apply carry-patch field migrations idempotently.
 	// Re-query existing columns to account for columns that may have been
 	// added by the CREATE TABLE DDL above (fresh database case).
 	existing, err = existingColumns(db, "workspaces")
@@ -150,7 +150,7 @@ func InitSchema(db *sql.DB) error {
 		return fmt.Errorf("status schema migration failed: %w", err)
 	}
 
-	// Create the patches table (15-REQ-7.1).
+	// Create the patches table.
 	if _, err := db.Exec(createPatchesTableSQL); err != nil {
 		return fmt.Errorf("failed to create patches table: %w", err)
 	}
@@ -173,8 +173,8 @@ func InitSchema(db *sql.DB) error {
 		}
 	}
 
-	// The token workspace bindings (spec 33), which deleteWorkspace reads to
-	// retire a deleted workspace's tokens (spec 34).
+	// The token workspace bindings, which deleteWorkspace reads to retire a
+	// deleted workspace's tokens.
 	if err := wsaccess.InitBindingSchema(db); err != nil {
 		return fmt.Errorf("token binding schema init: %w", err)
 	}

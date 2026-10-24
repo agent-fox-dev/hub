@@ -70,7 +70,6 @@ func PRCmd() *cobra.Command {
 // newForgeStatusCmd returns the 'forge status' subcommand.
 // It sends GET /api/v1/workspaces/:slug/forge and prints the response, how the hub
 // reaches the forge, as one JSON document. The hub sends nothing to the forge for it.
-// Requirements: 30-REQ-10.1
 func newForgeStatusCmd() *cobra.Command {
 	return newForgeReadCmd("status <workspace-slug>", "Show how the hub reaches the forge of a workspace", 1, false,
 		func(args []string) string { return apiPath("workspaces", args[0], "forge") })
@@ -80,7 +79,6 @@ func newForgeStatusCmd() *cobra.Command {
 // It sends GET /api/v1/workspaces/:slug/issues with each flag that is set as a query
 // parameter, repeated --label values joined with commas, and prints the issues. The values
 // are sent as given: the hub validates them.
-// Requirements: 30-REQ-10.2
 func newIssueListCmd() *cobra.Command {
 	var state, assignee, limit, target string
 	var labels []string
@@ -125,7 +123,6 @@ func newIssueListCmd() *cobra.Command {
 
 // newIssueGetCmd returns the 'issue get' subcommand.
 // It sends GET /api/v1/workspaces/:slug/issues/:n and prints the issue with its comments.
-// Requirements: 30-REQ-10.3
 func newIssueGetCmd() *cobra.Command {
 	return newForgeReadCmd("get <workspace-slug> <number>", "Show an issue with its comments", 2, true,
 		func(args []string) string { return apiPath("workspaces", args[0], "issues", args[1]) })
@@ -134,7 +131,6 @@ func newIssueGetCmd() *cobra.Command {
 // newPRReadCmd returns a 'pr' subcommand that reads one pull request: the pull request
 // itself for an empty what, else its state, files, checks or reviews.
 // It sends GET /api/v1/workspaces/:slug/pulls/:n[/what].
-// Requirements: 30-REQ-10.3
 func newPRReadCmd(name, short, what string) *cobra.Command {
 	return newForgeReadCmd(name+" <workspace-slug> <number>", short, 2, true, func(args []string) string {
 		if what == "" {

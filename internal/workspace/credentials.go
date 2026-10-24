@@ -31,8 +31,8 @@ var validateCredentialsFn ValidateCredentialsFuncType
 
 // CompensatingDeleteFuncType is the signature for the function that performs
 // a compensating DELETE on a workspace row when CreateSecrets fails after a
-// successful workspace INSERT (09-REQ-4.2). Tests replace it to simulate
-// the double-failure scenario (09-REQ-4.3).
+// successful workspace INSERT. Tests replace it to simulate the
+// double-failure scenario.
 type CompensatingDeleteFuncType func(db *sql.DB, slug string) error
 
 // compensatingDeleteFn is the injectable function used by handleCreateWorkspace

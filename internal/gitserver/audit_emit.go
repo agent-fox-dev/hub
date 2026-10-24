@@ -12,9 +12,8 @@ import (
 
 // emitGitPushAudit emits a hub.git.push audit event after a successful
 // receive-pack operation. If the package-level emitter is nil, emission
-// is silently skipped (18-REQ-5.3, 18-PROP-7). If Emit returns an error,
-// the error is logged and the push response is unaffected (18-REQ-5.E1,
-// 18-PROP-1).
+// is silently skipped. If Emit returns an error, the error is logged and
+// the push response is unaffected.
 func emitGitPushAudit(c echo.Context, slug string, commands []*packp.Command) {
 	if defaultAuditEmitter == nil {
 		return

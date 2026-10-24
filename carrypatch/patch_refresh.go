@@ -42,7 +42,7 @@ type PatchRefreshOutcome struct {
 }
 
 // RefStage names the step of the patch refresh that failed for a branch.
-// The zero value is a failed ref write, the case 20-REQ-4.3 specifies.
+// The zero value is a failed ref write.
 type RefStage int
 
 const (
@@ -301,8 +301,8 @@ func lookupRefSHA(ctx context.Context, runner GitRunner, ref string) (sha string
 // casUpdateRef writes ref with a compare-and-swap: git update-ref <ref>
 // <newSHA> <oldSHA> fails unless ref currently holds oldSHA. zeroSHA as oldSHA
 // means create: it fails if ref already exists. This is the only place that
-// runs the three-argument update-ref; the patch refresh (spec 20) and the
-// reset-to-origin (spec 23) both write refs through it.
+// runs the three-argument update-ref; the patch refresh and the
+// reset-to-origin both write refs through it.
 func casUpdateRef(ctx context.Context, runner GitRunner, ref, newSHA, oldSHA string) error {
 	_, err := runner.Run(ctx, "update-ref", ref, newSHA, oldSHA)
 	return err

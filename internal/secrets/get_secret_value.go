@@ -16,8 +16,6 @@ import (
 //
 // This method is internal-only and must never be exposed via any HTTP endpoint.
 // Secret values must never be returned through the API.
-//
-// Requirements: 09-REQ-5.1, 09-REQ-5.2, 09-REQ-5.3
 func (s *Store) GetSecretValue(ownerType, ownerID, key string) (string, error) {
 	if key == "" {
 		return "", fmt.Errorf("key must not be empty")

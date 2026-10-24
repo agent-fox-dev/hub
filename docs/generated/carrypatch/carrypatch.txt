@@ -107,17 +107,17 @@ func CarryPatchPermissions() []apikit.Permission
 
 func CleanupStaleRebuildWorktrees(ctx context.Context, workspaceRoot string, logger *slog.Logger)
     CleanupStaleRebuildWorktrees removes the rebuild worktrees left behind by
-    a hub that died mid-run (01-REQ-8.3). For every <workspaceRoot>/*/rebuild
-    directory it deletes the directory and then runs `git worktree prune` in the
+    a hub that died mid-run. For every <workspaceRoot>/*/rebuild directory
+    it deletes the directory and then runs `git worktree prune` in the
     matching <workspaceRoot>/<slug>/trunk, which drops the registrations whose
     directories are gone. Each removal is logged at info level with the slug and
     path.
 
-    It is meant to run once at startup, before the job queue starts,
-    so that no rebuild is using one of those directories. It never touches the
-    trunk's checkout and never fails: a missing trunk is skipped with a warning
-    (01-REQ-8.4), and removal or prune errors are logged and the remaining
-    workspaces are still processed (01-REQ-8.5).
+    It is meant to run once at startup, before the job queue starts, so that
+    no rebuild is using one of those directories. It never touches the trunk's
+    checkout and never fails: a missing trunk is skipped with a warning,
+    and removal or prune errors are logged and the remaining workspaces are
+    still processed.
 
 func FormatGroupKey(workspaceSlug, integrationBranch string) string
     FormatGroupKey returns the group_key for rebuild job serialization.
@@ -126,17 +126,16 @@ func NewCarryPatchSyncHook(cfg SyncAPIConfig) func(c echo.Context, slug, repoPat
     NewCarryPatchSyncHook returns a function suitable for use with
     workspace.RegisterCarryPatchSyncHook. It wraps the carry-patch sync logic so
     that it can be called from the workspace sync handler when the workspace is
-    in carry_patch mode (16-REQ-5).
+    in carry_patch mode.
 
     The returned function receives the Echo context, workspace slug,
     and repo path from the workspace sync handler. It performs upstream fetch,
     merge detection, and auto-rebuild enqueue, and returns the carry-patch
-    response fields for the caller to merge into the standard sync response,
-    as 16-REQ-5.1 requires. It does not write a success body of its own.
+    response fields for the caller to merge into the standard sync response.
+    It does not write a success body of its own.
 
     A (nil, false, nil) return means the workspace turned out not to be in
-    carry_patch mode, and the caller should apply standard sync behaviour
-    (16-REQ-5.E4).
+    carry_patch mode, and the caller should apply standard sync behaviour.
 
 func NewGitRunnerFactory() func(repoPath string) (GitRunner, error)
     NewGitRunnerFactory returns a factory function suitable for
@@ -148,8 +147,8 @@ func ParsePatchBranchSource(getVariable GetVariableFunc, slug string) string
     an unset variable, or a lookup error. This is the shared helper that both
     sync_handlers.go and the branch resolver use.
 
-    Rules (20-REQ-1.2 / 20-REQ-1.3): only the exact, case-sensitive string
-    "origin" selects origin mode. Everything else means hub.
+    Only the exact, case-sensitive string "origin" selects origin mode.
+    Everything else means hub.
 
 func PurgeExpiredDeletedPatches(ctx context.Context, store PatchStore) (int64, error)
     PurgeExpiredDeletedPatches permanently removes patches that have been in
@@ -243,9 +242,9 @@ func NewBranchResolverHook(
     NewBranchResolverHook returns the BranchResolverFunc that resolves a branch
     name in a workspace trunk.
 
-    PATCH_BRANCH_SOURCE is read once per request (21-REQ-1.5): when the context
-    carries a wsaccess request scope, the first resolution in that request reads
-    the variable and every later resolution in the same request (the remaining
+    PATCH_BRANCH_SOURCE is read once per request: when the context carries
+    a wsaccess request scope, the first resolution in that request reads the
+    variable and every later resolution in the same request (the remaining
     elements of a batch) reuses that value. Without a request scope each call
     reads the variable itself.
 
@@ -327,7 +326,7 @@ func DefaultFetchOriginFunc() FetchFunc
     DefaultFetchOriginFunc returns a FetchFunc that fetches the 'origin' remote
     of the trunk repository with refspec +refs/heads/*:refs/remotes/origin/*,
     no tags, and pruning of tracking refs whose branch no longer exists on the
-    fork (20-REQ-2.1). An already-up-to-date result is success.
+    fork. An already-up-to-date result is success.
 
 type GetVariableFunc func(scope, slug, key string) (string, error)
     GetVariableFunc reads a workspace setting of the host by the name the
@@ -365,7 +364,7 @@ type GitRunnerAdapter struct {
 
       - CherryPick and MergeNoFF do NOT auto-abort on conflict. This allows the
         rebuild executor to run git rerere before deciding whether to abort or
-        continue (16-REQ-3.1).
+        continue.
       - Return signatures are adapted: CherryPick/MergeNoFF/HardReset return
         only error (no string).
 
@@ -378,8 +377,7 @@ func (a *GitRunnerAdapter) Cherry(ctx context.Context, upstream, head string) ([
 func (a *GitRunnerAdapter) CherryPick(ctx context.Context, commitSHA string) error
     CherryPick applies a single commit via cherry-pick. Unlike
     gitcmd.CherryPick, it does NOT auto-abort on conflict — the repository is
-    left in a conflicted state so that the rebuild executor can invoke rerere
-    (16-REQ-1.5, 16-REQ-3.1).
+    left in a conflicted state so that the rebuild executor can invoke rerere.
 
 func (a *GitRunnerAdapter) HardReset(ctx context.Context, ref string) error
     HardReset runs 'git reset --hard <ref>'.
@@ -485,7 +483,7 @@ type PatchResult struct {
 	NewHeadSHA    *string  `json:"new_head_sha"`
 	ConflictFiles []string `json:"conflict_files,omitempty"`
 	// SourceSHA is the commit the patch branch resolved to at
-	// refs/heads/<branch> when patch application began (01-REQ-6.6). It is
+	// refs/heads/<branch> when patch application began. It is
 	// the only reference to the branch used during the run.
 	SourceSHA string `json:"source_sha,omitempty"`
 }
@@ -598,7 +596,7 @@ func NewPostPushRebuildHook(
 
     When mirror dependencies are supplied (non-nil ResolveAuth, non-empty
     WorkspaceRoot, non-nil Audit), the hook also mirrors registered patch
-    branches to the fork in hub mode after the rebuild enqueue (22-REQ-6).
+    branches to the fork in hub mode after the rebuild enqueue.
 
     The hook is called asynchronously after a successful push; errors are logged
     but do not affect the push response.
@@ -755,7 +753,8 @@ type RebuildPayload struct {
 
 func BuildRebuildPayload(slug, integrationBranch, submittedBy string, getVariable GetVariableFunc, strategyOverride, failModeOverride string) RebuildPayload
     BuildRebuildPayload assembles the rebuild job payload, capturing the rebuild
-    strategy and fail mode at enqueue time (16-PROP-3). Explicit overrides win
+    strategy and fail mode at enqueue time, so a later change of the workspace
+    variables does not affect a job already queued. Explicit overrides win
     over the REBUILD_STRATEGY / REBUILD_FAIL_MODE workspace variables; unset or
     invalid variables fall back to the defaults.
 
@@ -842,18 +841,17 @@ func (s *RecoveryService) RunReset(ctx context.Context, slug string, patch Reset
     the appropriate action.
 
     A hard-reset failure after the branch ref has moved is not fatal.
-    The ref move is the reset's effect: the persisted state, the rebuild
-    and the audit event all describe it, and a retry would find the
-    tips equal and answer action "none", so an error would not lead the
-    operator to a repaired work tree. The failure is logged at error level
-    instead, with the slug and branch, and the reset reports the move.
-    The patch refresh in spec 20 keeps the same outcome for the same
-    failure and additionally reports the failed reset to its caller; see
-    docs/errata/23_patch_divergence_recovery_divergences.md.
+    The ref move is the reset's effect: the persisted state, the rebuild and
+    the audit event all describe it, and a retry would find the tips equal and
+    answer action "none", so an error would not lead the operator to a repaired
+    work tree. The failure is logged at error level instead, with the slug and
+    branch, and the reset reports the move. The patch refresh of the sync keeps
+    the same outcome for the same failure and additionally reports the failed
+    reset to its caller (ADR 01).
 
 type RefStage int
     RefStage names the step of the patch refresh that failed for a branch.
-    The zero value is a failed ref write, the case 20-REQ-4.3 specifies.
+    The zero value is a failed ref write.
 
 const (
 	// RefStageWrite: an update-ref (including a lost compare-and-swap) failed.
@@ -975,16 +973,15 @@ func NewSQLPatchStore(db *sql.DB) *SQLPatchStore
 
 func (s *SQLPatchStore) ClearOriginSyncState(_ context.Context, workspaceSlug string) error
     ClearOriginSyncState clears the origin sync state for all patches of a
-    workspace (20-REQ-7.4).
+    workspace.
 
 func (s *SQLPatchStore) ClearOriginSyncStateForMergedDeleted(_ context.Context, workspaceSlug string) error
-    ClearOriginSyncStateForMergedDeleted clears the origin sync state for
-    all patches of a workspace whose status is merged_upstream or deleted
-    (20-REQ-7.2).
+    ClearOriginSyncStateForMergedDeleted clears the origin sync state for all
+    patches of a workspace whose status is merged_upstream or deleted.
 
 func (s *SQLPatchStore) ClearOriginSyncStateForPatch(_ context.Context, patchID string) error
-    ClearOriginSyncStateForPatch clears the origin sync state for a single patch
-    (20-REQ-7.4).
+    ClearOriginSyncStateForPatch clears the origin sync state for a single
+    patch.
 
 func (s *SQLPatchStore) CompactPositions(_ context.Context, workspaceSlug string) error
     CompactPositions re-numbers the non-deleted patches of a workspace to
@@ -1021,8 +1018,7 @@ func (s *SQLPatchStore) RestorePatch(_ context.Context, patchID string) error
     clears deleted_at.
 
 func (s *SQLPatchStore) SetOriginSyncState(_ context.Context, patchID, state string, originSHA *string, syncedAt string) error
-    SetOriginSyncState writes the origin sync state for a single patch
-    (20-REQ-7.4).
+    SetOriginSyncState writes the origin sync state for a single patch.
 
 func (s *SQLPatchStore) SoftDeletePatch(_ context.Context, patchID string) error
     SoftDeletePatch transitions a patch to status='deleted' and sets deleted_at.
@@ -1065,16 +1061,16 @@ type SyncAPIConfig struct {
 
 	// FetchOrigin fetches the origin remote of the trunk repository.
 	// Used when PATCH_BRANCH_SOURCE=origin. Nil means origin fetch is
-	// not configured (20-REQ-2.6).
+	// not configured, which is an error for an origin-mode sync.
 	FetchOrigin FetchFunc
 
 	// ResolveOriginAuth resolves credentials for the origin remote.
-	// Used when PATCH_BRANCH_SOURCE=origin (20-REQ-2.1).
+	// Used when PATCH_BRANCH_SOURCE=origin.
 	ResolveOriginAuth ResolveAuthFunc
 
 	// Audit is the optional audit event emitter. When non-nil, origin-mode
 	// syncs emit hub.patch.sync and hub.patch.replace events. When nil,
-	// audit emission is silently skipped (20-REQ-8.6).
+	// audit emission is silently skipped.
 	Audit Emitter
 }
     SyncAPIConfig holds dependencies for carry-patch sync extension endpoints.

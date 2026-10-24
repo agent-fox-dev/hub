@@ -24,7 +24,7 @@ import (
 // group's mount point.
 const mintRouteSuffix = "/workspaces/:slug/tokens"
 
-// handleMint serves POST /workspaces/:slug/tokens (34-REQ-1, 34-REQ-2): it
+// handleMint serves POST /workspaces/:slug/tokens: it
 // checks the caller in order, then mints the token through apikit's own
 // POST <mount>/user/tokens, served in-process, so apikit's validation, expiry
 // and privilege-escalation rules apply unchanged. Hub does no tokens:manage
@@ -44,7 +44,7 @@ func handleMint(cfg Config) echo.HandlerFunc {
 		}
 		slug := c.Param("slug")
 		// The owner, not merely a caller who may read the workspace, may mint
-		// for it (spec 34, Decision 4): to a member of its org it is private.
+		// for it: to a member of its org it is private.
 		ws, code, msg := wsaccess.AuthorizeWorkspace(cfg.DB, auth, slug, wsaccess.NeedPrivate)
 		if code != 0 {
 			return wsaccess.WriteRefusal(c, code, msg)
@@ -116,8 +116,7 @@ type mintResponse struct {
 // msgBindFailed is the answer when a minted token could not be bound.
 const msgBindFailed = "failed to bind the token to the workspace"
 
-// finishMint answers the caller from apikit's recorded answer
-// (34-REQ-2.3 to 34-REQ-3.7). Anything but a 201 is passed through unchanged.
+// finishMint answers the caller from apikit's recorded answer. Anything but a 201 is passed through unchanged.
 // A 201 is bound to the workspace; when that fails for any reason the token
 // is revoked before the answer, so no live unbound token is ever left. No
 // path logs the token, apikit's body or the Authorization header.
@@ -167,7 +166,7 @@ func finishMint(c echo.Context, cfg Config, auth *apikit.AuthInfo, answer *httpt
 	})
 }
 
-// emitBind records hub.token.bind for a committed binding (34-REQ-9.2), on a
+// emitBind records hub.token.bind for a committed binding, on a
 // context the caller's disconnect does not cancel. A nil emitter skips it; an
 // emit error is logged and does not change the answer.
 func emitBind(c echo.Context, cfg Config, auth *apikit.AuthInfo, slug string, m minted) {

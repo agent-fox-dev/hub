@@ -446,7 +446,7 @@ type ForceCloseResult struct {
 }
 
 // ---------------------------------------------------------------------------
-// Audit ingestion request/response types (spec 17)
+// Audit ingestion request/response types
 // ---------------------------------------------------------------------------
 
 // PostEventRequest is the JSON body for POST /workspaces/:slug/runs/:run_id/events.
