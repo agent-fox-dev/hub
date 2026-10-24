@@ -59,7 +59,7 @@ func TestBranchResolver_LocalAndTrackingWithoutOrigin(t *testing.T) {
 	if method, err := r.resolve(ctx, "ws", "tracked"); err != nil || method != ResolutionOriginTracking || refOf(r.f.trunk, "tracked") != tip {
 		t.Errorf("tracking = %s, %v, ref=%s", method, err, refOf(r.f.trunk, "tracked"))
 	}
-	if out := runGit(t, r.f.trunk, "config", "--get-regexp", "branch\\.tracked\\..*"); out != "" {
+	if out, err := gitErr(r.f.trunk, "config", "--get-regexp", "branch\\.tracked\\..*"); err == nil && out != "" {
 		t.Errorf("tracking configuration written: %s", out)
 	}
 	if method, err := r.resolve(ctx, "ws", "tracked"); err != nil || method != ResolutionLocal {

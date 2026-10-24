@@ -311,6 +311,7 @@ func TestSync_Refusals(t *testing.T) {
 	e.gitErr = errors.New("no runner")
 	e.wantErr(e.do(http.MethodPost, syncPath, "", alice), http.StatusInternalServerError)
 	e.gitErr = nil
+	e.fake.run = hubSync(t, "old", "new").fake.run
 	var upstream sql.NullString
 	if err := e.db.QueryRow(`SELECT upstream_head_sha FROM workspaces WHERE slug = 'ws'`).Scan(&upstream); err != nil || upstream.String != "old" {
 		t.Error("a refused sync changed upstream_head_sha")

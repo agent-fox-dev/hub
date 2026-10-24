@@ -10,8 +10,6 @@ import (
 	git "github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/transport"
-
-	"github.com/agent-fox-dev/aflib/jobqueue"
 )
 
 // pushEnv is a carry_patch workspace "ws" whose trunk's origin is a real
@@ -208,7 +206,7 @@ func TestStripUserinfo_SingleURL(t *testing.T) {
 		"https://alice:tok@github.com/o/r.git": "https://github.com/o/r.git",
 		"https://github.com/o/r.git":           "https://github.com/o/r.git",
 		"ssh://git@host:22/r":                  "ssh://host:22/r",
-		"http://a:b@h/x with space":            "http://h/x with space",
+		"http://a:b@h/x with space":            "http://h/x%20with%20space",
 	}
 	for in, want := range cases {
 		if got := stripUserinfo(in); got != want {
@@ -342,7 +340,9 @@ func TestMirror_FailuresAreAuditedPerBranch(t *testing.T) {
 	seedPatch(t, p.db, "ws", "p4", "feature/b", 2, "conflict")
 	p.f.localBranch(t, "feature/b", "b.txt", "b\n")
 
-	deps.ResolveAuth = func(string) (transport.AuthMethod, error) { return nil, errors.New("vault at https://u:pw@vault/x down") }
+	deps.ResolveAuth = func(string) (transport.AuthMethod, error) {
+		return nil, errors.New("vault at https://u:pw@vault/x down")
+	}
 	mirrorBranches(p.db, "ws", []string{"feature/a", "feature/b"}, deps, varsOf(p.vars, nil), logger)
 	events := emitter.ofType(EventPatchMirrorFailed)
 	if len(events) != 2 || events[0].Metadata["branch_name"] != "feature/a" || events[1].Metadata["branch_name"] != "feature/b" || events[0].ActorType != "system" || events[0].Action != "mirror" {
@@ -368,5 +368,4 @@ func TestMirror_FailuresAreAuditedPerBranch(t *testing.T) {
 		t.Error("emitter failure not logged")
 	}
 	emitMirrorFailedEvent(nil, "ws", "feature/a", "x", logger)
-	_ = jobqueue.StatusQueued
 }

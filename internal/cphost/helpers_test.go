@@ -41,7 +41,6 @@ func (r *hubRecorder) Emit(_ context.Context, ev audit.HubEvent) error {
 	return r.err
 }
 
-// nopEmitter is a module emitter that drops events.
 type nopEmitter struct{}
 
 func (nopEmitter) Emit(context.Context, carrypatch.Event) error { return nil }
@@ -108,8 +107,7 @@ func newHub(t *testing.T) *hub {
 		t.Fatal(err)
 	}
 
-	owner := testutil.SeedUser(t, db, "owner")
-	member := testutil.SeedUser(t, db, "member")
+	owner, member := testutil.SeedUser(t, db, "owner"), testutil.SeedUser(t, db, "member")
 	org := testutil.SeedOrg(t, db, "org-1", "myorg", owner)
 	testutil.SeedOrgMember(t, db, org, member)
 
@@ -122,12 +120,10 @@ func newHub(t *testing.T) *hub {
 	runGit(t, trunk, "remote", "add", "origin", origin)
 	runGit(t, trunk, "push", "-q", "origin", "main")
 
-	testutil.SeedWorkspace(t, db, testutil.Workspace{Slug: "myws", OwnerID: owner, OrgID: org, GitURL: origin,
-		WorkspaceMode: "carry_patch", IntegrationBranch: "main-int"})
+	testutil.SeedWorkspace(t, db, testutil.Workspace{Slug: "myws", OwnerID: owner, OrgID: org, GitURL: origin, WorkspaceMode: "carry_patch", IntegrationBranch: "main-int"})
 	testutil.Exec(t, db, `UPDATE workspaces SET clone_status = 'ready' WHERE slug = 'myws'`)
 	now := time.Now().UTC().Format(time.RFC3339)
-	testutil.Exec(t, db, `INSERT INTO patches (id, workspace_slug, branch_name, position, status, added_at, updated_at)
-		VALUES ('p1-id', 'myws', 'p1', 1, 'active', ?, ?)`, now, now)
+	testutil.Exec(t, db, `INSERT INTO patches (id, workspace_slug, branch_name, position, status, added_at, updated_at) VALUES ('p1-id', 'myws', 'p1', 1, 'active', ?, ?)`, now, now)
 	return &hub{db: db, owner: owner, member: member, queue: queue, root: root, trunk: trunk, origin: origin}
 }
 

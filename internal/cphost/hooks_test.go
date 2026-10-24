@@ -7,9 +7,8 @@ import (
 	"github.com/agent-fox-dev/hub/internal/testutil"
 )
 
-// With PATCH_BRANCH_SOURCE=origin the module's pre-receive hook, adapted to
-// the git server, refuses a push to a registered patch branch: the ref is not
-// written, while an unregistered branch in the same push goes through.
+// In origin mode the module's pre-receive hook, adapted to the git server, refuses
+// a push to a registered patch branch; an unregistered branch pushed with it lands.
 func TestPreReceive_RejectsRegisteredBranchInOriginMode(t *testing.T) {
 	h := newHub(t)
 	clone := h.clone(t, variables{"PATCH_BRANCH_SOURCE": "origin"})
@@ -29,9 +28,8 @@ func TestPreReceive_RejectsRegisteredBranchInOriginMode(t *testing.T) {
 	}
 }
 
-// In hub mode with PUSH_PATCHES_TO_ORIGIN=true the module's post-push hook,
-// adapted to the git server, runs after the push: it enqueues a rebuild and
-// mirrors the patch branch to the fork.
+// In hub mode with PUSH_PATCHES_TO_ORIGIN the module's post-push hook, adapted to
+// the git server, runs after the push: it enqueues a rebuild and mirrors the branch.
 func TestPostPush_EnqueuesRebuildAndMirrorsToOrigin(t *testing.T) {
 	h := newHub(t)
 	clone := h.clone(t, variables{"PUSH_PATCHES_TO_ORIGIN": "true"})

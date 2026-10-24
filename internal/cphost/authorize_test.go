@@ -10,9 +10,8 @@ import (
 	"github.com/agent-fox-dev/hub/internal/testutil"
 )
 
-// The module's access rule is the hub's: no credential is 401, owners and
-// admin tokens read and write, org members read but may not write, and a
-// workspace the caller may not see (or that does not exist) is 404.
+// The module's access rule is the hub's: no credential is 401, owners and admin
+// tokens write, org members only read (403), anything else is 404.
 func TestAuthorize_AppliesHubWorkspaceAccessRule(t *testing.T) {
 	h := newHub(t)
 	tests := []struct {

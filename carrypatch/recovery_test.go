@@ -23,14 +23,8 @@ type recovery struct {
 	root  string
 	vars  map[string]string
 	svc   *RecoveryService
-	db    *sqlDB
-	q     *jobqueue.Queue
 	wraps func(GitRunner) GitRunner
 }
-
-type sqlDB = struct{ *openedDB }
-
-type openedDB struct{}
 
 func newRecovery(t *testing.T) (*recovery, *RecoveryService) {
 	t.Helper()
@@ -185,7 +179,6 @@ func TestRecovery_RunReset_Actions(t *testing.T) {
 // anything else.
 func TestRecovery_RunReset_Failures(t *testing.T) {
 	r, svc := newRecovery(t)
-	ctx := context.Background()
 	forkTip := r.f.pushBranch(t, "feat", "f.txt", "fork\n")
 	local := r.f.localBranch(t, "feat", "l.txt", "local\n")
 
@@ -427,7 +420,7 @@ func TestPurgeExpiredDeletedPatchesWithRefs(t *testing.T) {
 
 	// A row restored between the listing and the delete is not purged, but
 	// its backup is gone by then.
-	racing := &racingStore{PatchStore: store, db: db}
+	racing := &racingStore{PatchStore: store}
 	n, err := PurgeExpiredDeletedPatchesWithRefs(ctx, racing, r.root, NewGitRunnerFactory())
 	if err != nil || n != 2 {
 		t.Fatalf("purged = %d, %v", n, err)
@@ -463,12 +456,7 @@ func TestPurgeExpiredDeletedPatchesWithRefs(t *testing.T) {
 
 // racingStore restores feature/back after it was listed, as a user would
 // between the listing and the delete.
-type racingStore struct {
-	PatchStore
-	db interface {
-		Exec(string, ...any) (interface{ RowsAffected() (int64, error) }, error)
-	}
-}
+type racingStore struct{ PatchStore }
 
 func (s *racingStore) ListExpiredDeletedPatches(ctx context.Context, cutoff string) ([]ExpiredDeletedPatch, error) {
 	rows, err := s.PatchStore.ListExpiredDeletedPatches(ctx, cutoff)
