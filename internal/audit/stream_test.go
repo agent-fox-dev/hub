@@ -81,12 +81,13 @@ func TestSSEManager_FanOutAndBackpressure(t *testing.T) {
 		t.Errorf("workspace w connection got %v", got)
 	}
 
-	full, _ := m.Register(sseFilters{})
+	full, _ := m.Register(sseFilters{workspace: "buf"})
 	for i := 0; i < PerClientBufferSize+1; i++ {
-		m.Broadcast(HubEvent{ID: uuidN(i), EventType: "hub.x"})
+		m.Broadcast(HubEvent{ID: uuidN(i), EventType: "hub.x", Workspace: "buf"})
 	}
-	waitFor(t, "the per-client buffer to fill", func() bool { return len(full.ch) == PerClientBufferSize })
-	if first := <-full.ch; first.ID != uuidN(1) {
+	m.Broadcast(HubEvent{ID: "end", EventType: "hub.end", Workspace: "w"})
+	drain(wsW.ch)
+	if first := <-full.ch; len(full.ch) != PerClientBufferSize-1 || first.ID != uuidN(1) {
 		t.Errorf("oldest buffered event is %s; want %s after dropping %s", first.ID, uuidN(1), uuidN(0))
 	}
 

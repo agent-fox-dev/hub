@@ -15,7 +15,7 @@ const costPath = "/api/v1/workspaces/w/cost"
 // GET /workspaces/:slug/cost sums the usage of the window (the last 24 hours
 // by default) per day, session or model for a reader of the active
 // workspace.
-func TestWorkspaceCost_GroupsAndDefaultsTheWindow(t *testing.T) {
+func TestWorkspaceCost_SumsPerDimensionAndDefaultsTheWindow(t *testing.T) {
 	env := newEnv(t)
 	env.seedUsage(t, TokenUsage{ID: "a", SessionID: "s1", WorkspaceSlug: "w", Model: "m1", InputTokens: 10, ReportedAt: "2026-09-01T10:00:00Z"})
 	env.seedUsage(t, TokenUsage{ID: "b", SessionID: "s2", WorkspaceSlug: "w", Model: "m2", OutputTokens: 5, ReportedAt: "2026-09-02T10:00:00Z"})

@@ -265,8 +265,8 @@ func TestListTokenUsage_PagesWithUnboundedTotals(t *testing.T) {
 }
 
 // GetWorkspaceCost sums the usage of the window per day, session or model,
-// counts distinct sessions and keeps the window half-open.
-func TestGetWorkspaceCost_GroupsByDimension(t *testing.T) {
+// counts the distinct sessions and keeps the window half-open.
+func TestGetWorkspaceCost_SumsPerDimension(t *testing.T) {
 	env := newBareEnv(t)
 	ctx := context.Background()
 	rows := []TokenUsage{

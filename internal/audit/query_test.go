@@ -164,6 +164,10 @@ func TestGetPostmortem_ReturnsReport(t *testing.T) {
 		jsonOf(pm["task_summary"]) != `{"done":1,"total":3}` || jsonOf(pm["blocked_tasks"]) != `["t1"]` || jsonOf(pm["session_history"]) != `[]` {
 		t.Errorf("postmortem %v", pm)
 	}
+	testutil.Exec(t, env.duck, "UPDATE postmortems SET cost_summary = 'not json'")
+	if pm := testutil.Object(t, env.must(t, http.StatusOK, http.MethodGet, runPath+"/postmortem", "", owner)); pm["cost_summary"] != "not json" {
+		t.Errorf("stored text that is not JSON came back as %v", pm["cost_summary"])
+	}
 	rec := env.do(t, http.MethodGet, "/api/v1/workspaces/w-own/runs/"+runID+"/postmortem", "", admin)
 	expect(t, rec, http.StatusNotFound, "no postmortem found for the given run_id")
 	if testutil.Error(t, rec).ErrorType != "postmortem_not_found" {
