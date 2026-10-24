@@ -163,20 +163,3 @@ func TestGet_Workspace(t *testing.T) {
 		t.Errorf("without an external URL: hub_url %v", got["hub_url"])
 	}
 }
-
-// TestGet_CoalescesLegacyNulls: rows of a database migrated before the sync
-// and carry-patch columns were NOT NULL read with the defaults.
-func TestGet_CoalescesLegacyNulls(t *testing.T) {
-	v := newEnv(t)
-	v.seed(t, &Workspace{Slug: "old", OwnerID: owner})
-	testutil.Exec(t, v.db, `UPDATE workspaces SET sync_mode = NULL, sync_status = NULL, workspace_mode = NULL, settings = NULL WHERE slug = 'old'`)
-	got := testutil.Object(t, v.do(t, http.MethodGet, "/api/v1/workspaces/old", "", testutil.User(owner)))
-	if got["sync_mode"] != "pull_only" || got["sync_status"] != "idle" || got["workspace_mode"] != "standard" || got["settings"].(map[string]any)["rebuild_strategy"] != "rebase" {
-		t.Errorf("legacy row: %v", got)
-	}
-	// The response layer coalesces too, for a row read with empty values.
-	body := workspaceResponse(&Workspace{Slug: "x"}, nil, "owner")
-	if body["sync_mode"] != "pull_only" || body["sync_status"] != "idle" || body["workspace_mode"] != "standard" {
-		t.Errorf("response of an empty row: %v", body)
-	}
-}

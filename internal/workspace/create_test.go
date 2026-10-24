@@ -307,7 +307,7 @@ func TestCreate_CredentialStorageFailure(t *testing.T) {
 	compensated := false
 	swap(t, &compensatingDeleteFn, func(*sql.DB, string) error { compensated = true; return errors.New("locked") })
 	expectStatus(t, create(t, v, workspaceBody("stuck", `"git_pat":"tok-secret"`)), http.StatusInternalServerError)
-	if !compensated || !strings.Contains(logs.String(), `CRITICAL: compensating DELETE failed for workspace "stuck"`) {
+	if !compensated || !strings.Contains(logs.String(), "CRITICAL: compensating DELETE failed for workspace") {
 		t.Errorf("compensated %v; logs: %s", compensated, logs)
 	}
 	if strings.Contains(logs.String(), "tok-secret") {

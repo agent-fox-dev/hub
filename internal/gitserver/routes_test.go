@@ -1,242 +1,161 @@
 package gitserver
 
 import (
+	"bytes"
+	"compress/gzip"
+	"errors"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/labstack/echo/v4"
+
+	"github.com/agent-fox-dev/hub/internal/testutil"
 )
 
-// TS-06-1: MountHandlers registers all four git smart HTTP routes on the Echo
-// instance at startup.
-// Requirement: 06-REQ-1.1
-func TestMountGitHandlers_RegistersRoutes(t *testing.T) {
-	env := newGitTestEnv(t)
-
-	routes := env.echo.Routes()
-
-	// Collect registered route patterns keyed by method+path.
-	type routeKey struct {
-		method string
-		path   string
-	}
-	registered := make(map[routeKey]bool)
-	for _, r := range routes {
-		registered[routeKey{r.Method, r.Path}] = true
-	}
-
-	expectedRoutes := []routeKey{
-		{http.MethodGet, "/git/:org/:slug.git/info/refs"},
-		{http.MethodPost, "/git/:org/:slug.git/git-upload-pack"},
-		{http.MethodPost, "/git/:org/:slug.git/git-receive-pack"},
-	}
-
-	for _, exp := range expectedRoutes {
-		if !registered[exp] {
-			t.Errorf("expected route %s %s not registered; registered routes: %v",
-				exp.method, exp.path, routeList(routes))
+// Each route answers with its git smart HTTP Content-Type.
+func TestRoutes_ContentTypes(t *testing.T) {
+	v := newEnv(t)
+	owner := v.key(t, "owner")
+	for i, want := range []string{
+		"application/x-git-upload-pack-advertisement",
+		"application/x-git-receive-pack-advertisement",
+		"application/x-git-upload-pack-result",
+		"application/x-git-receive-pack-result",
+	} {
+		r := gitRoutes[i]
+		if rec := v.do(t, r.method, r.path, "", owner); rec.Code != http.StatusOK || rec.Header().Get("Content-Type") != want {
+			t.Errorf("%s %s: (%d, %q); want 200 %s", r.method, r.path, rec.Code, rec.Header().Get("Content-Type"), want)
 		}
 	}
 }
 
-// TestMountGitHandlers_NoMatchWithoutDotGitSuffix verifies that requests
-// without the .git suffix in the path do not match any git route.
-// Requirement: 06-REQ-1.E2
-func TestMountGitHandlers_NoMatchWithoutDotGitSuffix(t *testing.T) {
-	env := newGitTestEnv(t)
-
-	// A request without .git suffix should fall through to Echo's default 404.
-	rec := env.doRequest(t, http.MethodGet,
-		"/git/myorg/myws/info/refs?service=git-upload-pack", "",
-		withBasicAuth("x-token-auth", "af_pat_test123"))
-
-	if rec.Code != http.StatusNotFound {
-		t.Errorf("GET /git/myorg/myws/info/refs (no .git) status = %d; want %d",
-			rec.Code, http.StatusNotFound)
+// Ref discovery announces the service, then advertises the refs with the
+// capabilities of the implementation that serves the following POST: the git
+// CLI for fetches, go-git for pushes.
+func TestInfoRefs_Advertisement(t *testing.T) {
+	v := newEnv(t)
+	owner := v.key(t, "owner")
+	trunk := v.trunk("ws")
+	head, branch := gitRun(t, trunk, "rev-parse", "HEAD"), gitRun(t, trunk, "symbolic-ref", "HEAD")
+	for service, capability := range map[string]string{"git-upload-pack": "multi_ack_detailed", "git-receive-pack": "report-status"} {
+		body := v.do(t, http.MethodGet, infoRefs+service, "", owner).Body.String()
+		prefix := string(encodePktLine("# service="+service+"\n")) + "0000"
+		if !strings.HasPrefix(body, prefix) || !strings.HasSuffix(body, "0000") || !strings.Contains(body, head+" "+branch) || !strings.Contains(body, capability) {
+			t.Errorf("%s advertisement %q; want %q, %s %s, %s and a final flush", service, body, prefix, head, branch, capability)
+		}
 	}
 }
 
-// TS-06-2: GET info/refs with service=git-upload-pack returns HTTP 200 with
-// the correct Content-Type and a pkt-line ref advertisement body.
-// Requirement: 06-REQ-1.2
-func TestInfoRefs_UploadPack_ContentType(t *testing.T) {
-	env := newGitTestEnv(t)
-
-	// Seed the org, workspace, and a local git repository.
-	env.seedOrg(t, "org-1", "My Org", "myorg")
-	env.seedOrgMember(t, "org-1", "user-1")
-	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "active")
-	env.initWorkspaceRepo(t, "myws")
-
-	rec := env.doRequest(t, http.MethodGet,
-		"/git/myorg/myws.git/info/refs?service=git-upload-pack", "",
-		withBasicAuth("x-token-auth", "af_pat_test123"))
-
-	if rec.Code != http.StatusOK {
-		t.Errorf("GET info/refs?service=git-upload-pack status = %d; want %d",
-			rec.Code, http.StatusOK)
-	}
-
-	ct := rec.Header().Get("Content-Type")
-	expected := "application/x-git-upload-pack-advertisement"
-	if ct != expected {
-		t.Errorf("Content-Type = %q; want %q", ct, expected)
-	}
-
-	// The pkt-line response must start with the service announcement line.
-	body := rec.Body.String()
-	if !strings.Contains(body, "# service=git-upload-pack") {
-		t.Errorf("response body does not contain service announcement; got %q", truncate(body, 200))
-	}
-
-	// The body must contain a flush packet (0000).
-	if !strings.Contains(body, "0000") {
-		t.Error("response body does not contain flush packet (0000)")
-	}
-}
-
-// TS-06-3: GET info/refs with service=git-receive-pack returns HTTP 200 with
-// the correct Content-Type and a pkt-line ref advertisement body.
-// Requirement: 06-REQ-1.3
-func TestInfoRefs_ReceivePack_ContentType(t *testing.T) {
-	env := newGitTestEnv(t)
-
-	env.seedOrg(t, "org-1", "My Org", "myorg")
-	env.seedOrgMember(t, "org-1", "user-1")
-	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "active")
-	env.initWorkspaceRepo(t, "myws")
-
-	rec := env.doRequest(t, http.MethodGet,
-		"/git/myorg/myws.git/info/refs?service=git-receive-pack", "",
-		withBasicAuth("x-token-auth", "af_pat_test123"))
-
-	if rec.Code != http.StatusOK {
-		t.Errorf("GET info/refs?service=git-receive-pack status = %d; want %d",
-			rec.Code, http.StatusOK)
-	}
-
-	ct := rec.Header().Get("Content-Type")
-	expected := "application/x-git-receive-pack-advertisement"
-	if ct != expected {
-		t.Errorf("Content-Type = %q; want %q", ct, expected)
-	}
-
-	body := rec.Body.String()
-	if !strings.Contains(body, "# service=git-receive-pack") {
-		t.Errorf("response body does not contain service announcement; got %q", truncate(body, 200))
-	}
-
-	if !strings.Contains(body, "0000") {
-		t.Error("response body does not contain flush packet (0000)")
-	}
-}
-
-// TS-06-4: POST to git-upload-pack returns HTTP 200 with Content-Type
-// application/x-git-upload-pack-result and a streaming pack response.
-// Requirement: 06-REQ-1.4
-func TestUploadPack_ContentType(t *testing.T) {
-	env := newGitTestEnv(t)
-
-	env.seedOrg(t, "org-1", "My Org", "myorg")
-	env.seedOrgMember(t, "org-1", "user-1")
-	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "active")
-	env.initWorkspaceRepo(t, "myws")
-
-	// Build a minimal upload-pack request body.
-	// In a real scenario this would contain want/have lines and a flush packet.
-	// For the stub test, we just verify the endpoint exists and returns the
-	// correct content type. The full protocol test requires a real git repo.
-	rec := env.doRequest(t, http.MethodPost,
-		"/git/myorg/myws.git/git-upload-pack", "",
-		withBasicAuth("x-token-auth", "af_pat_test123"))
-
-	if rec.Code != http.StatusOK {
-		t.Errorf("POST git-upload-pack status = %d; want %d",
-			rec.Code, http.StatusOK)
-	}
-
-	ct := rec.Header().Get("Content-Type")
-	expected := "application/x-git-upload-pack-result"
-	if ct != expected {
-		t.Errorf("Content-Type = %q; want %q", ct, expected)
-	}
-}
-
-// TS-06-5: POST to git-receive-pack returns HTTP 200 with Content-Type
-// application/x-git-receive-pack-result and a streaming pack response.
-// Requirement: 06-REQ-1.5
-func TestReceivePack_ContentType(t *testing.T) {
-	env := newGitTestEnv(t)
-
-	env.seedOrg(t, "org-1", "My Org", "myorg")
-	env.seedOrgMember(t, "org-1", "user-1")
-	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "active")
-	env.initWorkspaceRepo(t, "myws")
-
-	rec := env.doRequest(t, http.MethodPost,
-		"/git/myorg/myws.git/git-receive-pack", "",
-		withBasicAuth("x-token-auth", "af_pat_test123"))
-
-	if rec.Code != http.StatusOK {
-		t.Errorf("POST git-receive-pack status = %d; want %d",
-			rec.Code, http.StatusOK)
-	}
-
-	ct := rec.Header().Get("Content-Type")
-	expected := "application/x-git-receive-pack-result"
-	if ct != expected {
-		t.Errorf("Content-Type = %q; want %q", ct, expected)
-	}
-}
-
-// TestInfoRefs_InvalidService verifies that an invalid or missing service
-// query parameter returns HTTP 403 with a pkt-line error body.
-// Requirement: 06-REQ-1.E1
+// A missing or unknown service is refused with a pkt-line 403.
 func TestInfoRefs_InvalidService(t *testing.T) {
-	env := newGitTestEnv(t)
-
-	env.seedOrg(t, "org-1", "My Org", "myorg")
-	env.seedOrgMember(t, "org-1", "user-1")
-	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "active")
-	env.initWorkspaceRepo(t, "myws")
-
-	tests := []struct {
-		name    string
-		service string
-	}{
-		{"missing service param", ""},
-		{"unknown service", "?service=git-foo-bar"},
-		{"empty service value", "?service="},
+	v := newEnv(t)
+	owner := v.key(t, "owner")
+	for _, q := range []string{"", "?service=", "?service=git-foo"} {
+		rec := v.do(t, http.MethodGet, wsPath+"/info/refs"+q, "", owner)
+		if rec.Code != http.StatusForbidden || rec.Body.String() != invalidServiceBody || rec.Header().Get("Content-Type") != "text/plain" {
+			t.Errorf("info/refs%s: (%d, %q); want 403 %q", q, rec.Code, rec.Body, invalidServiceBody)
+		}
 	}
+}
 
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			url := "/git/myorg/myws.git/info/refs" + tc.service
-			rec := env.doRequest(t, http.MethodGet, url, "",
-				withBasicAuth("x-token-auth", "af_pat_test123"))
+// A URL without the .git suffix matches no git route.
+func TestRoutes_RequireDotGitSuffix(t *testing.T) {
+	v := newEnv(t)
+	if rec := v.do(t, http.MethodGet, "/git/myorg/ws/info/refs?service=git-upload-pack", "", v.key(t, "owner")); rec.Code != http.StatusNotFound || !strings.Contains(rec.Body.String(), `"message":"Not Found"`) {
+		t.Errorf("(%d, %q); want the router's 404", rec.Code, rec.Body)
+	}
+}
 
-			if rec.Code != http.StatusForbidden {
-				t.Errorf("GET info/refs (%s) status = %d; want %d",
-					tc.name, rec.Code, http.StatusForbidden)
+// upload-pack streams the pack for a plain or gzip-encoded request and
+// answers an in-band ERR for an empty, malformed or badly compressed one.
+func TestUploadPack_Requests(t *testing.T) {
+	v := newEnv(t)
+	owner := v.key(t, "owner")
+	want := uploadPackWant(t, v.trunk("ws"))
+	var gz bytes.Buffer
+	w := gzip.NewWriter(&gz)
+	_, _ = w.Write([]byte(want))
+	_ = w.Close()
+	for name, c := range map[string]struct{ body, encoding, expect string }{
+		"want and done": {want, "", "PACK"},
+		"gzip":          {gz.String(), "gzip", "PACK"},
+		"empty":         {"", "", "ERR empty upload-pack request"},
+		"malformed":     {"not pkt-lines", "", "ERR "},
+		"bad gzip":      {"not gzip", "gzip", "ERR invalid gzip request body"},
+	} {
+		req := httptest.NewRequest(http.MethodPost, wsPath+"/git-upload-pack", strings.NewReader(c.body))
+		req.Header.Set("Authorization", basic(owner))
+		if c.encoding != "" {
+			req.Header.Set("Content-Encoding", c.encoding)
+		}
+		rec := v.serve(req)
+		if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), c.expect) {
+			t.Errorf("%s: (%d, %.80q); want 200 with %q", name, rec.Code, rec.Body, c.expect)
+		}
+	}
+}
+
+// Without a git executable, fetches get an in-band ERR instead of a pack.
+func TestUploadPack_MissingGitIsInBandError(t *testing.T) {
+	orig := gitBinary
+	gitBinary = func() (string, error) { return "", errors.New("absent") }
+	t.Cleanup(func() { gitBinary = orig })
+	v := newEnv(t)
+	owner := v.key(t, "owner")
+	for _, r := range []struct{ method, path, body string }{
+		{http.MethodGet, infoRefs + "git-upload-pack", ""},
+		{http.MethodPost, wsPath + "/git-upload-pack", uploadPackWant(t, v.trunk("ws"))},
+	} {
+		if rec := v.do(t, r.method, r.path, r.body, owner); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "ERR git executable not found") {
+			t.Errorf("%s %s: (%d, %q); want an in-band ERR", r.method, r.path, rec.Code, rec.Body)
+		}
+	}
+}
+
+// bodyLimit stands for apikit's instance-wide body limit: a 413 for a body
+// declared longer than max, a MaxBytesReader otherwise.
+func bodyLimit(max int64) echo.MiddlewareFunc {
+	return func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c echo.Context) error {
+			if c.Request().ContentLength > max {
+				return c.NoContent(http.StatusRequestEntityTooLarge)
 			}
-		})
+			c.Request().Body = http.MaxBytesReader(c.Response(), c.Request().Body, max)
+			return next(c)
+		}
 	}
 }
 
-// routeList formats echo routes into a human-readable list for error messages.
-func routeList(routes []*echo.Route) []string {
-	var result []string
-	for _, r := range routes {
-		result = append(result, r.Method+" "+r.Path)
+// Git routes are exempt from the instance-wide body limit, which other routes
+// keep: a push larger than the limit reaches the handler.
+func TestRoutes_ExemptFromBodyLimit(t *testing.T) {
+	e := echo.New()
+	e.Use(bodyLimit(64))
+	e.POST("/api/v1/other", func(c echo.Context) error { return c.NoContent(http.StatusOK) })
+	v := newEnvOn(t, e)
+	big := strings.Repeat("x", 4096)
+	if rec := v.do(t, http.MethodPost, "/api/v1/other", big, ""); rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("other route: %d; want 413", rec.Code)
 	}
-	return result
+	rec := v.do(t, http.MethodPost, wsPath+"/git-receive-pack", big, v.key(t, "owner"))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "ERR") {
+		t.Errorf("git route: (%d, %.60q); want 200 with the pack's in-band ERR, not a 413", rec.Code, rec.Body)
+	}
 }
 
-// truncate shortens a string for error messages.
-func truncate(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
+// When the binding table cannot be created, MountGitHandlers fails and
+// registers no route.
+func TestMountGitHandlers_FailsWithoutBindingTable(t *testing.T) {
+	db := testutil.OpenDB(t)
+	testutil.Exec(t, db, `CREATE TABLE other (x TEXT)`)
+	testutil.Exec(t, db, `CREATE INDEX token_workspace_bindings ON other(x)`)
+	e := echo.New()
+	if err := MountGitHandlers(e, db, t.TempDir()); err == nil {
+		t.Error("MountGitHandlers = nil; want the DDL error")
 	}
-	return s[:maxLen] + "..."
+	if n := len(e.Routes()); n != 0 {
+		t.Errorf("%d routes registered; want none", n)
+	}
 }

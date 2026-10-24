@@ -3,10 +3,12 @@ package workspace
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"log/slog"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
@@ -86,6 +88,7 @@ func newEnv(t *testing.T) *env {
 	}
 	mountPatchRoutes(api, db, nil)
 	for _, u := range []string{owner, member, stranger} {
+		testutil.SeedUser(t, db, u)
 		org := testutil.SeedPersonalOrg(t, db, u)
 		testutil.SeedOrgMember(t, db, org, u)
 	}
@@ -314,6 +317,22 @@ func stubSync(t *testing.T, sha, outcome string, err, refErr error) *[]string {
 		return refErr
 	})
 	return &updated
+}
+
+// request is a request on path as auth, on ctx, for the tests that cancel it.
+func request(ctx context.Context, method, path string, auth *apikit.AuthInfo) *http.Request {
+	req := httptest.NewRequest(method, path, nil).WithContext(ctx)
+	raw, _ := json.Marshal(auth)
+	req.Header.Set(testutil.AuthHeader, string(raw))
+	return req
+}
+
+// gitTry runs git in dir and returns its output and error.
+func gitTry(dir string, args ...string) (string, error) {
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	return strings.TrimSpace(string(out)), err
 }
 
 // gitRun runs git in dir with a fixed identity and returns its trimmed output.

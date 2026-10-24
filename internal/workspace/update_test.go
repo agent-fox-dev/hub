@@ -3,6 +3,7 @@ package workspace
 import (
 	"database/sql"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -11,7 +12,7 @@ import (
 	"github.com/agent-fox-dev/hub/internal/testutil"
 )
 
-func patch(t *testing.T, v *env, slug, body string, auth *apikit.AuthInfo) *httptestRecorder {
+func patch(t *testing.T, v *env, slug, body string, auth *apikit.AuthInfo) *httptest.ResponseRecorder {
 	t.Helper()
 	return v.do(t, http.MethodPatch, "/api/v1/workspaces/"+slug, body, auth)
 }
@@ -117,5 +118,3 @@ func TestUpdate_Refusals(t *testing.T) {
 	testutil.Exec(t, v.db, `DROP TABLE workspaces`)
 	expectStatus(t, patch(t, v, "team", `{"description":"x"}`, o), http.StatusInternalServerError)
 }
-
-type httptestRecorder = httptestResponseRecorder

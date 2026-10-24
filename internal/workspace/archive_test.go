@@ -3,6 +3,7 @@ package workspace
 import (
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,13 +11,14 @@ import (
 
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	githttp "github.com/go-git/go-git/v5/plumbing/transport/http"
+	"github.com/txsvc/apikit"
 
 	"github.com/agent-fox-dev/hub/internal/audit"
 	"github.com/agent-fox-dev/hub/internal/testutil"
 	"github.com/agent-fox-dev/hub/internal/wslock"
 )
 
-func archive(t *testing.T, v *env, slug string) *httptestRecorder {
+func archive(t *testing.T, v *env, slug string) *httptest.ResponseRecorder {
 	t.Helper()
 	return v.do(t, http.MethodPost, "/api/v1/workspaces/"+slug+"/archive", "", testutil.User(owner))
 }
@@ -148,7 +150,7 @@ func TestArchive_Refusals(t *testing.T) {
 	end, _ := wslock.BeginRebuild("rebuilding")
 	defer end()
 
-	post := func(slug string, auth *testutilAuth) *httptestRecorder {
+	post := func(slug string, auth *apikit.AuthInfo) *httptest.ResponseRecorder {
 		return v.do(t, http.MethodPost, "/api/v1/workspaces/"+slug+"/archive", "", auth)
 	}
 	expectError(t, post("done", testutil.User(owner)), http.StatusBadRequest, "already archived", "")
@@ -192,7 +194,7 @@ func TestReactivate_Archived(t *testing.T) {
 	jobs := captureQueue(t)
 	v.orgWorkspace(t, "team")
 	v.seed(t, &Workspace{Slug: "done", OwnerID: owner, Status: "archived", CloneStatus: "archived", Branch: strPtr("dev"), HeadSHA: strPtr(headSHA), CloneError: strPtr("old")})
-	post := func(slug string, auth *testutilAuth) *httptestRecorder {
+	post := func(slug string, auth *apikit.AuthInfo) *httptest.ResponseRecorder {
 		return v.do(t, http.MethodPost, "/api/v1/workspaces/"+slug+"/reactivate", "", auth)
 	}
 	expectError(t, post("team", testutil.User(owner)), http.StatusConflict, "not archived", "")
