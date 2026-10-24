@@ -413,7 +413,7 @@ func TestBoundMemberRefused_TS_35_35(t *testing.T) {
 	if err := insertWorkspace(db, &Workspace{Slug: "b", GitURL: "https://github.com/a/b", OwnerID: "u1", OrgID: strp("ob"), Status: "pending"}); err != nil {
 		t.Fatal(err)
 	}
-	h.seed(t, "a2", "u2", "ready")
+	h.seed(t, "a2", "u2", "pending")
 	key, err := apikit.GenerateAPIKey(db, "u2", 0, echo.New().Logger)
 	if err != nil {
 		t.Fatal(err)
