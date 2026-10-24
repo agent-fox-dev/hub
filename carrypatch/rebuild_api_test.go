@@ -24,7 +24,7 @@ func rebuildEnv(t *testing.T) *env {
 	return e
 }
 
-// Submitting a rebuild enqueues one job keyed by the workspace and grouped by
+// Submitting a rebuild enqueues one job keyed by the workspace and serialised by
 // its integration branch, with the strategy and fail mode captured from the
 // settings or the body, and audits the enqueue.
 func TestSubmitRebuild_EnqueuesWithCapturedStrategy(t *testing.T) {

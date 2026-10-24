@@ -161,7 +161,7 @@ func TestBuildRebuildPayload_OverridesAndDefaults(t *testing.T) {
 		t.Errorf("nil lookup: %+v", p)
 	}
 	if FormatGroupKey("ws", "deploy") != "ws:deploy" {
-		t.Error("group key")
+		t.Error("FormatGroupKey")
 	}
 	if perms := CarryPatchPermissions(); len(perms) != 2 || perms[0].Resource != "rebuilds" || perms[1].Action != "write" {
 		t.Errorf("permissions = %v", perms)

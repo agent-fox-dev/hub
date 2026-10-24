@@ -77,12 +77,12 @@ func (r *rebuild) run(ctx context.Context, strategy, failMode string) (*RebuildR
 
 // runningJob attaches a queue with one running rebuild job and returns the
 // job context the executor would get from the queue.
-func (r *rebuild) runningJob(group string) (*jobqueue.Queue, context.Context, string) {
+func (r *rebuild) runningJob(serialKey string) (*jobqueue.Queue, context.Context, string) {
 	r.t.Helper()
 	q := newQueue(r.t, r.db, r.h)
 	r.h.Queue = q
 	raw, _ := json.Marshal(RebuildPayload{WorkspaceSlug: r.slug, Strategy: StrategyRebase, IntegrationBranch: "integration"})
-	id, _, err := q.Enqueue(jobqueue.EnqueueParams{Type: "rebuild", Key: r.slug, Nonce: "orig", Payload: raw, SubmittedBy: "operator", Group: group})
+	id, _, err := q.Enqueue(jobqueue.EnqueueParams{Type: "rebuild", Key: r.slug, Nonce: "orig", Payload: raw, SubmittedBy: "operator", Group: serialKey})
 	if err != nil {
 		r.t.Fatalf("enqueue: %v", err)
 	}
@@ -286,9 +286,9 @@ func TestRebuild_TrunkFollowsCheckedOutIntegrationBranch(t *testing.T) {
 	}
 }
 
-// A failing integration ref update ends phase two: no soft-deletion, no
+// A failing integration ref update ends the locked finishing step: no soft-deletion, no
 // compaction, no push; the run is retried.
-func TestRebuild_UpdateRefFailureStopsPhaseTwo(t *testing.T) {
+func TestRebuild_UpdateRefFailureStopsTheFinishingStep(t *testing.T) {
 	r := newRebuild(t)
 	r.patches("feature/merged", "feature/patch-a")
 	mustExec(t, r.db, `UPDATE patches SET status = 'merged_upstream' WHERE id = 'p1'`)
@@ -305,7 +305,7 @@ func TestRebuild_UpdateRefFailureStopsPhaseTwo(t *testing.T) {
 		t.Fatalf("run = %v, retryable=%v, err=%v", res, retryable, err)
 	}
 	if patchStatuses(t, r.db, r.slug)["feature/merged"] != "merged_upstream" || pushed {
-		t.Error("phase two continued after the failed ref update")
+		t.Error("the finishing step continued after the failed ref update")
 	}
 	r.assertClean()
 }
@@ -410,10 +410,10 @@ func TestRebuild_StaleDirectoriesAndFailedWorktreeAdd(t *testing.T) {
 	}
 }
 
-// Phase one runs under the lock and the rebuild guard; patch application
+// The preparation runs under the lock and the rebuild guard; patch application
 // holds the guard but not the lock; both are released at the end. Failures
 // before the worktree exists are transient.
-func TestRebuild_LockPhasesAndEarlyFailures(t *testing.T) {
+func TestRebuild_LockingAndEarlyFailures(t *testing.T) {
 	r := newRebuild(t)
 	r.patches("feature/patch-a")
 	var lockedDuringApply, guardedDuringApply bool
@@ -478,7 +478,7 @@ func TestRebuild_WritesProgressAfterEachPatch(t *testing.T) {
 
 // The patch tips are snapshotted before application: a branch that moves
 // during the run contributes its snapshot only, and the run enqueues one
-// follow-up rebuild with its own payload and group key, which the auto
+// follow-up rebuild with its own payload and serialisation key, which the auto
 // rebuild settings can suppress.
 func TestRebuild_StaleInputsEnqueueFollowup(t *testing.T) {
 	cases := []struct {
