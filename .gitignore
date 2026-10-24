@@ -5,10 +5,11 @@ coverage.txt
 .nightshift/
 .claude/worktrees/
 
-# Go build output
+# Go build output (the binaries at the repository root; cmd/af-hub and
+# cmd/afc are source directories)
 bin/
-af-hub
-afc
+/af-hub
+/afc
 
 # own stuff
 hack/
