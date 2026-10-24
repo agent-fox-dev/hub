@@ -128,15 +128,102 @@ that reviews on GitHub and upstreams patches wants fork authority.
   configuration. That is new coupling between the git server and the
   carry-patch package, in the same style as the existing post-push hook.
 
-## Implementation notes
+## Divergences from the proposals
 
-The Decision section stands as written. The following errata record where
-the delivered implementation diverges from the original proposal:
+The Decision section stands as written. The implementation differs from the
+proposals it was built from in the following ways, which are the rules the
+code follows:
 
-- [`docs/errata/20_fork_patch_sync_divergences.md`](../errata/20_fork_patch_sync_divergences.md)
-- [`docs/errata/21_fork_patch_registration_divergences.md`](../errata/21_fork_patch_registration_divergences.md)
-- [`docs/errata/22_fork_push_control_divergences.md`](../errata/22_fork_push_control_divergences.md)
-- [`docs/errata/23_patch_divergence_recovery_divergences.md`](../errata/23_patch_divergence_recovery_divergences.md)
+**Sync in `origin` mode.**
+
+- The origin fetch prunes tracking refs whose branch no longer exists on the
+  fork. A credential failure answers `502 failed to resolve origin
+  credentials`; a fetch failure `502 origin fetch failed` with error type
+  `origin_fetch_failed`. A nil origin credential resolver means anonymous
+  access (a public fork); a missing fetch function is
+  `500 origin fetch is not configured`.
+- Patch ref writes are compare-and-swap (`git update-ref <ref> <new> <old>`)
+  so a concurrent write is detected. A failed ref write answers
+  `500 failed to update patch branch <b>`, a failed ancestry check
+  `500 failed to compare patch branch <b> with origin`, and a failed work-tree
+  reset after the ref moved `500 failed to reset working tree for patch branch
+  <b>`; the moved branch keeps its outcome (persisted, audited, counted as
+  advanced). `last_sync_at` is not written when the refresh fails.
+- Only a moved `active` or `conflict` patch counts as advanced for the
+  rebuild trigger; a moved `disabled` patch does not. Merge detection also
+  runs when only patch tips changed. The failure path of the refresh honours
+  the `auto_rebuild_after_sync` setting as the success path does.
+- The sync runs: fetch origin, resolve the upstream base, detect a
+  force-push, refresh the patch branches (not refresh before detection).
+- `origin_fetched` is always in the sync response; `patches_synced` and
+  `patches_diverged` only in `origin` mode. A patch refreshed and then
+  detected as merged in the same sync has its origin columns cleared again
+  and appears in `patches_diverged` once if it was diverged.
+- `hub.patch.replace` carries the branch as `resource_id` and `replace` as
+  action; `hub.patch.sync` carries the slug and `sync`. Replacements are
+  logged at info level even without an audit emitter.
+- `afc workspace sync --fail-on-diverged` exits 3 through the hub's own exit
+  code mapping (`internal/cli/exit.go`), since apikit maps every CLI error
+  code but 1 and HTTP codes to 2; stdout holds exactly one JSON document.
+
+**Registration.**
+
+- A branch exists when `refs/heads/<name>` does; a tag, SHA or remote-qualified
+  name is not accepted. A fork fetch failure other than a missing branch is
+  `502 origin_fetch_failed`; a registration that must write while the lock is
+  held is `409 workspace_busy`.
+- `branch_resolution` in the audit metadata is `local`, `origin_tracking`,
+  `origin_fetch` or `skipped` (`skip_branch_check`). Batch registration emits
+  no `hub.patch.create` event; it validates the syntax of every element before
+  it resolves any, because resolution has side effects.
+
+**Push control.**
+
+- A delete of a registered patch branch is rejected in `origin` mode in both
+  reject and forward modes (`branch is synced from origin; delete it on the
+  fork instead`).
+- A forward goes through a temporary `refs/hub/forward/<branch>` ref with a
+  120 s timeout; error text loses URL userinfo by pattern replacement.
+- Only accepted ref updates drive the `hub.git.push` event and the post-push
+  hook; `head_sha` is refreshed after every push, rejected refs included.
+- The pre-receive control fails open on a database lookup failure (the push
+  is allowed and a warning logged); a settings lookup failure resolves to the
+  setting's default instead, because an unforwarded `origin`-mode push would
+  make the hub and the fork diverge.
+- The mirror runs after the post-push rebuild enqueue even when
+  `auto_rebuild_after_push` is false. A forward or mirror updates
+  `refs/remotes/origin/<branch>`, which go-git writes once the push succeeds;
+  harmless and left as is.
+
+**Divergence recovery.**
+
+- The reset fetches the branch from the fork first, writes a backup ref only
+  when it discards commits (action `replaced`), enqueues a rebuild when the
+  branch moved and the patch is `active` or `conflict`, and applies only to
+  `active`, `conflict` or `disabled` patches. It persists the origin sync
+  columns only in `origin` mode. It needs a lock function and an origin fetch
+  (else `500` before any write); a nil credential resolver means anonymous
+  access.
+- A failed `git reset --hard` after the branch moved is logged, not an
+  error: the ref move is the effect, and a retry would find nothing to do.
+- `hub.patch.reset` (and `hub.patch.replace` for `replaced`) is emitted as
+  soon as the reset succeeds, before the patch is read back for the response.
+- Only `refs/hub/replaced/` is protected from client pushes, by prefix.
+- The purge of expired soft-deleted patches and their backup refs exists but
+  nothing schedules it; it counts only the rows it deleted, and a patch
+  restored while a purge runs loses its backup.
+
+**Adjacent commands.**
+
+- `afc credential set` was removed: upstream credentials are the reserved
+  workspace secrets `UPSTREAM_GIT_PAT`, `UPSTREAM_GIT_USERNAME`,
+  `UPSTREAM_GIT_PASSWORD` (`GIT_*` for origin), managed with `afc secrets`.
+  The server ignores an incomplete username/password pair and falls back to
+  the next credential source.
+- rerere entries are listed and forgotten by `id` (the rr-cache entry name),
+  with `path` known only while a conflict is in progress, `recorded_at` and
+  `resolved`; `DELETE .../rerere/<id>` removes the entry, and a path still
+  delegates to `git rerere forget`, which works only during a conflict.
 
 ## Alternatives considered
 

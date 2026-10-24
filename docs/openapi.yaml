@@ -4,8 +4,7 @@
 # resolved through the `replace` directive in go.mod), cross-checked against
 # docs/api.md and docs/permissions.md. Endpoints served by apikit rather than
 # by hub code are marked `x-provider: apikit`. Where the prose docs disagree
-# with the handlers, the handlers win; the divergences are recorded in
-# docs/errata/openapi_description.md.
+# with the handlers, the handlers win (ADR 10).
 openapi: 3.1.0
 
 info:
@@ -28,9 +27,8 @@ info:
     The `/api/v1` prefix comes from `server.mount_point` in `config.toml` and
     defaults to `/api/v1`. Everything apikit mounts -- `/user`, `/users`,
     `/orgs`, `/auth` -- goes on that same group, so those paths are
-    `/api/v1/user`, `/api/v1/users`, and so on. `docs/api.md` and
-    `docs/permissions.md` both write them without the prefix; see
-    `docs/errata/openapi_description.md`.
+    `/api/v1/user`, `/api/v1/users`, and so on, as `docs/api.md` and
+    `docs/permissions.md` write them.
 
     ## Authentication
 
@@ -5530,8 +5528,7 @@ paths:
   #
   # Mounted by apikit's Server.MountHandlers on the API group, so every one of
   # these routes lives under the configured mount point -- `/api/v1` by
-  # default. Both docs/api.md and docs/permissions.md write them without that
-  # prefix; see docs/errata/openapi_description.md.
+  # default, as docs/api.md and docs/permissions.md write them.
   # ---------------------------------------------------------------------------
 
   /hooks/forge/{slug}:

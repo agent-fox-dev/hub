@@ -50,6 +50,38 @@ session — not as a follow-up task.
    CLI keeps the file anyway and says in one line that it has none.
 4. Run `make check` after doc updates to ensure nothing is broken.
 
+## Tests and Spec Traceability
+
+Specs are the input to an implementation, not the shape of its tests or its
+comments. Once a spec is implemented, the code, its tests and the ADRs are
+the record; the spec is archived.
+
+- **Tests are organised by behaviour, not by spec.** A test file is named for
+  the area of the production code it tests (`create_test.go`,
+  `sync_test.go`, `access_test.go`), and a test for the behaviour it checks
+  (`TestCreate_RejectsDuplicateSlug`). Do not create per-spec test files,
+  smoke, property, phase or group files, or test names and comments that
+  carry spec or test-case ids (`TS_01_17`, `01-REQ-4.1`). The variants of one
+  behaviour are one table-driven test.
+- **Every behaviour is tested once**, at the level where it lives: a handler
+  through the router, a store function directly, a pure function directly.
+  Keep end-to-end tests (a real server, real credentials) for what only that
+  layer proves. The test code of a package stays near the size of its
+  production code.
+- **Use the shared helpers** (`internal/testutil` in this repository) for the
+  database, credentials, requests, responses and seeds; a package keeps one
+  `helpers_test.go` for what is specific to it. Create another package's
+  tables with that package's schema function, never by copying its DDL.
+- **Do not test artefacts**: no tests of an import graph, a build tag, the
+  presence of a helper, a struct's fields, a documentation file's content, or
+  that a package boundary holds.
+- **Production comments give the reason, not a citation.** No spec or
+  requirement ids in code comments; where a decision is the reason, cite the
+  ADR.
+- **Where the code diverges from a spec, record the decision in the ADR of
+  the feature** (or a new ADR), as a rule the code follows, and update the
+  reference docs. Do not write errata.
+
 ## Generated Docs
 
 `make doc` writes `go doc -all` output for every publicly accessible package of
