@@ -24,16 +24,13 @@ CREATE TABLE IF NOT EXISTS workspaces (
 	branch            TEXT,
 	owner_id          TEXT NOT NULL,
 	org_id            TEXT,
-	status            TEXT NOT NULL DEFAULT 'active',
+	status            TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','cloning','ready','failed','archived')),
 	display_name      TEXT NOT NULL DEFAULT '',
 	description       TEXT NOT NULL DEFAULT '',
-	clone_status      TEXT NOT NULL DEFAULT 'pending' CHECK(clone_status IN ('pending','cloning','ready','failed','archived')),
 	head_sha          TEXT,
 	clone_error       TEXT,
 	created_at        TEXT NOT NULL,
 	updated_at        TEXT NOT NULL,
-	sync_mode         TEXT NOT NULL DEFAULT 'pull_only',
-	sync_status       TEXT NOT NULL DEFAULT 'idle',
 	upstream_head_sha TEXT,
 	last_sync_at      TEXT,
 	sync_error        TEXT
@@ -58,7 +55,7 @@ func TestCarryPatch_SchemaMigration_AddsColumns(t *testing.T) {
 	// Insert an existing workspace row.
 	if _, err := db.Exec(
 		`INSERT INTO workspaces (slug, git_url, owner_id, status, display_name, description, created_at, updated_at)
-		 VALUES ('existing-ws', 'https://github.com/org/repo', 'user-1', 'active', 'existing', '', '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z')`,
+		 VALUES ('existing-ws', 'https://github.com/org/repo', 'user-1', 'ready', 'existing', '', '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z')`,
 	); err != nil {
 		t.Fatalf("failed to insert legacy workspace row: %v", err)
 	}
@@ -255,7 +252,7 @@ func TestCarryPatch_SchemaDefaults_WorkspaceMode(t *testing.T) {
 	t.Run("default_to_standard", func(t *testing.T) {
 		_, err := db.Exec(
 			`INSERT INTO workspaces (slug, git_url, owner_id, status, display_name, description, created_at, updated_at)
-			 VALUES ('default-mode-ws', 'https://github.com/org/repo', 'user-1', 'active', '', '', '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z')`,
+			 VALUES ('default-mode-ws', 'https://github.com/org/repo', 'user-1', 'pending', '', '', '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z')`,
 		)
 		if err != nil {
 			t.Fatalf("INSERT omitting workspace_mode failed: %v", err)
@@ -275,7 +272,7 @@ func TestCarryPatch_SchemaDefaults_WorkspaceMode(t *testing.T) {
 	t.Run("null_rejected", func(t *testing.T) {
 		_, err := db.Exec(
 			`INSERT INTO workspaces (slug, git_url, owner_id, status, workspace_mode, display_name, description, created_at, updated_at)
-			 VALUES ('null-mode-ws', 'https://github.com/org/repo', 'user-1', 'active', NULL, '', '', '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z')`,
+			 VALUES ('null-mode-ws', 'https://github.com/org/repo', 'user-1', 'pending', NULL, '', '', '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z')`,
 		)
 		if err == nil {
 			t.Fatal("INSERT with workspace_mode=NULL should fail with NOT NULL constraint; got nil error")

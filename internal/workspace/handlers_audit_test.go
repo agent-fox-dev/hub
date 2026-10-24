@@ -531,9 +531,9 @@ func TestWorkspaceSyncAuditEmission(t *testing.T) {
 		t.Fatalf("create: expected 201, got %d: %s", rec.Code, rec.Body.String())
 	}
 
-	// Update clone_status to 'ready' and sync_mode to 'pull_only'.
+	// Update status to 'ready'.
 	_, err := env.testEnv.db.Exec(
-		`UPDATE workspaces SET clone_status = 'ready', sync_mode = 'pull_only', head_sha = 'oldsha' WHERE slug = 'sync-audit-ws'`,
+		`UPDATE workspaces SET status = 'ready', head_sha = 'oldsha' WHERE slug = 'sync-audit-ws'`,
 	)
 	if err != nil {
 		t.Fatalf("failed to update workspace for sync: %v", err)
@@ -681,7 +681,7 @@ func TestPatchAddAuditEmission(t *testing.T) {
 
 	// Update to ready state.
 	_, err := env.testEnv.db.Exec(
-		`UPDATE workspaces SET clone_status = 'ready' WHERE slug = 'patch-ws'`,
+		`UPDATE workspaces SET status = 'ready' WHERE slug = 'patch-ws'`,
 	)
 	if err != nil {
 		t.Fatalf("failed to update workspace: %v", err)
@@ -738,7 +738,7 @@ func TestPatchRemoveAuditEmission(t *testing.T) {
 
 	// Update to ready state.
 	_, err := env.testEnv.db.Exec(
-		`UPDATE workspaces SET clone_status = 'ready' WHERE slug = 'rm-patch-ws'`,
+		`UPDATE workspaces SET status = 'ready' WHERE slug = 'rm-patch-ws'`,
 	)
 	if err != nil {
 		t.Fatalf("failed to update workspace: %v", err)
@@ -809,7 +809,7 @@ func TestPatchAddNilAuditDoesNotPanic(t *testing.T) {
 	}
 
 	_, err := env.db.Exec(
-		`UPDATE workspaces SET workspace_mode = 'carry_patch', clone_status = 'ready' WHERE slug = 'nil-patch-ws'`,
+		`UPDATE workspaces SET workspace_mode = 'carry_patch', status = 'ready' WHERE slug = 'nil-patch-ws'`,
 	)
 	if err != nil {
 		t.Fatalf("failed to update workspace mode: %v", err)

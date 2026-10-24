@@ -173,8 +173,8 @@ func TestMint_Archived_TS_34_7(t *testing.T) {
 	env := newTestEnv(t, Config{APIKit: stub})
 	seedWorkspace(t, env.db, "s", "u1", "archived")
 	rec := env.do(http.MethodPost, mintPath, apiKey("u1"), `{"name":"n"}`, nil)
-	if rec.Code != http.StatusBadRequest || parseError(t, rec).Error.Message != "workspace is not active" || stub.calls != 0 {
-		t.Errorf("(%d, %s), apikit calls %d; want 400 workspace is not active and no call", rec.Code, rec.Body, stub.calls)
+	if rec.Code != http.StatusBadRequest || parseError(t, rec).Error.Message != "workspace is archived" || stub.calls != 0 {
+		t.Errorf("(%d, %s), apikit calls %d; want 400 workspace is archived and no call", rec.Code, rec.Body, stub.calls)
 	}
 }
 

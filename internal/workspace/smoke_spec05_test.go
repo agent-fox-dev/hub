@@ -16,8 +16,8 @@ import (
 )
 
 // TS-05-SMOKE-1: Happy path: workspace is created via POST /api/v1/workspaces,
-// returns HTTP 201 with clone_status='pending', and the job queue worker clones
-// the repository and sets clone_status='ready' with a valid head_sha.
+// returns HTTP 201 with status='pending', and the job queue worker clones
+// the repository and sets status='ready' with a valid head_sha.
 //
 // Real components: workspace create handler, job queue, job queue worker,
 // SQLite database, WORKSPACE_ROOT filesystem.
@@ -51,7 +51,7 @@ func TestSmoke05_CreateAndCloneReady(t *testing.T) {
 
 	auth := userAuth("alice-user-id")
 
-	// POST /api/v1/workspaces — must return 201 with clone_status='pending'.
+	// POST /api/v1/workspaces — must return 201 with status='pending'.
 	body := `{"slug":"smoke-ws","git_url":"https://github.com/example/repo.git"}`
 	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces", body, auth)
 	if rec.Code != http.StatusCreated {
@@ -62,8 +62,8 @@ func TestSmoke05_CreateAndCloneReady(t *testing.T) {
 	if err := json.NewDecoder(rec.Body).Decode(&createResp); err != nil {
 		t.Fatalf("decode create response: %v", err)
 	}
-	if createResp.CloneStatus == nil || *createResp.CloneStatus != "pending" {
-		t.Errorf("create clone_status = %v; want 'pending'", createResp.CloneStatus)
+	if createResp.Status != "pending" {
+		t.Errorf("create status = %q; want 'pending'", createResp.Status)
 	}
 	if createResp.HeadSHA != nil {
 		t.Errorf("create head_sha = %v; want nil", createResp.HeadSHA)
@@ -73,9 +73,9 @@ func TestSmoke05_CreateAndCloneReady(t *testing.T) {
 	}
 
 	// Wait for the worker to process the clone job.
-	waitForCloneStatus(t, env.db, "smoke-ws", "ready", 5*time.Second)
+	waitForStatus(t, env.db, "smoke-ws", "ready", 5*time.Second)
 
-	// GET /api/v1/workspaces/:slug — verify clone_status='ready' and valid head_sha.
+	// GET /api/v1/workspaces/:slug — verify status='ready' and valid head_sha.
 	rec = env.doRequest(t, http.MethodGet, "/api/v1/workspaces/smoke-ws", "", auth)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET status = %d; want %d\nbody: %s", rec.Code, http.StatusOK, rec.Body.String())
@@ -85,8 +85,8 @@ func TestSmoke05_CreateAndCloneReady(t *testing.T) {
 	if err := json.NewDecoder(rec.Body).Decode(&getResp); err != nil {
 		t.Fatalf("decode get response: %v", err)
 	}
-	if getResp.CloneStatus == nil || *getResp.CloneStatus != "ready" {
-		t.Errorf("get clone_status = %v; want 'ready'", getResp.CloneStatus)
+	if getResp.Status != "ready" {
+		t.Errorf("get status = %q; want 'ready'", getResp.Status)
 	}
 	if getResp.HeadSHA == nil || *getResp.HeadSHA != fakeSHA {
 		t.Errorf("get head_sha = %v; want %q", getResp.HeadSHA, fakeSHA)
@@ -102,7 +102,7 @@ func TestSmoke05_CreateAndCloneReady(t *testing.T) {
 	}
 }
 
-// TS-05-SMOKE-2: Happy path: archiving a workspace with clone_status='ready'
+// TS-05-SMOKE-2: Happy path: archiving a workspace with status='ready'
 // pushes local commits to upstream, records head_sha, deletes the local clone
 // directory, and returns HTTP 200 with status='archived'.
 //
@@ -120,7 +120,7 @@ func TestSmoke05_ArchiveReadyWorkspace(t *testing.T) {
 		t.Fatalf("create trunk dir: %v", err)
 	}
 
-	// Seed workspace with clone_status='ready'.
+	// Seed workspace with status='ready'.
 	env.seedWorkspace(t, &Workspace{
 		Slug:    slug,
 		GitURL:  "https://github.com/org/repo",
@@ -155,9 +155,6 @@ func TestSmoke05_ArchiveReadyWorkspace(t *testing.T) {
 	if resp.Status != "archived" {
 		t.Errorf("status = %q; want 'archived'", resp.Status)
 	}
-	if resp.CloneStatus == nil || *resp.CloneStatus != "archived" {
-		t.Errorf("clone_status = %v; want 'archived'", resp.CloneStatus)
-	}
 	if resp.HeadSHA == nil || *resp.HeadSHA != fakeSHA {
 		t.Errorf("head_sha = %v; want %q", resp.HeadSHA, fakeSHA)
 	}
@@ -169,8 +166,8 @@ func TestSmoke05_ArchiveReadyWorkspace(t *testing.T) {
 }
 
 // TS-05-SMOKE-3: Happy path: reactivating an archived workspace sets
-// status='active', clone_status='pending', enqueues a reclone job, and the
-// worker re-clones the repository setting clone_status='ready'.
+// status='pending', enqueues a reclone job, and the worker re-clones the
+// repository setting status='ready'.
 //
 // Validates: 05-REQ-7.1, 05-PATH-3
 func TestSmoke05_ReactivateAndReclone(t *testing.T) {
@@ -217,20 +214,17 @@ func TestSmoke05_ReactivateAndReclone(t *testing.T) {
 		t.Fatalf("decode reactivate response: %v", err)
 	}
 
-	if resp.Status != "active" {
-		t.Errorf("status = %q; want 'active'", resp.Status)
-	}
-	if resp.CloneStatus == nil || *resp.CloneStatus != "pending" {
-		t.Errorf("clone_status = %v; want 'pending'", resp.CloneStatus)
+	if resp.Status != "pending" {
+		t.Errorf("status = %q; want 'pending'", resp.Status)
 	}
 	if resp.CloneError != nil {
 		t.Errorf("clone_error = %v; want nil", resp.CloneError)
 	}
 
 	// Wait for the worker to process the reclone job.
-	waitForCloneStatus(t, env.db, "reactivate-ws", "ready", 5*time.Second)
+	waitForStatus(t, env.db, "reactivate-ws", "ready", 5*time.Second)
 
-	// GET — verify clone_status='ready' and updated head_sha.
+	// GET — verify status='ready' and updated head_sha.
 	rec = env.doRequest(t, http.MethodGet, "/api/v1/workspaces/reactivate-ws", "", auth)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET status = %d; want %d", rec.Code, http.StatusOK)
@@ -240,8 +234,8 @@ func TestSmoke05_ReactivateAndReclone(t *testing.T) {
 	if err := json.NewDecoder(rec.Body).Decode(&getResp); err != nil {
 		t.Fatalf("decode get response: %v", err)
 	}
-	if getResp.CloneStatus == nil || *getResp.CloneStatus != "ready" {
-		t.Errorf("after reclone: clone_status = %v; want 'ready'", getResp.CloneStatus)
+	if getResp.Status != "ready" {
+		t.Errorf("after reclone: status = %q; want 'ready'", getResp.Status)
 	}
 	if getResp.HeadSHA == nil || *getResp.HeadSHA != fakeSHA {
 		t.Errorf("after reclone: head_sha = %v; want %q", getResp.HeadSHA, fakeSHA)
@@ -351,64 +345,61 @@ func TestSmoke05_FullLifecycle(t *testing.T) {
 	slug := "lifecycle-spec05"
 	branch := "main"
 
-	// 1. Create workspace — HTTP 201 with clone_status='pending'.
+	// 1. Create workspace — HTTP 201 with status='pending'.
 	body := fmt.Sprintf(`{"slug":%q,"git_url":"https://github.com/org/repo","branch":%q}`, slug, branch)
 	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces", body, auth)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("step 1 create: status = %d; want %d\nbody: %s", rec.Code, http.StatusCreated, rec.Body.String())
 	}
-	assertCloneStatus(t, rec, "pending", "step 1 create")
+	assertStatus(t, rec, "pending", "step 1 create")
 
 	// 2. Wait for clone worker to complete.
-	waitForCloneStatus(t, env.db, slug, "ready", 5*time.Second)
+	waitForStatus(t, env.db, slug, "ready", 5*time.Second)
 
-	// 3. GET — clone_status='ready', valid head_sha.
+	// 3. GET — status='ready', valid head_sha.
 	rec = env.doRequest(t, http.MethodGet, "/api/v1/workspaces/"+slug, "", auth)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("step 3 get: status = %d", rec.Code)
 	}
-	ws := assertCloneStatus(t, rec, "ready", "step 3 get")
+	ws := assertStatus(t, rec, "ready", "step 3 get")
 	if ws.HeadSHA == nil || len(*ws.HeadSHA) != 40 {
 		t.Errorf("step 3 get: head_sha = %v; want 40-char hex string", ws.HeadSHA)
 	}
 
-	// 4. Archive — HTTP 200 with clone_status='archived'; directory deleted.
+	// 4. Archive — HTTP 200 with status='archived'; directory deleted.
 	rec = env.doRequest(t, http.MethodPost, "/api/v1/workspaces/"+slug+"/archive", "", auth)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("step 4 archive: status = %d; want %d\nbody: %s", rec.Code, http.StatusOK, rec.Body.String())
 	}
-	ws = assertCloneStatus(t, rec, "archived", "step 4 archive")
-	if ws.Status != "archived" {
-		t.Errorf("step 4 archive: status = %q; want 'archived'", ws.Status)
-	}
+	assertStatus(t, rec, "archived", "step 4 archive")
 	wsDir := filepath.Join(wsRoot, slug)
 	if _, err := os.Stat(wsDir); !os.IsNotExist(err) {
 		t.Errorf("step 4: workspace directory %q still exists", wsDir)
 	}
 
-	// 5. Reactivate — HTTP 200 with clone_status='pending'.
+	// 5. Reactivate — HTTP 200 with status='pending'.
 	rec = env.doRequest(t, http.MethodPost, "/api/v1/workspaces/"+slug+"/reactivate", "", auth)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("step 5 reactivate: status = %d; want %d\nbody: %s", rec.Code, http.StatusOK, rec.Body.String())
 	}
-	assertCloneStatus(t, rec, "pending", "step 5 reactivate")
+	assertStatus(t, rec, "pending", "step 5 reactivate")
 
 	// 6. Wait for reclone worker.
-	waitForCloneStatus(t, env.db, slug, "ready", 5*time.Second)
+	waitForStatus(t, env.db, slug, "ready", 5*time.Second)
 
-	// Verify reclone completed — clone_status='ready'.
+	// Verify reclone completed — status='ready'.
 	rec = env.doRequest(t, http.MethodGet, "/api/v1/workspaces/"+slug, "", auth)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("step 6 get: status = %d", rec.Code)
 	}
-	assertCloneStatus(t, rec, "ready", "step 6 after reclone")
+	assertStatus(t, rec, "ready", "step 6 after reclone")
 
 	// 7. Archive again.
 	rec = env.doRequest(t, http.MethodPost, "/api/v1/workspaces/"+slug+"/archive", "", auth)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("step 7 re-archive: status = %d", rec.Code)
 	}
-	assertCloneStatus(t, rec, "archived", "step 7 re-archive")
+	assertStatus(t, rec, "archived", "step 7 re-archive")
 
 	// 8. Delete — HTTP 204; DB row gone; no directory remains.
 	rec = env.doRequest(t, http.MethodDelete, "/api/v1/workspaces/"+slug, "", auth)
@@ -428,8 +419,8 @@ func TestSmoke05_FullLifecycle(t *testing.T) {
 }
 
 // TS-05-SMOKE-6: Failure path: workspace is created with an invalid git URL,
-// returns HTTP 201 with clone_status='pending', and the worker sets
-// clone_status='failed' with the error in clone_error after PlainCloneContext fails.
+// returns HTTP 201 with status='pending', and the worker sets
+// status='failed' with the error in clone_error after PlainCloneContext fails.
 //
 // Validates: 05-PATH-6
 func TestSmoke05_CloneFailure(t *testing.T) {
@@ -455,24 +446,24 @@ func TestSmoke05_CloneFailure(t *testing.T) {
 
 	auth := userAuth("alice-user-id")
 
-	// Create workspace — returns 201 with clone_status='pending'.
+	// Create workspace — returns 201 with status='pending'.
 	body := `{"slug":"fail-ws","git_url":"https://github.com/invalid/repo.git"}`
 	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces", body, auth)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("create status = %d; want %d\nbody: %s", rec.Code, http.StatusCreated, rec.Body.String())
 	}
-	assertCloneStatus(t, rec, "pending", "create")
+	assertStatus(t, rec, "pending", "create")
 
 	// Wait for worker to process the job (will fail the clone).
-	waitForCloneStatus(t, env.db, "fail-ws", "failed", 5*time.Second)
+	waitForStatus(t, env.db, "fail-ws", "failed", 5*time.Second)
 
-	// GET — clone_status='failed', clone_error non-null.
+	// GET — status='failed', clone_error non-null.
 	rec = env.doRequest(t, http.MethodGet, "/api/v1/workspaces/fail-ws", "", auth)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET status = %d", rec.Code)
 	}
 
-	ws := assertCloneStatus(t, rec, "failed", "after clone failure")
+	ws := assertStatus(t, rec, "failed", "after clone failure")
 	if ws.CloneError == nil {
 		t.Error("clone_error is nil; want non-null error message")
 	} else if *ws.CloneError == "" {
@@ -509,7 +500,7 @@ func TestSmoke05_AllEndpointsIncludeCloneFields(t *testing.T) {
 	slug := "clone-fields-ws"
 
 	// Verify each endpoint returns clone fields.
-	cloneFields := []string{"clone_status", "head_sha", "clone_error"}
+	cloneFields := []string{"status", "head_sha", "clone_error"}
 
 	t.Run("POST_create", func(t *testing.T) {
 		body := fmt.Sprintf(`{"slug":%q,"git_url":"https://github.com/org/repo"}`, slug)
@@ -556,7 +547,7 @@ func TestSmoke05_AllEndpointsIncludeCloneFields(t *testing.T) {
 		assertJSONHasFields(t, rec, cloneFields)
 	})
 
-	// Set clone_status to 'ready' so archive can push.
+	// Set status to 'ready' so archive can push.
 	_ = setStatus(env.db, slug, "ready", nil, nil)
 	trunkDir := filepath.Join(defaultWorkspaceRoot, slug, "trunk")
 	_ = os.MkdirAll(trunkDir, 0o755)
@@ -580,26 +571,23 @@ func TestSmoke05_AllEndpointsIncludeCloneFields(t *testing.T) {
 
 // ---------- helpers ----------
 
-// assertCloneStatus decodes a spec05WorkspaceJSON from the recorder and checks
-// that clone_status matches the expected value. Returns the decoded struct.
-func assertCloneStatus(t *testing.T, rec *httptest.ResponseRecorder, want, label string) spec05WorkspaceJSON {
+// assertStatus decodes a spec05WorkspaceJSON from the recorder and checks
+// that status matches the expected value. Returns the decoded struct.
+func assertStatus(t *testing.T, rec *httptest.ResponseRecorder, want, label string) spec05WorkspaceJSON {
 	t.Helper()
 	var ws spec05WorkspaceJSON
 	if err := json.NewDecoder(rec.Body).Decode(&ws); err != nil {
 		t.Fatalf("%s: decode: %v", label, err)
 	}
-	if ws.CloneStatus == nil {
-		t.Fatalf("%s: clone_status is nil; want %q", label, want)
-	}
-	if *ws.CloneStatus != want {
-		t.Errorf("%s: clone_status = %q; want %q", label, *ws.CloneStatus, want)
+	if ws.Status != want {
+		t.Errorf("%s: status = %q; want %q", label, ws.Status, want)
 	}
 	return ws
 }
 
-// waitForCloneStatus polls the database until the workspace's clone_status
-// matches the expected value, or times out.
-func waitForCloneStatus(t *testing.T, db *sql.DB, slug, want string, timeout time.Duration) {
+// waitForStatus polls the database until the workspace's status matches the
+// expected value, or times out.
+func waitForStatus(t *testing.T, db *sql.DB, slug, want string, timeout time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
@@ -610,7 +598,7 @@ func waitForCloneStatus(t *testing.T, db *sql.DB, slug, want string, timeout tim
 		time.Sleep(10 * time.Millisecond)
 	}
 	status, _, _, _ := getCloneFields(db, slug)
-	t.Fatalf("timeout waiting for clone_status=%q on %q; current=%q", want, slug, status)
+	t.Fatalf("timeout waiting for status=%q on %q; current=%q", want, slug, status)
 }
 
 // assertJSONHasFields decodes the response as a JSON object and verifies that

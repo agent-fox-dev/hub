@@ -1202,7 +1202,7 @@ func TestSessionReads_Member_TS_36_8(t *testing.T) {
 	}
 }
 
-// TS-36-9: session read routes refuse a workspace that is not active, not
+// TS-36-9: session read routes refuse a workspace that is archived, not
 // readable, missing or outside a bound PAT's binding with 403 workspace
 // access denied. Requirement: 36-REQ-2.2
 func TestSessionReads_Refused403_TS_36_9(t *testing.T) {

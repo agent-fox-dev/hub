@@ -69,7 +69,7 @@ func mockAPIServer(t *testing.T, workspaces map[string]workspaceResp, orgs map[s
 			Branch:    req.Branch,
 			OwnerID:   "test-user-id",
 			OrgID:     req.OrgID,
-			Status:    "active",
+			Status:    "pending",
 			CreatedAt: "2025-01-01T00:00:00Z",
 			UpdatedAt: "2025-01-01T00:00:00Z",
 		}
@@ -141,14 +141,14 @@ func mockAPIServer(t *testing.T, workspaces map[string]workspaceResp, orgs map[s
 			writeJSON(w, http.StatusNotFound, e)
 			return
 		}
-		if ws.Status == "active" {
+		if ws.Status != "archived" {
 			e := errorResp{}
 			e.Error.Code = http.StatusBadRequest
-			e.Error.Message = "workspace is already active"
+			e.Error.Message = "workspace is not archived"
 			writeJSON(w, http.StatusBadRequest, e)
 			return
 		}
-		ws.Status = "active"
+		ws.Status = "pending"
 		workspaces[slug] = ws
 		writeJSON(w, http.StatusOK, ws)
 	})
@@ -164,7 +164,7 @@ func mockAPIServer(t *testing.T, workspaces map[string]workspaceResp, orgs map[s
 			writeJSON(w, http.StatusNotFound, e)
 			return
 		}
-		if ws.Status == "active" {
+		if ws.Status != "archived" {
 			e := errorResp{}
 			e.Error.Code = http.StatusBadRequest
 			e.Error.Message = "only archived workspaces can be deleted"
@@ -302,8 +302,8 @@ func TestCLI_WorkspaceCreate_Success(t *testing.T) {
 	if ws.Slug != "my-ws" {
 		t.Errorf("slug = %q; want %q", ws.Slug, "my-ws")
 	}
-	if ws.Status != "active" {
-		t.Errorf("status = %q; want %q", ws.Status, "active")
+	if ws.Status != "pending" {
+		t.Errorf("status = %q; want %q", ws.Status, "pending")
 	}
 }
 
@@ -418,7 +418,7 @@ func TestCLI_WorkspaceCreate_APIError(t *testing.T) {
 			Slug:      "existing-ws",
 			GitURL:    "https://github.com/org/repo",
 			OwnerID:   "test-user-id",
-			Status:    "active",
+			Status:    "ready",
 			CreatedAt: "2025-01-01T00:00:00Z",
 			UpdatedAt: "2025-01-01T00:00:00Z",
 		},
@@ -448,7 +448,7 @@ func TestCLI_WorkspaceList_Success(t *testing.T) {
 			Slug:      "my-ws",
 			GitURL:    "https://github.com/org/repo",
 			OwnerID:   "test-user-id",
-			Status:    "active",
+			Status:    "ready",
 			CreatedAt: "2025-01-01T00:00:00Z",
 			UpdatedAt: "2025-01-01T00:00:00Z",
 		},
@@ -481,7 +481,7 @@ func TestCLI_WorkspaceList_IncludeArchived(t *testing.T) {
 			Slug:      "active-ws",
 			GitURL:    "https://github.com/org/repo1",
 			OwnerID:   "test-user-id",
-			Status:    "active",
+			Status:    "ready",
 			CreatedAt: "2025-01-01T00:00:00Z",
 			UpdatedAt: "2025-01-01T00:00:00Z",
 		},
@@ -558,7 +558,7 @@ func TestCLI_WorkspaceGet_Success(t *testing.T) {
 			Slug:      "my-ws",
 			GitURL:    "https://github.com/org/repo",
 			OwnerID:   "test-user-id",
-			Status:    "active",
+			Status:    "ready",
 			CreatedAt: "2025-01-01T00:00:00Z",
 			UpdatedAt: "2025-01-01T00:00:00Z",
 		},
@@ -612,7 +612,7 @@ func TestCLI_WorkspaceArchive_Success(t *testing.T) {
 			Slug:      "my-ws",
 			GitURL:    "https://github.com/org/repo",
 			OwnerID:   "test-user-id",
-			Status:    "active",
+			Status:    "ready",
 			CreatedAt: "2025-01-01T00:00:00Z",
 			UpdatedAt: "2025-01-01T00:00:00Z",
 		},
@@ -668,7 +668,7 @@ func TestCLI_WorkspaceArchive_Error(t *testing.T) {
 
 // TS-01-64: Verify that 'afc workspace reactivate <slug>' calls POST
 // /api/v1/workspaces/:slug/reactivate and prints the updated workspace JSON
-// (status='active') to stdout, exiting 0.
+// (status='pending') to stdout, exiting 0.
 // Requirement: 01-REQ-15.1
 func TestCLI_WorkspaceReactivate_Success(t *testing.T) {
 	workspaces := map[string]workspaceResp{
@@ -695,8 +695,8 @@ func TestCLI_WorkspaceReactivate_Success(t *testing.T) {
 	if jsonErr := json.Unmarshal([]byte(stdout), &ws); jsonErr != nil {
 		t.Fatalf("stdout is not valid JSON: %v\nstdout: %s", jsonErr, stdout)
 	}
-	if ws.Status != "active" {
-		t.Errorf("status = %q; want %q", ws.Status, "active")
+	if ws.Status != "pending" {
+		t.Errorf("status = %q; want %q", ws.Status, "pending")
 	}
 }
 
@@ -709,7 +709,7 @@ func TestCLI_WorkspaceReactivate_Error(t *testing.T) {
 			Slug:      "my-ws",
 			GitURL:    "https://github.com/org/repo",
 			OwnerID:   "test-user-id",
-			Status:    "active",
+			Status:    "ready",
 			CreatedAt: "2025-01-01T00:00:00Z",
 			UpdatedAt: "2025-01-01T00:00:00Z",
 		},
@@ -721,7 +721,7 @@ func TestCLI_WorkspaceReactivate_Error(t *testing.T) {
 		"reactivate", "my-ws")
 
 	if err == nil {
-		t.Error("expected error for already-active workspace; got nil")
+		t.Error("expected error for a workspace that is not archived; got nil")
 	}
 	if !hasErrorEnvelope(stdout) {
 		t.Errorf("stdout should contain error envelope; got: %s", stdout)
@@ -796,7 +796,7 @@ func TestCLI_WorkspaceDelete_Error(t *testing.T) {
 			Slug:      "my-ws",
 			GitURL:    "https://github.com/org/repo",
 			OwnerID:   "test-user-id",
-			Status:    "active",
+			Status:    "ready",
 			CreatedAt: "2025-01-01T00:00:00Z",
 			UpdatedAt: "2025-01-01T00:00:00Z",
 		},
@@ -855,7 +855,7 @@ func TestCLI_ExitCodes(t *testing.T) {
 				Slug:      "my-ws",
 				GitURL:    "https://github.com/org/repo",
 				OwnerID:   "test-user-id",
-				Status:    "active",
+				Status:    "ready",
 				CreatedAt: "2025-01-01T00:00:00Z",
 				UpdatedAt: "2025-01-01T00:00:00Z",
 			},

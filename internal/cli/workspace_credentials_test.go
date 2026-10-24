@@ -49,7 +49,7 @@ func credMockServer(t *testing.T, respondCode int, respondBody string) (*httptes
 			"slug":       rec.Slug,
 			"git_url":    rec.GitURL,
 			"owner_id":   "test-user-id",
-			"status":     "active",
+			"status":     "ready",
 			"created_at": "2025-01-01T00:00:00Z",
 			"updated_at": "2025-01-01T00:00:00Z",
 		})

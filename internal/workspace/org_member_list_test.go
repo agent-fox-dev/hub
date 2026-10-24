@@ -19,8 +19,8 @@ func seedListed(t *testing.T, env *testEnv, slug, owner, org, status, createdAt 
 	if org != "" {
 		orgID = org
 	}
-	if _, err := env.db.Exec(`INSERT INTO workspaces (slug, git_url, owner_id, org_id, status, display_name, description, clone_status, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, '', 'ready', ?, ?)`, slug, "https://github.com/org/"+slug, owner, orgID, status, slug, createdAt, createdAt); err != nil {
+	if _, err := env.db.Exec(`INSERT INTO workspaces (slug, git_url, owner_id, org_id, status, display_name, description, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, '', ?, ?)`, slug, "https://github.com/org/"+slug, owner, orgID, status, slug, createdAt, createdAt); err != nil {
 		t.Fatalf("seeding %s: %v", slug, err)
 	}
 }
@@ -52,10 +52,10 @@ func listFixture(t *testing.T) *testEnv {
 	env.seedOrgMember(t, "O", "u1")
 	env.seedOrgMember(t, "O", "u2")
 	env.seedOrgMember(t, "Z", "u1")
-	seedListed(t, env, "w1-owned", "u2", "", "active", "2026-01-01T00:00:01Z")
-	seedListed(t, env, "w2-member", "u1", "O", "active", "2026-01-01T00:00:03Z")
+	seedListed(t, env, "w1-owned", "u2", "", "ready", "2026-01-01T00:00:01Z")
+	seedListed(t, env, "w2-member", "u1", "O", "ready", "2026-01-01T00:00:03Z")
 	seedListed(t, env, "w3-archived", "u1", "O", "archived", "2026-01-01T00:00:02Z")
-	seedListed(t, env, "w4-other", "u1", "Z", "active", "2026-01-01T00:00:04Z")
+	seedListed(t, env, "w4-other", "u1", "Z", "ready", "2026-01-01T00:00:04Z")
 	return env
 }
 
@@ -115,7 +115,7 @@ func TestListWorkspaces_ManyChunks_TS_35_23(t *testing.T) {
 			owner, org = "u2", ""
 		}
 		// Slugs are not in created_at order, so the merge must sort.
-		seedListed(t, env, fmt.Sprintf("ws-%03d", (i*7)%501), owner, org, "active",
+		seedListed(t, env, fmt.Sprintf("ws-%03d", (i*7)%501), owner, org, "ready",
 			fmt.Sprintf("2026-01-01T%02d:%02d:%02dZ", i/3600, (i/60)%60, i%60))
 	}
 	rec := env.doRequest(t, http.MethodGet, "/api/v1/workspaces", "", userAuth("u2"))
@@ -228,7 +228,7 @@ func TestListWorkspacesBySlugChunks_Merge_TS_35_23(t *testing.T) {
 	for i := 0; i < 11; i++ {
 		slug := fmt.Sprintf("chunk-%02d", i)
 		// Three workspaces share each created_at, so ties need the slug order.
-		seedListed(t, env, slug, "u1", "", "active", fmt.Sprintf("2026-01-01T00:00:%02dZ", (i*7)%4))
+		seedListed(t, env, slug, "u1", "", "ready", fmt.Sprintf("2026-01-01T00:00:%02dZ", (i*7)%4))
 		slugs = append(slugs, slug)
 	}
 	want, err := listWorkspacesBySlugChunks(env.db, slugs, false, len(slugs))

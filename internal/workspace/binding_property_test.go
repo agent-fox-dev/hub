@@ -48,7 +48,7 @@ func newSweepEnv(t *testing.T, guarded, bound bool) *testEnv {
 	env := &testEnv{echo: e, db: db}
 	seedDefaultPersonalOrgs(t, db)
 	for _, w := range []struct{ slug, owner, status string }{
-		{"s", "user-1", "active"}, {"x", "user-1", "active"}, {"a", "user-1", "archived"}, {"o", "user-2", "active"},
+		{"s", "user-1", "ready"}, {"x", "user-1", "ready"}, {"a", "user-1", "archived"}, {"o", "user-2", "ready"},
 	} {
 		env.seedWorkspace(t, &Workspace{Slug: w.slug, GitURL: "https://github.com/org/" + w.slug, OwnerID: w.owner, Status: w.status})
 	}
@@ -293,7 +293,7 @@ func TestBinding_NoQueryForKeysAndAdmin_TS_33_52(t *testing.T) {
 	if err := secrets.RegisterRoutes(h.server.APIGroup(), h.db.SqlDB); err != nil {
 		t.Fatal(err)
 	}
-	h.seed(t, "s", "u1", "active")
+	h.seed(t, "s", "u1", "ready")
 	adminToken := apikit.TokenPrefix + "_admin_" + strings.Repeat("ab", 32)
 	sum := sha256.Sum256([]byte(adminToken))
 	if _, err := h.db.SqlDB.Exec(`INSERT OR REPLACE INTO admin_config (key, value) VALUES ('admin_token_hash', ?)`, hex.EncodeToString(sum[:])); err != nil {
@@ -427,8 +427,8 @@ func TestBoundToken_DeletedWorkspaceFailsClosed_TS_33_55(t *testing.T) {
 	if err := secrets.RegisterRoutes(h.server.APIGroup(), h.db.SqlDB); err != nil {
 		t.Fatal(err)
 	}
-	h.seed(t, "s", "u1", "active")
-	h.seed(t, "x", "u1", "active")
+	h.seed(t, "s", "u1", "ready")
+	h.seed(t, "x", "u1", "ready")
 	token, id := h.mintPAT(t, "workspaces:read", "workspaces:write", "patches:read", "secrets:write")
 	bindToken(t, h.db.SqlDB, id, "s")
 	noPatches, noPatchesID := h.mintPAT(t, "workspaces:read")

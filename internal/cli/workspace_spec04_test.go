@@ -40,7 +40,7 @@ func TestCLIWorkspace_CreateWithoutOrg_NoOrgIDInBody(t *testing.T) {
 			GitURL:    capturedBody["git_url"].(string),
 			OwnerID:   "test-user-id",
 			OrgID:     &orgID,
-			Status:    "active",
+			Status:    "ready",
 			CreatedAt: "2025-01-01T00:00:00Z",
 			UpdatedAt: "2025-01-01T00:00:00Z",
 		}
@@ -99,7 +99,7 @@ func TestCLIWorkspace_CreateWithOrg_OrgIDInBody(t *testing.T) {
 			GitURL:    capturedBody["git_url"].(string),
 			OwnerID:   "test-user-id",
 			OrgID:     &orgID,
-			Status:    "active",
+			Status:    "ready",
 			CreatedAt: "2025-01-01T00:00:00Z",
 			UpdatedAt: "2025-01-01T00:00:00Z",
 		}

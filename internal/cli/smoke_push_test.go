@@ -103,8 +103,8 @@ func startPushSmokeHub(t *testing.T) *pushSmokeHub {
 
 	// The workspace: a trunk with main and the given branches, origin a bare
 	// repository that has main.
-	if _, err := database.SqlDB.Exec(`INSERT INTO workspaces (slug, git_url, owner_id, status, clone_status, created_at, updated_at)
-		VALUES ('smoke', ?, 'u1', 'active', 'ready', ?, ?)`, h.bare(), now, now); err != nil {
+	if _, err := database.SqlDB.Exec(`INSERT INTO workspaces (slug, git_url, owner_id, status, created_at, updated_at)
+		VALUES ('smoke', ?, 'u1', 'ready', ?, ?)`, h.bare(), now, now); err != nil {
 		t.Fatal(err)
 	}
 	return h

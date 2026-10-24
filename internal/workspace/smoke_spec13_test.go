@@ -76,7 +76,7 @@ func TestSmoke13_SyncEndToEnd(t *testing.T) {
 	}
 
 	// Step 2: Wait for clone to complete.
-	waitForCloneStatus(t, env.db, "smoke-sync-ws", "ready", 5*1e9)
+	waitForStatus(t, env.db, "smoke-sync-ws", "ready", 5*1e9)
 
 	// Step 3: Trigger sync via POST /api/v1/workspaces/:slug/sync.
 	rec = env.doRequest(t, http.MethodPost,
@@ -179,7 +179,7 @@ func TestSmoke13_RecloneEndToEnd(t *testing.T) {
 	}
 
 	// Step 2: Wait for initial clone to complete.
-	waitForCloneStatus(t, env.db, "smoke-reclone-ws", "ready", 5*1e9)
+	waitForStatus(t, env.db, "smoke-reclone-ws", "ready", 5*1e9)
 
 	// Verify trunk directory exists.
 	trunkDir := filepath.Join(wsRoot, "smoke-reclone-ws", "trunk")
@@ -220,7 +220,7 @@ func TestSmoke13_RecloneEndToEnd(t *testing.T) {
 	// re-creates it asynchronously, so we just verify the response is correct.
 
 	// Step 5: Wait for reclone job to re-clone the workspace.
-	waitForCloneStatus(t, env.db, "smoke-reclone-ws", "ready", 5*1e9)
+	waitForStatus(t, env.db, "smoke-reclone-ws", "ready", 5*1e9)
 
 	// Step 6: Verify workspace is back to ready state.
 	rec = env.doRequest(t, http.MethodGet,

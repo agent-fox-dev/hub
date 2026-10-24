@@ -180,8 +180,8 @@ func TestBranchPushBoundElsewhere_TS_38_10(t *testing.T) {
 	hub := newRealHub(t)
 	events := useBranchPushEmitter(t)
 	pushes := recordPushes(t)
-	hub.seed(t, "ws-a", "u1", "active")
-	hub.seed(t, "ws-b", "u1", "active")
+	hub.seed(t, "ws-a", "u1", "ready")
+	hub.seed(t, "ws-b", "u1", "ready")
 	withScope, withScopeID := hub.mintPAT(t, "workspaces:write")
 	withoutScope, withoutScopeID := hub.mintPAT(t, "workspaces:read")
 	bindToken(t, hub.db.SqlDB, withScopeID, "ws-a")
@@ -290,8 +290,8 @@ func TestBranchPushInvalidName_TS_38_16(t *testing.T) {
 	env.assertNothingHappened(t)
 }
 
-// TS-38-17: An inactive workspace or one whose clone is not ready is refused
-// with 400 before the lock.
+// TS-38-17: A workspace that is not ready (archived, or its clone not done)
+// is refused with 400 before the lock.
 // Requirement: 38-REQ-3.2, 38-REQ-3.3
 func TestBranchPushWorkspaceNotUsable_TS_38_17(t *testing.T) {
 	env := newBranchPushEnv(t)
@@ -301,8 +301,8 @@ func TestBranchPushWorkspaceNotUsable_TS_38_17(t *testing.T) {
 	holdLock(t, "ws-cloning")
 
 	assertRefusal(t, env.push(t, "ws-archived", "feat", "", userAuth("user-a")),
-		http.StatusBadRequest, "workspace is not active; push requires an active workspace", "")
+		http.StatusBadRequest, "workspace is not ready; push requires a ready workspace", "")
 	assertRefusal(t, env.push(t, "ws-cloning", "feat", "", userAuth("user-a")),
-		http.StatusBadRequest, "workspace clone is not ready; clone_status must be 'ready' to push", "")
+		http.StatusBadRequest, "workspace is not ready; push requires a ready workspace", "")
 	env.assertNothingHappened(t)
 }

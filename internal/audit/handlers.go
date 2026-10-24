@@ -525,7 +525,7 @@ func handleWorkspaceCost(store Store, sqliteDB *sql.DB) echo.HandlerFunc {
 // workspace is refused, and reported with the request's method, route and
 // status 403, spec 34), then wsaccess.AuthorizeWorkspace with NeedRead (an
 // admin token, the owner or a member of the workspace's org), and the
-// workspace must be active. Any failed lookup denies access.
+// workspace must not be archived. Any failed lookup denies access.
 func hasWorkspaceAccess(c echo.Context, sqliteDB *sql.DB, auth *apikit.AuthInfo, slug string) bool {
 	denied, err := wsaccess.DeniesWorkspace(sqliteDB, auth, slug, wsaccess.SiteOf(c, http.StatusForbidden))
 	if err != nil || denied {
@@ -535,13 +535,13 @@ func hasWorkspaceAccess(c echo.Context, sqliteDB *sql.DB, auth *apikit.AuthInfo,
 	return status == 0 && ws.Status != "archived"
 }
 
-// getAccessibleWorkspaces returns the active workspaces a non-admin caller
+// getAccessibleWorkspaces returns the unarchived workspaces a non-admin caller
 // may read: the readable set of wsaccess.ReadableSlugs (owned and member
 // workspaces; for a PAT bound to a workspace at most that one, without a
-// refusal report), kept to those whose status is active.
+// refusal report), kept to those that are not archived.
 //
 // The list is never nil, because ListSessions reads a nil list as "no
-// restriction": a caller with no readable active workspace gets an empty
+// restriction": a caller with no readable unarchived workspace gets an empty
 // one, and so does a failed lookup, which also returns its error.
 func getAccessibleWorkspaces(sqliteDB *sql.DB, auth *apikit.AuthInfo) ([]string, error) {
 	readable, _, err := wsaccess.ReadableSlugs(sqliteDB, auth)

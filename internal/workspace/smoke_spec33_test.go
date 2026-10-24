@@ -45,8 +45,8 @@ func errorOf(t *testing.T, body string) errorEnvelope {
 // SQLite.
 func TestSmoke_BoundTokenOwnAndOtherWorkspace_TS_33_56(t *testing.T) {
 	h := newRealHub(t)
-	h.seed(t, "s", "u1", "active")
-	h.seed(t, "x", "u1", "active")
+	h.seed(t, "s", "u1", "ready")
+	h.seed(t, "x", "u1", "ready")
 	srv := httptest.NewServer(h.server.Echo())
 	defer srv.Close()
 

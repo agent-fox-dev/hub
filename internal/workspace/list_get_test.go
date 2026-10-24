@@ -252,8 +252,8 @@ func TestWorkspaceGet_Success(t *testing.T) {
 	if ws.OwnerID != "alice-id" {
 		t.Errorf("owner_id = %q; want %q", ws.OwnerID, "alice-id")
 	}
-	if ws.Status != "active" {
-		t.Errorf("status = %q; want %q", ws.Status, "active")
+	if ws.Status != "pending" {
+		t.Errorf("status = %q; want %q", ws.Status, "pending")
 	}
 	if _, err := time.Parse(time.RFC3339, ws.CreatedAt); err != nil {
 		t.Errorf("created_at %q is not valid RFC 3339: %v", ws.CreatedAt, err)

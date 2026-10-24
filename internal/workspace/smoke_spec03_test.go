@@ -184,8 +184,8 @@ func TestSmoke03_CreateWithDisplayNameAndDescription(t *testing.T) {
 	}
 
 	// Verify status.
-	if ws.Status != "active" {
-		t.Errorf("status = %q; want %q", ws.Status, "active")
+	if ws.Status != "pending" {
+		t.Errorf("status = %q; want %q", ws.Status, "pending")
 	}
 
 	// Verify the DB row was created with the correct fields.

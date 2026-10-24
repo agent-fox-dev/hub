@@ -232,7 +232,7 @@ func TestWorkspaceObject_MemberSeesOwnersView_TS_35_31(t *testing.T) {
 		`{"slug":"var-one","git_url":"https://github.com/acme/v1","org_id":"org-o","git_pat":"` + secret + `"}`,
 		`{"slug":"var-two","git_url":"https://github.com/acme/v2","org_id":"org-o","git_username":"bot","git_password":"` + secret + `"}`,
 		`{"slug":"var-three","git_url":"https://github.com/acme/v3","org_id":"org-o","workspace_mode":"carry_patch","upstream_url":"https://github.com/up/v3"}`,
-		`{"slug":"var-four","git_url":"https://github.com/acme/v4","org_id":"org-o","sync_mode":"disabled","description":"d"}`,
+		`{"slug":"var-four","git_url":"https://github.com/acme/v4","org_id":"org-o","settings":{"sync_enabled":false},"description":"d"}`,
 	} {
 		rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces", body, userAuth(specOwner))
 		if rec.Code != http.StatusCreated {
@@ -413,7 +413,7 @@ func TestBoundMemberRefused_TS_35_35(t *testing.T) {
 	if err := insertWorkspace(db, &Workspace{Slug: "b", GitURL: "https://github.com/a/b", OwnerID: "u1", OrgID: strp("ob"), Status: "pending"}); err != nil {
 		t.Fatal(err)
 	}
-	h.seed(t, "a2", "u2", "active")
+	h.seed(t, "a2", "u2", "ready")
 	key, err := apikit.GenerateAPIKey(db, "u2", 0, echo.New().Logger)
 	if err != nil {
 		t.Fatal(err)

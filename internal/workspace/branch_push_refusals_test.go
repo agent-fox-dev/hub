@@ -16,17 +16,13 @@ import (
 	"github.com/agent-fox-dev/hub/internal/wslock"
 )
 
-// seedPushWorkspace inserts ws, active and with its clone ready unless ws says
-// otherwise, with a trunk under the workspace root holding main and branches,
+// seedPushWorkspace inserts ws, ready unless ws says otherwise, with a trunk under the workspace root holding main and branches,
 // and an empty local bare repository as origin and git_url. It returns the bare
 // repository's path.
 func (e *branchPushEnv) seedPushWorkspace(t *testing.T, ws *Workspace, branches ...string) string {
 	t.Helper()
 	bare := newPushTrunk(t, filepath.Join(e.root, ws.Slug, "trunk"), branches...)
 	ws.GitURL = bare
-	if ws.Status == "" {
-		ws.Status = "active"
-	}
 	if ws.Status == "" {
 		ws.Status = "ready"
 	}

@@ -371,12 +371,12 @@ func TestWorkerCredential_CloneAuthError(t *testing.T) {
 	})
 
 	// Verify workspace is marked as failed.
-	cloneStatus, _, cloneError, err := getCloneFields(db, "auth-fail-ws")
+	status, _, cloneError, err := getCloneFields(db, "auth-fail-ws")
 	if err != nil {
 		t.Fatalf("getCloneFields() returned error: %v", err)
 	}
-	if cloneStatus != "failed" {
-		t.Errorf("clone_status = %q; want %q", cloneStatus, "failed")
+	if status != "failed" {
+		t.Errorf("status = %q; want %q", status, "failed")
 	}
 	if cloneError == nil || *cloneError == "" {
 		t.Error("clone_error should contain the authentication error message")

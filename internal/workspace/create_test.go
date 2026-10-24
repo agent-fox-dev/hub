@@ -30,8 +30,8 @@ func TestWorkspaceCreate_Success(t *testing.T) {
 	if ws.GitURL != "https://github.com/org/repo" {
 		t.Errorf("git_url = %q; want %q", ws.GitURL, "https://github.com/org/repo")
 	}
-	if ws.Status != "active" {
-		t.Errorf("status = %q; want %q", ws.Status, "active")
+	if ws.Status != "pending" {
+		t.Errorf("status = %q; want %q", ws.Status, "pending")
 	}
 	if ws.OwnerID != "alice-id" {
 		t.Errorf("owner_id = %q; want %q", ws.OwnerID, "alice-id")

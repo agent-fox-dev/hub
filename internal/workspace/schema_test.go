@@ -61,11 +61,11 @@ func TestWorkspaceSchema_CreatesTable(t *testing.T) {
 		t.Fatalf("rows iteration error: %v", err)
 	}
 
-	// 13 original columns + 5 sync columns (sync_mode, sync_status,
-	// upstream_head_sha, last_sync_at, sync_error) + 3 carry-patch columns
-	// (workspace_mode, upstream_url, integration_branch) + settings = 22.
-	if len(columns) != 22 {
-		t.Errorf("got %d columns; want 22", len(columns))
+	// 12 original columns (status carries the clone state) + 3 sync columns
+	// (upstream_head_sha, last_sync_at, sync_error) + 3 carry-patch columns
+	// (workspace_mode, upstream_url, integration_branch) + settings = 19.
+	if len(columns) != 19 {
+		t.Errorf("got %d columns; want 19", len(columns))
 	}
 
 	// Verify each column's properties.
@@ -81,7 +81,7 @@ func TestWorkspaceSchema_CreatesTable(t *testing.T) {
 		{"branch", "TEXT", false, "", false},
 		{"owner_id", "TEXT", true, "", false},
 		{"org_id", "TEXT", false, "", false},
-		{"status", "TEXT", true, "'active'", false},
+		{"status", "TEXT", true, "'pending'", false},
 		{"display_name", "TEXT", true, "''", false},
 		{"description", "TEXT", true, "''", false},
 		{"created_at", "TEXT", true, "", false},
@@ -197,16 +197,13 @@ func TestPatchesSchema_Migration_AddsConflictFilesColumn(t *testing.T) {
 			branch            TEXT,
 			owner_id          TEXT NOT NULL,
 			org_id            TEXT,
-			status            TEXT NOT NULL DEFAULT 'active',
+			status            TEXT NOT NULL DEFAULT 'pending',
 			display_name      TEXT NOT NULL DEFAULT '',
 			description       TEXT NOT NULL DEFAULT '',
-			clone_status      TEXT NOT NULL DEFAULT 'pending',
 			head_sha          TEXT,
 			clone_error       TEXT,
 			created_at        TEXT NOT NULL,
 			updated_at        TEXT NOT NULL,
-			sync_mode         TEXT NOT NULL DEFAULT 'pull_only',
-			sync_status       TEXT NOT NULL DEFAULT 'idle',
 			upstream_head_sha TEXT,
 			last_sync_at      TEXT,
 			sync_error        TEXT,

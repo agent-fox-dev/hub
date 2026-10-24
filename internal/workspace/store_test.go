@@ -135,8 +135,8 @@ func TestWorkspaceStore_AllFields(t *testing.T) {
 	if orgID != nil {
 		t.Errorf("org_id = %v; want nil", orgID)
 	}
-	if status != "active" {
-		t.Errorf("status = %q; want %q", status, "active")
+	if status != "pending" {
+		t.Errorf("status = %q; want %q", status, "pending")
 	}
 	if _, err := time.Parse(time.RFC3339, createdAt); err != nil {
 		t.Errorf("created_at %q is not valid RFC 3339: %v", createdAt, err)

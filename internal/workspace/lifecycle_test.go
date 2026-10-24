@@ -161,7 +161,7 @@ func TestWorkspaceArchive_NotFound(t *testing.T) {
 }
 
 // TS-01-43: Verify that POST /api/v1/workspaces/:slug/reactivate updates an
-// archived workspace to 'active' and returns HTTP 200 with the updated object.
+// archived workspace to 'pending' and returns HTTP 200 with the updated object.
 // Requirement: 01-REQ-9.1
 func TestWorkspaceReactivate_Success(t *testing.T) {
 	env := newTestEnv(t)
@@ -181,8 +181,8 @@ func TestWorkspaceReactivate_Success(t *testing.T) {
 	}
 
 	ws := parseWorkspaceJSON(t, rec)
-	if ws.Status != "active" {
-		t.Errorf("status = %q; want %q", ws.Status, "active")
+	if ws.Status != "pending" {
+		t.Errorf("status = %q; want %q", ws.Status, "pending")
 	}
 	if ws.Slug != "alice-ws" {
 		t.Errorf("slug = %q; want %q", ws.Slug, "alice-ws")
@@ -194,8 +194,8 @@ func TestWorkspaceReactivate_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("querying workspace status: %v", err)
 	}
-	if status != "active" {
-		t.Errorf("DB status = %q; want %q", status, "active")
+	if status != "pending" {
+		t.Errorf("DB status = %q; want %q", status, "pending")
 	}
 }
 

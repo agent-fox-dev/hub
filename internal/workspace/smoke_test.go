@@ -36,8 +36,8 @@ func TestSmoke_CreateWorkspace(t *testing.T) {
 	if ws.GitURL != "https://github.com/org/repo" {
 		t.Errorf("git_url = %q; want %q", ws.GitURL, "https://github.com/org/repo")
 	}
-	if ws.Status != "active" {
-		t.Errorf("status = %q; want %q", ws.Status, "active")
+	if ws.Status != "pending" {
+		t.Errorf("status = %q; want %q", ws.Status, "pending")
 	}
 	if ws.OwnerID != "alice-user-id" {
 		t.Errorf("owner_id = %q; want %q", ws.OwnerID, "alice-user-id")
@@ -59,8 +59,8 @@ func TestSmoke_CreateWorkspace(t *testing.T) {
 	if dbWs == nil {
 		t.Fatal("workspace not found in database after creation")
 	}
-	if dbWs.Status != "active" {
-		t.Errorf("DB status = %q; want %q", dbWs.Status, "active")
+	if dbWs.Status != "pending" {
+		t.Errorf("DB status = %q; want %q", dbWs.Status, "pending")
 	}
 	if dbWs.OwnerID != "alice-user-id" {
 		t.Errorf("DB owner_id = %q; want %q", dbWs.OwnerID, "alice-user-id")
@@ -197,8 +197,8 @@ func TestSmoke_ListWithIncludeArchived(t *testing.T) {
 	for _, ws := range wsList {
 		statuses[ws.Status] = true
 	}
-	if !statuses["active"] {
-		t.Error("no active workspace in list")
+	if !statuses["pending"] {
+		t.Error("no pending workspace in list")
 	}
 	if !statuses["archived"] {
 		t.Error("no archived workspace in list (should be included with include_archived=true)")
@@ -323,7 +323,7 @@ func TestSmoke_PATReadOwnWorkspacesOnly(t *testing.T) {
 }
 
 // TS-01-SMOKE-6: End-to-end smoke test: reactivate an archived workspace and verify
-// the workspace status is updated to 'active' in the database, with updated_at
+// the workspace status is updated to 'pending' in the database, with updated_at
 // refreshed.
 //
 // Real components: echo HTTP server, auth middleware (test shim),
@@ -357,8 +357,8 @@ func TestSmoke_ReactivateArchivedWorkspace(t *testing.T) {
 	}
 
 	ws := parseWorkspaceJSON(t, rec)
-	if ws.Status != "active" {
-		t.Errorf("response status = %q; want %q", ws.Status, "active")
+	if ws.Status != "pending" {
+		t.Errorf("response status = %q; want %q", ws.Status, "pending")
 	}
 
 	// Verify DB state.
@@ -366,8 +366,8 @@ func TestSmoke_ReactivateArchivedWorkspace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("getWorkspaceBySlug after reactivate: %v", err)
 	}
-	if dbAfter.Status != "active" {
-		t.Errorf("DB status = %q; want %q", dbAfter.Status, "active")
+	if dbAfter.Status != "pending" {
+		t.Errorf("DB status = %q; want %q", dbAfter.Status, "pending")
 	}
 	// created_at must not change.
 	if dbAfter.CreatedAt != beforeCreatedAt {
@@ -511,8 +511,8 @@ func TestSmoke_FullLifecycle(t *testing.T) {
 		t.Fatalf("get returned %d", rec.Code)
 	}
 	ws = parseWorkspaceJSON(t, rec)
-	if ws.Status != "active" {
-		t.Errorf("get: status = %q; want active", ws.Status)
+	if ws.Status != "pending" {
+		t.Errorf("get: status = %q; want pending", ws.Status)
 	}
 
 	// 4. Archive.
@@ -551,8 +551,8 @@ func TestSmoke_FullLifecycle(t *testing.T) {
 		t.Fatalf("reactivate returned %d", rec.Code)
 	}
 	ws = parseWorkspaceJSON(t, rec)
-	if ws.Status != "active" {
-		t.Errorf("reactivate: status = %q; want active", ws.Status)
+	if ws.Status != "pending" {
+		t.Errorf("reactivate: status = %q; want pending", ws.Status)
 	}
 
 	// 8. Delete active workspace — should fail with 409 (must be archived first).

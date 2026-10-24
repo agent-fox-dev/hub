@@ -22,11 +22,11 @@ func TestCLI_WorkspaceSync_Success(t *testing.T) {
 		if r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/api/v1/workspaces/") &&
 			strings.HasSuffix(r.URL.Path, "/sync") {
 			resp := map[string]any{
-				"slug":        "sync-ws",
-				"git_url":     "https://github.com/example/repo.git",
-				"status":      "active",
-				"sync_mode":   "pull_only",
-				"sync_status": "idle",
+				"slug":         "sync-ws",
+				"git_url":      "https://github.com/example/repo.git",
+				"status":       "ready",
+				"last_sync_at": "2026-01-01T00:00:00Z",
+				"sync_error":   nil,
 			}
 			writeJSON(w, http.StatusOK, resp)
 			return
@@ -52,8 +52,8 @@ func TestCLI_WorkspaceSync_Success(t *testing.T) {
 	if jsonErr := json.Unmarshal([]byte(stdout), &resp); jsonErr != nil {
 		t.Fatalf("stdout is not valid JSON: %v\nstdout: %s", jsonErr, stdout)
 	}
-	if resp["sync_status"] != "idle" {
-		t.Errorf("sync_status = %v; want %q", resp["sync_status"], "idle")
+	if resp["slug"] != "sync-ws" || resp["sync_error"] != nil {
+		t.Errorf("slug, sync_error = %v, %v; want %q, nil", resp["slug"], resp["sync_error"], "sync-ws")
 	}
 }
 
@@ -64,11 +64,9 @@ func TestCLI_WorkspaceSync_ResetToUpstream(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		capturedPath = r.URL.RequestURI()
 		resp := map[string]any{
-			"slug":        "sync-ws",
-			"git_url":     "https://github.com/example/repo.git",
-			"status":      "active",
-			"sync_mode":   "pull_only",
-			"sync_status": "idle",
+			"slug":    "sync-ws",
+			"git_url": "https://github.com/example/repo.git",
+			"status":  "ready",
 		}
 		writeJSON(w, http.StatusOK, resp)
 	}))
@@ -114,18 +112,16 @@ func TestCLI_WorkspaceSync_APIError(t *testing.T) {
 
 // 13-REQ-7.3: Verifies that 'afc workspace reclone <slug> --confirm' calls
 // POST /api/v1/workspaces/:slug/reclone and prints the workspace JSON with
-// clone_status='pending'.
+// status='pending'.
 func TestCLI_WorkspaceReclone_Success(t *testing.T) {
 	var capturedPath string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		capturedPath = r.URL.RequestURI()
 		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/reclone") {
 			resp := map[string]any{
-				"slug":         "reclone-ws",
-				"git_url":      "https://github.com/example/repo.git",
-				"status":       "active",
-				"clone_status": "pending",
-				"sync_status":  "idle",
+				"slug":    "reclone-ws",
+				"git_url": "https://github.com/example/repo.git",
+				"status":  "pending",
 			}
 			writeJSON(w, http.StatusOK, resp)
 			return
@@ -147,16 +143,13 @@ func TestCLI_WorkspaceReclone_Success(t *testing.T) {
 			capturedPath, "/api/v1/workspaces/reclone-ws/reclone")
 	}
 
-	// Verify the output contains clone_status='pending'.
+	// Verify the output contains status='pending'.
 	var resp map[string]any
 	if jsonErr := json.Unmarshal([]byte(stdout), &resp); jsonErr != nil {
 		t.Fatalf("stdout is not valid JSON: %v\nstdout: %s", jsonErr, stdout)
 	}
-	if resp["clone_status"] != "pending" {
-		t.Errorf("clone_status = %v; want %q", resp["clone_status"], "pending")
-	}
-	if resp["status"] != "active" {
-		t.Errorf("status = %v; want %q", resp["status"], "active")
+	if resp["status"] != "pending" {
+		t.Errorf("status = %v; want %q", resp["status"], "pending")
 	}
 }
 

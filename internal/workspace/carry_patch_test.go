@@ -705,7 +705,7 @@ func TestCarryPatch_CarryPatchResponseNonNullFields(t *testing.T) {
 		// the columns exist.
 		_, err := env.db.Exec(
 			`INSERT INTO workspaces (slug, git_url, owner_id, status, display_name, description, created_at, updated_at, workspace_mode, upstream_url, integration_branch)
-			 VALUES ('cp-resp-ws', 'https://github.com/myfork/repo.git', 'u1-id', 'active', 'cp-resp-ws', '', '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z', 'carry_patch', 'https://github.com/upstream/repo.git', 'deploy')`,
+			 VALUES ('cp-resp-ws', 'https://github.com/myfork/repo.git', 'u1-id', 'ready', 'cp-resp-ws', '', '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z', 'carry_patch', 'https://github.com/upstream/repo.git', 'deploy')`,
 		)
 		if err != nil {
 			t.Fatalf("could not seed carry_patch workspace (columns likely missing): %v", err)

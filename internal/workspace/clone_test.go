@@ -133,9 +133,9 @@ func createBareRepoWithBranch(t *testing.T, branchName string) string {
 	return bareDir
 }
 
-// TS-05-13 (TS-05-11 in task mapping): Worker sets clone_status='cloning',
+// TS-05-13 (TS-05-11 in task mapping): Worker sets status='cloning',
 // creates workspace dir, calls PlainCloneContext with Depth=1; on success
-// sets clone_status='ready' and records head_sha.
+// sets status='ready' and records head_sha.
 // Requirement: 05-REQ-4.2, 05-REQ-4.3
 func TestCloneWorker_SuccessfulClone(t *testing.T) {
 	db := openTestDB(t)
@@ -186,13 +186,13 @@ func TestCloneWorker_SuccessfulClone(t *testing.T) {
 		t.Errorf("trunk directory %q should exist after successful clone", trunkDir)
 	}
 
-	// Verify DB state: clone_status=ready, head_sha set, clone_error null.
-	cloneStatus, headSHA, cloneError, err := getCloneFields(db, ws.Slug)
+	// Verify DB state: status=ready, head_sha set, clone_error null.
+	status, headSHA, cloneError, err := getCloneFields(db, ws.Slug)
 	if err != nil {
 		t.Fatalf("getCloneFields(%q): %v", ws.Slug, err)
 	}
-	if cloneStatus != "ready" {
-		t.Errorf("clone_status = %q; want %q", cloneStatus, "ready")
+	if status != "ready" {
+		t.Errorf("status = %q; want %q", status, "ready")
 	}
 	if headSHA == nil {
 		t.Error("head_sha is nil; want non-null 40-character hex string")
@@ -351,7 +351,7 @@ func TestCloneWorker_DefaultBranchCloneOptions(t *testing.T) {
 	}
 }
 
-// TS-05-13 (TS-05-15 in task mapping): On clone failure, clone_status='failed',
+// TS-05-13 (TS-05-15 in task mapping): On clone failure, status='failed',
 // clone_error set to error message, partial workspace directory removed.
 // Requirement: 05-REQ-4.4
 func TestCloneWorker_FailedClone(t *testing.T) {
@@ -380,13 +380,13 @@ func TestCloneWorker_FailedClone(t *testing.T) {
 		GitURL: ws.GitURL,
 	})
 
-	// Verify DB state: clone_status=failed, clone_error set.
-	cloneStatus, _, cloneError, err := getCloneFields(db, ws.Slug)
+	// Verify DB state: status=failed, clone_error set.
+	status, _, cloneError, err := getCloneFields(db, ws.Slug)
 	if err != nil {
 		t.Fatalf("getCloneFields(%q): %v", ws.Slug, err)
 	}
-	if cloneStatus != "failed" {
-		t.Errorf("clone_status = %q; want %q", cloneStatus, "failed")
+	if status != "failed" {
+		t.Errorf("status = %q; want %q", status, "failed")
 	}
 	if cloneError == nil {
 		t.Error("clone_error is nil; want non-null error message")
@@ -435,13 +435,13 @@ func TestCloneWorker_FailedClone_RemovesPartialDir(t *testing.T) {
 		GitURL: ws.GitURL,
 	})
 
-	// Verify DB state: clone_status=failed, clone_error set.
-	cloneStatus, _, cloneError, err := getCloneFields(db, ws.Slug)
+	// Verify DB state: status=failed, clone_error set.
+	status, _, cloneError, err := getCloneFields(db, ws.Slug)
 	if err != nil {
 		t.Fatalf("getCloneFields(%q): %v", ws.Slug, err)
 	}
-	if cloneStatus != "failed" {
-		t.Errorf("clone_status = %q; want %q", cloneStatus, "failed")
+	if status != "failed" {
+		t.Errorf("status = %q; want %q", status, "failed")
 	}
 	if cloneError == nil || *cloneError == "" {
 		t.Error("clone_error should contain the error message")
@@ -459,7 +459,7 @@ func TestCloneWorker_FailedClone_RemovesPartialDir(t *testing.T) {
 }
 
 // TestCloneWorker_FailedClone_UnreachableURL verifies that an unreachable
-// git URL results in clone_status=failed with the error recorded.
+// git URL results in status=failed with the error recorded.
 // Requirement: 05-REQ-4.E4
 func TestCloneWorker_FailedClone_UnreachableURL(t *testing.T) {
 	db := openTestDB(t)
@@ -486,12 +486,12 @@ func TestCloneWorker_FailedClone_UnreachableURL(t *testing.T) {
 		GitURL: ws.GitURL,
 	})
 
-	cloneStatus, _, cloneError, err := getCloneFields(db, ws.Slug)
+	status, _, cloneError, err := getCloneFields(db, ws.Slug)
 	if err != nil {
 		t.Fatalf("getCloneFields: %v", err)
 	}
-	if cloneStatus != "failed" {
-		t.Errorf("clone_status = %q; want %q", cloneStatus, "failed")
+	if status != "failed" {
+		t.Errorf("status = %q; want %q", status, "failed")
 	}
 	if cloneError == nil || *cloneError == "" {
 		t.Error("clone_error should contain the network error message")
@@ -499,7 +499,7 @@ func TestCloneWorker_FailedClone_UnreachableURL(t *testing.T) {
 }
 
 // TestCloneWorker_FailedClone_BranchNotFound verifies that a non-existent
-// branch results in clone_status=failed with the error recorded.
+// branch results in status=failed with the error recorded.
 // Requirement: 05-REQ-4.E5
 func TestCloneWorker_FailedClone_BranchNotFound(t *testing.T) {
 	db := openTestDB(t)
@@ -529,12 +529,12 @@ func TestCloneWorker_FailedClone_BranchNotFound(t *testing.T) {
 		Branch: &branch,
 	})
 
-	cloneStatus, _, cloneError, err := getCloneFields(db, ws.Slug)
+	status, _, cloneError, err := getCloneFields(db, ws.Slug)
 	if err != nil {
 		t.Fatalf("getCloneFields: %v", err)
 	}
-	if cloneStatus != "failed" {
-		t.Errorf("clone_status = %q; want %q", cloneStatus, "failed")
+	if status != "failed" {
+		t.Errorf("status = %q; want %q", status, "failed")
 	}
 	if cloneError == nil || *cloneError == "" {
 		t.Error("clone_error should contain the branch-not-found error message")
@@ -542,7 +542,7 @@ func TestCloneWorker_FailedClone_BranchNotFound(t *testing.T) {
 }
 
 // TestCloneWorker_FailedClone_HeadError verifies that if repo.Head() returns
-// an error after a successful clone, the worker sets clone_status=failed and
+// an error after a successful clone, the worker sets status=failed and
 // removes the workspace directory.
 // Requirement: 05-REQ-4.E6
 func TestCloneWorker_FailedClone_HeadError(t *testing.T) {
@@ -575,12 +575,12 @@ func TestCloneWorker_FailedClone_HeadError(t *testing.T) {
 		GitURL: ws.GitURL,
 	})
 
-	cloneStatus, _, cloneError, err := getCloneFields(db, ws.Slug)
+	status, _, cloneError, err := getCloneFields(db, ws.Slug)
 	if err != nil {
 		t.Fatalf("getCloneFields: %v", err)
 	}
-	if cloneStatus != "failed" {
-		t.Errorf("clone_status = %q; want %q", cloneStatus, "failed")
+	if status != "failed" {
+		t.Errorf("status = %q; want %q", status, "failed")
 	}
 	if cloneError == nil || *cloneError == "" {
 		t.Error("clone_error should contain the Head() error message")
@@ -595,7 +595,7 @@ func TestCloneWorker_FailedClone_HeadError(t *testing.T) {
 
 // TS-05-14 (TS-05-16 in task mapping): Idempotency — if workspace directory
 // already exists under WORKSPACE_ROOT, the clone job skips PlainCloneContext
-// and sets clone_status to 'ready' directly.
+// and sets status to 'ready' directly.
 // Requirement: 05-REQ-4.5
 func TestCloneWorker_IdempotentSkip(t *testing.T) {
 	db := openTestDB(t)
@@ -637,12 +637,12 @@ func TestCloneWorker_IdempotentSkip(t *testing.T) {
 	}
 
 	// Clone status should still be set to ready.
-	cloneStatus, _, _, err := getCloneFields(db, ws.Slug)
+	status, _, _, err := getCloneFields(db, ws.Slug)
 	if err != nil {
 		t.Fatalf("getCloneFields(%q): %v", ws.Slug, err)
 	}
-	if cloneStatus != "ready" {
-		t.Errorf("clone_status = %q; want %q (idempotent skip)", cloneStatus, "ready")
+	if status != "ready" {
+		t.Errorf("status = %q; want %q (idempotent skip)", status, "ready")
 	}
 }
 
@@ -651,7 +651,7 @@ func TestCloneWorker_IdempotentSkip(t *testing.T) {
 // ========================================================================
 
 // TestCloneWorker_StatusTransition_PendingToCloning verifies that the worker
-// transitions clone_status from pending to cloning before starting the clone.
+// transitions status from pending to cloning before starting the clone.
 // Requirement: 05-REQ-9.1 (pending -> cloning transition)
 func TestCloneWorker_StatusTransition_PendingToCloning(t *testing.T) {
 	db := openTestDB(t)
@@ -667,12 +667,12 @@ func TestCloneWorker_StatusTransition_PendingToCloning(t *testing.T) {
 		t.Fatalf("seed workspace: %v", err)
 	}
 
-	// Clone function checks that clone_status was set to "cloning" before
+	// Clone function checks that status was set to "cloning" before
 	// the clone function is called.
 	var statusDuringClone string
 	oldFn := cloneFn
 	cloneFn = func(_ context.Context, _ string, _ string, _ int, _ bool, _ string, _ transport.AuthMethod) (string, error) {
-		// Read clone_status from DB during the clone operation.
+		// Read status from DB during the clone operation.
 		status, _, _, err := getCloneFields(db, ws.Slug)
 		if err != nil {
 			statusDuringClone = "error: " + err.Error()
@@ -689,7 +689,7 @@ func TestCloneWorker_StatusTransition_PendingToCloning(t *testing.T) {
 	})
 
 	if statusDuringClone != "cloning" {
-		t.Errorf("clone_status during clone = %q; want %q (pending -> cloning transition)",
+		t.Errorf("status during clone = %q; want %q (pending -> cloning transition)",
 			statusDuringClone, "cloning")
 	}
 }
@@ -722,12 +722,12 @@ func TestCloneWorker_StatusTransition_CloningToReady(t *testing.T) {
 		GitURL: ws.GitURL,
 	})
 
-	cloneStatus, _, _, err := getCloneFields(db, ws.Slug)
+	status, _, _, err := getCloneFields(db, ws.Slug)
 	if err != nil {
 		t.Fatalf("getCloneFields: %v", err)
 	}
-	if cloneStatus != "ready" {
-		t.Errorf("clone_status = %q; want %q after successful clone", cloneStatus, "ready")
+	if status != "ready" {
+		t.Errorf("status = %q; want %q after successful clone", status, "ready")
 	}
 }
 
@@ -759,11 +759,11 @@ func TestCloneWorker_StatusTransition_CloningToFailed(t *testing.T) {
 		GitURL: ws.GitURL,
 	})
 
-	cloneStatus, _, _, err := getCloneFields(db, ws.Slug)
+	status, _, _, err := getCloneFields(db, ws.Slug)
 	if err != nil {
 		t.Fatalf("getCloneFields: %v", err)
 	}
-	if cloneStatus != "failed" {
-		t.Errorf("clone_status = %q; want %q after failed clone", cloneStatus, "failed")
+	if status != "failed" {
+		t.Errorf("status = %q; want %q after failed clone", status, "failed")
 	}
 }
