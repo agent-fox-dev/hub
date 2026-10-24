@@ -62,12 +62,6 @@ func CreatePersonalOrg(ctx context.Context, tx *sql.Tx, userID, username, email 
 	return doCreatePersonalOrg(ctx, tx, userID, username, email)
 }
 
-// createPersonalOrg is the unexported entry point used by earlier test code
-// (groups 4 and 5) that reference the lowercase name.
-func createPersonalOrg(ctx context.Context, tx *sql.Tx, userID, username, email string) error {
-	return doCreatePersonalOrg(ctx, tx, userID, username, email)
-}
-
 // doCreatePersonalOrg is the internal implementation accepting a txExecutor
 // interface. This indirection allows tests to call the hook logic with a spy
 // transaction wrapper that records executed SQL statements, or a faulty

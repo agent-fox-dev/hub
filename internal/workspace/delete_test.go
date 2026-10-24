@@ -1,151 +1,142 @@
 package workspace
 
 import (
+	"database/sql"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/txsvc/apikit"
+
+	"github.com/agent-fox-dev/hub/internal/audit"
+	"github.com/agent-fox-dev/hub/internal/secrets"
+	"github.com/agent-fox-dev/hub/internal/testutil"
 )
 
-// ========================================================================
-// Spec 05 Task 3.2: Delete lifecycle changes
-// (TS-05-24)
-// ========================================================================
-
-// TS-05-24: DELETE /api/v1/workspaces/:slug checks for and deletes the
-// workspace directory if it exists, then deletes the database row, returning
-// HTTP 204; logs a warning if directory deletion fails but still deletes
-// the row.
-// Requirement: 05-REQ-8.1
-
-// TestDelete_Spec05_DirectoryCleanup verifies that deleting an archived
-// workspace removes the workspace directory under WORKSPACE_ROOT before
-// deleting the database row.
-func TestDelete_Spec05_DirectoryCleanup(t *testing.T) {
-	env := newTestEnv(t)
-	wsRoot := t.TempDir()
-
-	oldRoot := defaultWorkspaceRoot
-	defaultWorkspaceRoot = wsRoot
-	defer func() { defaultWorkspaceRoot = oldRoot }()
-
-	env.seedWorkspace(t, &Workspace{
-		Slug:    "archived-ws-to-delete",
-		GitURL:  "https://github.com/org/repo",
-		OwnerID: "user-1",
-		Status:  "archived",
-	})
-
-	// Create workspace directory to verify it gets cleaned up.
-	wsDir := filepath.Join(wsRoot, "archived-ws-to-delete")
-	if err := os.MkdirAll(wsDir, 0o755); err != nil {
-		t.Fatalf("create workspace dir: %v", err)
+// seedPAT inserts a pats row of owner; revokedAt "" leaves the token live.
+func seedPAT(t *testing.T, db *sql.DB, tokenID, revokedAt string) {
+	t.Helper()
+	var revoked any
+	if revokedAt != "" {
+		revoked = revokedAt
 	}
-	// Add a file inside to verify recursive deletion.
-	if err := os.WriteFile(filepath.Join(wsDir, "leftover.txt"), []byte("data"), 0o644); err != nil {
-		t.Fatalf("write leftover file: %v", err)
-	}
+	testutil.Exec(t, db, `INSERT INTO pats (token_id, user_id, name, secret_hash, permissions, expires_days, revoked_at, created_at)
+		VALUES (?, ?, ?, 'hash', '[]', 90, ?, ?)`, tokenID, owner, "n-"+tokenID, revoked, apikit.NowUTC())
+}
 
-	rec := env.doRequest(t, http.MethodDelete, "/api/v1/workspaces/archived-ws-to-delete", "",
-		userAuth("user-1"))
-
-	// Assert HTTP 204.
-	if rec.Code != http.StatusNoContent {
-		t.Fatalf("HTTP status = %d; want %d\nbody: %s",
-			rec.Code, http.StatusNoContent, rec.Body.String())
+func revokedAt(t *testing.T, db *sql.DB, tokenID string) sql.NullString {
+	t.Helper()
+	var v sql.NullString
+	if err := db.QueryRow(`SELECT revoked_at FROM pats WHERE token_id = ?`, tokenID).Scan(&v); err != nil {
+		t.Fatalf("revoked_at of %s: %v", tokenID, err)
 	}
+	return v
+}
 
-	// Assert workspace directory was deleted.
-	if _, err := os.Stat(wsDir); !os.IsNotExist(err) {
-		t.Errorf("workspace directory %q should be deleted after DELETE", wsDir)
+// TestDelete_Cascade: deleting an archived workspace removes its row, its
+// directory, its patches, secrets and variables, revokes the live tokens bound
+// to it and their bindings, force-closes its sessions and records the revoked
+// tokens; other workspaces' data is untouched.
+func TestDelete_Cascade(t *testing.T) {
+	v := newEnv(t)
+	v.orgWorkspace(t, "team")
+	testutil.Exec(t, v.db, `UPDATE workspaces SET status = 'archived' WHERE slug = 'team'`)
+	v.seed(t, &Workspace{Slug: "other", OwnerID: owner})
+	v.seedPatch(t, "other", "feature/a", 1)
+	marker := markerDir(t, v, "team")
+	store := secrets.NewStore(v.db)
+	for _, slug := range []string{"team", "other"} {
+		storeSecrets(t, v.db, slug, "GIT_PAT", "tok")
+		if _, err := store.CreateVariables("workspace", slug, []secrets.EntryInput{{Key: "K", Value: "v"}}); err != nil {
+			t.Fatal(err)
+		}
 	}
+	seedPAT(t, v.db, "live", "")
+	seedPAT(t, v.db, "old", "2026-01-01T00:00:00Z")
+	seedPAT(t, v.db, "elsewhere", "")
+	testutil.BindToken(t, v.db, "live", "team")
+	testutil.BindToken(t, v.db, "old", "team")
+	testutil.BindToken(t, v.db, "elsewhere", "other")
+	auditStore := &fakeAuditStore{results: []audit.ForceCloseResult{{SessionID: "s1"}}}
+	swap(t, &defaultAuditStore, audit.Store(auditStore))
 
-	// Assert database row was deleted.
-	var count int
-	if err := env.db.QueryRow("SELECT COUNT(*) FROM workspaces WHERE slug = ?",
-		"archived-ws-to-delete").Scan(&count); err != nil {
-		t.Fatalf("count query: %v", err)
+	rec := v.do(t, http.MethodDelete, "/api/v1/workspaces/team", "", testutil.PAT(owner, "workspaces:write"))
+	expectStatus(t, rec, http.StatusNoContent)
+	counts := map[string]int{
+		`SELECT COUNT(*) FROM workspaces WHERE slug = 'team'`:                0,
+		`SELECT COUNT(*) FROM patches WHERE workspace_slug = 'team'`:         0,
+		`SELECT COUNT(*) FROM secrets WHERE owner_id = 'team'`:               0,
+		`SELECT COUNT(*) FROM variables WHERE owner_id = 'team'`:             0,
+		`SELECT COUNT(*) FROM token_workspace_bindings WHERE slug = 'team'`:  0,
+		`SELECT COUNT(*) FROM workspaces WHERE slug = 'other'`:               1,
+		`SELECT COUNT(*) FROM patches WHERE workspace_slug = 'other'`:        1,
+		`SELECT COUNT(*) FROM secrets WHERE owner_id = 'other'`:              1,
+		`SELECT COUNT(*) FROM variables WHERE owner_id = 'other'`:            1,
+		`SELECT COUNT(*) FROM token_workspace_bindings WHERE slug = 'other'`: 1,
+		`SELECT COUNT(*) FROM org_members WHERE org_id = 'org-acme'`:         2,
 	}
-	if count != 0 {
-		t.Errorf("workspace row still exists; want 0 rows after DELETE")
+	for q, want := range counts {
+		if n := testutil.Count(t, v.db, q); n != want {
+			t.Errorf("%s = %d; want %d", q, n, want)
+		}
+	}
+	if !revokedAt(t, v.db, "live").Valid || revokedAt(t, v.db, "old").String != "2026-01-01T00:00:00Z" || revokedAt(t, v.db, "elsewhere").Valid {
+		t.Error("want live revoked, old unchanged and elsewhere untouched")
+	}
+	if _, err := os.Stat(filepath.Join(v.root, "team")); !os.IsNotExist(err) {
+		t.Error("the workspace directory survived")
+	}
+	_ = marker
+	if auditStore.calls[0] != "team|workspace deleted" || len(v.events.ofType("hub.session.force_closed")) != 1 {
+		t.Errorf("force-close %v, events %+v", auditStore.calls, v.events.ofType("hub.session.force_closed"))
+	}
+	ev := v.events.one(t, "hub.workspace.delete")
+	if revoked, _ := ev.Metadata["revoked_tokens"].([]string); len(revoked) != 1 || revoked[0] != "live" || ev.Workspace != "team" {
+		t.Errorf("event %+v", ev)
 	}
 }
 
-// TestDelete_Spec05_DirectoryMissing verifies that when the workspace
-// directory does not exist under WORKSPACE_ROOT, the delete handler
-// skips directory deletion and proceeds to delete the database row.
-// Requirement: 05-REQ-8.E1
-func TestDelete_Spec05_DirectoryMissing(t *testing.T) {
-	env := newTestEnv(t)
-	wsRoot := t.TempDir()
-
-	oldRoot := defaultWorkspaceRoot
-	defaultWorkspaceRoot = wsRoot
-	defer func() { defaultWorkspaceRoot = oldRoot }()
-
-	env.seedWorkspace(t, &Workspace{
-		Slug:    "no-dir-ws",
-		GitURL:  "https://github.com/org/repo",
-		OwnerID: "user-1",
-		Status:  "archived",
-	})
-
-	// Do NOT create the workspace directory — it should not exist.
-	wsDir := filepath.Join(wsRoot, "no-dir-ws")
-	if _, err := os.Stat(wsDir); !os.IsNotExist(err) {
-		t.Fatalf("precondition: workspace directory %q should not exist", wsDir)
+// TestDelete_Refusals: only an archived workspace is deleted, only by its
+// owner or an admin, and a failure leaves everything in place.
+func TestDelete_Refusals(t *testing.T) {
+	v := newEnv(t)
+	v.orgWorkspace(t, "team")
+	v.seed(t, &Workspace{Slug: "done", OwnerID: owner, Status: "archived"})
+	del := func(slug string, auth *apikit.AuthInfo) *httptest.ResponseRecorder {
+		return v.do(t, http.MethodDelete, "/api/v1/workspaces/"+slug, "", auth)
 	}
+	expectError(t, del("team", testutil.User(owner)), http.StatusConflict, "must be archived before deletion", "")
+	expectStatus(t, del("done", nil), http.StatusUnauthorized)
+	expectError(t, del("done", testutil.PAT(owner, "workspaces:read")), http.StatusNotFound, "workspace not found", "")
+	expectError(t, del("done", testutil.User(stranger)), http.StatusNotFound, "workspace not found", "")
+	expectError(t, del("nope", testutil.Admin()), http.StatusNotFound, "workspace not found", "")
+	testutil.Exec(t, v.db, `UPDATE workspaces SET status = 'archived' WHERE slug = 'team'`)
+	expectError(t, del("team", testutil.User(member)), http.StatusForbidden, "read-only access", "forbidden")
 
-	rec := env.doRequest(t, http.MethodDelete, "/api/v1/workspaces/no-dir-ws", "",
-		userAuth("user-1"))
-
-	// Assert HTTP 204 (success even without directory to delete).
-	if rec.Code != http.StatusNoContent {
-		t.Fatalf("HTTP status = %d; want %d\nbody: %s",
-			rec.Code, http.StatusNoContent, rec.Body.String())
+	// A failing cascade rolls the whole deletion back.
+	testutil.BindToken(t, v.db, "t1", "done")
+	seedPAT(t, v.db, "t1", "")
+	testutil.Exec(t, v.db, `DROP TABLE secrets`)
+	expectError(t, del("done", testutil.User(owner)), http.StatusInternalServerError, "failed to delete workspace", "")
+	if testutil.Count(t, v.db, `SELECT COUNT(*) FROM workspaces WHERE slug = 'done'`) != 1 ||
+		testutil.Count(t, v.db, `SELECT COUNT(*) FROM token_workspace_bindings WHERE slug = 'done'`) != 1 || revokedAt(t, v.db, "t1").Valid {
+		t.Error("the failed deletion was not rolled back")
 	}
-
-	// Assert database row was deleted.
-	var count int
-	if err := env.db.QueryRow("SELECT COUNT(*) FROM workspaces WHERE slug = ?",
-		"no-dir-ws").Scan(&count); err != nil {
-		t.Fatalf("count query: %v", err)
-	}
-	if count != 0 {
-		t.Errorf("workspace row still exists; want 0 rows after DELETE")
+	if len(v.events.ofType("hub.workspace.delete")) != 0 {
+		t.Error("a refused deletion emitted an event")
 	}
 }
 
-// TestDelete_Spec05_NotArchivedReturns409 verifies that deleting a workspace
-// that is not in archived status returns HTTP 409.
-// Requirement: 05-REQ-8.E2
-func TestDelete_Spec05_NotArchivedReturns409(t *testing.T) {
-	env := newTestEnv(t)
-
-	env.seedWorkspace(t, &Workspace{
-		Slug:    "active-ws",
-		GitURL:  "https://github.com/org/repo",
-		OwnerID: "user-1",
-		Status:  "pending",
-	})
-
-	rec := env.doRequest(t, http.MethodDelete, "/api/v1/workspaces/active-ws", "",
-		userAuth("user-1"))
-
-	// Spec 05-REQ-8.E2 requires HTTP 409.
-	// Note: current implementation returns 400; spec 05 changes this to 409.
-	if rec.Code != http.StatusConflict {
-		t.Errorf("HTTP status = %d; want %d (workspace must be archived before deletion)",
-			rec.Code, http.StatusConflict)
-	}
-
-	// Verify workspace row still exists.
-	var count int
-	if err := env.db.QueryRow("SELECT COUNT(*) FROM workspaces WHERE slug = ?",
-		"active-ws").Scan(&count); err != nil {
-		t.Fatalf("count query: %v", err)
-	}
-	if count != 1 {
-		t.Errorf("workspace row count = %d; want 1 (not deleted)", count)
+// TestDelete_WithoutBindings: a workspace with no bound tokens is deleted
+// without touching the pats table, and the admin may delete it.
+func TestDelete_WithoutBindings(t *testing.T) {
+	v := newEnv(t)
+	v.seed(t, &Workspace{Slug: "done", OwnerID: owner, Status: "archived"})
+	testutil.Exec(t, v.db, `DROP TABLE pats`)
+	expectStatus(t, v.do(t, http.MethodDelete, "/api/v1/workspaces/done", "", testutil.Admin()), http.StatusNoContent)
+	if ev := v.events.one(t, "hub.workspace.delete"); len(ev.Metadata["revoked_tokens"].([]string)) != 0 || ev.ActorType != "admin_token" {
+		t.Errorf("event %+v", ev)
 	}
 }

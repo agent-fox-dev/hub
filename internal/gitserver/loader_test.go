@@ -6,341 +6,85 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-git/go-git/v5/plumbing/storer"
 	"github.com/go-git/go-git/v5/plumbing/transport"
+
+	"github.com/agent-fox-dev/hub/internal/testutil"
 )
 
-// TS-06-24: Loader.Load() extracts the workspace slug from the endpoint
-// path, verifies status=ready, opens the repository via PlainOpen,
-// and returns (storer.Storer, nil).
-// Requirement: 06-REQ-7.1
-func TestLoader_HappyPath_ReadyWorkspace_ReturnsStorer(t *testing.T) {
-	env := newGitTestEnv(t)
-
-	// Seed org and workspace with matching org_id and status='ready'.
-	env.seedOrg(t, "org-1", "My Org", "myorg")
-	env.seedOrgMember(t, "org-1", "user-1")
-	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "ready")
-	// status defaults to 'ready' from schema.
-
-	// Create a real git repository at the expected filesystem path.
-	env.initWorkspaceRepo(t, "myws")
-
-	loader := NewWorkspaceLoader(env.db, env.workspaceRoot)
-	ep := &transport.Endpoint{Path: "/git/myorg/myws.git"}
-
-	s, err := loader.Load(ep)
-	if err != nil {
-		t.Errorf("Load() returned error: %v; want nil", err)
-	}
-	if s == nil {
-		t.Error("Load() returned nil storer; want non-nil storer.Storer")
-	}
-}
-
-// TestLoader_HappyPath_StorerIsUsable verifies that the storer returned
-// by Load() can be used to access repository data (e.g., references).
-// Requirement: 06-REQ-7.1
-func TestLoader_HappyPath_StorerIsUsable(t *testing.T) {
-	env := newGitTestEnv(t)
-
-	env.seedOrg(t, "org-1", "My Org", "myorg")
-	env.seedOrgMember(t, "org-1", "user-1")
-	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "ready")
-
-	env.initWorkspaceRepo(t, "myws")
-
-	loader := NewWorkspaceLoader(env.db, env.workspaceRoot)
-	ep := &transport.Endpoint{Path: "/git/myorg/myws.git"}
-
-	s, err := loader.Load(ep)
-	if err != nil {
-		t.Fatalf("Load() returned error: %v", err)
-	}
-	if s == nil {
-		t.Fatal("Load() returned nil storer")
-	}
-
-	// The storer should be able to iterate references (proving PlainOpen worked).
-	iter, err := s.IterReferences()
-	if err != nil {
-		t.Errorf("storer.IterReferences() returned error: %v; want nil", err)
-	}
-	if iter == nil {
-		t.Error("storer.IterReferences() returned nil iterator")
-	}
-}
-
-// TS-06-25: Loader.Load() returns (nil, transport.ErrRepositoryNotFound)
-// when the workspace is not found in the database.
-// Requirement: 06-REQ-7.2
-func TestLoader_WorkspaceNotFound_ReturnsErrRepositoryNotFound(t *testing.T) {
-	env := newGitTestEnv(t)
-
-	// No workspace seeded — 'ghost' does not exist.
-	loader := NewWorkspaceLoader(env.db, env.workspaceRoot)
-	ep := &transport.Endpoint{Path: "/git/myorg/ghost.git"}
-
-	s, err := loader.Load(ep)
-	if !errors.Is(err, transport.ErrRepositoryNotFound) {
-		t.Errorf("Load() error = %v; want transport.ErrRepositoryNotFound", err)
-	}
-	if s != nil {
-		t.Error("Load() returned non-nil storer; want nil")
-	}
-}
-
-// TestLoader_WorkspaceNotReady_ReturnsErrRepositoryNotFound verifies
-// that the Loader returns ErrRepositoryNotFound when the workspace
-// exists but status is not 'ready'.
-// Requirement: 06-REQ-7.2
-func TestLoader_WorkspaceNotReady_ReturnsErrRepositoryNotFound(t *testing.T) {
-	env := newGitTestEnv(t)
-
-	env.seedOrg(t, "org-1", "My Org", "myorg")
-	env.seedOrgMember(t, "org-1", "user-1")
-	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "ready")
-	env.setStatus(t, "myws", "cloning")
-
-	env.initWorkspaceRepo(t, "myws")
-
-	loader := NewWorkspaceLoader(env.db, env.workspaceRoot)
-	ep := &transport.Endpoint{Path: "/git/myorg/myws.git"}
-
-	s, err := loader.Load(ep)
-	if !errors.Is(err, transport.ErrRepositoryNotFound) {
-		t.Errorf("Load() error = %v; want transport.ErrRepositoryNotFound", err)
-	}
-	if s != nil {
-		t.Error("Load() returned non-nil storer for non-ready workspace; want nil")
-	}
-}
-
-// TestLoader_OrgMismatch_ReturnsErrRepositoryNotFound verifies that the
-// Loader returns ErrRepositoryNotFound when the org slug in the endpoint
-// does not match the workspace's org_id.
-// Requirement: 06-REQ-7.2
-func TestLoader_OrgMismatch_ReturnsErrRepositoryNotFound(t *testing.T) {
-	env := newGitTestEnv(t)
-
-	env.seedOrg(t, "org-1", "My Org", "myorg")
-	env.seedOrg(t, "org-2", "Other Org", "otherorg")
-	env.seedOrgMember(t, "org-1", "user-1")
-	// Workspace belongs to org-1 (slug 'myorg'), but endpoint uses 'otherorg'.
-	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "ready")
-
-	env.initWorkspaceRepo(t, "myws")
-
-	loader := NewWorkspaceLoader(env.db, env.workspaceRoot)
-	ep := &transport.Endpoint{Path: "/git/otherorg/myws.git"}
-
-	s, err := loader.Load(ep)
-	if !errors.Is(err, transport.ErrRepositoryNotFound) {
-		t.Errorf("Load() error = %v; want transport.ErrRepositoryNotFound", err)
-	}
-	if s != nil {
-		t.Error("Load() returned non-nil storer for org mismatch; want nil")
-	}
-}
-
-// TestLoader_InvalidEndpointPath_ReturnsErrRepositoryNotFound verifies
-// that the Loader returns ErrRepositoryNotFound when the endpoint path
-// does not contain a recognizable workspace slug segment.
-// Requirement: 06-REQ-7.E2
-func TestLoader_InvalidEndpointPath_ReturnsErrRepositoryNotFound(t *testing.T) {
-	env := newGitTestEnv(t)
-
-	loader := NewWorkspaceLoader(env.db, env.workspaceRoot)
-
-	invalidPaths := []string{
-		"",
-		"/",
-		"/git/",
-		"/git/myorg/",
-		"/some/random/path",
-		"no-leading-slash",
-	}
-
-	for _, path := range invalidPaths {
-		t.Run("path="+path, func(t *testing.T) {
-			ep := &transport.Endpoint{Path: path}
-
-			s, err := loader.Load(ep)
-			if !errors.Is(err, transport.ErrRepositoryNotFound) {
-				t.Errorf("Load(path=%q) error = %v; want transport.ErrRepositoryNotFound",
-					path, err)
-			}
-			if s != nil {
-				t.Errorf("Load(path=%q) returned non-nil storer; want nil", path)
-			}
-		})
-	}
-}
-
-// TestLoader_PlainOpenFails_ReturnsWrappedError verifies that when PlainOpen
-// returns an I/O error (not repository-not-found), the Loader wraps the
-// error rather than returning transport.ErrRepositoryNotFound.
-// Requirement: 06-REQ-7.E1
-func TestLoader_PlainOpenFails_ReturnsWrappedError(t *testing.T) {
-	env := newGitTestEnv(t)
-
-	env.seedOrg(t, "org-1", "My Org", "myorg")
-	env.seedOrgMember(t, "org-1", "user-1")
-	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "ready")
-	// Deliberately do NOT create a git repo at the expected path.
-	// The Loader should call PlainOpen and get an I/O error.
-
-	loader := NewWorkspaceLoader(env.db, env.workspaceRoot)
-	ep := &transport.Endpoint{Path: "/git/myorg/myws.git"}
-
-	s, err := loader.Load(ep)
-	if err == nil {
-		t.Error("Load() returned nil error; want an error for missing repo dir")
-	}
-	if errors.Is(err, transport.ErrRepositoryNotFound) {
-		t.Error("Load() returned transport.ErrRepositoryNotFound; want a wrapped I/O error " +
-			"so the HTTP handler can distinguish 500 from 404")
-	}
-	if s != nil {
-		t.Error("Load() returned non-nil storer for missing repo; want nil")
-	}
-}
-
-// TestLoader_LastStorerRecordedOnlyForRequestLoader verifies that the shared
-// base loader (used by the startup transport for info/refs and upload-pack)
-// never writes lastStorer, while a per-request loader records the storer it
-// created so the receive-pack handler can read the hook-rejected refs.
-//
-// The base loader is shared across concurrent requests, so writing the field
-// there is a data race. Only the per-request copy may record it.
-// Related: 22-REQ-5.1 (lastStorer feeds the accepted-refs classification)
-func TestLoader_LastStorerRecordedOnlyForRequestLoader(t *testing.T) {
-	env := newGitTestEnv(t)
-
-	env.seedOrg(t, "org-1", "My Org", "myorg")
-	env.seedOrgMember(t, "org-1", "user-1")
-	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "ready")
-	env.initWorkspaceRepo(t, "myws")
-
-	ep := &transport.Endpoint{Path: "/git/myorg/myws.git"}
-
-	t.Run("base loader leaves lastStorer nil", func(t *testing.T) {
-		base := NewWorkspaceLoader(env.db, env.workspaceRoot)
-		s, err := base.Load(ep)
+// Load opens the repository of a ready workspace named by either endpoint
+// form, as a storer that hides PackfileWriter so thin packs are resolved
+// against the existing objects.
+func TestLoader_OpensReadyWorkspace(t *testing.T) {
+	v := newEnv(t)
+	loader := NewWorkspaceLoader(v.db, v.root)
+	head := gitRun(t, v.trunk("ws"), "rev-parse", "HEAD")
+	for _, path := range []string{"/git/myorg/ws.git", "/myorg/ws.git"} {
+		s, err := loader.Load(&transport.Endpoint{Path: path})
 		if err != nil {
-			t.Fatalf("Load() returned error: %v", err)
+			t.Fatalf("Load(%s): %v", path, err)
 		}
-		if s == nil {
-			t.Fatal("Load() returned nil storer")
+		if _, ok := s.(storer.PackfileWriter); ok {
+			t.Error("the storer implements PackfileWriter")
 		}
-		if base.lastStorer != nil {
-			t.Error("base loader recorded lastStorer; it is shared across requests and must not")
+		ref, err := storer.ResolveReference(s, plumbing.HEAD)
+		if err != nil || ref.Hash().String() != head {
+			t.Errorf("Load(%s): HEAD %v, %v; want %s", path, ref, err, head)
 		}
-	})
-
-	t.Run("request loader records the storer it returned", func(t *testing.T) {
-		base := NewWorkspaceLoader(env.db, env.workspaceRoot)
-		req := base.forRequest(context.Background(), nil)
-		s, err := req.Load(ep)
-		if err != nil {
-			t.Fatalf("Load() returned error: %v", err)
-		}
-		if req.lastStorer == nil {
-			t.Fatal("request loader did not record lastStorer")
-		}
-		if storer, ok := s.(*thinPackSafeStorer); !ok || storer != req.lastStorer {
-			t.Errorf("lastStorer = %p; want the storer returned by Load (%p)", req.lastStorer, s)
-		}
-		if base.lastStorer != nil {
-			t.Error("forRequest Load wrote through to the base loader")
-		}
-	})
-
-	t.Run("request loader with a nil context still records", func(t *testing.T) {
-		base := NewWorkspaceLoader(env.db, env.workspaceRoot)
-		//nolint:staticcheck // a nil context must be tolerated, not treated as "base loader"
-		req := base.forRequest(nil, nil)
-		if _, err := req.Load(ep); err != nil {
-			t.Fatalf("Load() returned error: %v", err)
-		}
-		if req.lastStorer == nil {
-			t.Error("request loader with a nil ctx did not record lastStorer")
-		}
-	})
+	}
 }
 
-// TestLoader_ConcurrentBaseLoads exercises the shared base loader from many
-// goroutines, as concurrent info/refs?service=git-receive-pack requests do.
-// Run with -race: before the fix every Load wrote l.lastStorer unsynchronised.
-// Related: 22-REQ-5.1 (lastStorer feeds the accepted-refs classification)
-func TestLoader_ConcurrentBaseLoads(t *testing.T) {
-	env := newGitTestEnv(t)
+// Load answers ErrRepositoryNotFound for a slug it does not know, a wrong org,
+// a workspace outside every org, a clone that is not ready and a path without
+// org and slug; a repository missing on disk is a different error, so the
+// handler can tell a 500 from a 404.
+func TestLoader_NotFound(t *testing.T) {
+	v := newEnv(t)
+	testutil.SeedOrg(t, v.db, "org-2", "otherorg", "owner")
+	v.workspace(t, "noorg", "owner", "", "ready")
+	v.workspace(t, "cloning", "owner", orgID, "cloning")
+	v.workspace(t, "nodisk", "owner", orgID, "ready")
+	loader := NewWorkspaceLoader(v.db, v.root)
+	for _, path := range []string{"/git/myorg/unknown.git", "/git/otherorg/ws.git", "/git/myorg/noorg.git", "/git/myorg/cloning.git", "", "/", "/git", "/git/myorg"} {
+		if _, err := loader.Load(&transport.Endpoint{Path: path}); !errors.Is(err, transport.ErrRepositoryNotFound) {
+			t.Errorf("Load(%q): %v; want ErrRepositoryNotFound", path, err)
+		}
+	}
+	if _, err := loader.Load(&transport.Endpoint{Path: "/git/myorg/nodisk.git"}); err == nil || errors.Is(err, transport.ErrRepositoryNotFound) {
+		t.Errorf("Load of a workspace without a repository: %v; want an open error", err)
+	}
+}
 
-	env.seedOrg(t, "org-1", "My Org", "myorg")
-	env.seedOrgMember(t, "org-1", "user-1")
-	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "ready")
-	env.initWorkspaceRepo(t, "myws")
-
-	base := NewWorkspaceLoader(env.db, env.workspaceRoot)
-	ep := &transport.Endpoint{Path: "/git/myorg/myws.git"}
-
-	const workers = 8
+// Only a per-request loader records the storer it returned (the receive-pack
+// handler reads the hook-rejected refs from it); the shared base loader,
+// which serves concurrent requests, never writes it.
+func TestLoader_RecordsStorerPerRequestOnly(t *testing.T) {
+	v := newEnv(t)
+	base := NewWorkspaceLoader(v.db, v.root)
+	ep := &transport.Endpoint{Path: "/git/myorg/ws.git"}
 	var wg sync.WaitGroup
-	errs := make(chan error, workers)
-	for i := 0; i < workers; i++ {
+	for i := 0; i < 8; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			if _, err := base.Load(ep); err != nil {
-				errs <- err
+				t.Errorf("concurrent Load: %v", err)
 			}
 		}()
 	}
 	wg.Wait()
-	close(errs)
-	for err := range errs {
-		t.Errorf("concurrent Load() returned error: %v", err)
-	}
 	if base.lastStorer != nil {
-		t.Error("base loader recorded lastStorer")
+		t.Error("the base loader recorded a storer")
 	}
-}
-
-// TestLoader_SlugExtraction verifies that the Loader correctly extracts
-// the workspace slug from various endpoint path formats.
-// Requirement: 06-REQ-7.1
-func TestLoader_SlugExtraction(t *testing.T) {
-	env := newGitTestEnv(t)
-
-	env.seedOrg(t, "org-1", "My Org", "myorg")
-	env.seedOrgMember(t, "org-1", "user-1")
-	env.seedWorkspace(t, "my-workspace", "https://github.com/org/repo", "user-1", "org-1", "ready")
-
-	env.initWorkspaceRepo(t, "my-workspace")
-
-	loader := NewWorkspaceLoader(env.db, env.workspaceRoot)
-
-	// The standard path format used by git HTTP transport.
-	ep := &transport.Endpoint{Path: "/git/myorg/my-workspace.git"}
-
-	s, err := loader.Load(ep)
-	if err != nil {
-		t.Errorf("Load() returned error: %v; want nil", err)
-	}
-	if s == nil {
-		t.Error("Load() returned nil storer; want non-nil")
-	}
-}
-
-// TS-37-33: WorkspaceLoader.Load reports a workspace with a NULL org_id as
-// not found, with no scan error. Requirement: 37-REQ-9.2
-func TestLoader_NullOrg_NotFound_TS_37_33(t *testing.T) {
-	env := newGitTestEnv(t)
-	env.seedOrg(t, "org-1", "My Org", "myorg")
-	env.seedNoOrgWorkspace(t, "noorg", "user-a")
-
-	loader := NewWorkspaceLoader(env.db, env.workspaceRoot)
-	_, err := loader.Load(&transport.Endpoint{Path: "/git/myorg/noorg.git"})
-	if !errors.Is(err, transport.ErrRepositoryNotFound) {
-		t.Errorf("Load() = %v; want transport.ErrRepositoryNotFound", err)
+	for name, ctx := range map[string]context.Context{"with context": context.Background(), "nil context": nil} {
+		req := base.forRequest(ctx, nil) //nolint:staticcheck // a nil context is tolerated
+		s, err := req.Load(ep)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if req.lastStorer == nil || storer.Storer(req.lastStorer) != s || base.lastStorer != nil {
+			t.Errorf("%s: request loader recorded %p for %p, base %p", name, req.lastStorer, s, base.lastStorer)
+		}
 	}
 }

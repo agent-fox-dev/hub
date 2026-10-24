@@ -8,12 +8,10 @@ import (
 	"github.com/txsvc/apikit"
 )
 
-// TestExitCode pins the process exit-code mapping: the --fail-on-diverged
-// code 3 is produced hub-side, and the apikit codes 0/1/2 are unchanged.
-//
-// Verifies: 20-REQ-6.5
-func TestExitCode(t *testing.T) {
-	tests := []struct {
+// ExitCode maps the --fail-on-diverged error to 3 and leaves apikit's codes
+// (0 success, 1 API error, 2 client error) as they are.
+func TestExitCode_MapsDivergedToThreeAndKeepsAPIKitCodes(t *testing.T) {
+	for _, tc := range []struct {
 		name     string
 		err      error
 		want     int
@@ -26,8 +24,7 @@ func TestExitCode(t *testing.T) {
 		{"api error code 1", apikit.NewCLIError(1, "job failed"), 1, false},
 		{"http status code", apikit.NewCLIError(404, "not found"), 1, false},
 		{"plain error", errors.New("boom"), 2, false},
-	}
-	for _, tc := range tests {
+	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := ExitCode(tc.err); got != tc.want {
 				t.Errorf("ExitCode = %d; want %d", got, tc.want)

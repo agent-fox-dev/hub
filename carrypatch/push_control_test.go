@@ -1,595 +1,371 @@
 package carrypatch
 
 import (
-	"bytes"
 	"context"
 	"database/sql"
-	"fmt"
-	"log/slog"
+	"errors"
 	"strings"
-	"sync/atomic"
 	"testing"
 
+	git "github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
-	"github.com/txsvc/apikit"
+	"github.com/go-git/go-git/v5/plumbing/transport"
 )
 
-// ===========================================================================
-// TS-22-10: PUSH_PATCHES_TO_ORIGIN is enabled only by the exact string true
-// Verifies: 22-REQ-1.1
-// ===========================================================================
-
-func TestPushControl_TS22_10_PushPatchesEnabledParsing(t *testing.T) {
-	type testCase struct {
-		name     string
-		getVar   GetVariableFunc
-		expected bool
-	}
-
-	notFoundErr := fmt.Errorf("not found")
-
-	cases := []testCase{
-		{
-			name: "unset (not found error)",
-			getVar: func(_, _, _ string) (string, error) {
-				return "", notFoundErr
-			},
-			expected: false,
-		},
-		{
-			name: "exact string true",
-			getVar: func(_, _, _ string) (string, error) {
-				return "true", nil
-			},
-			expected: true,
-		},
-		{
-			name: "True (capitalized)",
-			getVar: func(_, _, _ string) (string, error) {
-				return "True", nil
-			},
-			expected: false,
-		},
-		{
-			name: "TRUE (all caps)",
-			getVar: func(_, _, _ string) (string, error) {
-				return "TRUE", nil
-			},
-			expected: false,
-		},
-		{
-			name: "1",
-			getVar: func(_, _, _ string) (string, error) {
-				return "1", nil
-			},
-			expected: false,
-		},
-		{
-			name: "space true (leading space)",
-			getVar: func(_, _, _ string) (string, error) {
-				return " true", nil
-			},
-			expected: false,
-		},
-		{
-			name: "empty string",
-			getVar: func(_, _, _ string) (string, error) {
-				return "", nil
-			},
-			expected: false,
-		},
-		{
-			name: "lookup error",
-			getVar: func(_, _, _ string) (string, error) {
-				return "", fmt.Errorf("db connection failed")
-			},
-			expected: false,
-		},
-		{
-			name:     "nil getVariable",
-			getVar:   nil,
-			expected: false,
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := pushPatchesEnabled(tc.getVar, "test-ws")
-			if got != tc.expected {
-				t.Errorf("pushPatchesEnabled() = %v; want %v", got, tc.expected)
-			}
-		})
-	}
+// pushEnv is a carry_patch workspace "ws" whose trunk's origin is a real
+// bare fork, with feature/a registered as a patch.
+type pushEnv struct {
+	db    *sql.DB
+	f     *forkTrunk
+	root  string
+	vars  map[string]string
+	reads map[string]int
+	logs  *logSink
+	deps  PreReceiveHookDeps
 }
 
-// ===========================================================================
-// TS-22-12: Push control applies to refs/heads/<name> matching a non-deleted
-// patch row of a carry_patch workspace
-// Verifies: 22-REQ-1.3
-// ===========================================================================
-
-func TestPushControl_TS22_12_ControlAppliesRegisteredPatches(t *testing.T) {
-	db := openTestDB(t)
-	createWorkspacesTable(t, db)
-	createPatchesTable(t, db)
-
-	// Seed a carry_patch workspace with integration_branch 'main-int'.
-	seedWorkspaceWithGitURL(t, db, "myws", "user-1", "ready",
-		"carry_patch", "main-int", "https://github.com/example/repo")
-
-	// Seed patches with statuses active, pending (not a valid status, but
-	// the spec says "status other than deleted"), and conflict.
-	// Note: the patches table CHECK constraint allows active, conflict,
-	// disabled, merged_upstream, deleted. We use active and conflict.
-	seedPatch(t, db, "p1", "myws", "feature/active", 1, "active")
-	seedPatch(t, db, "p2", "myws", "feature/conflict", 2, "conflict")
-	seedPatch(t, db, "p3", "myws", "feature/disabled", 3, "disabled")
-
-	// Source = origin, forwarding off → reject mode.
-	getVar := func(scope, slug, key string) (string, error) {
-		if key == "PATCH_BRANCH_SOURCE" {
-			return "origin", nil
-		}
-		// PUSH_PATCHES_TO_ORIGIN not set → reject mode
-		return "", fmt.Errorf("not found")
-	}
-
-	hook := NewPreReceiveHook(PreReceiveHookDeps{
-		GetVariable: getVar,
-	})
-
-	ctx := context.Background()
-	actor := &apikit.AuthInfo{UserID: "user-1"}
-
-	branches := []string{"feature/active", "feature/conflict", "feature/disabled"}
-	for _, b := range branches {
-		t.Run(b, func(t *testing.T) {
-			upd := RefUpdate{
-				Name: plumbing.ReferenceName("refs/heads/" + b),
-				Old:  plumbing.ZeroHash,
-				New:  plumbing.NewHash("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
-			}
-			err := hook(ctx, db, "myws", actor, upd)
-			if err == nil {
-				t.Errorf("expected non-nil error for registered patch branch %q; got nil", b)
-			}
-		})
-	}
-}
-
-// ===========================================================================
-// TS-22-13: Updates the control does not apply to are let through
-// Verifies: 22-REQ-1.4
-// ===========================================================================
-
-func TestPushControl_TS22_13_NonApplicableUpdatesPassThrough(t *testing.T) {
-	db := openTestDB(t)
-	createWorkspacesTable(t, db)
-	createPatchesTable(t, db)
-
-	// carry_patch workspace
-	seedWorkspaceWithGitURL(t, db, "cpws", "user-1", "ready",
-		"carry_patch", "main-int", "https://github.com/example/repo")
-	// standard workspace
-	seedWorkspaceWithGitURL(t, db, "stdws", "user-1", "ready",
-		"standard", "main", "https://github.com/example/repo")
-
-	// Patches for cpws
-	seedPatch(t, db, "p-del", "cpws", "feature/deleted", 1, "deleted")
-	seedPatch(t, db, "p-int", "cpws", "main-int", 2, "active") // same name as integration branch
-
-	// Source = origin, forwarding on (to ensure we'd see a forward if applicable)
-	getVar := func(scope, slug, key string) (string, error) {
-		if key == "PATCH_BRANCH_SOURCE" {
-			return "origin", nil
-		}
-		if key == "PUSH_PATCHES_TO_ORIGIN" {
-			return "true", nil
-		}
-		return "", fmt.Errorf("not found")
-	}
-
-	hook := NewPreReceiveHook(PreReceiveHookDeps{
-		GetVariable: getVar,
-	})
-
-	ctx := context.Background()
-	actor := &apikit.AuthInfo{UserID: "user-1"}
-
-	cases := []struct {
-		name string
-		slug string
-		ref  string
-	}{
-		{"deleted-status patch", "cpws", "refs/heads/feature/deleted"},
-		{"integration branch (even with patch row)", "cpws", "refs/heads/main-int"},
-		{"branch with no patch row", "cpws", "refs/heads/feature/unregistered"},
-		{"tag", "cpws", "refs/tags/v1"},
-		{"notes ref", "cpws", "refs/notes/x"},
-		{"standard workspace branch", "stdws", "refs/heads/feature/anything"},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			upd := RefUpdate{
-				Name: plumbing.ReferenceName(tc.ref),
-				Old:  plumbing.ZeroHash,
-				New:  plumbing.NewHash("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
-			}
-			err := hook(ctx, db, tc.slug, actor, upd)
-			if err != nil {
-				t.Errorf("expected nil error for %q; got %v", tc.name, err)
-			}
-		})
-	}
-}
-
-// ===========================================================================
-// TS-22-14: A standard-mode workspace push reads neither variable
-// Verifies: 22-REQ-1.5
-// ===========================================================================
-
-func TestPushControl_TS22_14_StandardWorkspaceNoVariableReads(t *testing.T) {
-	db := openTestDB(t)
-	createWorkspacesTable(t, db)
-	createPatchesTable(t, db)
-
-	seedWorkspaceWithGitURL(t, db, "stdws", "user-1", "ready",
-		"standard", "main", "https://github.com/example/repo")
-
-	var callCount int32
-	getVar := func(scope, slug, key string) (string, error) {
-		atomic.AddInt32(&callCount, 1)
-		return "", fmt.Errorf("not found")
-	}
-
-	hook := NewPreReceiveHook(PreReceiveHookDeps{
-		GetVariable: getVar,
-	})
-
-	ctx := context.Background()
-	actor := &apikit.AuthInfo{UserID: "user-1"}
-
-	// Push several refs
-	refs := []string{"refs/heads/main", "refs/heads/feature/a", "refs/tags/v1"}
-	for _, ref := range refs {
-		upd := RefUpdate{
-			Name: plumbing.ReferenceName(ref),
-			Old:  plumbing.ZeroHash,
-			New:  plumbing.NewHash("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
-		}
-		err := hook(ctx, db, "stdws", actor, upd)
-		if err != nil {
-			t.Errorf("expected nil error for %q; got %v", ref, err)
-		}
-	}
-
-	if atomic.LoadInt32(&callCount) != 0 {
-		t.Errorf("expected 0 GetVariable calls for standard workspace; got %d", callCount)
-	}
-}
-
-// ===========================================================================
-// TS-22-44: A failure while deciding whether control applies lets the update
-// through with a warning
-// Verifies: 22-REQ-8.1
-// ===========================================================================
-
-func TestPushControl_TS22_44_FailOpenOnQueryErrors(t *testing.T) {
-	// Test 1: workspace-mode query failure (workspace not found in DB)
-	t.Run("workspace not found", func(t *testing.T) {
-		db := openTestDB(t)
-		createWorkspacesTable(t, db)
-		createPatchesTable(t, db)
-		// No workspace seeded → query returns sql.ErrNoRows
-
-		var logBuf bytes.Buffer
-		logger := slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
-
-		getVar := func(_, _, _ string) (string, error) {
-			return "origin", nil
-		}
-
-		hook := NewPreReceiveHook(PreReceiveHookDeps{
-			GetVariable: getVar,
-			Logger:      logger,
-		})
-
-		ctx := context.Background()
-		actor := &apikit.AuthInfo{UserID: "user-1"}
-		upd := RefUpdate{
-			Name: plumbing.ReferenceName("refs/heads/feature/x"),
-			Old:  plumbing.ZeroHash,
-			New:  plumbing.NewHash("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
-		}
-
-		err := hook(ctx, db, "nonexistent", actor, upd)
-		if err != nil {
-			t.Errorf("expected nil error (fail open); got %v", err)
-		}
-
-		// 22-REQ-8.1: the fail-open for an unknown workspace is logged
-		// as a warning naming the slug and branch.
-		logOutput := logBuf.String()
-		if !strings.Contains(logOutput, "level=WARN") {
-			t.Errorf("expected a WARN line for an unknown workspace; got:\n%s", logOutput)
-		}
-		if !strings.Contains(logOutput, "nonexistent") {
-			t.Errorf("expected slug 'nonexistent' in the warning; got:\n%s", logOutput)
-		}
-		if !strings.Contains(logOutput, "feature/x") {
-			t.Errorf("expected branch 'feature/x' in the warning; got:\n%s", logOutput)
-		}
-	})
-
-	// Test 2: variable lookup failure beyond defaults
-	// Note: variable lookup errors for PATCH_BRANCH_SOURCE default to "hub"
-	// (which means no rejection), and PUSH_PATCHES_TO_ORIGIN defaults to
-	// disabled. These are by-design defaults, not fail-open. The fail-open
-	// behavior is tested by the workspace-mode and patches query failures.
-	// A variable error that goes beyond the defaults (e.g. an unexpected
-	// error in a code path that doesn't have a default) would be handled
-	// by the same fail-open pattern.
-
-	// Test 3: patches registration query failure
-	t.Run("patches query error", func(t *testing.T) {
-		db := openTestDB(t)
-		createWorkspacesTable(t, db)
-		// Do NOT create patches table → query will fail
-
-		seedWorkspaceWithGitURL(t, db, "myws", "user-1", "ready",
-			"carry_patch", "main-int", "https://github.com/example/repo")
-
-		var logBuf bytes.Buffer
-		logger := slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
-
-		getVar := func(_, _, key string) (string, error) {
-			if key == "PATCH_BRANCH_SOURCE" {
-				return "origin", nil
-			}
-			return "", fmt.Errorf("not found")
-		}
-
-		hook := NewPreReceiveHook(PreReceiveHookDeps{
-			GetVariable: getVar,
-			Logger:      logger,
-		})
-
-		ctx := context.Background()
-		actor := &apikit.AuthInfo{UserID: "user-1"}
-		upd := RefUpdate{
-			Name: plumbing.ReferenceName("refs/heads/feature/x"),
-			Old:  plumbing.ZeroHash,
-			New:  plumbing.NewHash("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
-		}
-
-		err := hook(ctx, db, "myws", actor, upd)
-		if err != nil {
-			t.Errorf("expected nil error (fail open); got %v", err)
-		}
-
-		logOutput := logBuf.String()
-		if !strings.Contains(logOutput, "WARN") && !strings.Contains(logOutput, "warn") {
-			t.Errorf("expected a warn-level log; got:\n%s", logOutput)
-		}
-	})
-}
-
-// ===========================================================================
-// TS-22-11: PATCH_BRANCH_SOURCE uses spec 20's parsing and both variables
-// are re-read on every controlled ref update
-// Verifies: 22-REQ-1.2
-// ===========================================================================
-
-func TestPushControl_TS22_11_VariablesReReadPerUpdate(t *testing.T) {
-	db := openTestDB(t)
-	createWorkspacesTable(t, db)
-	createPatchesTable(t, db)
-
-	seedWorkspaceWithGitURL(t, db, "myws", "user-1", "ready",
-		"carry_patch", "main-int", "https://github.com/example/repo")
-	seedPatch(t, db, "p1", "myws", "feature/a", 1, "active")
-
-	// Track variable reads
-	var varCalls int32
-	var patchSource string = "" // unset → hub mode
-	var pushPatches string = ""
-
-	getVar := func(scope, slug, key string) (string, error) {
-		atomic.AddInt32(&varCalls, 1)
-		if key == "PATCH_BRANCH_SOURCE" {
-			if patchSource == "" {
-				return "", fmt.Errorf("not found")
-			}
-			return patchSource, nil
-		}
-		if key == "PUSH_PATCHES_TO_ORIGIN" {
-			if pushPatches == "" {
-				return "", fmt.Errorf("not found")
-			}
-			return pushPatches, nil
-		}
-		return "", fmt.Errorf("not found")
-	}
-
-	hook := NewPreReceiveHook(PreReceiveHookDeps{
-		GetVariable: getVar,
-	})
-
-	ctx := context.Background()
-	actor := &apikit.AuthInfo{UserID: "user-1"}
-	upd := RefUpdate{
-		Name: plumbing.ReferenceName("refs/heads/feature/a"),
-		Old:  plumbing.ZeroHash,
-		New:  plumbing.NewHash("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
-	}
-
-	// Push 1: source unset → hub mode → should pass through (no rejection)
-	patchSource = ""
-	atomic.StoreInt32(&varCalls, 0)
-	err := hook(ctx, db, "myws", actor, upd)
-	if err != nil {
-		t.Errorf("push 1 (hub mode): expected nil error; got %v", err)
-	}
-
-	// Push 2: source = "garbage" → hub mode → should pass through
-	patchSource = "garbage"
-	err = hook(ctx, db, "myws", actor, upd)
-	if err != nil {
-		t.Errorf("push 2 (garbage source): expected nil error; got %v", err)
-	}
-
-	// Push 3: source = "origin" → origin mode, forwarding off → should reject
-	patchSource = "origin"
-	pushPatches = ""
-	err = hook(ctx, db, "myws", actor, upd)
-	if err == nil {
-		t.Error("push 3 (origin mode): expected non-nil error; got nil")
-	}
-
-	// Verify variables were read (at least PATCH_BRANCH_SOURCE per controlled update)
-	calls := atomic.LoadInt32(&varCalls)
-	if calls < 3 {
-		t.Errorf("expected at least 3 GetVariable calls across 3 updates; got %d", calls)
-	}
-}
-
-// ===========================================================================
-// sanitizeErrorText removes URL userinfo from free-form error text without
-// re-serialising anything else
-// Verifies: 22-REQ-4.5 (userinfo removed from forward errors),
-//           22-REQ-7.1 (userinfo removed from mirror_failed metadata)
-// ===========================================================================
-
-func TestSanitizeErrorText(t *testing.T) {
-	cases := []struct {
-		name string
-		in   string
-		want string
-	}{
-		{
-			name: "http client error embedding a URL",
-			in:   `Get "https://alice:pw@host/repo.git/info/refs?service=git-receive-pack": dial tcp 10.0.0.1:443: connect: connection refused`,
-			want: `Get "https://host/repo.git/info/refs?service=git-receive-pack": dial tcp 10.0.0.1:443: connect: connection refused`,
-		},
-		{
-			name: "message ending in a URL",
-			in:   "authentication required: https://alice:pw@host/repo.git",
-			want: "authentication required: https://host/repo.git",
-		},
-		{
-			name: "ssh scheme",
-			in:   "ssh://git:tok@host/x",
-			want: "ssh://host/x",
-		},
-		{
-			name: "username only",
-			in:   "fatal: unable to access 'https://token@host/repo.git/'",
-			want: "fatal: unable to access 'https://host/repo.git/'",
-		},
-		{
-			name: "password containing @",
-			in:   "authentication required: https://alice:p@ss@host/repo.git",
-			want: "authentication required: https://host/repo.git",
-		},
-		{
-			name: "upper-case scheme",
-			in:   "HTTPS://alice:pw@host/x",
-			want: "HTTPS://host/x",
-		},
-		{
-			name: "URL without a path",
-			in:   `Post "https://alice:pw@host": EOF`,
-			want: `Post "https://host": EOF`,
-		},
-		{
-			name: "several URLs in one message",
-			in:   "redirect https://a:b@one/x to https://c:d@two/y",
-			want: "redirect https://one/x to https://two/y",
-		},
-		{
-			name: "URL without userinfo is untouched",
-			in:   "authentication required: https://host/repo.git",
-			want: "authentication required: https://host/repo.git",
-		},
-		{
-			name: "at sign after the path is not userinfo",
-			in:   "see https://host/path/user@example.com",
-			want: "see https://host/path/user@example.com",
-		},
-		{
-			name: "plain text is not re-encoded",
-			in:   "context deadline exceeded",
-			want: "context deadline exceeded",
-		},
-		{
-			name: "hook-style message is not re-encoded",
-			in:   "command error on refs/heads/p2: pre-receive hook declined",
-			want: "command error on refs/heads/p2: pre-receive hook declined",
-		},
-		{
-			name: "address without a scheme is untouched",
-			in:   "contact admin@example.com",
-			want: "contact admin@example.com",
-		},
-		{
-			name: "empty",
-			in:   "",
-			want: "",
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := stripUserinfoText(tc.in)
-			if got != tc.want {
-				t.Errorf("stripUserinfoText(%q)\n got: %q\nwant: %q", tc.in, got, tc.want)
-			}
-			// Idempotent: a second pass changes nothing.
-			if again := stripUserinfoText(got); again != got {
-				t.Errorf("sanitizeErrorText is not idempotent: %q -> %q", got, again)
-			}
-		})
-	}
-}
-
-// stripUserinfo is the URL-only helper used for git_url. It must still
-// remove userinfo, and must not leak it when the string does not parse.
-func TestStripUserinfo(t *testing.T) {
-	cases := []struct {
-		name string
-		in   string
-		want string
-	}{
-		{"https with credentials", "https://alice:pw@host/repo.git", "https://host/repo.git"},
-		{"https without credentials", "https://host/repo.git", "https://host/repo.git"},
-		{"local path", "/srv/git/repo.git", "/srv/git/repo.git"},
-		// url.Parse rejects the port, so the helper falls back to the
-		// regexp rather than returning the credentials unchanged.
-		{"unparsable URL", "https://alice:pw@host:notaport/repo.git", "https://host:notaport/repo.git"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := stripUserinfo(tc.in); got != tc.want {
-				t.Errorf("stripUserinfo(%q) = %q; want %q", tc.in, got, tc.want)
-			}
-		})
-	}
-}
-
-// ===========================================================================
-// Helper: seedWorkspaceWithGitURL
-// ===========================================================================
-
-func seedWorkspaceWithGitURL(t *testing.T, db *sql.DB, slug, ownerID, status, mode, integrationBranch, gitURL string) {
+func newPushEnv(t *testing.T) *pushEnv {
 	t.Helper()
-	now := "2024-01-01T00:00:00Z"
-	_, err := db.Exec(
-		`INSERT INTO workspaces (slug, git_url, owner_id, status, workspace_mode, integration_branch, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		slug, gitURL, ownerID, status, mode, integrationBranch, now, now,
-	)
-	if err != nil {
-		t.Fatalf("seedWorkspaceWithGitURL(%q) returned error: %v", slug, err)
+	p := &pushEnv{db: openDB(t), root: t.TempDir(), vars: map[string]string{}, reads: map[string]int{}}
+	p.f = newForkTrunk(t, p.root, "ws")
+	seedWS(t, p.db, ws{slug: "ws", gitURL: "https://alice:secret@github.com/example/fork.git"})
+	seedWS(t, p.db, ws{slug: "std", mode: "standard"})
+	seedPatch(t, p.db, "ws", "p1", "feature/a", 1, "active")
+	seedPatch(t, p.db, "ws", "p2", "feature/gone", -2, "deleted")
+	seedPatch(t, p.db, "std", "p3", "feature/a", 1, "active")
+	logger, sink := newLogger()
+	p.logs = sink
+	p.deps = PreReceiveHookDeps{GetVariable: varsOf(p.vars, p.reads), ResolveAuth: noAuth, WorkspaceRoot: p.root, Logger: logger}
+	return p
+}
+
+func (p *pushEnv) update(branch string, newSHA string) RefUpdate {
+	upd := RefUpdate{Name: plumbing.ReferenceName("refs/heads/" + branch)}
+	if newSHA != "" {
+		upd.New = plumbing.NewHash(newSHA)
 	}
+	return upd
+}
+
+// Push control applies only to registered, non-deleted patch branches of a
+// carry_patch workspace in origin mode; everything else passes, and a lookup
+// failure fails open. A standard workspace reads no setting.
+func TestPreReceiveHook_Applicability(t *testing.T) {
+	p := newPushEnv(t)
+	hook := NewPreReceiveHook(p.deps)
+	ctx := context.Background()
+	p.vars["PATCH_BRANCH_SOURCE"] = "origin"
+	cases := map[string]struct {
+		slug string
+		upd  RefUpdate
+	}{
+		"tag":                    {"ws", RefUpdate{Name: "refs/tags/v1"}},
+		"unknown workspace":      {"nope", p.update("feature/a", p.f.base)},
+		"standard workspace":     {"std", p.update("feature/a", p.f.base)},
+		"integration branch":     {"ws", p.update("integration", p.f.base)},
+		"unregistered branch":    {"ws", p.update("feature/other", p.f.base)},
+		"soft-deleted patch":     {"ws", p.update("feature/gone", p.f.base)},
+		"registered in hub mode": {"ws", p.update("feature/a", p.f.base)},
+	}
+	for name, c := range cases {
+		if name == "registered in hub mode" {
+			p.vars["PATCH_BRANCH_SOURCE"] = "hub"
+		}
+		if err := hook(ctx, p.db, c.slug, alice, c.upd); err != nil {
+			t.Errorf("%s: rejected: %v", name, err)
+		}
+	}
+	if p.reads["PATCH_BRANCH_SOURCE"] != 1 || p.reads["PUSH_PATCHES_TO_ORIGIN"] != 0 {
+		t.Errorf("settings read for non-applicable updates: %v", p.reads)
+	}
+	if !strings.Contains(p.logs.String(), "failed to load workspace info") {
+		t.Error("unknown workspace not logged as a fail-open")
+	}
+	p.db.Close()
+	if err := hook(ctx, p.db, "ws", alice, p.update("feature/a", p.f.base)); err != nil {
+		t.Errorf("closed database must fail open: %v", err)
+	}
+}
+
+// In origin mode without forwarding the hub refuses the push and names the
+// fork without its credentials; the two settings are read on every update.
+func TestPreReceiveHook_RejectsPushInOriginMode(t *testing.T) {
+	p := newPushEnv(t)
+	hook := NewPreReceiveHook(p.deps)
+	p.vars["PATCH_BRANCH_SOURCE"] = "origin"
+	for _, value := range []string{"", "false", "TRUE", "yes"} {
+		if value != "" {
+			p.vars["PUSH_PATCHES_TO_ORIGIN"] = value
+		}
+		err := hook(context.Background(), p.db, "ws", alice, p.update("feature/a", p.f.base))
+		if err == nil || err.Error() != "branch is synced from origin; push to https://github.com/example/fork.git instead" {
+			t.Errorf("PUSH_PATCHES_TO_ORIGIN=%q: %v", value, err)
+		}
+	}
+	if p.reads["PATCH_BRANCH_SOURCE"] != 4 || p.reads["PUSH_PATCHES_TO_ORIGIN"] != 4 {
+		t.Errorf("reads = %v, want one of each per update", p.reads)
+	}
+	if !strings.Contains(p.logs.String(), "rejecting push") || !strings.Contains(p.logs.String(), "user=alice") {
+		t.Errorf("rejection not logged with the actor: %s", p.logs.String())
+	}
+	if err := hook(context.Background(), p.db, "ws", nil, p.update("feature/a", p.f.base)); err == nil || !strings.Contains(p.logs.String(), "user=unknown") {
+		t.Error("anonymous actor not logged as unknown")
+	}
+	for value, want := range map[string]bool{"true": true, "false": false, "True": false, "": false} {
+		vars := map[string]string{}
+		if value != "" {
+			vars["PUSH_PATCHES_TO_ORIGIN"] = value
+		}
+		if got := pushPatchesEnabled(varsOf(vars, nil), "ws"); got != want {
+			t.Errorf("pushPatchesEnabled(%q) = %v", value, got)
+		}
+	}
+	if pushPatchesEnabled(nil, "ws") {
+		t.Error("nil lookup enabled forwarding")
+	}
+}
+
+// With forwarding on, the pushed commit is pushed to the fork's branch
+// through a temporary ref before the hub writes its own; deletes and
+// credential failures are refused without contacting the fork; a refused
+// forward refuses the push with the sanitised reason.
+func TestPreReceiveHook_ForwardsToOrigin(t *testing.T) {
+	p := newPushEnv(t)
+	p.vars["PATCH_BRANCH_SOURCE"] = "origin"
+	p.vars["PUSH_PATCHES_TO_ORIGIN"] = "true"
+	ctx := context.Background()
+	// The commit exists in the trunk but on no branch, as after an unpack.
+	runGit(t, p.f.trunk, "checkout", "-q", "--detach", p.f.base)
+	pushed := commitFile(t, p.f.trunk, "a.txt", "a\n", "pushed to the hub")
+	runGit(t, p.f.trunk, "checkout", "-q", "main")
+
+	var opts *git.PushOptions
+	recording := func(ctx context.Context, repo *git.Repository, o *git.PushOptions) error {
+		opts = o
+		return defaultPushContext(ctx, repo, o)
+	}
+	p.deps.Push = recording
+	hook := NewPreReceiveHook(p.deps)
+	if err := hook(ctx, p.db, "ws", alice, p.update("feature/a", pushed)); err != nil {
+		t.Fatalf("forward: %v", err)
+	}
+	if refOf(p.f.fork, "feature/a") != pushed {
+		t.Error("fork branch not updated")
+	}
+	if opts == nil || opts.Force || opts.RemoteName != "origin" || len(opts.RefSpecs) != 1 || string(opts.RefSpecs[0]) != "refs/hub/forward/feature/a:refs/heads/feature/a" {
+		t.Errorf("push options = %+v", opts)
+	}
+	if refOf(p.f.trunk, "refs/hub/forward/feature/a") != "" {
+		t.Error("temporary ref not removed")
+	}
+	if err := hook(ctx, p.db, "ws", alice, p.update("feature/a", pushed)); err != nil {
+		t.Errorf("up-to-date forward: %v", err)
+	}
+
+	// A non-fast-forward is refused by the fork, so the hub refuses too.
+	if err := hook(ctx, p.db, "ws", alice, p.update("feature/a", p.f.base)); err == nil || !strings.HasPrefix(err.Error(), "origin rejected push: ") {
+		t.Errorf("rejected forward = %v", err)
+	}
+	if refOf(p.f.fork, "feature/a") != pushed {
+		t.Error("fork moved on a refused forward")
+	}
+	p.deps.Push = func(context.Context, *git.Repository, *git.PushOptions) error {
+		return errors.New("https://alice:secret@github.com/x: forbidden")
+	}
+	hook = NewPreReceiveHook(p.deps)
+	err := hook(ctx, p.db, "ws", alice, p.update("feature/a", pushed))
+	if err == nil || err.Error() != "origin rejected push: https://github.com/x: forbidden" || strings.Contains(p.logs.String(), "secret") {
+		t.Errorf("sanitised failure = %v", err)
+	}
+
+	contacted := false
+	p.deps.Push = func(context.Context, *git.Repository, *git.PushOptions) error { contacted = true; return nil }
+	hook = NewPreReceiveHook(p.deps)
+	if err := hook(ctx, p.db, "ws", alice, p.update("feature/a", "")); err == nil || err.Error() != "branch is synced from origin; delete it on the fork instead" {
+		t.Errorf("delete = %v", err)
+	}
+	p.deps.ResolveAuth = func(string) (transport.AuthMethod, error) { return nil, errors.New("no creds") }
+	if err := NewPreReceiveHook(p.deps)(ctx, p.db, "ws", alice, p.update("feature/a", pushed)); err == nil || err.Error() != "failed to resolve origin credentials" {
+		t.Errorf("credential failure = %v", err)
+	}
+	p.deps.ResolveAuth = nil
+	if err := NewPreReceiveHook(p.deps)(ctx, p.db, "ws", alice, p.update("feature/a", pushed)); err == nil || err.Error() != "failed to resolve origin credentials" {
+		t.Errorf("no resolver = %v", err)
+	}
+	if contacted {
+		t.Error("fork contacted for a delete or without credentials")
+	}
+	p.deps.ResolveAuth, p.deps.WorkspaceRoot = noAuth, t.TempDir()
+	if err := NewPreReceiveHook(p.deps)(ctx, p.db, "ws", alice, p.update("feature/a", pushed)); err == nil || !strings.Contains(err.Error(), "open trunk") {
+		t.Errorf("missing trunk = %v", err)
+	}
+}
+
+func TestStripUserinfo_SingleURL(t *testing.T) {
+	cases := map[string]string{
+		"https://alice:tok@github.com/o/r.git": "https://github.com/o/r.git",
+		"https://github.com/o/r.git":           "https://github.com/o/r.git",
+		"ssh://git@host:22/r":                  "ssh://host:22/r",
+		"http://a:b@h/x with space":            "http://h/x%20with%20space",
+	}
+	for in, want := range cases {
+		if got := stripUserinfo(in); got != want {
+			t.Errorf("stripUserinfo(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// The post-push hook enqueues one rebuild when a pushed branch is a
+// registered patch of a carry_patch workspace, unless AUTO_REBUILD_AFTER_PUSH
+// is "false"; a queued or running rebuild suppresses another.
+func TestPostPushHook_EnqueuesRebuildForRegisteredPatch(t *testing.T) {
+	p := newPushEnv(t)
+	q := newQueue(t, p.db, nil)
+	p.vars["REBUILD_STRATEGY"] = StrategyMerge
+	hook := NewPostPushRebuildHook(q, varsOf(p.vars, nil), PostPushMirrorDeps{})
+	count := func() int { jobs, _ := q.ListByKey("rebuild", "ws"); return len(jobs) }
+
+	hook(p.db, "ws", []string{"main", "feature/other"})
+	hook(p.db, "std", []string{"feature/a"})
+	hook(p.db, "nope", []string{"feature/a"})
+	if count() != 0 {
+		t.Fatal("rebuild enqueued for an unregistered branch, a standard or unknown workspace")
+	}
+	hook(p.db, "ws", []string{"main", "feature/a"})
+	jobs, _ := q.ListByKey("rebuild", "ws")
+	if len(jobs) != 1 || jobs[0].SubmittedBy != "system:push-hook" || jobs[0].GroupKey != "ws:integration" || !strings.Contains(string(jobs[0].Payload), `"strategy":"merge"`) {
+		t.Fatalf("jobs = %+v", jobs)
+	}
+	hook(p.db, "ws", []string{"feature/a"})
+	if count() != 1 {
+		t.Error("duplicate rebuild enqueued")
+	}
+	mustExec(t, p.db, `DELETE FROM jobs`)
+	p.vars["AUTO_REBUILD_AFTER_PUSH"] = "false"
+	hook(p.db, "ws", []string{"feature/a"})
+	if count() != 0 {
+		t.Error("rebuild enqueued although auto rebuild after push is off")
+	}
+	delete(p.vars, "AUTO_REBUILD_AFTER_PUSH")
+	NewPostPushRebuildHook(q, nil, PostPushMirrorDeps{})(p.db, "ws", []string{"feature/a"})
+	if count() != 1 {
+		t.Error("nil lookup must enqueue")
+	}
+}
+
+// mirrorEnv returns the post-push env with mirror dependencies in hub mode
+// with forwarding on, and an emitter.
+func mirrorEnv(t *testing.T) (*pushEnv, PostPushMirrorDeps, *recordingEmitter) {
+	t.Helper()
+	p := newPushEnv(t)
+	p.vars["PUSH_PATCHES_TO_ORIGIN"] = "true"
+	emitter := &recordingEmitter{}
+	return p, PostPushMirrorDeps{ResolveAuth: noAuth, WorkspaceRoot: p.root, Audit: emitter}, emitter
+}
+
+// In hub mode with forwarding on, the post-push hook force-mirrors each
+// registered patch branch to the fork after the rebuild enqueue; the
+// integration branch and unregistered branches are skipped.
+func TestPostPushHook_MirrorsPatchBranchesToFork(t *testing.T) {
+	p, deps, emitter := mirrorEnv(t)
+	q := newQueue(t, p.db, nil)
+	logger, _ := newLogger()
+	hook := newPostPushRebuildHookWithLogger(q, varsOf(p.vars, p.reads), deps, logger)
+	first := p.f.localBranch(t, "feature/a", "a.txt", "one\n")
+	p.f.localBranch(t, "integration", "i.txt", "i\n")
+	p.f.localBranch(t, "feature/other", "o.txt", "o\n")
+
+	hook(p.db, "ws", []string{"feature/a", "integration", "feature/other"})
+	if refOf(p.f.fork, "feature/a") != first || refOf(p.f.fork, "integration") != "" || refOf(p.f.fork, "feature/other") != "" {
+		t.Errorf("fork refs: a=%s integration=%s other=%s", refOf(p.f.fork, "feature/a"), refOf(p.f.fork, "integration"), refOf(p.f.fork, "feature/other"))
+	}
+	if jobs, _ := q.ListByKey("rebuild", "ws"); len(jobs) != 1 {
+		t.Error("rebuild not enqueued alongside the mirror")
+	}
+	// A rewritten branch is force-mirrored.
+	runGit(t, p.f.trunk, "update-ref", "refs/heads/feature/a", p.f.base)
+	hook(p.db, "ws", []string{"feature/a"})
+	if refOf(p.f.fork, "feature/a") != p.f.base {
+		t.Error("rewrite not mirrored")
+	}
+	if len(emitter.events) != 0 {
+		t.Errorf("events on success: %v", emitter.events)
+	}
+}
+
+// Mirroring needs every dependency, a carry_patch workspace, forwarding on,
+// hub mode and an applicable branch; only then are credentials resolved.
+func TestMirror_NotApplicableCases(t *testing.T) {
+	p, deps, _ := mirrorEnv(t)
+	logger, _ := newLogger()
+	authed := 0
+	deps.ResolveAuth = func(string) (transport.AuthMethod, error) { authed++; return nil, nil }
+	p.f.localBranch(t, "feature/a", "a.txt", "a\n")
+	run := func(d PostPushMirrorDeps, slug string, branches []string) {
+		mirrorBranches(p.db, slug, branches, d, varsOf(p.vars, p.reads), logger)
+		if refOf(p.f.fork, "feature/a") != "" {
+			t.Fatalf("mirrored for slug=%s branches=%v deps=%+v vars=%v", slug, branches, d, p.vars)
+		}
+	}
+	run(PostPushMirrorDeps{WorkspaceRoot: p.root, Audit: deps.Audit}, "ws", []string{"feature/a"})
+	run(PostPushMirrorDeps{ResolveAuth: noAuth, Audit: deps.Audit}, "ws", []string{"feature/a"})
+	run(PostPushMirrorDeps{ResolveAuth: noAuth, WorkspaceRoot: p.root}, "ws", []string{"feature/a"})
+	run(deps, "std", []string{"feature/a"})
+	run(deps, "nope", []string{"feature/a"})
+	if p.reads["PUSH_PATCHES_TO_ORIGIN"] != 0 {
+		t.Error("setting read for a standard or unknown workspace")
+	}
+	p.vars["PATCH_BRANCH_SOURCE"] = "origin"
+	run(deps, "ws", []string{"feature/a"})
+	p.vars["PATCH_BRANCH_SOURCE"] = "hub"
+	p.vars["PUSH_PATCHES_TO_ORIGIN"] = "false"
+	run(deps, "ws", []string{"feature/a"})
+	p.vars["PUSH_PATCHES_TO_ORIGIN"] = "true"
+	run(deps, "ws", []string{"integration", "feature/other", "feature/gone"})
+	if authed != 0 {
+		t.Error("credentials resolved without an applicable branch")
+	}
+	if !deps.mirrorEnabled() || (PostPushMirrorDeps{}).mirrorEnabled() {
+		t.Error("mirrorEnabled")
+	}
+}
+
+// A failed mirror is logged with credentials removed and audited per branch
+// as hub.patch.mirror_failed; a credential failure fails every applicable
+// branch; an emitter failure is logged only.
+func TestMirror_FailuresAreAuditedPerBranch(t *testing.T) {
+	p, deps, emitter := mirrorEnv(t)
+	logger, sink := newLogger()
+	p.f.localBranch(t, "feature/a", "a.txt", "a\n")
+	seedPatch(t, p.db, "ws", "p4", "feature/b", 2, "conflict")
+	p.f.localBranch(t, "feature/b", "b.txt", "b\n")
+
+	deps.ResolveAuth = func(string) (transport.AuthMethod, error) {
+		return nil, errors.New("vault at https://u:pw@vault/x down")
+	}
+	mirrorBranches(p.db, "ws", []string{"feature/a", "feature/b"}, deps, varsOf(p.vars, nil), logger)
+	events := emitter.ofType(EventPatchMirrorFailed)
+	if len(events) != 2 || events[0].Metadata["branch_name"] != "feature/a" || events[1].Metadata["branch_name"] != "feature/b" || events[0].ActorType != "system" || events[0].Action != "mirror" {
+		t.Errorf("credential failure events = %+v", events)
+	}
+	if msg := events[0].Metadata["error"].(string); !strings.HasPrefix(msg, "failed to resolve origin credentials: ") || strings.Contains(msg, "pw") || strings.Contains(sink.String(), "pw") {
+		t.Errorf("unsanitised error: %q / %s", msg, sink.String())
+	}
+
+	emitter.events = nil
+	deps.ResolveAuth = noAuth
+	deps.WorkspaceRoot = t.TempDir()
+	mirrorBranches(p.db, "ws", []string{"feature/a"}, deps, varsOf(p.vars, nil), logger)
+	if events := emitter.ofType(EventPatchMirrorFailed); len(events) != 1 || !strings.Contains(events[0].Metadata["error"].(string), "open trunk") {
+		t.Errorf("push failure events = %+v", events)
+	}
+	if !strings.Contains(sink.String(), "failed to push branch to origin") {
+		t.Error("push failure not logged")
+	}
+	emitter.err = errors.New("audit down")
+	mirrorBranches(p.db, "ws", []string{"feature/a"}, deps, varsOf(p.vars, nil), logger)
+	if !strings.Contains(sink.String(), "failed to emit mirror_failed event") {
+		t.Error("emitter failure not logged")
+	}
+	emitMirrorFailedEvent(nil, "ws", "feature/a", "x", logger)
 }

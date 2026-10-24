@@ -3,171 +3,126 @@ package workspace
 import (
 	"encoding/json"
 	"errors"
-	"net/http"
 	"strings"
 	"testing"
 
 	"github.com/agent-fox-dev/hub/internal/secrets"
+	"github.com/agent-fox-dev/hub/internal/testutil"
 )
 
-func TestSettings_DefaultsAndApply(t *testing.T) {
+// TestSettings_Apply: a given key is taken, a null key returns to its
+// default, an absent key keeps the base, null resets everything, and the
+// refusals name the key and what it takes.
+func TestSettings_Apply(t *testing.T) {
 	d := DefaultSettings()
-	if d.PatchBranchSource != "hub" || d.PatchDivergencePolicy != "replace" || !d.AutoRebuildAfterPush ||
-		!d.AutoRebuildAfterSync || d.PushPatchesToOrigin || d.RebuildStrategy != "rebase" ||
-		d.RebuildFailMode != "fail_fast" || d.RebuildPushIntegrationBranch || d.SquashMergeDetection != "both" ||
-		d.ForgeAPIURL != "" || d.UpstreamForgeAPIURL != "" {
+	if d.PatchBranchSource != "hub" || d.PatchDivergencePolicy != "replace" || !d.AutoRebuildAfterPush || !d.AutoRebuildAfterSync ||
+		d.PushPatchesToOrigin || d.RebuildStrategy != "rebase" || d.RebuildFailMode != "fail_fast" || d.RebuildPushIntegrationBranch ||
+		d.SquashMergeDetection != "both" || d.ForgeAPIURL != "" || d.UpstreamForgeAPIURL != "" {
 		t.Errorf("DefaultSettings() = %+v", d)
 	}
-
-	// A given key is taken, a null key returns to its default, an absent key keeps base.
 	base := d
 	base.PatchBranchSource = "origin"
 	base.RebuildStrategy = "merge"
-	got, err := applySettings(base, json.RawMessage(`{"push_patches_to_origin": true, "rebuild_strategy": null, "forge_api_url": "https://api.example.test"}`))
-	if err != nil {
-		t.Fatal(err)
+	got, err := applySettings(base, json.RawMessage(`{"push_patches_to_origin": true, "rebuild_strategy": null, "forge_api_url": " https://api.example.test "}`))
+	if err != nil || got.PatchBranchSource != "origin" || !got.PushPatchesToOrigin || got.RebuildStrategy != "rebase" || got.ForgeAPIURL != " https://api.example.test " {
+		t.Errorf("applySettings = %+v, %v", got, err)
 	}
-	if got.PatchBranchSource != "origin" || !got.PushPatchesToOrigin || got.RebuildStrategy != "rebase" || got.ForgeAPIURL != "https://api.example.test" {
-		t.Errorf("applySettings = %+v", got)
+	if reset, err := applySettings(base, json.RawMessage(`null`)); err != nil || reset != d {
+		t.Errorf("null = %+v, %v", reset, err)
 	}
-
-	// Refusals.
 	for body, want := range map[string]string{
-		`[]`:                                   "settings must be an object",
-		`{"colour": "blue"}`:                   `unknown setting "colour"`,
-		`{"push_patches_to_origin": "yes"}`:    "setting push_patches_to_origin must be true or false",
-		`{"patch_branch_source": "github"}`:    `setting patch_branch_source must be one of "hub", "origin"`,
-		`{"forge_api_url": "http://insecure"}`: "setting forge_api_url must be an absolute https:// URL",
-		`{"forge_api_url": 7}`:                 "setting forge_api_url must be a string",
+		`[]`:                                     "settings must be an object",
+		`{"colour": "blue"}`:                     `unknown setting "colour"`,
+		`{"push_patches_to_origin": "yes"}`:      "setting push_patches_to_origin must be true or false",
+		`{"patch_branch_source": "github"}`:      `setting patch_branch_source must be one of "hub", "origin"`,
+		`{"forge_api_url": "http://insecure"}`:   "setting forge_api_url must be an absolute https:// URL",
+		`{"forge_api_url": "https://u@h/p"}`:     "without userinfo",
+		`{"upstream_forge_api_url": "https://"}`: "with a host",
+		`{"forge_api_url": "https://h/p?q=1"}`:   "query",
+		`{"forge_api_url": 7}`:                   "setting forge_api_url must be a string",
 	} {
 		if _, err := applySettings(d, json.RawMessage(body)); err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("applySettings(%s) error = %v; want %q", body, err, want)
 		}
 	}
-
-	// The stored document round-trips, and an old empty one gives the defaults.
-	if back := decodeSettings(encodeSettings(got)); back != got {
-		t.Errorf("round trip = %+v; want %+v", back, got)
+	if back := decodeSettings(encodeSettings(got)); back != got || decodeSettings("{}") != d || decodeSettings("") != d || decodeSettings("garbage") != d {
+		t.Error("the stored document does not round-trip or an empty one is not the defaults")
 	}
-	if decodeSettings("{}") != d || decodeSettings("") != d {
-		t.Error("an empty document should give the defaults")
+	if settingValue(d, "auto_rebuild_after_push") != "true" || settingValue(d, "push_patches_to_origin") != "false" || settingValue(d, "rebuild_strategy") != "rebase" || settingValue(d, "nope") != "" {
+		t.Error("settingValue")
 	}
 }
 
-func TestSettingsReader(t *testing.T) {
-	env := newTestEnv(t)
-	env.seedWorkspace(t, &Workspace{Slug: "ws", GitURL: "https://github.com/a/b", OwnerID: "alice-id", Status: "pending",
-		Settings: func() Settings {
-			s := DefaultSettings()
-			s.PatchBranchSource = "origin"
-			s.PushPatchesToOrigin = true
-			s.ForgeAPIURL = "https://api.example.test"
-			return s
-		}()})
-	read := SettingsReader(env.db)
+// TestSettings_Reader: the forge client and the module read the settings by
+// their old variable names; what is not a set setting of a workspace is not
+// found, and a database failure is returned as is.
+func TestSettings_Reader(t *testing.T) {
+	v := newEnv(t)
+	s := DefaultSettings()
+	s.PatchBranchSource, s.PushPatchesToOrigin, s.ForgeAPIURL = "origin", true, "https://api.example.test"
+	v.seed(t, &Workspace{Slug: "ws", OwnerID: owner, Settings: s})
+	read := SettingsReader(v.db)
 	for key, want := range map[string]string{
-		"PATCH_BRANCH_SOURCE":     "origin",
-		"push_patches_to_origin":  "true",
-		"AUTO_REBUILD_AFTER_PUSH": "true",
-		"REBUILD_STRATEGY":        "rebase",
-		"FORGE_API_URL":           "https://api.example.test",
+		"PATCH_BRANCH_SOURCE": "origin", "push_patches_to_origin": "true", "AUTO_REBUILD_AFTER_PUSH": "true",
+		"REBUILD_STRATEGY": "rebase", "FORGE_API_URL": "https://api.example.test",
 	} {
-		got, err := read("workspace", "ws", key)
-		if err != nil || got != want {
+		if got, err := read("workspace", "ws", key); err != nil || got != want {
 			t.Errorf("read(%s) = %q, %v; want %q", key, got, err, want)
 		}
 	}
 	var notFound *secrets.NotFoundError
 	for _, c := range []struct{ owner, slug, key string }{
-		{"workspace", "ws", "UPSTREAM_FORGE_API_URL"}, // empty URL is not set
-		{"workspace", "ws", "CHECK_COMMAND"},          // not a setting
-		{"workspace", "nope", "PATCH_BRANCH_SOURCE"},  // no such workspace
-		{"user", "alice-id", "PATCH_BRANCH_SOURCE"},   // not a workspace
+		{"workspace", "ws", "UPSTREAM_FORGE_API_URL"}, {"workspace", "ws", "CHECK_COMMAND"},
+		{"workspace", "nope", "PATCH_BRANCH_SOURCE"}, {"user", owner, "PATCH_BRANCH_SOURCE"},
 	} {
 		if _, err := read(c.owner, c.slug, c.key); !errors.As(err, &notFound) {
 			t.Errorf("read(%s, %s, %s) error = %v; want *secrets.NotFoundError", c.owner, c.slug, c.key, err)
 		}
 	}
-}
-
-func TestSettings_CreateAndUpdateThroughAPI(t *testing.T) {
-	env := newTestEnv(t)
-	auth := userAuth("alice-id")
-	origValidate := validateCredentialsFn
-	validateCredentialsFn = nil
-	t.Cleanup(func() { validateCredentialsFn = origValidate })
-	origClone := cloneFn
-	cloneFn = nil
-	t.Cleanup(func() { cloneFn = origClone })
-
-	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces",
-		`{"slug":"with-settings","git_url":"https://github.com/a/b","settings":{"patch_branch_source":"origin","auto_rebuild_after_push":false}}`, auth)
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("create: %d %s", rec.Code, rec.Body)
-	}
-	body := decodeObject(t, rec)
-	settings := body["settings"].(map[string]any)
-	if settings["patch_branch_source"] != "origin" || settings["auto_rebuild_after_push"] != false || settings["rebuild_strategy"] != "rebase" {
-		t.Errorf("created settings = %v", settings)
-	}
-
-	rec = env.doRequest(t, http.MethodPost, "/api/v1/workspaces",
-		`{"slug":"bad-settings","git_url":"https://github.com/a/b","settings":{"rebuild_strategy":"squash"}}`, auth)
-	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "rebuild_strategy must be one of") {
-		t.Errorf("create with a bad setting: %d %s; want 400", rec.Code, rec.Body)
-	}
-
-	// PATCH merges: one key changed, one reset, the rest kept.
-	rec = env.doRequest(t, http.MethodPatch, "/api/v1/workspaces/with-settings",
-		`{"settings":{"rebuild_strategy":"merge","auto_rebuild_after_push":null}}`, auth)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("patch: %d %s", rec.Code, rec.Body)
-	}
-	settings = decodeObject(t, rec)["settings"].(map[string]any)
-	if settings["rebuild_strategy"] != "merge" || settings["auto_rebuild_after_push"] != true || settings["patch_branch_source"] != "origin" {
-		t.Errorf("patched settings = %v", settings)
-	}
-	if got, _ := SettingsReader(env.db)("workspace", "with-settings", "REBUILD_STRATEGY"); got != "merge" {
-		t.Errorf("reader after patch = %q; want merge", got)
-	}
-	rec = env.doRequest(t, http.MethodPatch, "/api/v1/workspaces/with-settings", `{"settings":{"nope":1}}`, auth)
-	if rec.Code != http.StatusBadRequest {
-		t.Errorf("patch with an unknown setting: %d; want 400", rec.Code)
+	testutil.Exec(t, v.db, `DROP TABLE workspaces`)
+	if _, err := read("workspace", "ws", "PATCH_BRANCH_SOURCE"); err == nil || errors.As(err, &notFound) {
+		t.Errorf("without the table: %v; want the database error", err)
 	}
 }
 
-func TestMigrateVariableSettings(t *testing.T) {
-	env := newTestEnv(t)
-	if err := secrets.InitSchema(env.db); err != nil {
-		t.Fatal(err)
-	}
-	env.seedWorkspace(t, &Workspace{Slug: "old", GitURL: "https://github.com/a/b", OwnerID: "alice-id", Status: "pending"})
-	env.seedWorkspace(t, &Workspace{Slug: "plain", GitURL: "https://github.com/a/c", OwnerID: "alice-id", Status: "pending"})
-	store := secrets.NewStore(env.db)
+// TestSettings_MigrateVariables: the behaviour switches that were workspace
+// variables move into the settings document once, values a setting cannot
+// take and unreadable ones are dropped with a warning, other variables stay.
+func TestSettings_MigrateVariables(t *testing.T) {
+	v := newEnv(t)
+	v.seed(t, &Workspace{Slug: "old", OwnerID: owner})
+	v.seed(t, &Workspace{Slug: "plain", OwnerID: owner})
+	store := secrets.NewStore(v.db)
 	if _, err := store.CreateVariables("workspace", "old", []secrets.EntryInput{
-		{Key: "PATCH_BRANCH_SOURCE", Value: "origin"},
-		{Key: "AUTO_REBUILD_AFTER_SYNC", Value: "false"},
-		{Key: "REBUILD_STRATEGY", Value: "squash"}, // not a value the setting takes: dropped
-		{Key: "MY_OWN_VARIABLE", Value: "kept"},
+		{Key: "PATCH_BRANCH_SOURCE", Value: "origin"}, {Key: "auto_rebuild_after_sync", Value: " False "},
+		{Key: "REBUILD_STRATEGY", Value: "squash"}, {Key: "MY_OWN_VARIABLE", Value: "kept"},
 	}); err != nil {
 		t.Fatal(err)
 	}
-	n, err := MigrateVariableSettings(env.db)
+	// A variable of a workspace that is gone is deleted without a change.
+	if _, err := store.CreateVariables("workspace", "gone", []secrets.EntryInput{{Key: "REBUILD_FAIL_MODE", Value: "continue"}}); err != nil {
+		t.Fatal(err)
+	}
+	testutil.Exec(t, v.db, `UPDATE variables SET value = '%%%' WHERE owner_id = 'old' AND key = 'REBUILD_STRATEGY'`)
+	n, err := MigrateVariableSettings(v.db)
 	if err != nil || n != 1 {
 		t.Fatalf("MigrateVariableSettings = %d, %v; want 1", n, err)
 	}
-	ws, err := getWorkspaceBySlug(env.db, "old")
-	if err != nil {
-		t.Fatal(err)
-	}
+	ws, _ := getWorkspaceBySlug(v.db, "old")
 	if ws.Settings.PatchBranchSource != "origin" || ws.Settings.AutoRebuildAfterSync || ws.Settings.RebuildStrategy != "rebase" {
 		t.Errorf("migrated settings = %+v", ws.Settings)
 	}
-	vars, err := store.ListVariables("workspace", "old")
-	if err != nil || len(vars) != 1 || vars[0].Key != "MY_OWN_VARIABLE" {
+	if vars, err := store.ListVariables("workspace", "old"); err != nil || len(vars) != 1 || vars[0].Key != "MY_OWN_VARIABLE" {
 		t.Errorf("remaining variables = %v, %v; want only MY_OWN_VARIABLE", vars, err)
 	}
-	if n, err := MigrateVariableSettings(env.db); err != nil || n != 0 {
+	if testutil.Count(t, v.db, `SELECT COUNT(*) FROM variables WHERE owner_id = 'gone'`) != 0 {
+		t.Error("the variable of the missing workspace stayed")
+	}
+	if n, err := MigrateVariableSettings(v.db); err != nil || n != 0 {
 		t.Errorf("second run = %d, %v; want 0", n, err)
+	}
+	testutil.Exec(t, v.db, `DROP TABLE variables`)
+	if _, err := MigrateVariableSettings(v.db); err == nil {
+		t.Error("no error without the variables table")
 	}
 }

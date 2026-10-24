@@ -1,280 +1,281 @@
 package gitserver
 
 import (
+	"context"
+	"crypto/sha1"
+	"database/sql"
+	"errors"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"reflect"
+	"sort"
 	"strings"
 	"testing"
+
+	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/txsvc/apikit"
+
+	"github.com/agent-fox-dev/hub/internal/audit"
+	"github.com/agent-fox-dev/hub/internal/testutil"
+	"github.com/agent-fox-dev/hub/internal/wslock"
 )
 
-// TS-06-22: After a successful ReceivePackSession, the head_sha column on
-// the workspace database row is updated to the new HEAD commit SHA.
-// Requirement: 06-REQ-6.1
-func TestPush_HeadSHA_UpdatedAfterSuccessfulPush(t *testing.T) {
-	env := newGitTestEnv(t)
-
-	// Seed org, workspace, and a local git repository.
-	env.seedOrg(t, "org-1", "My Org", "myorg")
-	env.seedOrgMember(t, "org-1", "user-1")
-	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "ready")
-
-	trunkPath := env.initWorkspaceRepo(t, "myws")
-
-	// Record the initial HEAD SHA.
-	initialSHA := getHeadSHA(t, trunkPath)
-	setHeadSHAInDB(t, env, "myws", initialSHA)
-
-	// Create a second commit (simulating what the pack would contain).
-	addCommit(t, trunkPath, "second.txt", "second commit")
-	newSHA := getHeadSHA(t, trunkPath)
-
-	// Verify the SHAs are different.
-	if initialSHA == newSHA {
-		t.Fatalf("initial and new SHA are the same: %s", initialSHA)
-	}
-
-	// POST to git-receive-pack with the owner's credential.
-	// In a real implementation, this would carry a valid pack body.
-	// For the stub test, we verify the endpoint processes the request
-	// and updates head_sha in the database.
-	rec := env.doRequest(t, http.MethodPost,
-		"/git/myorg/myws.git/git-receive-pack", "",
-		withBasicAuth("x-token-auth", "af_key_user1"))
-
-	if rec.Code != http.StatusOK {
-		t.Errorf("POST git-receive-pack: status = %d; want %d",
-			rec.Code, http.StatusOK)
-	}
-
-	// The response should contain a pkt-line "unpack ok" line.
-	body := rec.Body.String()
-	if !strings.Contains(body, "unpack ok") {
-		t.Errorf("response body should contain 'unpack ok'; got %q",
-			truncate(body, 200))
-	}
-
-	// After a successful push, head_sha in the database should be updated.
-	var headSHA string
-	err := env.db.QueryRow(
-		`SELECT COALESCE(head_sha, '') FROM workspaces WHERE slug = ?`, "myws",
-	).Scan(&headSHA)
-	if err != nil {
-		t.Fatalf("failed to query head_sha: %v", err)
-	}
-	if headSHA == initialSHA {
-		t.Errorf("head_sha was not updated; still %q", headSHA)
-	}
-	if headSHA == "" {
-		t.Error("head_sha is empty after push")
+// rejecting is a pre-receive hook refusing the named refs.
+func rejecting(refs ...string) PreReceiveHookFunc {
+	return func(_ context.Context, _ *sql.DB, _ string, _ *apikit.AuthInfo, upd RefUpdate) error {
+		for _, r := range refs {
+			if string(upd.Name) == r {
+				return errors.New(r + " is blocked")
+			}
+		}
+		return nil
 	}
 }
 
-// TS-06-23: After a successful push, the local clone is updated but no
-// propagation to the upstream remote occurs.
-// Requirement: 06-REQ-6.2
-func TestPush_NoUpstreamPropagation(t *testing.T) {
-	env := newGitTestEnv(t)
-
-	env.seedOrg(t, "org-1", "My Org", "myorg")
-	env.seedOrgMember(t, "org-1", "user-1")
-	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "ready")
-
-	trunkPath := env.initWorkspaceRepo(t, "myws")
-
-	// Set up a local "upstream" bare repo to detect any push propagation.
-	upstreamPath := t.TempDir()
-	initBareRepo(t, upstreamPath)
-
-	// Add the upstream as a remote to the workspace repo.
-	addRemote(t, trunkPath, "origin", upstreamPath)
-
-	// Record the initial upstream ref count.
-	upstreamRefsBefore := countRefs(t, upstreamPath)
-
-	// POST to git-receive-pack.
-	rec := env.doRequest(t, http.MethodPost,
-		"/git/myorg/myws.git/git-receive-pack", "",
-		withBasicAuth("x-token-auth", "af_key_user1"))
-
-	if rec.Code != http.StatusOK {
-		t.Errorf("POST git-receive-pack: status = %d; want %d",
-			rec.Code, http.StatusOK)
-	}
-
-	// Verify that no push to the upstream remote occurred.
-	upstreamRefsAfter := countRefs(t, upstreamPath)
-	if upstreamRefsAfter != upstreamRefsBefore {
-		t.Errorf("upstream ref count changed from %d to %d; push should not propagate upstream",
-			upstreamRefsBefore, upstreamRefsAfter)
-	}
+// emptyPack is a packfile of zero objects, as a client sends when every
+// pushed commit already exists on the server.
+func emptyPack() []byte {
+	header := []byte{'P', 'A', 'C', 'K', 0, 0, 0, 2, 0, 0, 0, 0}
+	sum := sha1.Sum(header)
+	return append(header, sum[:]...)
 }
 
-// TestPush_FailedSession_DoesNotUpdateHeadSHA verifies that when the
-// ReceivePackSession fails (corrupt pack or session error), head_sha
-// is not updated in the database.
-// Requirement: 06-REQ-6.E3
-func TestPush_FailedSession_DoesNotUpdateHeadSHA(t *testing.T) {
-	env := newGitTestEnv(t)
-
-	env.seedOrg(t, "org-1", "My Org", "myorg")
-	env.seedOrgMember(t, "org-1", "user-1")
-	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "ready")
-
-	trunkPath := env.initWorkspaceRepo(t, "myws")
-	initialSHA := getHeadSHA(t, trunkPath)
-	setHeadSHAInDB(t, env, "myws", initialSHA)
-
-	// Send corrupt/invalid pack data to trigger a session error.
-	rec := env.doRequest(t, http.MethodPost,
-		"/git/myorg/myws.git/git-receive-pack", "INVALID_PACK_DATA",
-		withBasicAuth("x-token-auth", "af_key_user1"))
-
-	// The response should be HTTP 200 with a pkt-line error per git smart HTTP spec.
-	if rec.Code != http.StatusOK {
-		t.Errorf("POST git-receive-pack with corrupt pack: status = %d; want %d",
-			rec.Code, http.StatusOK)
-	}
-
-	// head_sha should NOT be updated after a failed session.
-	var headSHA string
-	err := env.db.QueryRow(
-		`SELECT COALESCE(head_sha, '') FROM workspaces WHERE slug = ?`, "myws",
-	).Scan(&headSHA)
-	if err != nil {
-		t.Fatalf("failed to query head_sha: %v", err)
-	}
-	if headSHA != initialSHA {
-		t.Errorf("head_sha changed after failed push; got %q, want %q",
-			headSHA, initialSHA)
-	}
-}
-
-// TestPush_DBUpdateFails_PushStillSucceeds verifies that if the database
-// update of head_sha fails after the pack has been written to disk, the
-// git client still receives a successful push response.
-// Requirement: 06-REQ-6.E1
-func TestPush_DBUpdateFails_PushStillSucceeds(t *testing.T) {
-	env := newGitTestEnv(t)
-
-	env.seedOrg(t, "org-1", "My Org", "myorg")
-	env.seedOrgMember(t, "org-1", "user-1")
-	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "ready")
-
-	env.initWorkspaceRepo(t, "myws")
-
-	// POST to git-receive-pack.
-	// The implementation should handle DB errors gracefully — the push
-	// response to the client should succeed even if head_sha update fails.
-	rec := env.doRequest(t, http.MethodPost,
-		"/git/myorg/myws.git/git-receive-pack", "",
-		withBasicAuth("x-token-auth", "af_key_user1"))
-
-	// The push response should succeed regardless of DB update status.
-	if rec.Code != http.StatusOK {
-		t.Errorf("POST git-receive-pack: status = %d; want %d",
-			rec.Code, http.StatusOK)
-	}
-}
-
-// --- Test helpers ---
-
-// getHeadSHA returns the HEAD commit SHA for the repository at the given path.
-func getHeadSHA(t *testing.T, repoPath string) string {
+// pushSetup is a workspace with its owner's remote and clone, the trunk's
+// branch and a push spy running hook.
+func pushSetup(t *testing.T, hook PreReceiveHookFunc) (v *env, s *pushSpy, trunk, local, branch string) {
 	t.Helper()
-	cmd := exec.Command("git", "-C", repoPath, "rev-parse", "HEAD")
-	cmd.Env = append(os.Environ(),
-		"GIT_CONFIG_GLOBAL=/dev/null",
-		"GIT_CONFIG_SYSTEM=/dev/null",
-	)
-	out, err := cmd.Output()
-	if err != nil {
-		t.Fatalf("git rev-parse HEAD in %q failed: %v", repoPath, err)
-	}
-	return strings.TrimSpace(string(out))
+	v = newEnv(t)
+	s = spyPushes(t, hook)
+	trunk = v.trunk("ws")
+	local = clone(t, v.remote(t, v.key(t, "owner")))
+	return v, s, trunk, local, gitRun(t, trunk, "symbolic-ref", "--short", "HEAD")
 }
 
-// setHeadSHAInDB updates the head_sha column for a workspace in the database.
-func setHeadSHAInDB(t *testing.T, env *gitTestEnv, slug, sha string) {
-	t.Helper()
-	_, err := env.db.Exec(
-		`UPDATE workspaces SET head_sha = ? WHERE slug = ?`, sha, slug,
-	)
-	if err != nil {
-		t.Fatalf("failed to set head_sha for %q: %v", slug, err)
+// A push updates the trunk's ref and worktree, records head_sha, runs the
+// post-push hook with the branch and emits one audit event naming the
+// actor, the ref and the new head.
+func TestPush_UpdatesRepositoryAndRecordsIt(t *testing.T) {
+	v, s, trunk, local, branch := pushSetup(t, nil)
+	sha := addCommit(t, local, "new.txt", "new")
+	gitRun(t, local, "push", "-q", "origin", branch)
+	if got := refValue(trunk, "refs/heads/"+branch); got != sha {
+		t.Errorf("trunk %s = %s; want %s", branch, got, sha)
+	}
+	if got := v.headSHA(t, "ws"); got != sha {
+		t.Errorf("head_sha = %s; want %s", got, sha)
+	}
+	if _, err := os.Stat(filepath.Join(trunk, "new.txt")); err != nil {
+		t.Error("the trunk worktree was not reset to the pushed commit")
+	}
+	if got := s.Pushed(t); !reflect.DeepEqual(got, []string{branch}) {
+		t.Errorf("post-push branches %v; want [%s]", got, branch)
+	}
+	events := s.Events()
+	if len(events) != 1 {
+		t.Fatalf("%d audit events; want 1", len(events))
+	}
+	e := events[0]
+	want := audit.HubEvent{EventType: "hub.git.push", ResourceType: "workspace", Action: "push", Workspace: "ws", ActorID: "owner", ActorType: "api_key"}
+	e.Metadata = nil
+	if !reflect.DeepEqual(e, want) {
+		t.Errorf("event %+v; want %+v", e, want)
+	}
+	if refs := refsUpdated(t, events[0]); events[0].Metadata["head_sha"] != sha || !reflect.DeepEqual(refs, []string{"refs/heads/" + branch}) {
+		t.Errorf("metadata %v; want head_sha %s and refs [refs/heads/%s]", events[0].Metadata, sha, branch)
 	}
 }
 
-// addCommit creates a new file and commits it to the repository at the given path.
-func addCommit(t *testing.T, repoPath, filename, message string) {
-	t.Helper()
-	filePath := filepath.Join(repoPath, filename)
-	if err := os.WriteFile(filePath, []byte(message+"\n"), 0o644); err != nil {
-		t.Fatalf("failed to write %q: %v", filePath, err)
+// While a rebuild, merge or sync holds the workspace, a push still updates
+// the ref and head_sha but leaves the worktree to the running operation.
+func TestPush_LeavesWorktreeToBusyOperation(t *testing.T) {
+	v, _, trunk, local, branch := pushSetup(t, nil)
+	unlock := wslock.Lock("ws")
+	defer unlock()
+	sha := addCommit(t, local, "new.txt", "new")
+	gitRun(t, local, "push", "-q", "origin", branch)
+	if got := refValue(trunk, "refs/heads/"+branch); got != sha || v.headSHA(t, "ws") != sha {
+		t.Errorf("trunk %s = %s, head_sha %s; want %s", branch, got, v.headSHA(t, "ws"), sha)
 	}
-	for _, args := range [][]string{
-		{"git", "-C", repoPath, "add", filename},
-		{"git", "-C", repoPath, "-c", "user.name=test", "-c", "user.email=test@test.com", "commit", "-m", message},
-	} {
-		cmd := exec.Command(args[0], args[1:]...)
-		cmd.Env = append(os.Environ(),
-			"GIT_CONFIG_GLOBAL=/dev/null",
-			"GIT_CONFIG_SYSTEM=/dev/null",
-		)
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("%v failed: %v\n%s", args, err, out)
+	if _, err := os.Stat(filepath.Join(trunk, "new.txt")); err == nil {
+		t.Error("the trunk worktree was reset while the workspace was busy")
+	}
+}
+
+// An empty receive-pack body is a successful no-op that refreshes head_sha
+// from the trunk without consulting the pre-receive hook.
+func TestPush_EmptyBodyIsNoOp(t *testing.T) {
+	v := newEnv(t)
+	calls := 0
+	s := spyPushes(t, func(context.Context, *sql.DB, string, *apikit.AuthInfo, RefUpdate) error { calls++; return nil })
+	rec := v.do(t, http.MethodPost, wsPath+"/git-receive-pack", "", v.key(t, "owner"))
+	if want := string(encodePktLine("unpack ok\n")) + "0000"; rec.Code != http.StatusOK || rec.Body.String() != want {
+		t.Errorf("(%d, %q); want 200 %q", rec.Code, rec.Body, want)
+	}
+	if head := gitRun(t, v.trunk("ws"), "rev-parse", "HEAD"); v.headSHA(t, "ws") != head {
+		t.Errorf("head_sha %s; want %s", v.headSHA(t, "ws"), head)
+	}
+	if calls != 0 || len(s.Events()) != 0 {
+		t.Errorf("%d hook calls, %d audit events; want none", calls, len(s.Events()))
+	}
+}
+
+// An unreadable pack is reported in-band and changes nothing.
+func TestPush_UnreadablePackIsAnError(t *testing.T) {
+	v := newEnv(t)
+	s := spyPushes(t, nil)
+	testutil.Exec(t, v.db, `UPDATE workspaces SET head_sha = 'stale' WHERE slug = 'ws'`)
+	rec := v.do(t, http.MethodPost, wsPath+"/git-receive-pack", "not a push", v.key(t, "owner"))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "ERR ") {
+		t.Errorf("(%d, %q); want 200 with an ERR line", rec.Code, rec.Body)
+	}
+	if v.headSHA(t, "ws") != "stale" || len(s.Events()) != 0 {
+		t.Errorf("head_sha %s, %d audit events; want stale and none", v.headSHA(t, "ws"), len(s.Events()))
+	}
+}
+
+// The pre-receive hook sees every ref update of a push, after the objects
+// are in the trunk and before the ref is written, with the workspace, the
+// actor and the old and new hashes.
+func TestPush_PreReceiveHookSeesEachRefUpdate(t *testing.T) {
+	type call struct {
+		slug, actor string
+		upd         RefUpdate
+		inTrunk     bool
+		refBefore   string
+	}
+	var calls []call
+	var trunk, local string
+	_, _, trunk, local, _ = pushSetup(t, func(_ context.Context, _ *sql.DB, slug string, actor *apikit.AuthInfo, upd RefUpdate) error {
+		_, err := gitTry(trunk, "cat-file", "-e", upd.New.String())
+		calls = append(calls, call{slug, actor.CredentialType + ":" + actor.UserID, upd, err == nil, refValue(trunk, string(upd.Name))})
+		return nil
+	})
+	gitRun(t, local, "checkout", "-q", "-b", "b")
+	oldB := addCommit(t, local, "b1.txt", "b1")
+	gitRun(t, local, "push", "-q", "origin", "b")
+	calls = nil
+	gitRun(t, local, "checkout", "-q", "-b", "a")
+	shaA := addCommit(t, local, "a.txt", "a")
+	gitRun(t, local, "checkout", "-q", "b")
+	shaB := addCommit(t, local, "b2.txt", "b2")
+	gitRun(t, local, "push", "-q", "origin", "a", "b")
+	sort.Slice(calls, func(i, j int) bool { return calls[i].upd.Name < calls[j].upd.Name })
+	want := []call{
+		{"ws", "api_key:owner", RefUpdate{Name: "refs/heads/a", Old: plumbing.ZeroHash, New: plumbing.NewHash(shaA)}, true, ""},
+		{"ws", "api_key:owner", RefUpdate{Name: "refs/heads/b", Old: plumbing.NewHash(oldB), New: plumbing.NewHash(shaB)}, true, oldB},
+	}
+	if !reflect.DeepEqual(calls, want) {
+		t.Errorf("hook calls %+v; want %+v", calls, want)
+	}
+}
+
+// A push mixing a rejected ref, an accepted branch and a delete writes only
+// the accepted updates, tells the client which ref was rejected and why,
+// and drives the post-push hook (branches, deletes excluded) and the audit
+// event (every accepted ref) from the accepted updates only.
+func TestPush_MixedPushAppliesAcceptedRefsOnly(t *testing.T) {
+	_, s, trunk, local, _ := pushSetup(t, rejecting("refs/heads/p1"))
+	gitRun(t, local, "checkout", "-q", "-b", "old")
+	addCommit(t, local, "old.txt", "old")
+	gitRun(t, local, "push", "-q", "origin", "old")
+	s.Pushed(t)
+	before := len(s.Events())
+	gitRun(t, local, "checkout", "-q", "-b", "p1")
+	addCommit(t, local, "p1.txt", "p1")
+	gitRun(t, local, "checkout", "-q", "-b", "feature")
+	sha := addCommit(t, local, "feature.txt", "feature")
+	out, err := gitTry(local, "push", "origin", "p1", "feature", ":old")
+	if err == nil || !strings.Contains(out, "remote rejected") || !strings.Contains(out, "refs/heads/p1 is blocked") {
+		t.Errorf("push: %v\n%s\nwant a remote rejection naming refs/heads/p1", err, out)
+	}
+	if refValue(trunk, "refs/heads/feature") != sha || refValue(trunk, "refs/heads/p1") != "" || refValue(trunk, "refs/heads/old") != "" {
+		t.Errorf("trunk: feature %s, p1 %q, old %q; want %s, none, none", refValue(trunk, "refs/heads/feature"), refValue(trunk, "refs/heads/p1"), refValue(trunk, "refs/heads/old"), sha)
+	}
+	if got := s.Pushed(t); !reflect.DeepEqual(got, []string{"feature"}) {
+		t.Errorf("post-push branches %v; want [feature]", got)
+	}
+	events := s.Events()[before:]
+	if len(events) != 1 {
+		t.Fatalf("%d audit events; want 1", len(events))
+	}
+	refs := refsUpdated(t, events[0])
+	sort.Strings(refs)
+	if !reflect.DeepEqual(refs, []string{"refs/heads/feature", "refs/heads/old"}) || events[0].Metadata["head_sha"] != sha {
+		t.Errorf("audit refs %v head_sha %v; want [feature old] and %s", refs, events[0].Metadata["head_sha"], sha)
+	}
+}
+
+// A push with no accepted update emits no audit event and runs no post-push
+// hook, but still refreshes head_sha from the trunk.
+func TestPush_RejectedOnlyPushHasNoSideEffects(t *testing.T) {
+	v, s, trunk, local, _ := pushSetup(t, rejecting("refs/heads/blocked"))
+	testutil.Exec(t, v.db, `UPDATE workspaces SET head_sha = 'stale' WHERE slug = 'ws'`)
+	gitRun(t, local, "checkout", "-q", "-b", "blocked")
+	addCommit(t, local, "x.txt", "x")
+	if _, err := gitTry(local, "push", "origin", "blocked"); err == nil {
+		t.Fatal("the rejected push succeeded")
+	}
+	if n := len(s.Events()); n != 0 {
+		t.Errorf("%d audit events; want none", n)
+	}
+	if head := gitRun(t, trunk, "rev-parse", "HEAD"); v.headSHA(t, "ws") != head {
+		t.Errorf("head_sha %s; want the trunk HEAD %s", v.headSHA(t, "ws"), head)
+	}
+	// The next accepted push is the first post-push call.
+	gitRun(t, local, "checkout", "-q", "-b", "open")
+	gitRun(t, local, "push", "-q", "origin", "open")
+	if got := s.Pushed(t); !reflect.DeepEqual(got, []string{"open"}) {
+		t.Errorf("first post-push call %v; want [open]", got)
+	}
+}
+
+// A client that does not ask for report-status still has a hook rejection
+// enforced, gets no per-ref message and no ERR line, and the refs accepted
+// in the same push keep their side effects; a failed unpack is still an ERR.
+func TestPush_WithoutReportStatus(t *testing.T) {
+	v, s, trunk, _, _ := pushSetup(t, rejecting("refs/heads/blocked"))
+	owner := v.key(t, "owner")
+	base, zero := gitRun(t, trunk, "rev-parse", "HEAD"), plumbing.ZeroHash.String()
+	body := receivePackRequest([]string{zero + " " + base + " refs/heads/blocked", zero + " " + base + " refs/heads/open"}, "agent=test", emptyPack())
+	rec := v.do(t, http.MethodPost, wsPath+"/git-receive-pack", body, owner)
+	if rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), "ERR") || strings.Contains(rec.Body.String(), "blocked") {
+		t.Errorf("(%d, %q); want 200 without an ERR line or the hook's message", rec.Code, rec.Body)
+	}
+	if refValue(trunk, "refs/heads/blocked") != "" || refValue(trunk, "refs/heads/open") != base {
+		t.Errorf("trunk: blocked %q, open %q; want none and %s", refValue(trunk, "refs/heads/blocked"), refValue(trunk, "refs/heads/open"), base)
+	}
+	if events := s.Events(); len(events) != 1 || !reflect.DeepEqual(refsUpdated(t, events[0]), []string{"refs/heads/open"}) {
+		t.Errorf("audit events %+v; want one for refs/heads/open", events)
+	}
+	if got := s.Pushed(t); !reflect.DeepEqual(got, []string{"open"}) {
+		t.Errorf("post-push branches %v; want [open]", got)
+	}
+	if v.headSHA(t, "ws") != base {
+		t.Errorf("head_sha %s; want %s", v.headSHA(t, "ws"), base)
+	}
+	body = receivePackRequest([]string{zero + " " + base + " refs/heads/broken"}, "agent=test", []byte("not a packfile"))
+	rec = v.do(t, http.MethodPost, wsPath+"/git-receive-pack", body, owner)
+	if !strings.Contains(rec.Body.String(), "ERR") || refValue(trunk, "refs/heads/broken") != "" || len(s.Events()) != 1 {
+		t.Errorf("unreadable pack: %q, ref %q, %d events; want an ERR line, no ref and no new event", rec.Body, refValue(trunk, "refs/heads/broken"), len(s.Events()))
+	}
+}
+
+// failingEmitter refuses every event.
+type failingEmitter struct{}
+
+func (failingEmitter) Emit(context.Context, audit.HubEvent) error { return errors.New("audit down") }
+
+// Audit is optional: without an emitter, or with one that fails, the push
+// succeeds all the same.
+func TestPush_AuditEmitterOptional(t *testing.T) {
+	_, _, trunk, local, _ := pushSetup(t, nil)
+	for branch, emitter := range map[string]audit.Emitter{"none": nil, "failing": failingEmitter{}} {
+		defaultAuditEmitter = emitter
+		gitRun(t, local, "checkout", "-q", "-b", branch)
+		sha := addCommit(t, local, branch+".txt", branch)
+		if out, err := gitTry(local, "push", "origin", branch); err != nil || refValue(trunk, "refs/heads/"+branch) != sha {
+			t.Errorf("push with %s emitter: %v\n%s", branch, err, out)
 		}
 	}
-}
-
-// initBareRepo creates a bare git repository at the given path.
-func initBareRepo(t *testing.T, path string) {
-	t.Helper()
-	cmd := exec.Command("git", "init", "--bare", path)
-	cmd.Env = append(os.Environ(),
-		"GIT_CONFIG_GLOBAL=/dev/null",
-		"GIT_CONFIG_SYSTEM=/dev/null",
-	)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("git init --bare %q failed: %v\n%s", path, err, out)
-	}
-}
-
-// addRemote adds a remote to the repository at the given path.
-func addRemote(t *testing.T, repoPath, name, url string) {
-	t.Helper()
-	cmd := exec.Command("git", "-C", repoPath, "remote", "add", name, url)
-	cmd.Env = append(os.Environ(),
-		"GIT_CONFIG_GLOBAL=/dev/null",
-		"GIT_CONFIG_SYSTEM=/dev/null",
-	)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		// Remote may already exist; try set-url instead.
-		cmd2 := exec.Command("git", "-C", repoPath, "remote", "set-url", name, url)
-		cmd2.Env = cmd.Env
-		if out2, err2 := cmd2.CombinedOutput(); err2 != nil {
-			t.Fatalf("git remote add/set-url %q %q failed: %v\n%s\n%s", name, url, err, out, out2)
-		}
-	}
-}
-
-// countRefs returns the number of refs in a git repository.
-func countRefs(t *testing.T, repoPath string) int {
-	t.Helper()
-	cmd := exec.Command("git", "-C", repoPath, "show-ref")
-	cmd.Env = append(os.Environ(),
-		"GIT_CONFIG_GLOBAL=/dev/null",
-		"GIT_CONFIG_SYSTEM=/dev/null",
-	)
-	out, err := cmd.Output()
-	if err != nil {
-		// show-ref returns exit code 1 when there are no refs.
-		return 0
-	}
-	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-	if len(lines) == 1 && lines[0] == "" {
-		return 0
-	}
-	return len(lines)
 }

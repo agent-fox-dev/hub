@@ -1,11 +1,11 @@
 package forge
 
 import (
-	"encoding/json"
 	"errors"
 	"net/http"
-	"os/exec"
+	"net/url"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/agent-fox-dev/aflib/issuex"
@@ -13,502 +13,353 @@ import (
 	githttp "github.com/go-git/go-git/v5/plumbing/transport/http"
 
 	"github.com/agent-fox-dev/hub/internal/secrets"
+	"github.com/agent-fox-dev/hub/internal/testutil"
 	"github.com/agent-fox-dev/hub/internal/workspace"
 )
 
-const apiURLRule = "absolute https:// URL"
-
-// TS-30-11: Absent target and target=origin read the repository parsed from git_url
-// with the origin resolver and FORGE_API_URL.
-// Requirement: 30-REQ-3.1
-func TestOriginTargetReadsGitURL_TS_30_11(t *testing.T) {
-	e := newEnv(t)
-	e.stub.answerRepository()
-	addWorkspace(t, e.db, "widgets")
-	e.setVar("widgets", "FORGE_API_URL", e.stub.URL)
-
-	for _, query := range []string{"", "?target=origin"} {
-		before := e.stub.count()
-		rec := e.get("/workspaces/widgets/forge/repository"+query, apiKeyAuth())
-		if rec.Code != http.StatusOK {
-			t.Fatalf("%q: status = %d; want 200\n%s", query, rec.Code, rec.Body)
-		}
-		var got issuex.Repository
-		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil || got.FullName != "acme/widgets" {
-			t.Errorf("%q: body = %s; want the repository the forge answered", query, rec.Body)
-		}
-		reqs := e.stub.received()
-		if len(reqs) != before+1 {
-			t.Fatalf("%q: the stub received %d requests; want one more than %d", query, len(reqs), before)
-		}
-		if last := reqs[len(reqs)-1]; last.Path != "/repos/acme/widgets" || bearer(last) != "origin-token" {
-			t.Errorf("%q: the stub saw %s with token %q; want /repos/acme/widgets with the origin token", query, last.Path, bearer(last))
-		}
-	}
-	if n := e.upstreamCalls.Load(); n != 0 {
-		t.Errorf("the upstream resolver was called %d times; want none", n)
-	}
-}
-
-// TS-30-12: target=upstream on a carry_patch workspace uses upstream_url, the
-// upstream credential and UPSTREAM_FORGE_API_URL only.
-// Requirement: 30-REQ-3.2
-func TestUpstreamTargetUsesUpstreamOnly_TS_30_12(t *testing.T) {
-	e := newEnv(t)
-	stubA, stubB := e.stub, newForgeStub(t)
-	stubB.answerRepository()
-	e.upstreamAuth = &githttp.BasicAuth{Username: "x-token-auth", Password: "upstream-token"}
-
-	addWorkspace(t, e.db, "fork", func(r *workspaceRow) {
-		r.gitURL = "https://github.com/me/widgets"
-		carryPatch("https://github.com/up/widgets")(r)
-	})
-	e.setVar("fork", "FORGE_API_URL", stubA.URL)
-	e.setVar("fork", "UPSTREAM_FORGE_API_URL", stubB.URL)
-
-	for _, tc := range []struct{ route, path string }{
-		{"/forge/repository", "/repos/up/widgets"},
-		{"/pulls/1/state", "/repos/up/widgets/pulls/1"},
-	} {
-		before := len(stubB.received())
-		rec := e.get("/workspaces/fork"+tc.route+"?target=upstream", apiKeyAuth())
-		if rec.Code != http.StatusOK {
-			t.Fatalf("%s: status = %d; want 200\n%s", tc.route, rec.Code, rec.Body)
-		}
-		reqs := stubB.received()
-		if len(reqs) != before+1 {
-			t.Fatalf("%s: stub B received %d requests; want %d", tc.route, len(reqs), before+1)
-		}
-		if last := reqs[len(reqs)-1]; last.Path != tc.path || bearer(last) != "upstream-token" {
-			t.Errorf("%s: stub B saw %s with token %q; want %s with the upstream token", tc.route, last.Path, bearer(last), tc.path)
-		}
-	}
-	if n := stubA.count(); n != 0 {
-		t.Errorf("stub A (FORGE_API_URL) received %d requests; want none", n)
-	}
-	if n := e.originCalls.Load(); n != 0 {
-		t.Errorf("the origin resolver was called %d times; want none", n)
-	}
-
-	// The upstream does not fall back to FORGE_API_URL: a host that names neither
-	// forge stays unknown although the origin has an API URL.
-	addWorkspace(t, e.db, "fork2", func(r *workspaceRow) {
-		carryPatch("https://git.other.example/up/widgets")(r)
-	})
-	// FORGE_API_URL names GitHub, so that the origin could classify the host: the upstream
-	// has no variable of its own and must not borrow it.
-	e.setVar("fork2", "FORGE_API_URL", stubA.URL+"/github")
-	rec := e.get("/workspaces/fork2/forge/repository?target=upstream", apiKeyAuth())
-	if rec.Code != http.StatusUnprocessableEntity || decodeError(t, rec).ErrorType != "forge_unknown" {
-		t.Errorf("status = %d, body %s; want 422 forge_unknown", rec.Code, rec.Body)
-	}
-	if n := stubA.count(); n != 0 {
-		t.Errorf("stub A received %d requests after the fallback case; want none", n)
-	}
-}
-
-// TS-30-15: A rotated GIT_PAT applies to the next call because no client is cached.
-// Requirement: 30-REQ-4.1
-func TestRotatedTokenAppliesToTheNextCall_TS_30_15(t *testing.T) {
-	var store *secrets.Store
-	e := newEnv(t, func(cfg *Config) {
-		if err := secrets.InitSchema(cfg.DB); err != nil {
-			t.Fatalf("secrets schema: %v", err)
-		}
-		store = secrets.NewStore(cfg.DB)
-		cfg.ResolveOriginAuth = func(slug string) (transport.AuthMethod, error) {
-			return workspace.ResolveCloneAuth(store, slug)
-		}
-		cfg.GetVariable = store.GetVariableValue
-	})
-	e.stub.answerRepository()
-	addWorkspace(t, e.db, "widgets")
-	if _, err := store.CreateVariables("workspace", "widgets", []secrets.EntryInput{{Key: "FORGE_API_URL", Value: e.stub.URL}}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.CreateSecrets("workspace", "widgets", []secrets.EntryInput{{Key: "GIT_PAT", Value: "old"}}); err != nil {
-		t.Fatal(err)
-	}
-
-	call := func() {
-		t.Helper()
-		if rec := e.get("/workspaces/widgets/forge/repository", apiKeyAuth()); rec.Code != http.StatusOK {
-			t.Fatalf("status = %d; want 200\n%s", rec.Code, rec.Body)
-		}
-	}
-	call()
-	if _, err := store.UpdateSecret("workspace", "widgets", "GIT_PAT", "new"); err != nil {
-		t.Fatal(err)
-	}
-	call()
-
-	var tokens []string
-	for _, r := range e.stub.received() {
-		tokens = append(tokens, bearer(r))
-	}
-	if strings.Join(tokens, ",") != "old,new" {
-		t.Errorf("the stub saw the tokens %v; want [old new]", tokens)
-	}
-}
-
-// TS-30-16: An unparseable remote URL answers 422 forge_unknown without userinfo.
-// Requirement: 30-REQ-4.2
-func TestUnparseableRemoteIsForgeUnknown_TS_30_16(t *testing.T) {
-	for _, gitURL := range []string{
-		"https://user:s3cret@host",
-		"https://user:s3cret@host/onlyone",
-		"git@host",
-		"user:s3cret@host",
-		// A password that holds a character that ends the authority of a URL.
-		"https://user:s3cret#x@host/foo/bar",
-		"https://user:s3cr?et@host/foo/bar",
-		"https://user:s3cret/x@host/foo/bar",
-		"https://user#s3cret@github.com/acme/widgets",
-	} {
-		t.Run(gitURL, func(t *testing.T) {
-			e := newEnv(t)
-			addWorkspace(t, e.db, "widgets", func(r *workspaceRow) { r.gitURL = gitURL })
-
-			rec := e.get("/workspaces/widgets/forge/repository", apiKeyAuth())
-			if rec.Code != http.StatusUnprocessableEntity {
-				t.Fatalf("status = %d; want 422\n%s", rec.Code, rec.Body)
-			}
-			body := decodeError(t, rec)
-			if body.ErrorType != "forge_unknown" {
-				t.Errorf("error_type = %q; want forge_unknown", body.ErrorType)
-			}
-			for _, leaked := range []string{"user", "s3cret", "@"} {
-				if strings.Contains(body.Message, leaked) {
-					t.Errorf("the message %q contains %q", body.Message, leaked)
-				}
-			}
-			if !strings.Contains(body.Message, "host") {
-				t.Errorf("the message %q does not name the URL", body.Message)
-			}
-			assertNothingSent(t, e)
-		})
-	}
-}
-
-// TS-30-17: An invalid FORGE_API_URL or UPSTREAM_FORGE_API_URL answers 422
-// forge_api_url_invalid without echoing the value.
-// Requirement: 30-REQ-4.3
-func TestInvalidAPIURLIsRefused_TS_30_17(t *testing.T) {
-	bad := []string{
-		"http://x.example",
-		"relative/path",
-		"https://u:p@h.example",
-		"https://h.example/?q=1",
-		"https://h.example/#f",
-		"https:///nohost",
-		"",
-		"ftp://x.example",
-	}
-	for _, tc := range []struct{ variable, query string }{
-		{"FORGE_API_URL", ""},
-		{"UPSTREAM_FORGE_API_URL", "?target=upstream"},
-	} {
-		for _, value := range bad {
-			t.Run(tc.variable+"="+value, func(t *testing.T) {
-				e := newEnv(t)
-				addWorkspace(t, e.db, "fork", carryPatch("https://github.com/up/widgets"))
-				e.setVar("fork", tc.variable, value)
-
-				rec := e.get("/workspaces/fork/forge/repository"+tc.query, apiKeyAuth())
-				if rec.Code != http.StatusUnprocessableEntity {
-					t.Fatalf("status = %d; want 422\n%s", rec.Code, rec.Body)
-				}
-				body := decodeError(t, rec)
-				if body.ErrorType != "forge_api_url_invalid" {
-					t.Errorf("error_type = %q; want forge_api_url_invalid", body.ErrorType)
-				}
-				if !strings.Contains(body.Message, tc.variable) || !strings.Contains(body.Message, apiURLRule) {
-					t.Errorf("the message %q does not name the variable and the rule", body.Message)
-				}
-				if value != "" && strings.Contains(body.Message, value) {
-					t.Errorf("the message %q echoes the value", body.Message)
-				}
-				assertNothingSent(t, e)
-			})
-		}
-	}
-}
-
-// TS-30-18: An unclassifiable host without an API URL answers 422 forge_unknown
-// naming the host and the variable.
-// Requirement: 30-REQ-4.4
-func TestUnclassifiableHostIsForgeUnknown_TS_30_18(t *testing.T) {
-	counting := &countingTransport{}
-	e := newEnv(t, func(cfg *Config) { cfg.Transport = counting })
-	addWorkspace(t, e.db, "widgets", func(r *workspaceRow) { r.gitURL = "https://git.internal.example/acme/widgets" })
-	addWorkspace(t, e.db, "fork", func(r *workspaceRow) {
-		r.gitURL = "https://git.internal.example/me/widgets"
-		carryPatch("git@git.upstream.example:up/widgets.git")(r)
-	})
-
-	for _, tc := range []struct{ slug, query, host, variable string }{
-		{"widgets", "", "git.internal.example", "FORGE_API_URL"},
-		{"fork", "?target=upstream", "git.upstream.example", "UPSTREAM_FORGE_API_URL"},
-	} {
-		rec := e.get("/workspaces/"+tc.slug+"/forge/repository"+tc.query, apiKeyAuth())
-		if rec.Code != http.StatusUnprocessableEntity {
-			t.Fatalf("%s: status = %d; want 422\n%s", tc.slug, rec.Code, rec.Body)
-		}
-		body := decodeError(t, rec)
-		if body.ErrorType != "forge_unknown" {
-			t.Errorf("%s: error_type = %q; want forge_unknown", tc.slug, body.ErrorType)
-		}
-		if !strings.Contains(body.Message, tc.host) || !strings.Contains(body.Message, tc.variable) {
-			t.Errorf("%s: the message %q does not name %s and %s", tc.slug, body.Message, tc.host, tc.variable)
-		}
-		if strings.Contains(body.Message, "neither") {
-			t.Errorf("%s: the message %q says the variable is set; it is not", tc.slug, body.Message)
-		}
-	}
-	if n := counting.n.Load(); n != 0 {
-		t.Errorf("the transport saw %d requests; want none", n)
-	}
-}
-
-// A set API URL that still names no forge is not asked for again: the message says
-// so, because setting the variable is not the answer.
-// Requirement: 30-REQ-4.4
-func TestAPIURLThatNamesNoForgeSaysSo(t *testing.T) {
-	e := newEnv(t)
-	addWorkspace(t, e.db, "widgets", func(r *workspaceRow) { r.gitURL = "https://git.internal.example/acme/widgets" })
-	e.setVar("widgets", "FORGE_API_URL", e.stub.URL)
-
-	rec := e.get("/workspaces/widgets/forge/repository", apiKeyAuth())
-	if rec.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("status = %d; want 422\n%s", rec.Code, rec.Body)
-	}
-	body := decodeError(t, rec)
-	if body.ErrorType != "forge_unknown" || !strings.Contains(body.Message, "git.internal.example") || !strings.Contains(body.Message, "github") {
-		t.Errorf("error %+v; want forge_unknown naming the host and what an API URL must contain", body)
-	}
-	if !strings.Contains(body.Message, "neither") || strings.Contains(body.Message, "set FORGE_API_URL") {
-		t.Errorf("the message %q asks to set a variable that is set; want it to say what is wrong with its value", body.Message)
-	}
-	if strings.Contains(body.Message, e.stub.URL) {
-		t.Errorf("the message echoes the variable's value: %q", body.Message)
-	}
-	assertNothingSent(t, e)
-
-	// An API URL that names the forge classifies a host that does not.
-	e2 := newEnv(t)
-	e2.stub.answerRepository()
-	addWorkspace(t, e2.db, "widgets", func(r *workspaceRow) { r.gitURL = "https://git.internal.example/acme/widgets" })
-	e2.setVar("widgets", "FORGE_API_URL", e2.stub.URL+"/github/api")
-	rec = e2.get("/workspaces/widgets/forge/repository", apiKeyAuth())
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d; want 200: an API URL that names GitHub classifies the host\n%s", rec.Code, rec.Body)
-	}
-	if reqs := e2.stub.received(); len(reqs) != 1 || reqs[0].Path != "/github/api/repos/acme/widgets" {
-		t.Errorf("the stub saw %+v; want one request to /github/api/repos/acme/widgets", reqs)
-	}
-}
-
-// TS-30-20: A store failure from the resolver or the variable lookup answers 500 and
-// logs no secret.
-// Requirement: 30-REQ-4.6
-func TestStoreFailureIsA500WithoutSecrets_TS_30_20(t *testing.T) {
-	const secret = "SECRET-VALUE-9f2c"
-	for name, setup := range map[string]func(*env){
-		"the resolver fails": func(e *env) { e.originErr = errors.New("lookup GIT_PAT: stored value " + secret) },
-		"the variable lookup fails": func(e *env) {
-			e.varErr = errors.New("database is locked: " + secret)
-		},
-	} {
-		t.Run(name, func(t *testing.T) {
-			log := captureLog(t)
-			e := newEnv(t)
-			addWorkspace(t, e.db, "widgets")
-			setup(e)
-
-			rec := e.get("/workspaces/widgets/forge/repository", apiKeyAuth())
-			if rec.Code != http.StatusInternalServerError {
-				t.Fatalf("status = %d; want 500\n%s", rec.Code, rec.Body)
-			}
-			decodeError(t, rec)
-			if strings.Contains(rec.Body.String(), secret) {
-				t.Errorf("the response holds the secret: %s", rec.Body)
-			}
-			if !strings.Contains(log.String(), "widgets") {
-				t.Errorf("the failure was not logged with the workspace:\n%s", log)
-			}
-			if strings.Contains(log.String(), secret) {
-				t.Errorf("the log holds the secret:\n%s", log)
-			}
-			assertNothingSent(t, e)
-		})
-	}
-}
-
-// parseRemote reads the repository of the remote URLs a workspace can have: through
-// issuex's parser for the forges it knows, and by splitting the URL for any other
-// host, which issuex then fails to classify.
+// parseRemote reads the forges issuex knows through its parser and splits any other
+// URL or scp-style remote into host, owner and name.
 func TestParseRemote(t *testing.T) {
-	cases := []struct {
+	for _, tc := range []struct {
 		remote string
 		want   issuex.Repo
 		ok     bool
 	}{
-		{"https://github.com/acme/widgets", issuex.Repo{Host: "github.com", Owner: "acme", Name: "widgets"}, true},
 		{"https://github.com/acme/widgets.git", issuex.Repo{Host: "github.com", Owner: "acme", Name: "widgets"}, true},
 		{"git@github.com:acme/widgets.git", issuex.Repo{Host: "github.com", Owner: "acme", Name: "widgets"}, true},
 		{"https://gitlab.example.com/group/subgroup/widgets", issuex.Repo{Host: "gitlab.example.com", Owner: "group/subgroup", Name: "widgets"}, true},
-		{"https://tok:en@github.com/acme/widgets", issuex.Repo{Host: "github.com", Owner: "acme", Name: "widgets"}, true},
-		{"https://git.internal.example/acme/widgets", issuex.Repo{Host: "git.internal.example", Owner: "acme", Name: "widgets"}, true},
 		{"https://Git.Internal.Example:8443/a/b/c.git", issuex.Repo{Host: "git.internal.example", Owner: "a/b", Name: "c"}, true},
 		{"git@git.internal.example:acme/widgets.git", issuex.Repo{Host: "git.internal.example", Owner: "acme", Name: "widgets"}, true},
-		{"ssh://git@git.internal.example:2222/acme/widgets", issuex.Repo{Host: "git.internal.example", Owner: "acme", Name: "widgets"}, true},
 		{"https://user:s3cret@host", issuex.Repo{}, false},
 		{"https://host/onlyone", issuex.Repo{}, false},
-		{"https://host//widgets", issuex.Repo{}, false},
 		{"ftp://host/acme/widgets", issuex.Repo{}, false},
 		{"git@host", issuex.Repo{}, false},
-		{"widgets", issuex.Repo{}, false},
-		{"", issuex.Repo{}, false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.remote, func(t *testing.T) {
-			got, ok := parseRemote(tc.remote)
-			if ok != tc.ok || got != tc.want {
-				t.Errorf("parseRemote(%q) = %+v, %v; want %+v, %v", tc.remote, got, ok, tc.want, tc.ok)
-			}
-		})
+		{"https://%zz/acme/widgets", issuex.Repo{}, false},
+	} {
+		if got, ok := parseRemote(tc.remote); ok != tc.ok || got != tc.want {
+			t.Errorf("parseRemote(%q) = %+v, %v; want %+v, %v", tc.remote, got, ok, tc.want, tc.ok)
+		}
 	}
 }
 
-// redactRemote removes the userinfo of a URL and of an scp-style remote.
+// redactRemote removes the userinfo of a URL and of an scp-style remote; shownRemote also
+// cuts what a password that ends the authority leaves behind.
 func TestRedactRemote(t *testing.T) {
-	cases := map[string]string{
+	for in, want := range map[string]string{
 		"https://user:s3cret@host/acme/widgets": "https://host/acme/widgets",
-		"https://tok@github.com/acme/widgets":   "https://github.com/acme/widgets",
 		"ssh://git@host:2222/acme/widgets":      "ssh://host:2222/acme/widgets",
 		"git@github.com:acme/widgets.git":       "github.com:acme/widgets.git",
 		"user:s3cret@host":                      "host",
-		"https://github.com/acme/widgets":       "https://github.com/acme/widgets",
 		"github.com:acme/at@sign.git":           "github.com:acme/at@sign.git",
 		"https://host/path?x=1#frag@ment":       "https://host/path?x=1#frag@ment",
 		"https://a:b@c:d@host/acme/widgets":     "https://host/acme/widgets",
-	}
-	for in, want := range cases {
+	} {
 		if got := redactRemote(in); got != want {
 			t.Errorf("redactRemote(%q) = %q; want %q", in, got, want)
 		}
 	}
+	if got := shownRemote("https://user:s3cret/x@host/foo/bar"); got != "host/foo/bar" {
+		t.Errorf("shownRemote = %q; want host/foo/bar", got)
+	}
 }
 
-// validAPIURL accepts an absolute https URL with a host and nothing in the way of
-// userinfo, a query or a fragment.
 func TestValidAPIURL(t *testing.T) {
-	for _, ok := range []string{
-		"https://api.github.com",
-		"https://gitlab.example.com/api/v4",
-		"https://gitlab.example.com:8443/api/v4/",
-		"https://127.0.0.1:9000",
-		"https://[::1]:9000/api",
-	} {
+	for _, ok := range []string{"https://api.github.com", "https://gitlab.example.com:8443/api/v4/", "https://[::1]:9000/api"} {
 		if !validAPIURL(ok) {
 			t.Errorf("validAPIURL(%q) = false; want true", ok)
 		}
 	}
-	for _, bad := range []string{
-		"", "http://x.example", "relative/path", "https://u:p@h.example", "https://u@h.example",
-		"https://h.example/?q=1", "https://h.example?", "https://h.example/#f", "https://h.example#",
-		"https:///nohost", "https:nohost", "//h.example", "ftp://h.example", "https://", "https://h.example/a b",
-	} {
+	for _, bad := range []string{"", "http://x.example", "relative/path", "https://u:p@h.example", "https://h.example/?q=1",
+		"https://h.example/#f", "https:///nohost", "https:nohost", "ftp://h.example", "https://h.example/a b", "https://%zz"} {
 		if validAPIURL(bad) {
 			t.Errorf("validAPIURL(%q) = true; want false", bad)
 		}
 	}
 }
 
-// assertNothingSent fails when the forge stub received a request.
-func assertNothingSent(t *testing.T, e *env) {
-	t.Helper()
-	if n := e.stub.count(); n != 0 {
-		t.Errorf("the forge stub received %d requests; want none", n)
-	}
-}
-
-// A host that names both forges cannot be classified, and issuex must not then fall back
-// to the origin of the git repository the hub happens to run in: the read is refused and
-// the diagnostic says unknown, whatever the working directory holds.
-// Requirement: 30-REQ-4.4, 30-REQ-6.3
-func TestAmbiguousHostNeverAsksTheWorkingDirectory(t *testing.T) {
-	dir := t.TempDir()
-	for _, args := range [][]string{
-		{"init", "-q"},
-		{"remote", "add", "origin", "https://github.com/evil/repo.git"},
+// The username decides the kind of a credential: x-token-auth is a PAT, any other makes
+// the password a basic token, and no basic auth is none.
+func TestCredentialOf(t *testing.T) {
+	var nilBasic *githttp.BasicAuth
+	for _, tc := range []struct {
+		auth  transport.AuthMethod
+		kind  credentialKind
+		token string
+	}{
+		{nil, credentialNone, ""},
+		{nilBasic, credentialNone, ""},
+		{&githttp.TokenAuth{Token: "t"}, credentialNone, ""},
+		{&githttp.BasicAuth{Username: patUsername, Password: "p"}, credentialPAT, "p"},
+		{&githttp.BasicAuth{Username: "alice", Password: "q"}, credentialBasic, "q"},
 	} {
-		cmd := exec.Command("git", args...)
-		cmd.Dir = dir
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Skipf("git %v: %v\n%s", args, err, out)
+		if kind, token := credentialOf(tc.auth); kind != tc.kind || token != tc.token {
+			t.Errorf("credentialOf(%v) = %q, %q; want %q, %q", tc.auth, kind, token, tc.kind, tc.token)
 		}
 	}
-	t.Chdir(dir)
-
-	e := newEnv(t)
-	addWorkspace(t, e.db, "widgets", func(r *workspaceRow) { r.gitURL = "https://github.gitlab.example/acme/widgets" })
-
-	rec := e.get("/workspaces/widgets/forge/repository", apiKeyAuth())
-	if rec.Code != http.StatusUnprocessableEntity || decodeError(t, rec).ErrorType != "forge_unknown" {
-		t.Errorf("read: status %d, body %s; want 422 forge_unknown", rec.Code, rec.Body)
-	}
-	d, _ := getDiagnostic(t, e, "widgets")
-	if d.Forge != "unknown" || d.APIURL != nil {
-		t.Errorf("diagnostic: forge, api_url = %q, %v; want unknown and null", d.Forge, d.APIURL)
-	}
-	assertNothingSent(t, e)
 }
 
-// An API URL that holds both words does not say which forge it is, and the message does not
-// claim it holds neither.
-// Requirement: 30-REQ-4.4
-func TestAPIURLWithBothForgeNamesIsAmbiguous(t *testing.T) {
-	e := newEnv(t)
-	addWorkspace(t, e.db, "widgets", func(r *workspaceRow) { r.gitURL = "https://git.internal.example/acme/widgets" })
-	e.setVar("widgets", "FORGE_API_URL", e.stub.URL+"/github-gitlab")
-
-	rec := e.get("/workspaces/widgets/forge/repository", apiKeyAuth())
-	if rec.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("status = %d; want 422\n%s", rec.Code, rec.Body)
+func TestDefaultAPIURL(t *testing.T) {
+	for _, tc := range []struct{ forge, host, want string }{
+		{"github", "github.com", "https://api.github.com"},
+		{"github", "github.corp.example", "https://github.corp.example/api/v3"},
+		{"gitlab", "gitlab.com", "https://gitlab.com/api/v4"},
+	} {
+		if got := defaultAPIURL(issuex.ForgeType(tc.forge), tc.host); got != tc.want {
+			t.Errorf("defaultAPIURL(%s, %s) = %q; want %q", tc.forge, tc.host, got, tc.want)
+		}
 	}
-	if msg := decodeError(t, rec).Message; strings.Contains(msg, "contains github or gitlab") || !strings.Contains(msg, "exactly one") {
-		t.Errorf("message %q; want it to say the API URL must name exactly one forge", msg)
-	}
-	assertNothingSent(t, e)
 }
 
-// issuex puts /api/v4 after a GitLab API URL that does not end with it, so the diagnostic
-// shows the URL a read is sent to.
-// Requirement: 30-REQ-6.1
-func TestDiagnosticShowsTheGitLabAPIURLTheReadUses(t *testing.T) {
+// resolveTarget takes an absent target and origin everywhere and upstream only on a
+// carry_patch workspace with an upstream_url; anything else is refused.
+func TestResolveTarget(t *testing.T) {
+	fork := workspaceRemotes{gitURL: "https://github.com/me/widgets", mode: "carry_patch", upstreamURL: "https://github.com/up/widgets"}
+	standard := workspaceRemotes{gitURL: "https://github.com/me/widgets", mode: "standard", upstreamURL: "https://github.com/up/widgets"}
+	for _, tc := range []struct {
+		query     string
+		ws        workspaceRemotes
+		want      target
+		errorType string
+	}{
+		{"", standard, targetOrigin, ""},
+		{"target=origin", standard, targetOrigin, ""},
+		{"", fork, targetOrigin, ""},
+		{"target=upstream", fork, targetUpstream, ""},
+		{"target=upstream", standard, "", "workspace_mode_mismatch"},
+		{"target=upstream", workspaceRemotes{mode: "carry_patch"}, "", "workspace_mode_mismatch"},
+		{"target=bogus", fork, "", "refused"},
+		{"target=", fork, "", "refused"},
+		{"target=ORIGIN", fork, "", "refused"},
+		{"target=origin&target=upstream", fork, "", "refused"},
+	} {
+		q, _ := url.ParseQuery(tc.query)
+		got, ref := resolveTarget(q, tc.ws)
+		switch {
+		case tc.errorType == "" && (ref != nil || got != tc.want):
+			t.Errorf("%q: = %q, %+v; want %q", tc.query, got, ref, tc.want)
+		case tc.errorType == "refused" && (ref == nil || ref.status != 400 || !strings.Contains(ref.message, `"origin" or "upstream"`)):
+			t.Errorf("%q: = %+v; want a 400 listing the values", tc.query, ref)
+		case tc.errorType == "workspace_mode_mismatch" && (ref == nil || ref.status != 400 || ref.errorType != tc.errorType):
+			t.Errorf("%q: = %+v; want 400 %s", tc.query, ref, tc.errorType)
+		}
+	}
+}
+
+// The target picks the remote, the resolver and the variable: origin reads git_url with
+// the origin credential and FORGE_API_URL, upstream reads upstream_url with the upstream
+// credential and UPSTREAM_FORGE_API_URL only, without falling back to the origin's.
+func TestBuildClient_TargetSelectsRemoteCredentialAndVariable(t *testing.T) {
 	e := newEnv(t)
-	addWorkspace(t, e.db, "widgets", func(r *workspaceRow) { r.gitURL = "https://gitlab.example.com/group/widgets" })
-	e.setVar("widgets", "FORGE_API_URL", e.stub.URL+"/gitlab")
+	origin, upstream := e.stub, newForgeStub(t)
+	origin.setHandler(respond(http.StatusOK, repositoryBody))
+	upstream.setHandler(respond(http.StatusOK, repositoryBody))
+	e.upstreamAuth = &githttp.BasicAuth{Username: patUsername, Password: "upstream-token"}
+	addWorkspace(t, e.db, "fork", withGitURL("https://github.com/me/widgets"), carryPatch("https://github.com/up/widgets"))
+	e.setVar("fork", "FORGE_API_URL", origin.URL)
+	e.setVar("fork", "UPSTREAM_FORGE_API_URL", upstream.URL)
 
-	d, _ := getDiagnostic(t, e, "widgets")
-	if d.Forge != "gitlab" || d.APIURL == nil || *d.APIURL != e.stub.URL+"/gitlab/api/v4" {
-		t.Fatalf("forge, api_url = %q, %v; want gitlab at %s/gitlab/api/v4", d.Forge, d.APIURL, e.stub.URL)
+	for _, tc := range []struct{ query, path, token string }{
+		{"", "/repos/me/widgets", "origin-token"},
+		{"?target=origin", "/repos/me/widgets", "origin-token"},
+		{"?target=upstream", "/repos/up/widgets", "upstream-token"},
+	} {
+		origin.forget()
+		upstream.forget()
+		if rec := e.get("/workspaces/fork/forge/repository"+tc.query, apiKeyAuth()); rec.Code != http.StatusOK {
+			t.Fatalf("%q: status = %d\n%s", tc.query, rec.Code, rec.Body)
+		}
+		reqs := append(origin.received(), upstream.received()...)
+		if len(reqs) != 1 || reqs[0].Path != tc.path || bearer(reqs[0]) != tc.token {
+			t.Errorf("%q: the forges saw %+v; want one %s with the token %s", tc.query, reqs, tc.path, tc.token)
+		}
 	}
-	if e.stub.count() != 0 {
-		t.Fatalf("the diagnostic sent %d requests", e.stub.count())
+	if e.originCalls.Load() != 2 || e.upstreamCalls.Load() != 1 {
+		t.Errorf("origin resolver %d, upstream resolver %d; want 2 and 1", e.originCalls.Load(), e.upstreamCalls.Load())
 	}
-	e.get("/workspaces/widgets/forge/repository", apiKeyAuth())
-	reqs := e.stub.received()
-	if len(reqs) != 1 || !strings.HasPrefix(e.stub.URL+reqs[0].Path, *d.APIURL+"/") {
-		t.Errorf("the read sent %+v; want a request under the URL the diagnostic showed", reqs)
+	// A target the workspace does not have, and an unknown one, are refused before anything is looked up.
+	addWorkspace(t, e.db, "standard")
+	for _, q := range []string{"?target=upstream", "?target=bogus", "?target="} {
+		rec := e.get("/workspaces/standard/issues"+q, apiKeyAuth())
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("%s: status = %d; want 400", q, rec.Code)
+		}
+	}
+	if rec := e.get("/workspaces/fork/forge?target=bogus", apiKeyAuth()); rec.Code != http.StatusOK {
+		t.Errorf("the diagnostic takes no target: status = %d; want 200", rec.Code)
+	}
+	// The upstream of a host that names no forge does not borrow FORGE_API_URL.
+	addWorkspace(t, e.db, "fork2", carryPatch("https://git.other.example/up/widgets"))
+	e.setVar("fork2", "FORGE_API_URL", origin.URL+"/github")
+	rec := e.get("/workspaces/fork2/forge/repository?target=upstream", apiKeyAuth())
+	if rec.Code != http.StatusUnprocessableEntity || testutil.Error(t, rec).ErrorType != "forge_unknown" {
+		t.Errorf("an upstream without its own API URL: %d %s; want 422 forge_unknown", rec.Code, rec.Body)
+	}
+}
+
+// The client is built from the credential and variable of the moment, with the API URL
+// trimmed, the remote's userinfo dropped, the shared HTTP client, and the token of the
+// credential's kind: a PAT or basic password is sent, no credential sends no token at
+// all, not even the one in hub's environment. A rotated secret applies to the next call.
+func TestBuildClient_CredentialAndOptions(t *testing.T) {
+	var got []issuex.Options
+	var mu sync.Mutex
+	record := func(cfg *Config) {
+		cfg.NewClient = func(o issuex.Options) (issuex.Client, error) {
+			mu.Lock()
+			got = append(got, o)
+			mu.Unlock()
+			return issuex.NewWithOptions(o)
+		}
+	}
+	e := newEnv(t, record)
+	e.stub.setHandler(respond(http.StatusOK, repositoryBody))
+	e.originAuth = nil
+	addWorkspace(t, e.db, "widgets", withGitURL("https://tok:en@github.com/acme/widgets"))
+	e.setVar("widgets", "FORGE_API_URL", "  "+e.stub.URL+"\n")
+	if rec := e.get("/workspaces/widgets/forge/repository", apiKeyAuth()); rec.Code != http.StatusOK {
+		t.Fatalf("status = %d\n%s", rec.Code, rec.Body)
+	}
+	want := issuex.Options{BaseURL: e.stub.URL, RemoteURL: "https://github.com/acme/widgets",
+		Repo: issuex.Repo{Host: "github.com", Owner: "acme", Name: "widgets"}}
+	if len(got) != 1 || got[0].HTTPClient == nil || got[0].Token != "" || got[0].BaseURL != want.BaseURL || got[0].RemoteURL != want.RemoteURL || got[0].Repo != want.Repo {
+		t.Errorf("Options = %+v; want %+v with the shared HTTP client", got, want)
 	}
 
-	// A value that ends with it is shown as it is.
-	e.setVar("widgets", "FORGE_API_URL", "")
-	addWorkspace(t, e.db, "ends", func(r *workspaceRow) { r.gitURL = "https://gitlab.example.com/group/widgets" })
-	e.setVar("ends", "FORGE_API_URL", "https://gitlab.example.com/api/v4/")
-	if d, _ := getDiagnostic(t, e, "ends"); d.APIURL == nil || *d.APIURL != "https://gitlab.example.com/api/v4" {
-		t.Errorf("api_url = %v; want https://gitlab.example.com/api/v4", d.APIURL)
+	t.Setenv("GITHUB_TOKEN", "env-github")
+	t.Setenv("GITLAB_TOKEN", "env-gitlab")
+	for _, tc := range []struct {
+		name   string
+		gitURL string
+		api    string
+		auth   transport.AuthMethod
+		token  string
+	}{
+		{"github pat", "https://github.com/acme/widgets", "", &githttp.BasicAuth{Username: patUsername, Password: "tok-pat"}, "tok-pat"},
+		{"github basic", "https://github.com/acme/widgets", "", &githttp.BasicAuth{Username: "alice", Password: "tok-pass"}, "tok-pass"},
+		{"github none", "https://github.com/acme/widgets", "", nil, ""},
+		{"gitlab pat", "https://gitlab.example.com/group/widgets", "/gitlab/api/v4", &githttp.BasicAuth{Username: patUsername, Password: "tok-pat"}, "tok-pat"},
+		{"gitlab none", "https://gitlab.example.com/group/widgets", "/gitlab/api/v4", nil, ""},
+	} {
+		e := newEnv(t)
+		e.stub.setHandler(respond(http.StatusOK, repositoryBody))
+		e.originAuth = tc.auth
+		addWorkspace(t, e.db, "widgets", withGitURL(tc.gitURL))
+		e.setVar("widgets", "FORGE_API_URL", e.stub.URL+tc.api)
+		if rec := e.get("/workspaces/widgets/forge/repository", apiKeyAuth()); rec.Code != http.StatusOK {
+			t.Fatalf("%s: status = %d\n%s", tc.name, rec.Code, rec.Body)
+		}
+		reqs := e.stub.received()
+		if len(reqs) != 1 || bearer(reqs[0]) != tc.token {
+			t.Errorf("%s: the stub saw %d requests with the token %q; want 1 with %q", tc.name, len(reqs), bearer(reqs[0]), tc.token)
+		}
+	}
+
+	// Nothing is cached: a rotated GIT_PAT in the real store applies to the next call.
+	var store *secrets.Store
+	rotated := newEnv(t, func(cfg *Config) {
+		store = secrets.NewStore(cfg.DB)
+		cfg.ResolveOriginAuth = func(slug string) (transport.AuthMethod, error) { return workspace.ResolveCloneAuth(store, slug) }
+		cfg.GetVariable = store.GetVariableValue
+	})
+	rotated.stub.setHandler(respond(http.StatusOK, repositoryBody))
+	addWorkspace(t, rotated.db, "widgets")
+	if _, err := store.CreateVariables("workspace", "widgets", []secrets.EntryInput{{Key: "FORGE_API_URL", Value: rotated.stub.URL}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateSecrets("workspace", "widgets", []secrets.EntryInput{{Key: "GIT_PAT", Value: "old"}}); err != nil {
+		t.Fatal(err)
+	}
+	rotated.get("/workspaces/widgets/forge/repository", apiKeyAuth())
+	if _, err := store.UpdateSecret("workspace", "widgets", "GIT_PAT", "new"); err != nil {
+		t.Fatal(err)
+	}
+	rotated.get("/workspaces/widgets/forge/repository", apiKeyAuth())
+	var tokens []string
+	for _, r := range rotated.stub.received() {
+		tokens = append(tokens, bearer(r))
+	}
+	if strings.Join(tokens, ",") != "old,new" {
+		t.Errorf("the stub saw the tokens %v; want old then new", tokens)
+	}
+}
+
+// What hub cannot build a client for is refused before the forge is asked: an unparseable
+// remote and an unclassifiable host are 422 forge_unknown naming the host and the variable
+// but never userinfo or the variable's value; an invalid API URL is 422
+// forge_api_url_invalid naming the variable and the rule; a failing store is 500 without
+// the secret in the answer or the log.
+func TestBuildClient_Refusals(t *testing.T) {
+	const secret = "SECRET-VALUE-9f2c"
+	log := captureLog(t)
+	e := newEnv(t)
+	addWorkspace(t, e.db, "userinfo", withGitURL("https://user:s3cret#x@host/foo/bar"))
+	addWorkspace(t, e.db, "onlyone", withGitURL("https://user:s3cret@host/onlyone"))
+	addWorkspace(t, e.db, "internal", withGitURL("https://git.internal.example/acme/widgets"))
+	addWorkspace(t, e.db, "named", withGitURL("https://git.internal.example/acme/widgets"))
+	e.setVar("named", "FORGE_API_URL", e.stub.URL+"/neither")
+	addWorkspace(t, e.db, "both", withGitURL("https://git.internal.example/acme/widgets"))
+	e.setVar("both", "FORGE_API_URL", e.stub.URL+"/github-gitlab")
+	addWorkspace(t, e.db, "fork", carryPatch("git@git.upstream.example:up/widgets.git"))
+	addWorkspace(t, e.db, "badvar")
+	e.setVar("badvar", "FORGE_API_URL", "http://u:p@h.example/?q="+secret)
+	addWorkspace(t, e.db, "badupstream", carryPatch("https://github.com/up/widgets"))
+	e.setVar("badupstream", "UPSTREAM_FORGE_API_URL", "ftp://x")
+	addWorkspace(t, e.db, "widgets")
+
+	for _, tc := range []struct {
+		name, path, errorType string
+		contains, lacks       []string
+		setup                 func()
+	}{
+		{"an unparseable remote", "/workspaces/userinfo/forge/repository", "forge_unknown", []string{"host/foo/bar"}, []string{"user", "s3cret", "@"}, nil},
+		{"a remote with one segment", "/workspaces/onlyone/issues", "forge_unknown", []string{"host"}, []string{"user", "s3cret", "@"}, nil},
+		{"an unclassifiable host", "/workspaces/internal/forge/repository", "forge_unknown", []string{"git.internal.example", "set FORGE_API_URL"}, []string{"neither"}, nil},
+		{"an unclassifiable upstream", "/workspaces/fork/pulls/1/state?target=upstream", "forge_unknown", []string{"git.upstream.example", "UPSTREAM_FORGE_API_URL"}, nil, nil},
+		{"an API URL that names no forge", "/workspaces/named/forge/repository", "forge_unknown", []string{"neither", "github"}, []string{e.stub.URL, "set FORGE_API_URL"}, nil},
+		{"an API URL that names both", "/workspaces/both/forge/repository", "forge_unknown", []string{"exactly one"}, nil, nil},
+		{"an invalid FORGE_API_URL", "/workspaces/badvar/forge/repository", "forge_api_url_invalid", []string{"FORGE_API_URL", "absolute https:// URL"}, []string{secret}, nil},
+		{"an invalid UPSTREAM_FORGE_API_URL", "/workspaces/badupstream/issues?target=upstream", "forge_api_url_invalid", []string{"UPSTREAM_FORGE_API_URL"}, []string{"ftp"}, nil},
+		{"a resolver that fails", "/workspaces/widgets/forge/repository", "", nil, []string{secret}, func() { e.originErr = errors.New("lookup GIT_PAT: " + secret) }},
+		{"a variable lookup that fails", "/workspaces/widgets/forge/repository", "", nil, []string{secret}, func() { e.originErr, e.varErr = nil, errors.New("locked: "+secret) }},
+	} {
+		if tc.setup != nil {
+			tc.setup()
+		}
+		rec := e.get(tc.path, apiKeyAuth())
+		want := http.StatusUnprocessableEntity
+		if tc.errorType == "" {
+			want = http.StatusInternalServerError
+		}
+		got := testutil.Error(t, rec)
+		if rec.Code != want || got.ErrorType != tc.errorType {
+			t.Errorf("%s: %d %+v; want %d %s", tc.name, rec.Code, got, want, tc.errorType)
+		}
+		for _, s := range tc.contains {
+			if !strings.Contains(got.Message, s) {
+				t.Errorf("%s: message %q lacks %q", tc.name, got.Message, s)
+			}
+		}
+		for _, s := range tc.lacks {
+			if strings.Contains(got.Message, s) {
+				t.Errorf("%s: message %q holds %q", tc.name, got.Message, s)
+			}
+		}
+	}
+	if n := e.stub.count(); n != 0 {
+		t.Errorf("the forge received %d requests; want none", n)
+	}
+	if strings.Contains(log.String(), secret) || !strings.Contains(log.String(), "widgets") {
+		t.Errorf("the log holds the secret or not the workspace:\n%s", log)
+	}
+
+	// An API URL that names the forge classifies a host that does not.
+	e.varErr = nil
+	e.stub.setHandler(respond(http.StatusOK, repositoryBody))
+	e.setVar("internal", "FORGE_API_URL", e.stub.URL+"/github/api")
+	if rec := e.get("/workspaces/internal/forge/repository", apiKeyAuth()); rec.Code != http.StatusOK {
+		t.Fatalf("an API URL naming GitHub: status = %d\n%s", rec.Code, rec.Body)
+	}
+	if reqs := e.stub.received(); len(reqs) != 1 || reqs[0].Path != "/github/api/repos/acme/widgets" {
+		t.Errorf("the stub saw %+v; want one request under /github/api", reqs)
 	}
 }

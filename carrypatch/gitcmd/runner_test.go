@@ -3,598 +3,227 @@ package gitcmd
 import (
 	"context"
 	"errors"
-	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
 
-// ========================================================================
-// Spec 11 Task 1.2: Constructor integration tests (version enforcement)
-// (TS-11-1, TS-11-2, TS-11-3, TS-11-4)
-// Requirements: 11-REQ-1.1, 11-REQ-1.2, 11-REQ-1.3, 11-REQ-1.4
-// ========================================================================
-
-// TestNew_Success verifies that the constructor returns a non-nil *GitRunner
-// and nil error when the host git version is >= 2.38 and workDir exists.
-//
-// TS-11-1
-// Requirement: 11-REQ-1.1
-func TestNew_Success(t *testing.T) {
-	requireGitMinVersion(t, 2, 38)
-
-	tmpDir := t.TempDir()
-	runner, err := New(tmpDir, nil)
-	if err != nil {
-		t.Fatalf("New(%q, nil) returned unexpected error: %v", tmpDir, err)
-	}
-	if runner == nil {
-		t.Fatal("New returned nil runner with nil error")
+func TestNew_RejectsUnusableWorkDir(t *testing.T) {
+	parent := t.TempDir()
+	writeFile(t, parent, "file", "x")
+	for _, dir := range []string{"", filepath.Join(parent, "missing"), filepath.Join(parent, "file")} {
+		if r, err := New(dir, nil); err == nil || r != nil {
+			t.Errorf("New(%q) = %v, %v; want nil, error", dir, r, err)
+		}
 	}
 }
 
-// TestNew_VersionBelowMinimum verifies that the constructor returns (nil, error)
-// when the detected git version is below 2.38, with the error message
-// identifying the detected version and the 2.38 minimum requirement.
-//
-// TS-11-2
-// Requirement: 11-REQ-1.2
-//
-// Note: This test uses a fake git binary to simulate an old version. If the
-// fake binary cannot be injected, the test is skipped (per TS-11-2
-// preconditions).
-func TestNew_VersionBelowMinimum(t *testing.T) {
-	// Create a fake git binary that outputs a version below 2.38.
-	fakeGitDir := t.TempDir()
-	fakeGitPath := fakeGitDir + "/git"
+// New needs a directory, not a repository.
+func TestNew_AcceptsNonGitDirectory(t *testing.T) {
+	newRunner(t, t.TempDir())
+}
 
-	script := "#!/bin/sh\necho 'git version 2.37.0'\n"
-	if err := os.WriteFile(fakeGitPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("failed to create fake git binary: %v", err)
-	}
-
-	// Override PATH so that our fake git is found first.
-	origPath := os.Getenv("PATH")
-	t.Setenv("PATH", fakeGitDir+":"+origPath)
-
-	tmpDir := t.TempDir()
-	runner, err := New(tmpDir, nil)
-	if runner != nil {
-		t.Error("New should return nil runner for git < 2.38")
-	}
-	if err == nil {
-		t.Fatal("New should return non-nil error for git < 2.38")
-	}
-
-	errMsg := err.Error()
-	if !strings.Contains(errMsg, "2.37") {
-		t.Errorf("error message %q should contain detected version '2.37'", errMsg)
-	}
-	if !strings.Contains(errMsg, "2.38") {
-		t.Errorf("error message %q should contain minimum version '2.38'", errMsg)
+func TestNew_RequiresGitOnPath(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	if r, err := New(t.TempDir(), nil); err == nil || r != nil {
+		t.Fatalf("New = %v, %v without git on PATH; want nil, error", r, err)
 	}
 }
 
-// TestNew_GitNotOnPath verifies that the constructor returns (nil, error)
-// wrapping the exec failure when git is not found on PATH.
-//
-// TS-11-3
-// Requirement: 11-REQ-1.3
-func TestNew_GitNotOnPath(t *testing.T) {
-	// Set PATH to a directory that does not contain a git binary.
-	emptyDir := t.TempDir()
-	t.Setenv("PATH", emptyDir)
-
-	tmpDir := t.TempDir()
-	runner, err := New(tmpDir, nil)
-	if runner != nil {
-		t.Error("New should return nil runner when git is not on PATH")
-	}
-	if err == nil {
-		t.Fatal("New should return non-nil error when git is not on PATH")
-	}
-}
-
-// TestNew_NonGitDirectory verifies that the constructor accepts any valid
-// directory path as workDir, even if it is not a git repository.
-//
-// TS-11-4
-// Requirement: 11-REQ-1.4
-func TestNew_NonGitDirectory(t *testing.T) {
-	requireGitMinVersion(t, 2, 38)
-
-	// Use a plain temp dir that is not a git repo.
-	tmpDir := t.TempDir()
-	runner, err := New(tmpDir, nil)
-	if err != nil {
-		t.Fatalf("New(%q, nil) returned unexpected error: %v", tmpDir, err)
-	}
-	if runner == nil {
-		t.Fatal("New returned nil runner for a valid non-git directory")
-	}
-}
-
-// TestNew_InvalidWorkDir verifies that the constructor returns (nil, error)
-// when workDir is empty or does not exist on the filesystem.
-//
-// 11-REQ-1.E1
-func TestNew_InvalidWorkDir(t *testing.T) {
-	requireGitMinVersion(t, 2, 38)
-
+func TestNew_RejectsOldOrUnparsableGit(t *testing.T) {
 	tests := []struct {
-		name    string
-		workDir string
+		name, output string
+		wantInErr    []string
 	}{
-		{"empty_string", ""},
-		{"nonexistent_path", "/tmp/gitcmd-nonexistent-path-" + fmt.Sprintf("%d", os.Getpid())},
+		{"below 2.38", "git version 2.37.0", []string{"2.37", "2.38"}},
+		{"unparsable", "totally bogus output", []string{"unrecognized", "totally bogus output"}},
 	}
-
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			runner, err := New(tt.workDir, nil)
-			if runner != nil {
-				t.Error("New should return nil runner for invalid workDir")
+			fakeGit(t, "echo '"+tt.output+"'")
+			r, err := New(t.TempDir(), nil)
+			if err == nil || r != nil {
+				t.Fatalf("New = %v, %v; want nil, error", r, err)
 			}
-			if err == nil {
-				t.Fatalf("New(%q, nil) should return non-nil error", tt.workDir)
+			for _, want := range tt.wantInErr {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error %q does not mention %q", err, want)
+				}
 			}
 		})
 	}
 }
 
-// TestNew_MalformedVersionString verifies that the constructor returns
-// (nil, error) when git --version output is unrecognizable.
-//
-// 11-REQ-1.E2
-func TestNew_MalformedVersionString(t *testing.T) {
-	// Create a fake git binary that outputs a malformed version string.
-	fakeGitDir := t.TempDir()
-	fakeGitPath := fakeGitDir + "/git"
+// The subprocess environment drops variables that redirect git elsewhere,
+// defaults the committer identity only where nothing set one, and appends the
+// safety variables last so they beat any caller-supplied value.
+func TestAssembleEnv_StripsRedirectsDefaultsIdentityPinsSafetyVars(t *testing.T) {
+	t.Setenv("GIT_DIR", "/elsewhere/.git")
+	t.Setenv("GIT_WORK_TREE", "/elsewhere")
+	t.Setenv("GIT_CONFIG_PARAMETERS", "'core.hooksPath=/tmp/evil'")
+	t.Setenv("GIT_AUTHOR_NAME", "")
+	t.Setenv("GIT_COMMITTER_EMAIL", "ops@example.com")
 
-	script := "#!/bin/sh\necho 'totally bogus output'\n"
-	if err := os.WriteFile(fakeGitPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("failed to create fake git binary: %v", err)
-	}
-
-	origPath := os.Getenv("PATH")
-	t.Setenv("PATH", fakeGitDir+":"+origPath)
-
-	tmpDir := t.TempDir()
-	runner, err := New(tmpDir, nil)
-	if runner != nil {
-		t.Error("New should return nil runner for malformed version string")
-	}
-	if err == nil {
-		t.Fatal("New should return non-nil error for malformed version string")
-	}
-}
-
-// ========================================================================
-// Spec 11 Task 1.3: Safety environment variable injection tests
-// (TS-11-5, TS-11-6, TS-11-7)
-// Requirements: 11-REQ-2.1, 11-REQ-2.2, 11-REQ-2.3
-//
-// Note: The test spec suggests using `runner.Run(ctx, "env")` to inspect
-// subprocess environment, but `git env` is not a valid git subcommand.
-// Instead, these tests inspect the runner's internal env slice directly
-// (same-package test access) to verify safety variables are present and
-// correctly ordered.
-// ========================================================================
-
-// TestSafetyEnvVars_Present verifies that the runner's environment contains
-// all three safety variables with the correct values.
-//
-// TS-11-5
-// Requirement: 11-REQ-2.1
-func TestSafetyEnvVars_Present(t *testing.T) {
-	requireGitMinVersion(t, 2, 38)
-
-	tmpDir := t.TempDir()
-	runner, err := New(tmpDir, nil)
-	if err != nil {
-		t.Fatalf("New failed: %v", err)
-	}
-	if runner == nil {
-		t.Fatal("runner is nil")
-	}
-
-	env := runner.env
-
-	expected := []string{
-		"GIT_ALLOW_PROTOCOL=file:https:ssh",
-		"GIT_TERMINAL_PROMPT=0",
-		"GIT_CONFIG_NOSYSTEM=1",
-	}
-
-	for _, want := range expected {
-		if !envSliceContains(env, want) {
-			t.Errorf("runner.env does not contain %q; env = %v", want, env)
-		}
-	}
-}
-
-// TestSafetyEnvVars_PrecedenceOverExtraEnv verifies that the hardcoded safety
-// variables are appended AFTER extraEnv, so they unconditionally take
-// precedence over any conflicting caller-supplied values.
-//
-// TS-11-6
-// Requirement: 11-REQ-2.2
-func TestSafetyEnvVars_PrecedenceOverExtraEnv(t *testing.T) {
-	requireGitMinVersion(t, 2, 38)
-
-	tmpDir := t.TempDir()
-	extraEnv := []string{
-		"GIT_ALLOW_PROTOCOL=git:http",
-		"GIT_TERMINAL_PROMPT=1",
+	env := assembleEnv([]string{
+		"GIT_AUTHOR_EMAIL=extra@example.com",
+		"GIT_ALLOW_PROTOCOL=https",
+		"GIT_TERMINAL_PROMPT=1", "GIT_TERMINAL_PROMPT=2",
 		"GIT_CONFIG_NOSYSTEM=0",
-	}
-	runner, err := New(tmpDir, extraEnv)
-	if err != nil {
-		t.Fatalf("New failed: %v", err)
-	}
-	if runner == nil {
-		t.Fatal("runner is nil")
-	}
+	})
 
-	env := runner.env
-
-	// Last occurrence of each safety variable must be the hardcoded value.
-	checks := []struct {
-		key  string
-		want string
-	}{
-		{"GIT_ALLOW_PROTOCOL", "file:https:ssh"},
-		{"GIT_TERMINAL_PROMPT", "0"},
-		{"GIT_CONFIG_NOSYSTEM", "1"},
-	}
-
-	for _, c := range checks {
-		val, found := lastEnvValue(env, c.key)
-		if !found {
-			t.Errorf("env does not contain %s", c.key)
-			continue
+	for _, key := range []string{"GIT_DIR", "GIT_WORK_TREE", "GIT_CONFIG_PARAMETERS"} {
+		if _, found := lastEnvValue(env, key); found {
+			t.Errorf("%s must be stripped from the git environment", key)
 		}
-		if val != c.want {
-			t.Errorf("last %s = %q, want %q", c.key, val, c.want)
+	}
+	want := map[string]string{
+		"GIT_AUTHOR_NAME":     "",                  // set (empty) by the process: kept
+		"GIT_AUTHOR_EMAIL":    "extra@example.com", // from extraEnv: kept
+		"GIT_COMMITTER_EMAIL": "ops@example.com",   // from the process: kept
+		"GIT_COMMITTER_NAME":  DefaultIdentityName, // absent everywhere: defaulted
+		"GIT_EDITOR":          "true",
+		"GIT_PAGER":           "cat",
+		"LC_ALL":              "C",
+		"GIT_ALLOW_PROTOCOL":  "file:https:ssh", // safety vars win over extraEnv
+		"GIT_TERMINAL_PROMPT": "0",
+		"GIT_CONFIG_NOSYSTEM": "1",
+	}
+	for key, w := range want {
+		if got, found := lastEnvValue(env, key); !found || got != w {
+			t.Errorf("%s = %q (found=%v), want %q", key, got, found, w)
 		}
 	}
 }
 
-// TestSafetyEnvVars_AllowProtocolOverride verifies that when a caller passes
-// a different GIT_ALLOW_PROTOCOL in extraEnv, the hardcoded file:https:ssh
-// value wins because it is appended last.
-//
-// TS-11-7
-// Requirement: 11-REQ-2.3
-func TestSafetyEnvVars_AllowProtocolOverride(t *testing.T) {
-	requireGitMinVersion(t, 2, 38)
-
-	tmpDir := t.TempDir()
-	runner, err := New(tmpDir, []string{"GIT_ALLOW_PROTOCOL=https"})
+// Every git the runner spawns gets the assembled environment.
+func TestRun_SubprocessSeesSafetyEnv(t *testing.T) {
+	dir := initRepo(t)
+	realGit, err := exec.LookPath("git")
 	if err != nil {
-		t.Fatalf("New failed: %v", err)
+		t.Fatal(err)
 	}
-	if runner == nil {
-		t.Fatal("runner is nil")
-	}
+	capture := filepath.Join(t.TempDir(), "env")
+	fakeGit(t, "env > '"+capture+"'\nexec '"+realGit+"' \"$@\"")
 
-	val, found := lastEnvValue(runner.env, "GIT_ALLOW_PROTOCOL")
-	if !found {
-		t.Fatal("GIT_ALLOW_PROTOCOL not found in runner.env")
+	if _, err := newRunner(t, dir).Run(context.Background(), "rev-parse", "HEAD"); err != nil {
+		t.Fatalf("Run: %v", err)
 	}
-	if val != "file:https:ssh" {
-		t.Errorf("effective GIT_ALLOW_PROTOCOL = %q, want %q", val, "file:https:ssh")
-	}
-}
-
-// TestSafetyEnvVars_NilExtraEnv verifies that when extraEnv is nil, the
-// runner applies only the three safety variables without error.
-//
-// 11-REQ-2.E1
-func TestSafetyEnvVars_NilExtraEnv(t *testing.T) {
-	requireGitMinVersion(t, 2, 38)
-
-	tmpDir := t.TempDir()
-	runner, err := New(tmpDir, nil)
-	if err != nil {
-		t.Fatalf("New failed: %v", err)
-	}
-	if runner == nil {
-		t.Fatal("runner is nil")
-	}
-
-	expected := []string{
-		"GIT_ALLOW_PROTOCOL=file:https:ssh",
-		"GIT_TERMINAL_PROMPT=0",
-		"GIT_CONFIG_NOSYSTEM=1",
-	}
-
-	for _, want := range expected {
-		if !envSliceContains(runner.env, want) {
-			t.Errorf("runner.env missing %q with nil extraEnv", want)
+	got, _ := os.ReadFile(capture)
+	for _, want := range []string{"GIT_TERMINAL_PROMPT=0", "GIT_CONFIG_NOSYSTEM=1", "GIT_ALLOW_PROTOCOL=file:https:ssh", "LC_ALL=C"} {
+		if !strings.Contains(string(got), want+"\n") {
+			t.Errorf("subprocess environment lacks %s", want)
 		}
 	}
 }
 
-// TestSafetyEnvVars_DuplicateExtraEnvEntries verifies that even with multiple
-// duplicate entries for safety variables in extraEnv, the hardcoded values
-// always win.
-//
-// 11-REQ-2.E2
-func TestSafetyEnvVars_DuplicateExtraEnvEntries(t *testing.T) {
-	requireGitMinVersion(t, 2, 38)
-
-	tmpDir := t.TempDir()
-	extraEnv := []string{
-		"GIT_TERMINAL_PROMPT=1",
-		"GIT_TERMINAL_PROMPT=2",
-		"GIT_CONFIG_NOSYSTEM=0",
-		"GIT_CONFIG_NOSYSTEM=99",
-	}
-	runner, err := New(tmpDir, extraEnv)
-	if err != nil {
-		t.Fatalf("New failed: %v", err)
-	}
-	if runner == nil {
-		t.Fatal("runner is nil")
-	}
-
-	env := runner.env
-
-	val, _ := lastEnvValue(env, "GIT_TERMINAL_PROMPT")
-	if val != "0" {
-		t.Errorf("last GIT_TERMINAL_PROMPT = %q, want %q", val, "0")
-	}
-
-	val, _ = lastEnvValue(env, "GIT_CONFIG_NOSYSTEM")
-	if val != "1" {
-		t.Errorf("last GIT_CONFIG_NOSYSTEM = %q, want %q", val, "1")
+func TestRun_ReturnsTrimmedStdout(t *testing.T) {
+	out, err := newRunner(t, initRepo(t)).Run(context.Background(), "rev-parse", "--git-dir")
+	if err != nil || out != ".git" {
+		t.Fatalf("Run(rev-parse --git-dir) = %q, %v; want .git", out, err)
 	}
 }
 
-// ========================================================================
-// Spec 11 Task 1.4: Run method tests
-// (TS-11-8, TS-11-9, TS-11-10)
-// Requirements: 11-REQ-3.1, 11-REQ-3.2, 11-REQ-3.3
-// ========================================================================
-
-// TestRun_Success verifies that Run returns trimmed stdout and nil error
-// when the git subprocess exits with code 0.
-//
-// TS-11-8
-// Requirement: 11-REQ-3.1
-func TestRun_Success(t *testing.T) {
-	requireGitMinVersion(t, 2, 38)
-
-	repoDir := initTestRepo(t)
-	runner, err := New(repoDir, nil)
-	if err != nil {
-		t.Fatalf("New failed: %v", err)
-	}
-
-	ctx := context.Background()
-	out, err := runner.Run(ctx, "rev-parse", "--git-dir")
-	if err != nil {
-		t.Fatalf("Run(rev-parse --git-dir) returned error: %v", err)
-	}
-
-	trimmed := strings.TrimSpace(out)
-	if trimmed != ".git" {
-		t.Errorf("Run(rev-parse --git-dir) = %q, want %q", trimmed, ".git")
-	}
-}
-
-// TestRun_NonZeroExitReturnsGitError verifies that Run returns a *GitError
-// containing Args, ExitCode, and trimmed Stderr when the git subprocess
-// exits with a non-zero exit code.
-//
-// TS-11-9
-// Requirement: 11-REQ-3.2
-func TestRun_NonZeroExitReturnsGitError(t *testing.T) {
-	requireGitMinVersion(t, 2, 38)
-
-	repoDir := initTestRepo(t)
-	runner, err := New(repoDir, nil)
-	if err != nil {
-		t.Fatalf("New failed: %v", err)
-	}
-
-	ctx := context.Background()
-	out, runErr := runner.Run(ctx, "cat-file", "-t", "nonexistent-sha-abc123")
+// A failing git command becomes a *GitError carrying the arguments, exit code
+// and trimmed stderr, all of which its message repeats.
+func TestRun_NonZeroExitIsGitError(t *testing.T) {
+	r := newRunner(t, initRepo(t))
+	out, err := r.Run(context.Background(), "cat-file", "-t", "deadbeef")
 	if out != "" {
-		t.Errorf("Run should return empty stdout on failure, got %q", out)
+		t.Errorf("stdout = %q on failure, want empty", out)
 	}
-	if runErr == nil {
-		t.Fatal("Run should return non-nil error for non-zero exit")
+	ge := asGitError(t, err)
+	if ge.Args[0] != "cat-file" {
+		t.Errorf("Args = %v, want the cat-file invocation", ge.Args)
 	}
-
-	var ge *GitError
-	if !errors.As(runErr, &ge) {
-		t.Fatalf("error is not *GitError: %T: %v", runErr, runErr)
+	if ge.Stderr == "" || ge.Stderr != strings.TrimSpace(ge.Stderr) {
+		t.Errorf("Stderr = %q, want trimmed and non-empty", ge.Stderr)
 	}
-
-	if ge.ExitCode == 0 {
-		t.Error("GitError.ExitCode should be non-zero")
-	}
-	if len(ge.Args) == 0 {
-		t.Error("GitError.Args should not be empty")
-	}
-
-	// Verify that the args contain the subcommand we passed.
-	argsJoined := strings.Join(ge.Args, " ")
-	if !strings.Contains(argsJoined, "cat-file") {
-		t.Errorf("GitError.Args %v should contain 'cat-file'", ge.Args)
-	}
-}
-
-// TestRun_ContextCancellation verifies that Run respects context cancellation
-// by killing the subprocess and returning the context error.
-//
-// TS-11-10
-// Requirement: 11-REQ-3.3
-func TestRun_ContextCancellation(t *testing.T) {
-	requireGitMinVersion(t, 2, 38)
-
-	tmpDir := t.TempDir()
-	runner, err := New(tmpDir, nil)
-	if err != nil {
-		t.Fatalf("New failed: %v", err)
-	}
-
-	// Use an extremely short deadline to trigger cancellation.
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Millisecond)
-	defer cancel()
-
-	// ls-remote to a non-listening address will block long enough for the
-	// context to expire.
-	out, runErr := runner.Run(ctx, "ls-remote", "https://localhost:1/nonexistent")
-	if out != "" {
-		t.Errorf("expected empty stdout on cancellation, got %q", out)
-	}
-	if runErr == nil {
-		t.Fatal("Run should return non-nil error on context cancellation")
-	}
-
-	// Per 11-REQ-3.3: the error should wrap context.DeadlineExceeded or
-	// context.Canceled.
-	if !errors.Is(runErr, context.DeadlineExceeded) && !errors.Is(runErr, context.Canceled) {
-		t.Errorf("expected context error, got: %v", runErr)
-	}
-}
-
-// TestRun_EmptyArgs verifies that Run passes empty args to git, which returns
-// a non-zero exit code with a usage error, wrapped as *GitError.
-//
-// 11-REQ-3.E2
-func TestRun_EmptyArgs(t *testing.T) {
-	requireGitMinVersion(t, 2, 38)
-
-	tmpDir := t.TempDir()
-	runner, err := New(tmpDir, nil)
-	if err != nil {
-		t.Fatalf("New failed: %v", err)
-	}
-
-	ctx := context.Background()
-	_, runErr := runner.Run(ctx)
-	if runErr == nil {
-		t.Fatal("Run with no args should return an error")
-	}
-
-	var ge *GitError
-	if !errors.As(runErr, &ge) {
-		t.Fatalf("error should be *GitError, got %T: %v", runErr, runErr)
-	}
-}
-
-// ========================================================================
-// Spec 11 Task 1.5: GitError uniform error type tests
-// (TS-11-28, TS-11-29)
-// Requirements: 11-REQ-10.1, 11-REQ-10.2
-// ========================================================================
-
-// TestGitError_ErrorMethod verifies that GitError.Error() returns a non-empty
-// string containing the args, exit code, and stderr.
-//
-// TS-11-28
-// Requirement: 11-REQ-10.1
-func TestGitError_ErrorMethod(t *testing.T) {
-	requireGitMinVersion(t, 2, 38)
-
-	repoDir := initTestRepo(t)
-	runner, err := New(repoDir, nil)
-	if err != nil {
-		t.Fatalf("New failed: %v", err)
-	}
-
-	ctx := context.Background()
-	_, runErr := runner.Run(ctx, "cat-file", "-t", "deadbeef")
-	if runErr == nil {
-		t.Fatal("expected non-nil error")
-	}
-
-	var ge *GitError
-	if !errors.As(runErr, &ge) {
-		t.Fatalf("error is not *GitError: %T: %v", runErr, runErr)
-	}
-
-	// Verify fields are populated.
-	if len(ge.Args) == 0 {
-		t.Error("GitError.Args should not be empty")
-	}
-	if ge.ExitCode == 0 {
-		t.Error("GitError.ExitCode should be non-zero")
-	}
-
-	// Verify Error() string contains all relevant information.
 	msg := ge.Error()
-	if msg == "" {
-		t.Fatal("GitError.Error() returned empty string")
+	for _, want := range []string{"cat-file", strconv.Itoa(ge.ExitCode), ge.Stderr} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("Error() = %q, want it to contain %q", msg, want)
+		}
 	}
-	if !strings.Contains(msg, "cat-file") {
-		t.Errorf("Error() %q should contain 'cat-file'", msg)
+	// git with no arguments fails the same way.
+	_, err = r.Run(context.Background())
+	asGitError(t, err)
+}
+
+func TestGitError_RedactsURLUserinfo(t *testing.T) {
+	e := &GitError{
+		Args:     []string{"remote", "add", "upstream", "https://bot:ghp_secret@github.com/o/r.git"},
+		ExitCode: 128,
+		Stderr:   "fatal: unable to access 'https://bot:ghp_secret@github.com/o/r.git/': boom",
 	}
-	if !strings.Contains(msg, fmt.Sprintf("%d", ge.ExitCode)) {
-		t.Errorf("Error() %q should contain exit code %d", msg, ge.ExitCode)
+	msg := e.Error()
+	if strings.Contains(msg, "ghp_secret") || !strings.Contains(msg, "https://***@github.com/o/r.git") {
+		t.Fatalf("GitError.Error() = %q; want the userinfo redacted", msg)
 	}
 }
 
-// TestGitError_ErrorsAs verifies that *GitError can be detected via errors.As
-// from any error returned by Run, so callers can use type assertions to
-// inspect structured fields.
-//
-// TS-11-29
-// Requirement: 11-REQ-10.2
-func TestGitError_ErrorsAs(t *testing.T) {
-	requireGitMinVersion(t, 2, 38)
+// A deadline, from the context or from DefaultTimeout when the context has
+// none, kills git and the helpers it spawned (here a shell holding the pipes
+// open), so Run returns the context error promptly.
+func TestRun_DeadlineKillsProcessGroup(t *testing.T) {
+	r := newRunner(t, t.TempDir())
+	deadline, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	old := DefaultTimeout
+	DefaultTimeout = 300 * time.Millisecond
+	t.Cleanup(func() { DefaultTimeout = old })
 
-	repoDir := initTestRepo(t)
-	runner, err := New(repoDir, nil)
-	if err != nil {
-		t.Fatalf("New failed: %v", err)
-	}
-
-	ctx := context.Background()
-	_, runErr := runner.Run(ctx, "invalid-subcommand-xyz")
-	if runErr == nil {
-		t.Fatal("expected non-nil error for invalid subcommand")
-	}
-
-	var ge *GitError
-	ok := errors.As(runErr, &ge)
-	if !ok {
-		t.Fatalf("errors.As should succeed for *GitError, got %T: %v", runErr, runErr)
+	for name, ctx := range map[string]context.Context{"context deadline": deadline, "DefaultTimeout": context.Background()} {
+		start := time.Now()
+		out, err := r.Run(ctx, "-c", "alias.hang=!sleep 30", "hang")
+		if !errors.Is(err, context.DeadlineExceeded) || out != "" {
+			t.Errorf("%s: Run = %q, %v; want \"\", context.DeadlineExceeded", name, out, err)
+		}
+		if elapsed := time.Since(start); elapsed > 3*time.Second {
+			t.Errorf("%s: Run returned after %s; git's child processes were not killed", name, elapsed)
+		}
 	}
 }
 
-// TestGitError_StderrTrimmed verifies that GitError.Stderr is trimmed of
-// leading/trailing whitespace but preserves internal content regardless of
-// length.
-//
-// 11-REQ-10.E1
-func TestGitError_StderrTrimmed(t *testing.T) {
-	requireGitMinVersion(t, 2, 38)
-
-	repoDir := initTestRepo(t)
-	runner, err := New(repoDir, nil)
-	if err != nil {
-		t.Fatalf("New failed: %v", err)
+func TestRun_IsSafeForConcurrentUse(t *testing.T) {
+	dir := initRepo(t)
+	want := runGit(t, dir, "rev-parse", "HEAD")
+	r := newRunner(t, dir)
+	results := make([]string, 20)
+	var wg sync.WaitGroup
+	for i := range results {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			results[i], _ = r.Run(context.Background(), "rev-parse", "HEAD")
+		}()
 	}
-
-	ctx := context.Background()
-	_, runErr := runner.Run(ctx, "cat-file", "-t", "deadbeef")
-	if runErr == nil {
-		t.Fatal("expected non-nil error")
+	wg.Wait()
+	for i, got := range results {
+		if got != want {
+			t.Errorf("goroutine %d: HEAD = %q, want %q", i, got, want)
+		}
 	}
+}
 
-	var ge *GitError
-	if !errors.As(runErr, &ge) {
-		t.Fatalf("error is not *GitError: %T: %v", runErr, runErr)
+func TestResetInProgressState_ClearsConflictAndDirtyTree(t *testing.T) {
+	dir, mainSHA, featureSHA := divergedRepo(t, true)
+	if _, err := tryGit(dir, "cherry-pick", featureSHA); err == nil {
+		t.Fatal("cherry-pick did not conflict")
 	}
+	newRunner(t, dir).ResetInProgressState(context.Background())
 
-	// Stderr should be trimmed — no leading or trailing whitespace.
-	if ge.Stderr != strings.TrimSpace(ge.Stderr) {
-		t.Errorf("GitError.Stderr is not trimmed: %q", ge.Stderr)
+	if exists(filepath.Join(dir, ".git", "CHERRY_PICK_HEAD")) {
+		t.Error("CHERRY_PICK_HEAD still exists")
+	}
+	if st := runGit(t, dir, "status", "--porcelain"); st != "" {
+		t.Errorf("working tree not clean:\n%s", st)
+	}
+	if head := runGit(t, dir, "rev-parse", "HEAD"); head != mainSHA {
+		t.Errorf("HEAD = %s, want %s", head, mainSHA)
 	}
 }
