@@ -63,6 +63,9 @@ type Workspace struct {
 	WorkspaceMode     string  // standard (default) or carry_patch
 	UpstreamURL       *string // nullable: upstream repo URL for carry_patch workspaces
 	IntegrationBranch *string // nullable: integration branch name for carry_patch workspaces
+
+	// Settings are the workspace's behaviour switches (see Settings).
+	Settings Settings
 }
 
 // insertWorkspace inserts a new workspace record into the workspaces table.
@@ -88,10 +91,14 @@ func insertWorkspace(db *sql.DB, ws *Workspace) error {
 		ws.WorkspaceMode = "standard"
 	}
 
+	if ws.Settings == (Settings{}) {
+		ws.Settings = DefaultSettings()
+	}
+
 	_, err := db.Exec(
-		`INSERT INTO workspaces (slug, git_url, branch, owner_id, org_id, status, display_name, description, clone_status, head_sha, clone_error, created_at, updated_at, sync_mode, sync_status, upstream_head_sha, last_sync_at, sync_error, workspace_mode, upstream_url, integration_branch)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		ws.Slug, ws.GitURL, ws.Branch, ws.OwnerID, ws.OrgID, ws.Status, ws.DisplayName, ws.Description, ws.CloneStatus, ws.HeadSHA, ws.CloneError, ws.CreatedAt, ws.UpdatedAt, ws.SyncMode, ws.SyncStatus, ws.UpstreamHeadSHA, ws.LastSyncAt, ws.SyncError, ws.WorkspaceMode, ws.UpstreamURL, ws.IntegrationBranch,
+		`INSERT INTO workspaces (slug, git_url, branch, owner_id, org_id, status, display_name, description, clone_status, head_sha, clone_error, created_at, updated_at, sync_mode, sync_status, upstream_head_sha, last_sync_at, sync_error, workspace_mode, upstream_url, integration_branch, settings)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		ws.Slug, ws.GitURL, ws.Branch, ws.OwnerID, ws.OrgID, ws.Status, ws.DisplayName, ws.Description, ws.CloneStatus, ws.HeadSHA, ws.CloneError, ws.CreatedAt, ws.UpdatedAt, ws.SyncMode, ws.SyncStatus, ws.UpstreamHeadSHA, ws.LastSyncAt, ws.SyncError, ws.WorkspaceMode, ws.UpstreamURL, ws.IntegrationBranch, encodeSettings(ws.Settings),
 	)
 	if err != nil {
 		return fmt.Errorf("insert workspace %q: %w", ws.Slug, err)
@@ -102,7 +109,7 @@ func insertWorkspace(db *sql.DB, ws *Workspace) error {
 // workspaceSelectColumns is the column list for SELECT queries on the workspaces
 // table. All query functions and scanWorkspace use this list so it stays in sync
 // with the Workspace struct field order.
-const workspaceSelectColumns = `slug, git_url, branch, owner_id, org_id, status, display_name, description, clone_status, head_sha, clone_error, created_at, updated_at, sync_mode, sync_status, upstream_head_sha, last_sync_at, sync_error, workspace_mode, upstream_url, integration_branch`
+const workspaceSelectColumns = `slug, git_url, branch, owner_id, org_id, status, display_name, description, clone_status, head_sha, clone_error, created_at, updated_at, sync_mode, sync_status, upstream_head_sha, last_sync_at, sync_error, workspace_mode, upstream_url, integration_branch, settings`
 
 // scanWorkspaceRow scans a single row into a Workspace struct. The row must
 // contain columns in workspaceSelectColumns order. Nullable sync fields
@@ -113,17 +120,22 @@ const workspaceSelectColumns = `slug, git_url, branch, owner_id, org_id, status,
 func scanWorkspaceRow(scanner interface{ Scan(dest ...any) error }) (*Workspace, error) {
 	ws := &Workspace{}
 	var syncMode, syncStatus *string
-	var workspaceMode *string
+	var workspaceMode, settings *string
 	err := scanner.Scan(
 		&ws.Slug, &ws.GitURL, &ws.Branch, &ws.OwnerID, &ws.OrgID,
 		&ws.Status, &ws.DisplayName, &ws.Description, &ws.CloneStatus,
 		&ws.HeadSHA, &ws.CloneError, &ws.CreatedAt, &ws.UpdatedAt,
 		&syncMode, &syncStatus,
 		&ws.UpstreamHeadSHA, &ws.LastSyncAt, &ws.SyncError,
-		&workspaceMode, &ws.UpstreamURL, &ws.IntegrationBranch,
+		&workspaceMode, &ws.UpstreamURL, &ws.IntegrationBranch, &settings,
 	)
 	if err != nil {
 		return nil, err
+	}
+	if settings != nil {
+		ws.Settings = decodeSettings(*settings)
+	} else {
+		ws.Settings = DefaultSettings()
 	}
 	// 13-REQ-1.E2: Coalesce NULL sync_mode/sync_status to defaults.
 	if syncMode != nil {
@@ -186,11 +198,11 @@ func listAllWorkspaces(db *sql.DB, includeArchived bool) ([]*Workspace, error) {
 // updated_at. This is used by the PATCH handler after loading the current state
 // and applying only the provided field changes to the in-memory struct.
 // Returns the updated workspace, or an error if the update fails.
-func updateWorkspaceRow(db *sql.DB, slug, displayName, description string, orgID *string, syncMode string) (*Workspace, error) {
+func updateWorkspaceRow(db *sql.DB, slug, displayName, description string, orgID *string, syncMode string, settings Settings) (*Workspace, error) {
 	now := time.Now().UTC().Format(timestampFormat)
 	_, err := db.Exec(
-		`UPDATE workspaces SET display_name = ?, description = ?, org_id = ?, sync_mode = ?, updated_at = ? WHERE slug = ?`,
-		displayName, description, orgID, syncMode, now, slug,
+		`UPDATE workspaces SET display_name = ?, description = ?, org_id = ?, sync_mode = ?, settings = ?, updated_at = ? WHERE slug = ?`,
+		displayName, description, orgID, syncMode, encodeSettings(settings), now, slug,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("update workspace %q: %w", slug, err)

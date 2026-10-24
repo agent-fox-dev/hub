@@ -505,15 +505,15 @@ The forge routes (see [Forge Endpoints](api.md#forge-endpoints)) need no key in
 `config.toml`. The hub reads a workspace's repository on its forge with the git
 credential stored for the workspace (`GIT_PAT`, or `GIT_USERNAME` with `GIT_PASSWORD`;
 `UPSTREAM_GIT_PAT` and its siblings for the upstream of a `carry_patch` workspace),
-and two optional workspace variables set the API URL when the host does not give it
+and two optional workspace settings set the API URL when the host does not give it
 away:
 
-| Workspace variable | Meaning |
+| Workspace setting | Meaning |
 |---|---|
-| `FORGE_API_URL` | The API URL of the forge behind the workspace's `git_url`: an absolute `https://` URL with a host, without userinfo, query or fragment |
-| `UPSTREAM_FORGE_API_URL` | The same for the `upstream_url` of a `carry_patch` workspace; it does not fall back to `FORGE_API_URL` |
+| `forge_api_url` | The API URL of the forge behind the workspace's `git_url`: an absolute `https://` URL with a host, without userinfo, query or fragment |
+| `upstream_forge_api_url` | The same for the `upstream_url` of a `carry_patch` workspace; it does not fall back to `forge_api_url` |
 
-Both are listed in the [Workspace Variables Reference](api.md#workspace-variables-reference).
+Both are listed in the [Workspace Settings Reference](api.md#workspace-settings-reference).
 
 What the hub's environment changes:
 

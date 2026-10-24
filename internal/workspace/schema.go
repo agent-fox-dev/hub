@@ -31,7 +31,8 @@ CREATE TABLE IF NOT EXISTS workspaces (
 	sync_error        TEXT,
 	workspace_mode    TEXT NOT NULL DEFAULT 'standard',
 	upstream_url      TEXT,
-	integration_branch TEXT
+	integration_branch TEXT,
+	settings          TEXT NOT NULL DEFAULT '{}'
 )`
 
 // syncFieldDDL contains ALTER TABLE statements that add the five sync-related
@@ -54,6 +55,8 @@ var carryPatchFieldDDL = []string{
 	`ALTER TABLE workspaces ADD COLUMN workspace_mode TEXT NOT NULL DEFAULT 'standard'`,
 	`ALTER TABLE workspaces ADD COLUMN upstream_url TEXT`,
 	`ALTER TABLE workspaces ADD COLUMN integration_branch TEXT`,
+	// The settings document (see Settings); '{}' means every default.
+	`ALTER TABLE workspaces ADD COLUMN settings TEXT NOT NULL DEFAULT '{}'`,
 }
 
 // createPatchesTableSQL is the DDL for the patches table (15-REQ-7.1).

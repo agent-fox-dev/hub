@@ -63,9 +63,9 @@ func TestWorkspaceSchema_CreatesTable(t *testing.T) {
 
 	// 13 original columns + 5 sync columns (sync_mode, sync_status,
 	// upstream_head_sha, last_sync_at, sync_error) + 3 carry-patch columns
-	// (workspace_mode, upstream_url, integration_branch) = 21 total.
-	if len(columns) != 21 {
-		t.Errorf("got %d columns; want 21", len(columns))
+	// (workspace_mode, upstream_url, integration_branch) + settings = 22.
+	if len(columns) != 22 {
+		t.Errorf("got %d columns; want 22", len(columns))
 	}
 
 	// Verify each column's properties.

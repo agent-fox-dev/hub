@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -97,6 +98,7 @@ func newCreateCmd() *cobra.Command {
 		gitPAT            string
 		gitUsername       string
 		gitPassword       string
+		settings          []string
 		wf                waitFlags
 	)
 
@@ -218,6 +220,13 @@ func newCreateCmd() *cobra.Command {
 			if org != "" {
 				body["org_id"] = org
 			}
+			if len(settings) > 0 {
+				obj, err := parseSettingFlags(settings)
+				if err != nil {
+					return apikit.CLIHandleError(cmd, err)
+				}
+				body["settings"] = obj
+			}
 
 			// Add credential fields to request body.
 			if hasPAT {
@@ -259,6 +268,7 @@ func newCreateCmd() *cobra.Command {
 	cmd.Flags().StringVar(&gitPAT, "git-pat", "", "Personal access token for private repo (optional)")
 	cmd.Flags().StringVar(&gitUsername, "git-username", "", "Git username for private repo (optional)")
 	cmd.Flags().StringVar(&gitPassword, "git-password", "", "Git password for private repo (optional)")
+	cmd.Flags().StringArrayVar(&settings, "setting", nil, "Workspace setting as key=value (repeatable), e.g. patch_branch_source=origin")
 	addWaitFlags(cmd, &wf)
 
 	return cmd
@@ -275,6 +285,7 @@ func newUpdateCmd() *cobra.Command {
 		clearDisplayName bool
 		clearDescription bool
 		clearOrg         bool
+		settings         []string
 	)
 
 	cmd := &cobra.Command{
@@ -291,8 +302,8 @@ func newUpdateCmd() *cobra.Command {
 			hasOrg := cmd.Flags().Changed("org")
 
 			if !hasDisplayName && !hasDescription && !hasOrg &&
-				!clearDisplayName && !clearDescription && !clearOrg {
-				return apikit.CLIHandleError(cmd, apikit.NewCLIError(2, "at least one update flag must be provided (--display-name, --description, --org, --clear-display-name, --clear-description, --clear-org)"))
+				!clearDisplayName && !clearDescription && !clearOrg && len(settings) == 0 {
+				return apikit.CLIHandleError(cmd, apikit.NewCLIError(2, "at least one update flag must be provided (--display-name, --description, --org, --setting, --clear-display-name, --clear-description, --clear-org)"))
 			}
 
 			client, err := apikit.CLIClientFromCmd(cmd)
@@ -323,6 +334,14 @@ func newUpdateCmd() *cobra.Command {
 				body["org_id"] = org
 			}
 
+			if len(settings) > 0 {
+				obj, err := parseSettingFlags(settings)
+				if err != nil {
+					return apikit.CLIHandleError(cmd, err)
+				}
+				body["settings"] = obj
+			}
+
 			result, err := client.DoRequest(ctx, http.MethodPatch, apiPath("workspaces", slug), body)
 			if err != nil {
 				return apikit.CLIHandleError(cmd, err)
@@ -346,8 +365,34 @@ func newUpdateCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&clearDisplayName, "clear-display-name", false, "Clear display name to default (slug)")
 	cmd.Flags().BoolVar(&clearDescription, "clear-description", false, "Clear description to default (empty)")
 	cmd.Flags().BoolVar(&clearOrg, "clear-org", false, "Remove organization association")
+	cmd.Flags().StringArrayVar(&settings, "setting", nil, "Workspace setting as key=value (repeatable); key= alone resets the setting to its default")
 
 	return cmd
+}
+
+// parseSettingFlags turns the --setting key=value flags into the settings
+// object of a request: "true" and "false" are sent as booleans, an empty
+// value as null (the default), anything else as a string.
+func parseSettingFlags(flags []string) (map[string]any, error) {
+	settings := make(map[string]any, len(flags))
+	for _, f := range flags {
+		key, value, ok := strings.Cut(f, "=")
+		key = strings.TrimSpace(key)
+		if !ok || key == "" {
+			return nil, apikit.NewCLIError(2, "--setting takes key=value; got "+strconv.Quote(f))
+		}
+		switch value {
+		case "":
+			settings[key] = nil
+		case "true":
+			settings[key] = true
+		case "false":
+			settings[key] = false
+		default:
+			settings[key] = value
+		}
+	}
+	return settings, nil
 }
 
 // newListCmd returns the 'workspace list' subcommand.

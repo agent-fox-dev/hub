@@ -108,9 +108,11 @@ func main() {
 		log.Fatal(err)
 	}
 
-	// Create a secrets store for resolving clone credentials and workspace
-	// variables.
+	// Create a secrets store for resolving clone credentials, and the reader
+	// of the workspace settings (the behaviour switches of carry-patch and the
+	// forge client, read by the names they had as workspace variables).
 	store := secrets.NewStore(database.SqlDB)
+	workspaceSettings := workspace.SettingsReader(database.SqlDB)
 
 	// The two git credentials of a workspace, resolved from its secrets on
 	// every use: the one of its own repository (origin) and, on a carry-patch
@@ -149,7 +151,7 @@ func main() {
 		NewGitRunner:    cpGitRunnerFactory,
 		Fetch:           carrypatch.DefaultFetchFunc(),
 		ResolveAuth:     resolveUpstreamAuth,
-		GetVariable:     store.GetVariableValue,
+		GetVariable:     workspaceSettings,
 		PatchStore:      cpPatchStore,
 		PushIntegration: carrypatch.DefaultPushIntegrationFunc(resolveOriginAuth),
 	}
@@ -308,6 +310,13 @@ func main() {
 	}); err != nil {
 		log.Fatal(err)
 	}
+	// The behaviour switches that used to be workspace variables are workspace
+	// settings now; a database from before carries them over once.
+	if n, err := workspace.MigrateVariableSettings(database.SqlDB); err != nil {
+		log.Fatalf("migrate workspace settings: %v", err)
+	} else if n > 0 {
+		slog.Info("moved workspace variables into workspace settings", "workspaces", n)
+	}
 
 	// Create the table of the forge deliveries at every start (spec 32); the
 	// maintenance loop below keeps it small.
@@ -389,7 +398,7 @@ func main() {
 		DB:                  database.SqlDB,
 		ResolveOriginAuth:   resolveOriginAuth,
 		ResolveUpstreamAuth: resolveUpstreamAuth,
-		GetVariable:         store.GetVariableValue,
+		GetVariable:         workspaceSettings,
 		Audit:               auditEmitter,
 		Secrets:             store,
 		ExternalURL:         server.ExternalURL(),
@@ -409,14 +418,14 @@ func main() {
 	cpResolveBranch := carrypatch.NewBranchResolverHook(
 		cpGitRunnerFactory,
 		cfg.Workspace.Path,
-		store.GetVariableValue,
+		workspaceSettings,
 		resolveOriginAuth,
 		carrypatch.DefaultSingleBranchFetch(),
 	)
 	cpRecovery := &carrypatch.RecoveryService{
 		NewGitRunner:  cpGitRunnerFactory,
 		WorkspaceRoot: cfg.Workspace.Path,
-		GetVariable:   store.GetVariableValue,
+		GetVariable:   workspaceSettings,
 		ResolveAuth:   resolveOriginAuth,
 		Fetch:         carrypatch.DefaultSingleBranchFetch(),
 		LockFunc:      wslock.TryLock,
@@ -432,7 +441,7 @@ func main() {
 		WorkspaceRoot: cfg.Workspace.Path,
 		NewGitRunner:  cpGitRunnerFactory,
 		PatchStore:    cpPatchStore,
-		GetVariable:   store.GetVariableValue,
+		GetVariable:   workspaceSettings,
 		ResolveBranch: cpResolveBranch,
 		Recovery:      cpRecovery,
 		Audit:         cpAudit,
@@ -448,7 +457,7 @@ func main() {
 			NewGitRunner:      cpGitRunnerFactory,
 			Fetch:             carrypatch.DefaultFetchFunc(),
 			ResolveAuth:       resolveUpstreamAuth,
-			GetVariable:       store.GetVariableValue,
+			GetVariable:       workspaceSettings,
 			PatchStore:        cpPatchStore,
 			FetchOrigin:       carrypatch.DefaultFetchOriginFunc(),
 			ResolveOriginAuth: resolveOriginAuth,
@@ -462,13 +471,13 @@ func main() {
 	// registered patch branch (unless AUTO_REBUILD_AFTER_PUSH is "false")
 	// and, in hub mode with PUSH_PATCHES_TO_ORIGIN, mirrors it to the fork.
 	gitserver.RegisterPreReceiveHook(cphost.PreReceive(carrypatch.NewPreReceiveHook(carrypatch.PreReceiveHookDeps{
-		GetVariable:   store.GetVariableValue,
+		GetVariable:   workspaceSettings,
 		ResolveAuth:   resolveOriginAuth,
 		WorkspaceRoot: cfg.Workspace.Path,
 	})))
 	gitserver.RegisterPostPushHook(cphost.PostPush(carrypatch.NewPostPushRebuildHook(
 		mergeQueue,
-		store.GetVariableValue,
+		workspaceSettings,
 		carrypatch.PostPushMirrorDeps{
 			ResolveAuth:   resolveOriginAuth,
 			WorkspaceRoot: cfg.Workspace.Path,

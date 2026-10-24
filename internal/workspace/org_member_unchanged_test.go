@@ -2,6 +2,7 @@ package workspace
 
 import (
 	"net/http"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -120,7 +121,7 @@ func TestOwnerAndAdminUnchanged_TS_35_55(t *testing.T) {
 	delete(owner, "access")
 	delete(admin, "access")
 	for k, v := range owner {
-		if admin[k] != v {
+		if !reflect.DeepEqual(admin[k], v) {
 			t.Errorf("%s: owner %v, admin %v", k, v, admin[k])
 		}
 	}
