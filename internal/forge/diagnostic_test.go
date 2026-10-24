@@ -177,7 +177,7 @@ func TestDiagnostic_WebhookBlock(t *testing.T) {
 // webhook block and no cause in the answer.
 func TestDiagnostic_WebhookFailuresAre500(t *testing.T) {
 	for name, env := range map[string]func() *env{
-		"the secrets store fails": func() *env { return newEnv(t, withFakeSecrets(&fakeSecrets{getErr: errors.New("boom: disk gone")})) },
+		"the secrets store fails":   func() *env { return newEnv(t, withFakeSecrets(&fakeSecrets{getErr: errors.New("boom: disk gone")})) },
 		"there is no secrets store": func() *env { return newEnv(t, func(cfg *Config) { cfg.Secrets = nil }) },
 		"the delivery log is gone": func() *env {
 			e := newEnv(t)

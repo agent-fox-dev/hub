@@ -2,7 +2,6 @@ package forge
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -280,8 +279,7 @@ func TestWebhookSecretOf(t *testing.T) {
 			t.Errorf("webhookSecretOf(%q) = %q, %+v; want a generated secret", body, secret, ref)
 		}
 	}
-	var raw json.RawMessage
-	if secret, ref := webhookSecretOf([]byte(`{"secret":"abcdefghijklmnop"}`)); secret != "abcdefghijklmnop" || ref != nil || json.Unmarshal([]byte(`"x"`), &raw) != nil {
+	if secret, ref := webhookSecretOf([]byte(`{"secret":"abcdefghijklmnop"}`)); secret != "abcdefghijklmnop" || ref != nil {
 		t.Errorf("webhookSecretOf = %q, %+v; want the secret", secret, ref)
 	}
 }

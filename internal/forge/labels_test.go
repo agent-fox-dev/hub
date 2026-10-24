@@ -48,11 +48,11 @@ func TestRemoveLabel(t *testing.T) {
 		}
 	}
 	for _, tc := range []struct {
-		name       string
-		handler    http.HandlerFunc
-		status     int
-		errorType  string
-		requests   int
+		name      string
+		handler   http.HandlerFunc
+		status    int
+		errorType string
+		requests  int
 	}{
 		{"an absent label", routes(map[string]http.HandlerFunc{"DELETE /repos/acme/widgets/issues/42/labels/af:fix": answer(404, "Label does not exist"), "GET /repos/acme/widgets/issues/42": respond(http.StatusOK, issueBody(42, "t", ""))}), 204, "", 2},
 		{"a missing issue", answer(404, "Not Found"), 404, "forge_not_found", 2},

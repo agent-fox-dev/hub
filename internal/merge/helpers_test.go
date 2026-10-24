@@ -96,8 +96,8 @@ func newEnv(t *testing.T) *env {
 	testutil.SeedOrgMember(t, db, orgID, member)
 	testutil.Exec(t, db, `INSERT INTO workspaces (slug, git_url, owner_id, org_id, status, clone_status, created_at, updated_at)
 		VALUES (?, 'https://github.com/org/ws', ?, ?, 'active', 'ready', ?, ?)`, ws, owner, orgID, apikit.NowUTC(), apikit.NowUTC())
-	v.e, _ = testutil.API()
-	_, api := v.e, v.e.Group("/api/v1", testutil.AuthMiddleware())
+	e, api := testutil.API()
+	v.e = e
 	RegisterMergeRoutes(api, MergeAPIConfig{
 		DB:    db,
 		Queue: q,

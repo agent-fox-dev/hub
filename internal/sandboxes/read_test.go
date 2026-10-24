@@ -1,6 +1,7 @@
 package sandboxes
 
 import (
+	"maps"
 	"net/http"
 	"slices"
 	"strings"
@@ -38,7 +39,9 @@ func TestList_LiveLeasesNewestFirst(t *testing.T) {
 	if rec := env.get("/api/v1/workspaces/empty/sandboxes", ownerKey()); rec.Code != http.StatusOK || strings.TrimSpace(rec.Body.String()) != "[]" {
 		t.Errorf("empty workspace: %d %q; want 200 []", rec.Code, rec.Body)
 	}
-	count := func(query string) int { return len(leaseList(t, env.get("/api/v1/workspaces/widgets/sandboxes"+query, ownerKey()))) }
+	count := func(query string) int {
+		return len(leaseList(t, env.get("/api/v1/workspaces/widgets/sandboxes"+query, ownerKey())))
+	}
 	for _, q := range []string{"?all=true", "?all=1", "?all=T"} {
 		if n := count(q); n != 3 {
 			t.Errorf("%s: %d leases; want 3", q, n)
@@ -118,15 +121,15 @@ func TestRender_ExactFieldsAndNoLeak(t *testing.T) {
 
 	wantFields := []string{"created_at", "created_by", "end_reason", "ended_at", "error", "expires_at", "gateway_url", "id", "image", "labels", "lease_expires_at", "network",
 		"optional_secrets", "profile", "purpose", "require_landlock", "resources", "sandbox_id", "secrets", "state", "updated_at", "workspace"}
-	if got := slices.Sorted(mapKeys(issued)); !slices.Equal(got, append(slices.Clone(wantFields), "token")) {
+	if got := slices.Sorted(maps.Keys(issued)); !slices.Equal(got, append(slices.Clone(wantFields), "token")) {
 		t.Errorf("POST keys = %v", got)
 	}
 	check := func(what string, body string, lease map[string]any) {
 		t.Helper()
-		if got := slices.Sorted(mapKeys(lease)); !slices.Equal(got, wantFields) {
+		if got := slices.Sorted(maps.Keys(lease)); !slices.Equal(got, wantFields) {
 			t.Errorf("%s: keys = %v", what, got)
 		}
-		if got := slices.Sorted(mapKeys(lease["resources"].(map[string]any))); !slices.Equal(got, []string{"cpus", "disk_mb", "memory_mb", "pids"}) {
+		if got := slices.Sorted(maps.Keys(lease["resources"].(map[string]any))); !slices.Equal(got, []string{"cpus", "disk_mb", "memory_mb", "pids"}) {
 			t.Errorf("%s: resources keys = %v", what, got)
 		}
 		if lease["gateway_url"] != "http://127.0.0.1:4711" {
@@ -164,12 +167,4 @@ func TestRender_ExactFieldsAndNoLeak(t *testing.T) {
 	if secretsList, ok := env.mustIssue(`{"profile":"data"}`)["secrets"].([]any); !ok || len(secretsList) != 0 {
 		t.Error("a profile without secrets does not render []")
 	}
-}
-
-func mapKeys(m map[string]any) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	return keys
 }

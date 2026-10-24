@@ -54,7 +54,9 @@ func TestMetrics_Recalibrate(t *testing.T) {
 	if err := env.sweeper.recalibrate(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	series := func(ws string) (float64, bool) { return metricSample(t, env.metrics, "afhub_sandboxes_active", map[string]string{"workspace": ws}) }
+	series := func(ws string) (float64, bool) {
+		return metricSample(t, env.metrics, "afhub_sandboxes_active", map[string]string{"workspace": ws})
+	}
 	if v, ok := series("widgets"); !ok || v != 2 {
 		t.Errorf("widgets = (%v, %v); want 2", v, ok)
 	}

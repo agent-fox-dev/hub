@@ -109,17 +109,19 @@ func TestLeaseStore_TransitionsAreConditional(t *testing.T) {
 	for n := 1; n <= 6; n++ {
 		insertRawLease(t, db, leaseID(n), "widgets", "leased", HashToken(testToken(n)))
 	}
-	must := func(what string, want bool, changed bool, err error) {
-		t.Helper()
-		if err != nil || changed != want {
-			t.Errorf("%s = (%v, %v); want (%v, nil)", what, changed, err, want)
+	must := func(what string, want bool) func(changed bool, err error) {
+		return func(changed bool, err error) {
+			t.Helper()
+			if err != nil || changed != want {
+				t.Errorf("%s = (%v, %v); want (%v, nil)", what, changed, err, want)
+			}
 		}
 	}
 	// leased -> active keeps the token and records the box; a second MarkActive
 	// and a FailLease on an active lease change nothing.
-	must("MarkActive", true, store.MarkActive(leaseID(1), "box-1"))
-	must("MarkActive again", false, store.MarkActive(leaseID(1), "box-2"))
-	must("FailLease on active", false, store.FailLease(leaseID(1), "late"))
+	must("MarkActive", true)(store.MarkActive(leaseID(1), "box-1"))
+	must("MarkActive again", false)(store.MarkActive(leaseID(1), "box-2"))
+	must("FailLease on active", false)(store.FailLease(leaseID(1), "late"))
 	if l, _ := store.GetLease(leaseID(1)); l.State != "active" || *l.SandboxID != "box-1" || l.EndedAt != nil || l.UpdatedAt != stamp {
 		t.Errorf("after MarkActive: %+v", l)
 	}
@@ -127,26 +129,29 @@ func TestLeaseStore_TransitionsAreConditional(t *testing.T) {
 		t.Error("MarkActive cleared the token hash")
 	}
 	// leased -> failed records the message and ends the lease without a reason.
-	must("FailLease", true, store.FailLease(leaseID(2), "secret_missing: GIT_PAT"))
+	must("FailLease", true)(store.FailLease(leaseID(2), "secret_missing: GIT_PAT"))
 	if l, _ := store.GetLease(leaseID(2)); l.State != "failed" || *l.Error != "secret_missing: GIT_PAT" || *l.EndedAt != stamp || l.EndReason != nil || readState(t, db, leaseID(2)).hash.Valid {
 		t.Errorf("after FailLease: %+v", l)
 	}
 	// leased -> expired, leased -> destroyed, active -> destroyed record the reason.
-	must("ExpireLease", true, store.ExpireLease(leaseID(3), "expired"))
-	must("DestroyLease from leased", true, store.DestroyLease(leaseID(4), "leased", "api"))
-	must("DestroyLease from active", true, store.DestroyLease(leaseID(1), "active", "client"))
+	must("ExpireLease", true)(store.ExpireLease(leaseID(3), "expired"))
+	must("DestroyLease from leased", true)(store.DestroyLease(leaseID(4), "leased", "api"))
+	must("DestroyLease from active", true)(store.DestroyLease(leaseID(1), "active", "client"))
 	for n, want := range map[int][2]string{3: {"expired", "expired"}, 4: {"destroyed", "api"}, 1: {"destroyed", "client"}} {
 		if s := readState(t, db, leaseID(n)); s.state != want[0] || s.endReason != want[1] || s.endedAt != stamp || s.updatedAt != stamp || s.hash.Valid {
 			t.Errorf("lease %d reads %+v; want %v with the hash cleared", n, s, want)
 		}
 	}
 	// A wrong expected state, a terminal lease and an unknown state change nothing.
-	must("DestroyLease(leased, from active)", false, store.DestroyLease(leaseID(5), "active", "client"))
-	must("ExpireLease on active", false, func() (bool, error) { store.MarkActive(leaseID(6), "b"); return store.ExpireLease(leaseID(6), "expired") }())
+	must("DestroyLease(leased, from active)", false)(store.DestroyLease(leaseID(5), "active", "client"))
+	must("ExpireLease on active", false)(func() (bool, error) {
+		store.MarkActive(leaseID(6), "b")
+		return store.ExpireLease(leaseID(6), "expired")
+	}())
 	for _, id := range []string{leaseID(1), leaseID(2), leaseID(3)} {
-		must("MarkActive on terminal", false, store.MarkActive(id, "box"))
-		must("DestroyLease on terminal", false, store.DestroyLease(id, "active", "api"))
-		must("EndLease on terminal", false, store.EndLease(&Lease{ID: id}, "destroyed", "api"))
+		must("MarkActive on terminal", false)(store.MarkActive(id, "box"))
+		must("DestroyLease on terminal", false)(store.DestroyLease(id, "active", "api"))
+		must("EndLease on terminal", false)(store.EndLease(&Lease{ID: id}, "destroyed", "api"))
 	}
 	for _, from := range []string{"destroyed", "bogus", ""} {
 		if changed, err := store.DestroyLease(leaseID(5), from, "api"); err == nil || changed {
@@ -158,7 +163,7 @@ func TestLeaseStore_TransitionsAreConditional(t *testing.T) {
 			t.Errorf("EndLease to %q = (%v, %v); want an error", target, changed, err)
 		}
 	}
-	must("EndLease to expired", true, store.EndLease(&Lease{ID: leaseID(5)}, "expired", "timeout"))
+	must("EndLease to expired", true)(store.EndLease(&Lease{ID: leaseID(5)}, "expired", "timeout"))
 }
 
 // ListLeases is newest first and capped at 200, live only unless all;

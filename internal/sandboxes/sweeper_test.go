@@ -141,9 +141,9 @@ func TestSweep_PrunesOldTerminalLeasesOnly(t *testing.T) {
 		"ancient active":           env.seed(5, "active", seedFields{created: old, expires: old.Add(time.Hour), boxID: "b5"}),
 	}
 	pruned := map[string]string{
-		"destroyed 24h1s ago":  env.seed(6, "destroyed", seedFields{created: old, ended: timePtr(now.Add(-24*time.Hour - time.Second))}),
-		"failed 48h ago":       env.seed(7, "failed", seedFields{created: old, ended: timePtr(now.Add(-48 * time.Hour))}),
-		"no ended_at, old":     env.seed(8, "expired", seedFields{created: old, updated: now.Add(-25 * time.Hour)}),
+		"destroyed 24h1s ago": env.seed(6, "destroyed", seedFields{created: old, ended: timePtr(now.Add(-24*time.Hour - time.Second))}),
+		"failed 48h ago":      env.seed(7, "failed", seedFields{created: old, ended: timePtr(now.Add(-48 * time.Hour))}),
+		"no ended_at, old":    env.seed(8, "expired", seedFields{created: old, updated: now.Add(-25 * time.Hour)}),
 	}
 	env.sweep()
 	has := func(path string) bool {

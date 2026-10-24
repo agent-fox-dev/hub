@@ -157,8 +157,8 @@ func requireValid(t *testing.T, cfg *Config) *Validated {
 
 // ---- credentials ----
 
-func ownerKey() *apikit.AuthInfo        { return testutil.User(owner) }
-func adminAuth() *apikit.AuthInfo       { return testutil.Admin() }
+func ownerKey() *apikit.AuthInfo            { return testutil.User(owner) }
+func adminAuth() *apikit.AuthInfo           { return testutil.Admin() }
 func pat(scopes ...string) *apikit.AuthInfo { return testutil.PAT(owner, scopes...) }
 
 // ---- doubles ----
@@ -353,12 +353,18 @@ func (p *recordingProvider) set(f func(*recordingProvider)) {
 	f(p)
 }
 
-func (p *recordingProvider) setCreateErr(err error) { p.set(func(p *recordingProvider) { p.createErr = err }) }
-func (p *recordingProvider) setCloseErr(err error)  { p.set(func(p *recordingProvider) { p.closeErr = err }) }
+func (p *recordingProvider) setCreateErr(err error) {
+	p.set(func(p *recordingProvider) { p.createErr = err })
+}
+func (p *recordingProvider) setCloseErr(err error) {
+	p.set(func(p *recordingProvider) { p.closeErr = err })
+}
 func (p *recordingProvider) setCloseBlock(ch chan struct{}) {
 	p.set(func(p *recordingProvider) { p.closeBlock = ch })
 }
-func (p *recordingProvider) setBlock(ch chan struct{}) { p.set(func(p *recordingProvider) { p.block = ch }) }
+func (p *recordingProvider) setBlock(ch chan struct{}) {
+	p.set(func(p *recordingProvider) { p.block = ch })
+}
 func (p *recordingProvider) setReap(ids []string, err error) {
 	p.set(func(p *recordingProvider) { p.reapIDs, p.reapErr = ids, err })
 }
@@ -1177,7 +1183,9 @@ func (e *backendEnv) mustCreate(id string) sandbox.Sandbox {
 	return sb
 }
 
-func (e *backendEnv) eventsOf(eventType string) []audit.HubEvent { return eventsOf(e.emitter, eventType) }
+func (e *backendEnv) eventsOf(eventType string) []audit.HubEvent {
+	return eventsOf(e.emitter, eventType)
+}
 
 // blockCreates makes every Create wait on the returned channel; the test
 // waits on entered for a Create to arrive.

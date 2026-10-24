@@ -539,18 +539,12 @@ func TestGateway_NothingSecretLeavesHub(t *testing.T) {
 	var seen []string
 	keep := func(v any) { seen = append(seen, fmt.Sprint(v)) }
 
-	idFail, tokenFail := env.mustIssueAs("widgets", "", adminAuth())["id"].(string), ""
-	tokenFail = env.lease(idFail).ID // placeholder, replaced below
-	_, tokenFail = env.issueToken("")
-	idFail = env.issue("")
+	idFail, tokenFail := env.issueToken("")
 	env.prov.setCreateErr(echo)
 	_, err := gw.dial(t, tokenFail).Create(ctx, sandbox.Spec{Image: "x"})
 	keep(err)
 	env.prov.setCreateErr(nil)
-	idAdmin, tokenAdmin := env.mustIssueAs("widgets", "", adminAuth())["id"].(string), ""
-	tokenAdmin = env.mustIssueAs("widgets", "", adminAuth())["token"].(string)
-	idAdmin = env.lease(idAdmin).ID
-	sb := createVia(t, gw.dial(t, tokenAdmin))
+	sb := createVia(t, gw.dial(t, env.mustIssueAs("widgets", "", adminAuth())["token"].(string)))
 	keep(fmt.Sprintf("%+v", sb.Spec()))
 	env.prov.setCloseErr(echo)
 	keep(sb.Close(ctx))

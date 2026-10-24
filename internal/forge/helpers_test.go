@@ -41,8 +41,8 @@ const (
 	webhookPath   = "/workspaces/widgets/forge/webhook"
 )
 
-func apiKeyAuth() *apikit.AuthInfo          { return testutil.User(ownerID) }
-func adminAuth() *apikit.AuthInfo           { return testutil.Admin() }
+func apiKeyAuth() *apikit.AuthInfo             { return testutil.User(ownerID) }
+func adminAuth() *apikit.AuthInfo              { return testutil.Admin() }
 func patAuth(perms ...string) *apikit.AuthInfo { return testutil.PAT(ownerID, perms...) }
 
 // ---------------------------------------------------------------------------
@@ -354,8 +354,8 @@ var (
 	}
 )
 
-// writeRoute finds a write route by name.
-func writeRoute(name string) route {
+// namedWrite finds a write route by name.
+func namedWrite(name string) route {
 	for _, r := range writeRoutes {
 		if r.name == name {
 			return r
@@ -379,8 +379,12 @@ type syncBuffer struct {
 	buf bytes.Buffer
 }
 
-func (b *syncBuffer) Write(p []byte) (int, error) { b.mu.Lock(); defer b.mu.Unlock(); return b.buf.Write(p) }
-func (b *syncBuffer) String() string              { b.mu.Lock(); defer b.mu.Unlock(); return b.buf.String() }
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+func (b *syncBuffer) String() string { b.mu.Lock(); defer b.mu.Unlock(); return b.buf.String() }
 
 // shortDeadline shortens the call deadline for the test.
 func shortDeadline(t *testing.T, d time.Duration) {
@@ -534,7 +538,9 @@ func (f *fakeWriter) AddLabels(ctx context.Context, _ issuex.IssueRef, _ []strin
 func (f *fakeWriter) DropLabel(ctx context.Context, _ issuex.IssueRef, _ string) error {
 	return f.do(ctx, "DropLabel")
 }
-func (f *fakeWriter) CheckIssue(ctx context.Context, _ issuex.IssueRef) error { return f.do(ctx, "CheckIssue") }
+func (f *fakeWriter) CheckIssue(ctx context.Context, _ issuex.IssueRef) error {
+	return f.do(ctx, "CheckIssue")
+}
 func (f *fakeWriter) GetLabel(ctx context.Context, _ issuex.Repo, name string) (issuex.Label, error) {
 	return issuex.Label{Name: name}, f.do(ctx, "GetLabel")
 }
@@ -596,13 +602,17 @@ func eventTypes(events []audit.HubEvent) []string {
 // and can play a concurrent request that creates the entry first.
 type fakeSecrets struct {
 	SecretStore
-	mu                          sync.Mutex
-	calls                       []string
+	mu                           sync.Mutex
+	calls                        []string
 	getErr, updateErr, deleteErr error
-	createRace                  bool
+	createRace                   bool
 }
 
-func (f *fakeSecrets) note(call string) { f.mu.Lock(); defer f.mu.Unlock(); f.calls = append(f.calls, call) }
+func (f *fakeSecrets) note(call string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, call)
+}
 
 func (f *fakeSecrets) called() string {
 	f.mu.Lock()

@@ -55,7 +55,7 @@ func TestWriteEvents_OneEventPerWrite(t *testing.T) {
 		{"open pull request", audit.EventForgePullRequestCreate, "pull_request", "9", "create"},
 		{"comment on pull request", audit.EventForgePullRequestComment, "pull_request", "42", "comment"},
 	} {
-		r := writeRoute(tc.route)
+		r := namedWrite(tc.route)
 		before, requests := len(em.recorded()), e.stub.count()
 		req := httptest.NewRequest(r.method, "/api/v1"+r.url("widgets"), strings.NewReader(r.body))
 		req.Header.Set(testutil.AuthHeader, marshal(caller))
@@ -75,7 +75,7 @@ func TestWriteEvents_OneEventPerWrite(t *testing.T) {
 	e.stub.setHandler(answer(500, "boom"))
 	for _, name := range []string{"create issue", "open pull request"} {
 		before := len(em.recorded())
-		e.sendRoute(writeRoute(name), "widgets", apiKeyAuth())
+		e.sendRoute(namedWrite(name), "widgets", apiKeyAuth())
 		if events := em.recorded()[before:]; len(events) != 1 || events[0].ResourceID != "" || events[0].Metadata["ok"] != false {
 			t.Errorf("%s that failed: events = %+v; want one failure with no resource id", name, events)
 		}

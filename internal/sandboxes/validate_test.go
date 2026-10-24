@@ -97,7 +97,10 @@ func TestValidate_DeploymentKeys(t *testing.T) {
 		{"external_url query", func(c *Config) { c.ExternalURL = "https://gw?x=1" }, []string{"sandbox.external_url", "query"}},
 		{"external_url path", func(c *Config) { c.ExternalURL = "https://gw/api" }, []string{"sandbox.external_url", "path"}},
 		{"external_url invalid", func(c *Config) { c.ExternalURL = "://nohost" }, []string{"sandbox.external_url", "valid URL"}},
-		{"podman keys under gateway", func(c *Config) { *c = *remoteConfig("https://gw.example"); c.EngineBinary, c.Runtime, c.UserNS = "/p", "krun", "keep-id" },
+		{"podman keys under gateway", func(c *Config) {
+			*c = *remoteConfig("https://gw.example")
+			c.EngineBinary, c.Runtime, c.UserNS = "/p", "krun", "keep-id"
+		},
 			[]string{"sandbox.runtime", `applies only to sandbox.provider "podman"`}},
 		{"gateway keys under podman", func(c *Config) { c.GatewayURL, c.GatewayToken = "https://gw.example", "tok-SECRET-0123456789" },
 			[]string{"sandbox.gateway_token", `applies only to sandbox.provider "gateway"`}},
@@ -126,7 +129,10 @@ func TestValidate_DeploymentKeys(t *testing.T) {
 	}
 	// The three podman keys are each one failure; a max_ttl that does not parse
 	// does not compare, so a lease_timeout above the default is left alone.
-	err := mustFail(t, edited(func(c *Config) { *c = *remoteConfig("https://gw.example"); c.EngineBinary, c.Runtime, c.UserNS = "/p", "krun", "keep-id" }))
+	err := mustFail(t, edited(func(c *Config) {
+		*c = *remoteConfig("https://gw.example")
+		c.EngineBinary, c.Runtime, c.UserNS = "/p", "krun", "keep-id"
+	}))
 	if n := len(failures(err)); n != 3 {
 		t.Errorf("the three podman keys gave %d failures; want 3:\n%v", n, err)
 	}
@@ -245,8 +251,13 @@ func TestValidate_Profiles(t *testing.T) {
 			profileWith("badsecret", func(p *ProfileConfig) { p.Secrets = []string{"OK", "1BAD"}; p.OptionalSecrets = []string{"has-dash"} }),
 			profileWith("within", func(p *ProfileConfig) { p.Secrets = []string{"API_KEY", "api_key"} }),
 			profileWith("across", func(p *ProfileConfig) { p.Secrets = []string{"TOKEN"}; p.OptionalSecrets = []string{"token"} }),
-			profileWith("badenv", func(p *ProfileConfig) { p.Env = map[string]string{"BAD-KEY": "supersecretvalue", "GOOD_KEY": "goodsecretvalue"} }),
-			profileWith("clash", func(p *ProfileConfig) { p.Secrets = []string{"GIT_PAT"}; p.Env = map[string]string{"git_pat": "leakme"} }),
+			profileWith("badenv", func(p *ProfileConfig) {
+				p.Env = map[string]string{"BAD-KEY": "supersecretvalue", "GOOD_KEY": "goodsecretvalue"}
+			}),
+			profileWith("clash", func(p *ProfileConfig) {
+				p.Secrets = []string{"GIT_PAT"}
+				p.Env = map[string]string{"git_pat": "leakme"}
+			}),
 			profileWith("optclash", func(p *ProfileConfig) { p.OptionalSecrets = []string{"X"}; p.Env = map[string]string{"x": "leakme"} }),
 			profileWith("fine", func(p *ProfileConfig) {
 				p.Network, p.TTL, p.CPUs = strPtr("unrestricted"), "1h", 0.5

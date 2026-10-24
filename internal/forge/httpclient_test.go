@@ -125,7 +125,9 @@ func TestHTTPClient_RedirectPolicy(t *testing.T) {
 		{"https://gitlab.example.com/group/widgets", "/gitlab/api/v4"},
 	} {
 		e := newEnv(t)
-		e.stub.setHandler(func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, other.URL+r.URL.Path, http.StatusTemporaryRedirect) })
+		e.stub.setHandler(func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, other.URL+r.URL.Path, http.StatusTemporaryRedirect)
+		})
 		addWorkspace(t, e.db, "widgets", withGitURL(tc.gitURL))
 		e.setVar("widgets", "FORGE_API_URL", e.stub.URL+tc.api)
 		rec := e.get("/workspaces/widgets/forge/repository", apiKeyAuth())

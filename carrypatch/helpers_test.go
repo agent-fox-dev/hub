@@ -906,6 +906,11 @@ func (e *env) server() *echo.Echo {
 			return err
 		}
 		if !handled {
+			// The hook also reports "not handled" after it wrote an error
+			// response itself; the host must not write a second body then.
+			if c.Response().Committed {
+				return nil
+			}
 			return c.JSON(http.StatusOK, map[string]any{"handled": false})
 		}
 		return c.JSON(http.StatusOK, extras)

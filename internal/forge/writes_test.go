@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/agent-fox-dev/aflib/issuex"
+	githttp "github.com/go-git/go-git/v5/plumbing/transport/http"
 	"github.com/txsvc/apikit"
 
 	"github.com/agent-fox-dev/hub/internal/testutil"
@@ -90,7 +91,7 @@ func TestWrites_ChecksInOrderAndRefusalsSendNothing(t *testing.T) {
 func TestWrites_MalformedNumberIs400(t *testing.T) {
 	e := widgetsEnv(t)
 	for _, name := range []string{"update issue", "close issue", "comment on issue", "add labels", "remove label", "comment on pull request"} {
-		r := writeRoute(name)
+		r := namedWrite(name)
 		for _, n := range []string{"0", "abc", "-1"} {
 			if rec := e.send(r.method, strings.Replace(r.url("widgets"), "/42", "/"+n, 1), apiKeyAuth(), r.body); rec.Code != http.StatusBadRequest {
 				t.Errorf("%s with n=%s: status = %d; want 400", name, n, rec.Code)
@@ -155,7 +156,7 @@ func TestWrites_InvalidBodies(t *testing.T) {
 		{"open pull request", `{"title":"t","head":"h","base":"main","draft":"yes"}`, "draft"},
 		{"open pull request", `{"title":"t","head":"h","base":"main","body":false}`, "body"},
 	} {
-		r := writeRoute(tc.route)
+		r := namedWrite(tc.route)
 		rec := e.send(r.method, r.url("widgets"), apiKeyAuth(), tc.body)
 		if rec.Code != http.StatusBadRequest || !strings.Contains(testutil.Error(t, rec).Message, tc.field) {
 			t.Errorf("%s %s: %d %s; want 400 naming %q", tc.route, tc.body, rec.Code, rec.Body, tc.field)
@@ -564,7 +565,7 @@ func TestWrites_WithoutACredential(t *testing.T) {
 	e.originAuth = nil
 	e.stub.setHandler(githubWrites())
 	for _, name := range []string{"create issue", "comment on issue", "add labels", "open pull request", "comment on pull request"} {
-		if rec := e.sendRoute(writeRoute(name), "widgets", apiKeyAuth()); rec.Code != http.StatusBadGateway {
+		if rec := e.sendRoute(namedWrite(name), "widgets", apiKeyAuth()); rec.Code != http.StatusBadGateway {
 			t.Errorf("%s: status = %d; want 502", name, rec.Code)
 		}
 	}

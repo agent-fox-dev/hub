@@ -141,13 +141,13 @@ func TestNew_ChecksEveryProfileAgainstTheProvider(t *testing.T) {
 
 	cfg = configWith(profileWith("a", func(p *ProfileConfig) { p.Network = strPtr("host") }), profileWith("b", func(p *ProfileConfig) { p.Network = strPtr("host") }))
 	cfg.NetworkModes = []string{"none", "host"}
-	err = requireError(t, New(requireValid(t, cfg), newFakeProvider()))
+	err = newRefused(t, requireValid(t, cfg), newFakeProvider())
 	requireFailure(t, err, "sandbox.network_modes[1]", `"host"`, "it honours")
 	if n := len(failures(err)); n != 1 {
 		t.Errorf("%d failures; want only the network_modes one:\n%v", n, err)
 	}
 
-	err = requireError(t, New(requireValid(t, configWith(profileWith("mem", func(p *ProfileConfig) { p.MemoryMB = 1 << 53 }), profileWith("disk", func(p *ProfileConfig) { p.DiskMB = 1 << 53 }))), newFakeProvider()))
+	err = newRefused(t, requireValid(t, configWith(profileWith("mem", func(p *ProfileConfig) { p.MemoryMB = 1 << 53 }), profileWith("disk", func(p *ProfileConfig) { p.DiskMB = 1 << 53 }))), newFakeProvider())
 	requireFailure(t, err, `"mem"`, "memory_mb")
 	requireFailure(t, err, `"disk"`, "disk_mb")
 }
@@ -156,10 +156,12 @@ func TestNew_ChecksEveryProfileAgainstTheProvider(t *testing.T) {
 type noCloseRemote struct{ *fakeProvider }
 
 func (noCloseRemote) List(context.Context) ([]gateway.Info, error) { return nil, nil }
-func (noCloseRemote) Destroy(context.Context, string) error       { return nil }
+func (noCloseRemote) Destroy(context.Context, string) error        { return nil }
 
-func requireError(t *testing.T, svc *Service, err error) error {
+// newRefused is New on a definition the provider must refuse.
+func newRefused(t *testing.T, v *Validated, p sandbox.Provider) error {
 	t.Helper()
+	svc, err := New(v, p)
 	if err == nil || svc != nil {
 		t.Fatalf("New = (%v, nil); want an error", svc)
 	}
@@ -249,10 +251,10 @@ func TestStartRemote_FailuresRefuseStart(t *testing.T) {
 	}{
 		"static failure": {edit: func(c *Config) { c.GatewayURL, c.MaxTTL = "https://gw.example/api", strPtr("bogus") },
 			want: []string{"sandbox.gateway_url"}},
-		"factory error":  {factory: func(*stubRemote) *remoteFactory { return stubFactory(nil, errors.New(leak)) }, want: []string{"[redacted]", `sandbox.gateway_url "https://gw.example"`}},
-		"no client":      {factory: func(*stubRemote) *remoteFactory { return stubFactory(nil, nil) }, want: []string{"no client"}},
-		"List fails":     {stub: func(s *stubRemote) { s.listErr = errors.New(leak) }, want: []string{"[redacted]"}, closes: 1},
-		"List hangs":     {stub: func(s *stubRemote) { s.listBlock = true }, want: []string{"no answer within 200ms"}, closes: 1},
+		"factory error": {factory: func(*stubRemote) *remoteFactory { return stubFactory(nil, errors.New(leak)) }, want: []string{"[redacted]", `sandbox.gateway_url "https://gw.example"`}},
+		"no client":     {factory: func(*stubRemote) *remoteFactory { return stubFactory(nil, nil) }, want: []string{"no client"}},
+		"List fails":    {stub: func(s *stubRemote) { s.listErr = errors.New(leak) }, want: []string{"[redacted]"}, closes: 1},
+		"List hangs":    {stub: func(s *stubRemote) { s.listBlock = true }, want: []string{"no answer within 200ms"}, closes: 1},
 		"profile refused": {edit: func(c *Config) { c.NetworkModes = []string{"none", "unrestricted"} }, // the stub honours none only
 			want: []string{"sandbox.network_modes[1]"}, closes: 1},
 	} {
