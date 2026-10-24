@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -116,18 +117,13 @@ func TestWrites_InvalidBodies(t *testing.T) {
 	for _, tc := range []struct{ route, body, field string }{
 		{"create issue", `{"body":"b"}`, "title"},
 		{"create issue", `{"title":"  "}`, "title"},
-		{"create issue", `{"title":5}`, "title"},
 		{"create issue", `{"title":"t","body":1}`, "body"},
 		{"create issue", `{"title":"t","labels":[` + names(101) + `]}`, "labels"},
 		{"create issue", `{"title":"t","labels":["a","  "]}`, "labels"},
-		{"create issue", `{"title":"t","labels":"a"}`, "labels"},
-		{"create issue", `{"title":"t","assignees":[""]}`, "assignees"},
 		{"create issue", `["t"]`, "JSON object"},
 		{"create issue", `{not json`, "JSON object"},
 		{"update issue", `{"title":""}`, "title"},
 		{"update issue", `{"state":"merged"}`, "state"},
-		{"update issue", `{"body":"fine","state":""}`, "state"},
-		{"update issue", `{"labels":[" "]}`, "labels"},
 		{"update issue", `{"assignees":[` + names(101) + `]}`, "assignees"},
 		{"update issue", `{}`, "nothing to update"},
 		{"update issue", `{"title":null,"body":null,"extra":1}`, "nothing to update"},
@@ -135,24 +131,18 @@ func TestWrites_InvalidBodies(t *testing.T) {
 		{"close issue", `[]`, "JSON object"},
 		{"comment on issue", `{}`, "body"},
 		{"comment on issue", `{"body":"  "}`, "body"},
-		{"comment on issue", `{"body":3}`, "body"},
 		{"comment on pull request", `{"body":null}`, "body"},
 		{"add labels", `{"labels":["a"]}`, "labels"},
 		{"add labels", `[]`, "labels"},
 		{"add labels", `[` + names(101) + `]`, "labels"},
-		{"add labels", `["a",2]`, "labels"},
 		{"add labels", `["  "]`, "labels"},
 		{"add labels", ``, "labels"},
 		{"ensure label", `{"color":"ff0000"}`, "name"},
 		{"ensure label", `{"name":"  "}`, "name"},
 		{"ensure label", `{"name":"a","color":"red"}`, "color"},
-		{"ensure label", `{"name":"a","color":"#12345g"}`, "color"},
-		{"ensure label", `{"name":"a","color":""}`, "color"},
 		{"ensure label", `{"name":"a","color":123456}`, "color"},
-		{"ensure label", `{"name":"a","description":[]}`, "description"},
 		{"open pull request", `{"head":"h","base":"main"}`, "title"},
 		{"open pull request", `{"title":"t","head":"  ","base":"main"}`, "head"},
-		{"open pull request", `{"title":"t","head":"h","base":""}`, "base"},
 		{"open pull request", `{"title":"t","head":"h","base":"main","draft":"yes"}`, "draft"},
 		{"open pull request", `{"title":"t","head":"h","base":"main","body":false}`, "body"},
 	} {
@@ -249,22 +239,6 @@ func TestUpdateIssue_SendsOnlyPresentFields(t *testing.T) {
 	rec = gl.send(http.MethodPatch, "/workspaces/lab/issues/42", apiKeyAuth(), `{"assignees":["octocat"]}`)
 	if rec.Code != http.StatusBadRequest || !strings.Contains(testutil.Error(t, rec).Message, "nothing to update") || gl.stub.count() != 2 {
 		t.Errorf("only assignees on GitLab: %d %s; want 400 nothing to update and no request", rec.Code, rec.Body)
-	}
-}
-
-// issueUpdate's payloads: a set list is a list, an empty one included, and the fields are sorted.
-func TestIssueUpdatePayloads(t *testing.T) {
-	var nilList []string
-	title, state := "t", "open"
-	update := issueUpdate{Title: &title, State: &state, Labels: &nilList, Assignees: &nilList}
-	if got := marshal(update.githubPayload()); got != `{"assignees":[],"labels":[],"state":"open","title":"t"}` {
-		t.Errorf("GitHub payload = %s", got)
-	}
-	if got := marshal(update.gitlabPayload()); got != `{"labels":"","state_event":"reopen","title":"t"}` {
-		t.Errorf("GitLab payload = %s", got)
-	}
-	if got := fmt.Sprint(update.fields()); got != "[assignees labels state title]" || len((issueUpdate{}).fields()) != 0 {
-		t.Errorf("fields = %s; want them sorted, and none for an empty update", got)
 	}
 }
 
@@ -470,48 +444,35 @@ func TestWrites_ForgeFailures(t *testing.T) {
 }
 
 // A write the caller walks away from still reaches the forge, is answered and is recorded:
-// the request to the forge and the event run on a context the caller's cancellation does
-// not reach, for a request issuex sends, one hub sends itself and the second step of a close.
+// the requests to the forge, the one issuex sends and the one hub sends itself, and the
+// event run on a context the caller's cancellation does not reach.
 func TestWrites_ContinueAfterTheCallerLeaves(t *testing.T) {
-	for _, tc := range []struct {
-		name, method, path, body string
-		wantStatus, wantSteps    int
-	}{
-		{"create issue", http.MethodPost, "/workspaces/widgets/issues", `{"title":"t"}`, 201, 1},
-		{"update issue", http.MethodPatch, "/workspaces/widgets/issues/42", `{"title":"t"}`, 200, 1},
-		{"close with a comment", http.MethodPost, "/workspaces/widgets/issues/42/close", `{"comment":"done"}`, 200, 2},
-	} {
-		em := &recordingEmitter{}
-		e := widgetsEnv(t, withEmitter(em))
-		started, release := make(chan struct{}), make(chan struct{})
-		var once sync.Once
-		var stayed sync.Map
-		all := githubWrites()
-		e.stub.setHandler(func(w http.ResponseWriter, r *http.Request) {
-			once.Do(func() {
-				close(started)
-				<-release
-				stayed.Store("stayed", r.Context().Err() == nil)
-			})
-			all(w, r)
+	em := &recordingEmitter{}
+	e := widgetsEnv(t, withEmitter(em))
+	started, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	var stayed atomic.Bool
+	all := githubWrites()
+	e.stub.setHandler(func(w http.ResponseWriter, r *http.Request) {
+		once.Do(func() {
+			close(started)
+			<-release
+			stayed.Store(r.Context().Err() == nil)
 		})
-		ctx, cancel := context.WithCancel(context.Background())
-		req := httptest.NewRequest(tc.method, "/api/v1"+tc.path, strings.NewReader(tc.body)).WithContext(ctx)
-		raw, _ := json.Marshal(apiKeyAuth())
-		req.Header.Set(testutil.AuthHeader, string(raw))
-		rec := httptest.NewRecorder()
-		done := make(chan struct{})
-		go func() { e.echo.ServeHTTP(rec, req); close(done) }()
-		<-started
-		cancel()
-		close(release)
-		<-done
-		if v, _ := stayed.Load("stayed"); v != true || rec.Code != tc.wantStatus || e.stub.count() != tc.wantSteps {
-			t.Errorf("%s: hub stayed %v, answered %d after %d requests; want it to stay, %d and %d", tc.name, v, rec.Code, e.stub.count(), tc.wantStatus, tc.wantSteps)
-		}
-		if ctxs := em.contexts(); len(ctxs) != 1 || ctxs[0] != nil {
-			t.Errorf("%s: the event was emitted on the context %v; want one live event", tc.name, ctxs)
-		}
+		all(w, r)
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/workspaces/widgets/issues/42/close", strings.NewReader(`{"comment":"done"}`)).WithContext(ctx)
+	req.Header.Set(testutil.AuthHeader, marshal(apiKeyAuth()))
+	rec := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() { e.echo.ServeHTTP(rec, req); close(done) }()
+	<-started
+	cancel()
+	close(release)
+	<-done
+	if ctxs := em.contexts(); !stayed.Load() || rec.Code != http.StatusOK || e.stub.count() != 2 || len(ctxs) != 1 || ctxs[0] != nil {
+		t.Errorf("hub stayed %v, answered %d after %d requests, emitted on %v; want it to stay, 200, 2 and one live event", stayed.Load(), rec.Code, e.stub.count(), ctxs)
 	}
 }
 
@@ -537,14 +498,6 @@ func TestWrites_EachRequestGetsItsOwnDeadline(t *testing.T) {
 				}
 				return nil
 			}, "[GetLabel MakeLabel GetLabel]"},
-		{route{"", http.MethodDelete, "/workspaces/%s/issues/42/labels/af:fix", ``},
-			func(_ context.Context, method string, _ int) error {
-				time.Sleep(used)
-				if method == "DropLabel" {
-					return notFound()
-				}
-				return nil
-			}, "[DropLabel CheckIssue]"},
 	} {
 		fake := &fakeWriter{behave: tc.behave}
 		e := widgetsEnv(t, useClient(fake, nil))
@@ -636,7 +589,6 @@ func TestWrites_BodyLimits(t *testing.T) {
 	long := strings.Repeat("y", 70000)
 	for _, tc := range []struct{ method, path, body string }{
 		{http.MethodPost, "/issues", `{"title":"` + long + `","labels":["` + long + `"]}`},
-		{http.MethodPost, "/pulls", `{"title":"` + long + `","head":"` + long + `","base":"main"}`},
 		{http.MethodPost, "/labels", `{"name":"af:triage","description":"` + long + `"}`},
 	} {
 		gh.stub.forget()

@@ -8,7 +8,6 @@ import (
 	"net/url"
 	"reflect"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -61,43 +60,9 @@ func TestParseIssueFilter(t *testing.T) {
 	}
 }
 
-// Each read route calls its issuex method with the workspace's repository, the number as
-// an integer and the pull request flag of the path, and the list query reaches issuex.
-func TestReads_CallTheirIssuexMethod(t *testing.T) {
-	for path, want := range map[string]struct {
-		call string
-		pr   bool
-	}{
-		"/forge/repository": {"GetRepository", false}, "/issues": {"ListIssues", false}, "/issues/7": {"ReadIssue", false},
-		"/issues/7/comments": {"ListComments", false}, "/pulls/7": {"ReadPullRequest", true}, "/pulls/7/state": {"GetPRState", true},
-		"/pulls/7/files": {"ReadChangedFiles", true}, "/pulls/7/checks": {"GetCIChecks", true}, "/pulls/7/reviews": {"GetPRReviews", true},
-	} {
-		rc := &recordingClient{}
-		e := newEnv(t, useClient(rc, nil))
-		addWorkspace(t, e.db, "widgets")
-		if rec := e.get("/workspaces/widgets"+path, apiKeyAuth()); rec.Code != http.StatusOK {
-			t.Fatalf("%s: status = %d\n%s", path, rec.Code, rec.Body)
-		}
-		if got := rc.called(); len(got) != 1 || got[0] != want.call || rc.repo != (issuex.Repo{Host: "github.com", Owner: "acme", Name: "widgets"}) {
-			t.Errorf("%s: calls = %v on %+v; want [%s] on acme/widgets", path, got, rc.repo, want.call)
-		}
-		if strings.Contains(path, "7") && (rc.ref.Number != 7 || rc.ref.IsPullRequest != want.pr) {
-			t.Errorf("%s: ref = %+v; want number 7, pull request %v", path, rc.ref, want.pr)
-		}
-	}
-	rc := &recordingClient{}
-	e := newEnv(t, useClient(rc, nil))
-	addWorkspace(t, e.db, "widgets")
-	if rec := e.get("/workspaces/widgets/issues?labels=af:triage,,bug&assignee=bob&state=open&limit=5", apiKeyAuth()); rec.Code != http.StatusOK {
-		t.Fatalf("status = %d\n%s", rec.Code, rec.Body)
-	}
-	if want := (issuex.IssueFilter{State: "open", Labels: []string{"af:triage", "bug"}, Assignee: "bob", Limit: 5}); !reflect.DeepEqual(rc.filter, want) {
-		t.Errorf("filter = %+v; want %+v", rc.filter, want)
-	}
-}
-
-// Each route returns the issuex encoding unchanged, a list as a bare array, and the issue
-// with its comments and the truncation flag.
+// Each read route asks the forge about the thing its path names, through issuex, and
+// returns the issuex encoding unchanged: a list as a bare array, the issue with its comments
+// and the truncation flag; the list query reaches the forge.
 func TestReads_ReturnTheIssuexEncoding(t *testing.T) {
 	e := widgetsEnv(t)
 	e.stub.setHandler(githubFixture)
@@ -115,22 +80,33 @@ func TestReads_ReturnTheIssuexEncoding(t *testing.T) {
 	}
 	list, listErr := direct.ListIssues(ctx, repo, issuex.IssueFilter{Limit: 30})
 	comments, commentsErr := direct.ListComments(ctx, issueRef)
-	want := map[string]any{
-		"/forge/repository":  must(direct.GetRepository(ctx, repo)),
-		"/issues":            must(list.Issues, listErr),
-		"/issues/1":          must(direct.ReadIssue(ctx, issueRef)),
-		"/issues/1/comments": must(comments.Comments, commentsErr),
-		"/pulls/1":           must(direct.ReadPullRequest(ctx, prRef)),
-		"/pulls/1/state":     must(direct.GetPRState(ctx, prRef)),
-		"/pulls/1/files":     must(direct.ReadChangedFiles(ctx, prRef)),
-		"/pulls/1/checks":    must(direct.GetCIChecks(ctx, prRef)),
-		"/pulls/1/reviews":   must(direct.GetPRReviews(ctx, prRef)),
+	want := map[string]struct {
+		body any
+		path string
+	}{
+		"/forge/repository":  {must(direct.GetRepository(ctx, repo)), "/repos/acme/widgets"},
+		"/issues":            {must(list.Issues, listErr), "/repos/acme/widgets/issues"},
+		"/issues/1":          {must(direct.ReadIssue(ctx, issueRef)), "/repos/acme/widgets/issues/1"},
+		"/issues/1/comments": {must(comments.Comments, commentsErr), "/repos/acme/widgets/issues/1/comments"},
+		"/pulls/1":           {must(direct.ReadPullRequest(ctx, prRef)), "/repos/acme/widgets/pulls/1"},
+		"/pulls/1/state":     {must(direct.GetPRState(ctx, prRef)), "/repos/acme/widgets/pulls/1"},
+		"/pulls/1/files":     {must(direct.ReadChangedFiles(ctx, prRef)), "/repos/acme/widgets/pulls/1/files"},
+		"/pulls/1/checks":    {must(direct.GetCIChecks(ctx, prRef)), "/repos/acme/widgets/commits/abc123/check-runs"},
+		"/pulls/1/reviews":   {must(direct.GetPRReviews(ctx, prRef)), "/repos/acme/widgets/pulls/1/reviews"},
 	}
 	for _, path := range readPaths {
+		e.stub.forget()
 		rec := e.get("/workspaces/widgets"+path, apiKeyAuth())
-		wantJSON, _ := json.Marshal(want[path])
+		wantJSON, _ := json.Marshal(want[path].body)
 		if rec.Code != http.StatusOK || strings.TrimSpace(rec.Body.String()) != string(wantJSON) {
 			t.Errorf("%s: %d %s\nwant %s", path, rec.Code, rec.Body, wantJSON)
+		}
+		var paths []string
+		for _, r := range e.stub.received() {
+			paths = append(paths, r.Path)
+		}
+		if !strings.Contains(fmt.Sprint(paths), want[path].path) {
+			t.Errorf("%s: the forge saw %v; want %s", path, paths, want[path].path)
 		}
 	}
 	var thread struct {
@@ -141,12 +117,28 @@ func TestReads_ReturnTheIssuexEncoding(t *testing.T) {
 	if len(thread.Comments) != 2 || thread.Truncated == nil || *thread.Truncated {
 		t.Errorf("the thread has %d comments, truncated %v; want 2 and false", len(thread.Comments), thread.Truncated)
 	}
+	e.stub.forget()
+	e.get("/workspaces/widgets/issues?labels=af:triage,,bug&assignee=bob&state=open&limit=5", apiKeyAuth())
+	if q := e.stub.received()[0].Query; !strings.Contains(q, "af%3Atriage") || !strings.Contains(q, "bug") || !strings.Contains(q, "state=open") || !strings.Contains(q, "assignee=bob") {
+		t.Errorf("the forge saw the query %q; want the labels, the state and the assignee", q)
+	}
 }
 
 // Empty lists are encoded as [] and never null, the comments of an issue included.
 func TestReads_EmptyListsAreArrays(t *testing.T) {
-	e := newEnv(t, useClient(&recordingClient{}, nil))
-	addWorkspace(t, e.db, "widgets")
+	e := widgetsEnv(t)
+	e.stub.setHandler(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/pulls/1"):
+			respond(http.StatusOK, pullBody(1, "acme/widgets", "feature", "main", false))(w, r)
+		case strings.HasSuffix(r.URL.Path, "/issues/1"):
+			respond(http.StatusOK, issueBody(1, "t", ""))(w, r)
+		case strings.HasSuffix(r.URL.Path, "/check-runs"):
+			respond(http.StatusOK, `{"total_count":0,"check_runs":[]}`)(w, r)
+		default:
+			respond(http.StatusOK, "[]")(w, r)
+		}
+	})
 	for _, path := range []string{"/issues", "/issues/1/comments", "/pulls/1/files", "/pulls/1/checks", "/pulls/1/reviews"} {
 		if rec := e.get("/workspaces/widgets"+path, apiKeyAuth()); rec.Code != http.StatusOK || strings.TrimSpace(rec.Body.String()) != "[]" {
 			t.Errorf("%s: %d %s; want 200 []", path, rec.Code, rec.Body)
@@ -157,12 +149,9 @@ func TestReads_EmptyListsAreArrays(t *testing.T) {
 	}
 }
 
-// A bad number or list parameter is 400 naming it, before a client is built or a
-// credential or variable is read.
+// A bad number or list parameter is 400 naming it, before a credential or variable is read.
 func TestReads_BadParametersAreRefusedFirst(t *testing.T) {
-	var built atomic.Int64
-	e := newEnv(t, useClient(&recordingClient{}, &built))
-	addWorkspace(t, e.db, "widgets")
+	e := widgetsEnv(t)
 	for _, path := range []string{"/issues/%s", "/issues/%s/comments", "/pulls/%s", "/pulls/%s/state", "/pulls/%s/files", "/pulls/%s/checks", "/pulls/%s/reviews"} {
 		for _, n := range []string{"0", "abc", "1.5", "%201"} {
 			rec := e.get("/workspaces/widgets"+fmt.Sprintf(path, n), apiKeyAuth())
@@ -177,26 +166,25 @@ func TestReads_BadParametersAreRefusedFirst(t *testing.T) {
 			t.Errorf("?%s: %d %s; want 400 naming %s", query, rec.Code, rec.Body, param)
 		}
 	}
-	if n := built.Load() + e.originCalls.Load() + e.varCalls.Load(); n != 0 {
-		t.Errorf("%d clients built or lookups made; want none", n)
+	if n := e.originCalls.Load() + e.varCalls.Load() + int64(e.stub.count()); n != 0 {
+		t.Errorf("%d lookups or requests; want none", n)
 	}
 }
 
-// Reads need neither the workspace lock nor a clone: an archived, a pending and a locked
-// workspace answer like a ready one. They record no audit event, for a success or a failure.
+// Reads need neither the workspace lock nor a clone: an archived and a locked workspace
+// answer like a ready one. They record no audit event, for a success or a failure.
 func TestReads_NeedNoLockOrCloneAndRecordNothing(t *testing.T) {
 	spy := &recordingEmitter{}
 	e := widgetsEnv(t, withEmitter(spy))
 	e.stub.setHandler(githubFixture)
 	addWorkspace(t, e.db, "archived", archived)
-	addWorkspace(t, e.db, "pending", func(w *testutil.Workspace) { w.Status = "pending" })
 	addWorkspace(t, e.db, "locked")
-	for _, slug := range []string{"archived", "pending", "locked"} {
+	for _, slug := range []string{"archived", "locked"} {
 		e.setVar(slug, "FORGE_API_URL", e.stub.URL)
 	}
 	unlock := wslock.Lock("locked")
 	defer unlock()
-	for _, slug := range []string{"widgets", "archived", "pending", "locked"} {
+	for _, slug := range []string{"widgets", "archived", "locked"} {
 		done := make(chan int, 1)
 		go func() { done <- e.get("/workspaces/"+slug+"/forge/repository", apiKeyAuth()).Code }()
 		select {

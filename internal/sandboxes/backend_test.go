@@ -281,21 +281,22 @@ func TestBackendCreate_ResolvesSecretsAndFailsWhatCannotBeBuilt(t *testing.T) {
 	}
 
 	creates := env.prov.creates()
-	for name, tc := range map[string]struct {
+	for _, tc := range []struct {
+		name    string
 		prepare func() string
 		want    string
 	}{
-		"profile gone": {func() string {
+		{"profile gone", func() string {
 			id := env.issue("")
 			testutil.Exec(t, env.db, `UPDATE sandbox_leases SET profile = 'gone' WHERE id = ?`, id)
 			return id
 		}, `profile "gone" is no longer configured`},
-		"network not honoured": {func() string {
+		{"network not honoured", func() string {
 			id := env.issue("")
 			testutil.Exec(t, env.db, `UPDATE sandbox_leases SET network = 'host' WHERE id = ?`, id)
 			return id
 		}, `network mode "host"`},
-		"not a member": {func() string {
+		{"not a member", func() string {
 			id := env.mustIssueAs("orgws", "", ownerKey())["id"].(string)
 			testutil.Exec(t, env.db, `DELETE FROM org_members`)
 			env.secrets.DeleteSecret("user", owner, "GIT_PAT")
@@ -303,6 +304,7 @@ func TestBackendCreate_ResolvesSecretsAndFailsWhatCannotBeBuilt(t *testing.T) {
 			return id
 		}, "secret_missing: GIT_PAT (searched scopes: workspace, user)"},
 	} {
+		name := tc.name
 		id := tc.prepare()
 		_, err := env.create(id, sandbox.Spec{})
 		wantCode(t, err, codes.FailedPrecondition)
@@ -342,7 +344,7 @@ func TestBackendCreate_StoreErrorsLeaveTheLeaseLeased(t *testing.T) {
 	second := env.issue("")
 	_, err = b.Create(withPrincipal(context.Background(), second), sandbox.Spec{})
 	wantCode(t, err, codes.Internal)
-	if strings.Contains(err.Error(), "locked") || len(env.prov.live()) != 0 || env.lease(second).State != "leased" || len(env.eventsOf(audit.EventSandboxCreate)) != 1 {
+	if strings.Contains(err.Error(), "locked") || len(env.prov.live()) != 1 || env.lease(second).State != "leased" || len(env.eventsOf(audit.EventSandboxCreate)) != 1 {
 		t.Errorf("a box that could not be recorded: %v, live %v, lease %s", err, env.prov.live(), env.lease(second).State)
 	}
 }

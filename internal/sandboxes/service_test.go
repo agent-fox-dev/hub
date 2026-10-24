@@ -275,12 +275,12 @@ func TestStartRemote_FailuresRefuseStart(t *testing.T) {
 			if svc != nil || err == nil {
 				t.Fatalf("Start = (%v, %v); want a refusal", svc, err)
 			}
-			if name != "static failure" {
+			if name != "static failure" && name != "profile refused" {
 				if !strings.HasPrefix(err.Error(), "sandbox:") {
 					t.Errorf("error %q does not start with sandbox:", err)
 				}
 				requireFailure(t, err, "sandbox.provider", "sandbox.gateway_url", "sandbox.gateway_token")
-			} else if factory.callCount() != 0 {
+			} else if name == "static failure" && factory.callCount() != 0 {
 				t.Error("a static failure built a client")
 			}
 			requireFailure(t, err, tc.want...)

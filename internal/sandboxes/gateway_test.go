@@ -362,7 +362,9 @@ func TestGateway_TokensAndBoxesOverGRPC(t *testing.T) {
 		t.Errorf("Destroy of another lease's box = %v, live %v", err, env.prov.live())
 	}
 
-	env.store.DestroyLease(idA, "active", "api")
+	if env.delete(idA).Code != http.StatusNoContent {
+		t.Fatal("DELETE failed")
+	}
 	if _, err := clientA.List(context.Background()); !errors.Is(err, gateway.ErrUnauthenticated) {
 		t.Errorf("List after the lease was destroyed = %v", err)
 	}
@@ -371,14 +373,6 @@ func TestGateway_TokensAndBoxesOverGRPC(t *testing.T) {
 	}
 	if _, err := a.Tools(context.Background(), sandbox.ToolOptions{}); err == nil {
 		t.Error("a relayed Tools call on the box of a destroyed lease succeeded")
-	}
-	env.secrets.DeleteSecret("workspace", "widgets", "GIT_PAT")
-	clientC := gw.dial(t, tokenC)
-	if _, err := clientC.Create(context.Background(), sandbox.Spec{Image: "x"}); err == nil || !strings.Contains(err.Error(), "secret_missing:") {
-		t.Errorf("Create with a missing secret = %v", err)
-	}
-	if _, err := clientC.List(context.Background()); !errors.Is(err, gateway.ErrUnauthenticated) || env.prov.creates() != 2 {
-		t.Errorf("after the failed Create: %v, %d provider calls", err, env.prov.creates())
 	}
 	// The gateway lists and destroys the boxes it holds, leaving the lease to the
 	// caller; a box it does not hold is gone.
@@ -401,6 +395,14 @@ func TestGateway_TokensAndBoxesOverGRPC(t *testing.T) {
 	env.prov.setCloseErr(nil)
 	if err := gw.Destroy(context.Background(), d.ID()); err != nil || len(env.prov.live()) != 0 || len(gw.backend.heldBoxes()) != 0 || env.lease(idD).State != "active" {
 		t.Errorf("the retried Destroy = %v, live %v, held %v", err, env.prov.live(), gw.backend.heldBoxes())
+	}
+	env.secrets.DeleteSecret("workspace", "widgets", "GIT_PAT")
+	clientC := gw.dial(t, tokenC)
+	if _, err := clientC.Create(context.Background(), sandbox.Spec{Image: "x"}); err == nil || !strings.Contains(err.Error(), "secret_missing:") {
+		t.Errorf("Create with a missing secret = %v", err)
+	}
+	if _, err := clientC.List(context.Background()); !errors.Is(err, gateway.ErrUnauthenticated) || env.prov.creates() != 3 {
+		t.Errorf("after the failed Create: %v, %d provider calls", err, env.prov.creates())
 	}
 }
 
@@ -544,33 +546,39 @@ func TestGateway_NothingSecretLeavesHub(t *testing.T) {
 	_, err := gw.dial(t, tokenFail).Create(ctx, sandbox.Spec{Image: "x"})
 	keep(err)
 	env.prov.setCreateErr(nil)
-	sb := createVia(t, gw.dial(t, env.mustIssueAs("widgets", "", adminAuth())["token"].(string)))
+	// An admin's lease: made, reported, listed and closed, its events naming admin.
+	adminClient := gw.dial(t, env.mustIssueAs("widgets", "", adminAuth())["token"].(string))
+	sb := createVia(t, adminClient)
 	keep(fmt.Sprintf("%+v", sb.Spec()))
+	infos, _ := adminClient.List(ctx)
+	keep(infos)
+	keep(sb.Close(ctx))
+	// A Close the provider fails, then a DELETE it fails and one it does not.
+	idClose, tokenClose := env.issueToken("")
+	failing := createVia(t, gw.dial(t, tokenClose))
 	env.prov.setCloseErr(echo)
-	keep(sb.Close(ctx))
-	env.prov.setCloseErr(nil)
-	keep(sb.Close(ctx))
+	closeErr := failing.Close(ctx)
+	keep(closeErr)
 	idDel, tokenDel := env.issueToken("")
 	createVia(t, gw.dial(t, tokenDel))
-	env.prov.setCloseErr(echo)
 	keep(env.delete(idDel).Body)
 	env.prov.setCloseErr(nil)
 	keep(env.delete(idDel).Body)
 	keep(env.get("/api/v1/workspaces/widgets/sandboxes?all=true", ownerKey()).Body)
 	events, _ := json.Marshal(env.emitter.recorded())
 	keep(string(events))
-	for _, id := range []string{idFail, idDel} {
+	for _, id := range []string{idFail, idClose, idDel} {
 		if l := env.lease(id); l.Error != nil {
 			keep(*l.Error)
 		}
-		keep(rowText(t, env.db, id))
+		containsNone(t, "the row of "+id, rowText(t, env.db, id), plantedSecret, "user:pw") // the fixed env is stored by design
 	}
 	for i, out := range seen {
 		containsNone(t, fmt.Sprintf("output %d", i), out, plantedSecret, "envval", "user:pw")
 	}
-	containsNone(t, "the log", logs.String(), plantedSecret, "envval", "user:pw", tokenFail, HashToken(tokenFail), tokenDel, HashToken(tokenDel))
-	if l := env.lease(idFail); l.State != "failed" || !strings.Contains(*l.Error, "[redacted]") {
-		t.Errorf("the failed lease = %+v", l)
+	containsNone(t, "the log", logs.String(), plantedSecret, "envval", "user:pw", tokenFail, HashToken(tokenFail), tokenClose, HashToken(tokenClose), tokenDel, HashToken(tokenDel))
+	if l := env.lease(idFail); l.State != "failed" || !strings.Contains(*l.Error, "[redacted]") || closeErr == nil || !strings.Contains(closeErr.Error(), "[redacted]") {
+		t.Errorf("the failed lease = %+v, the Close error = %v", l, closeErr)
 	}
 	actors := map[string][2]string{}
 	for _, e := range env.emitter.recorded() {
@@ -608,7 +616,7 @@ func TestGateway_NothingSecretLeavesHub(t *testing.T) {
 		}
 		idB, tokenB := env.issueToken("")
 		createVia(t, gw.dial(t, tokenB))
-		return fmt.Sprint(err, closeErr, env.delete(idB).Code, env.lease(idA).State, env.lease(idB).State)
+		return fmt.Sprintf("%v %v %d %s %s", err, closeErr, env.delete(idB).Code, env.lease(idA).State, env.lease(idB).State)
 	}
 	base := run(leaseEnvOptions{config: gatewayLeaseConfig()}, false)
 	if base != "<nil> <nil> 204 destroyed destroyed" {

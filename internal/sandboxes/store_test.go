@@ -30,8 +30,12 @@ func TestLeaseStore_InsertAndGetRoundTrip(t *testing.T) {
 		t.Fatalf("InsertLease: %v", err)
 	}
 	got, err := store.GetLease(want.ID)
-	if err != nil || fmt.Sprintf("%+v", got) != fmt.Sprintf("%+v", want) {
-		t.Errorf("read back (%+v, %v)\nwant      %+v", got, err, want)
+	if err != nil || got.LeaseExpiresAt == nil || *got.LeaseExpiresAt != *want.LeaseExpiresAt {
+		t.Fatalf("read back (%+v, %v)", got, err)
+	}
+	got.LeaseExpiresAt, want.LeaseExpiresAt = nil, nil
+	if fmt.Sprintf("%+v", got) != fmt.Sprintf("%+v", want) {
+		t.Errorf("read back %+v\nwant      %+v", got, want)
 	}
 	// Nil lists and maps are stored and read back as empty ones.
 	bare := &Lease{ID: leaseID(8), Workspace: "w", Profile: "p", State: "leased", Image: "i", Network: "none", TTLSeconds: 60, ExpiresAt: "2030-01-02T04:04:05Z", CreatedBy: "u", CreatedAt: "x", UpdatedAt: "x"}

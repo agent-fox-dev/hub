@@ -170,56 +170,60 @@ func TestIngress_Verification(t *testing.T) {
 	}
 }
 
-// A rotated secret, through PUT or the store, applies from the next delivery.
-func TestIngress_SecretRotationApplies(t *testing.T) {
-	e, _ := ingressEnv(t)
+// A rotated secret, through PUT or the store, applies from the next delivery; after DELETE a
+// delivery answers the 404 of an unknown slug and writes no row while the earlier rows stay
+// listed; a new PUT turns the ingress on again.
+func TestIngress_FollowsTheSecret(t *testing.T) {
+	e, em := ingressEnv(t)
 	sign := func(secret, id string) signedDelivery {
 		return githubDelivery(secret, id, "issues", issuesPayload("labeled", "acme/widgets"))
 	}
+	outcomeOf(t, e.deliver("widgets", sign(ingressSecret, "d-0")))
 	e.send(http.MethodPut, webhookPath, apiKeyAuth(), `{"secret":"the-new-secret-of-16-chars"}`)
-	if rec := e.deliver("widgets", sign(ingressSecret, "d-1")); rec.Code != http.StatusUnauthorized {
-		t.Errorf("the old secret after the PUT: %d; want 401", rec.Code)
-	}
-	if outcome := outcomeOf(t, e.deliver("widgets", sign("the-new-secret-of-16-chars", "d-2"))); outcome != "relayed" {
-		t.Errorf("the new secret: outcome = %q", outcome)
-	}
 	if _, err := e.secrets.UpdateSecret("workspace", "widgets", webhookSecretKey, "the-newest-secret-of-16+"); err != nil {
 		t.Fatal(err)
 	}
-	if rec := e.deliver("widgets", sign("the-new-secret-of-16-chars", "d-3")); rec.Code != http.StatusUnauthorized {
-		t.Errorf("the old secret after the store update: %d; want 401", rec.Code)
+	for _, old := range []string{ingressSecret, "the-new-secret-of-16-chars"} {
+		if rec := e.deliver("widgets", sign(old, "d-1")); rec.Code != http.StatusUnauthorized {
+			t.Errorf("an old secret: %d; want 401", rec.Code)
+		}
 	}
-	if outcome := outcomeOf(t, e.deliver("widgets", sign("the-newest-secret-of-16+", "d-4"))); outcome != "relayed" {
+	if outcome := outcomeOf(t, e.deliver("widgets", sign("the-newest-secret-of-16+", "d-2"))); outcome != "relayed" {
 		t.Errorf("the newest secret: outcome = %q", outcome)
+	}
+	if rec := e.send(http.MethodDelete, webhookPath, apiKeyAuth(), ""); rec.Code != http.StatusNoContent {
+		t.Fatalf("DELETE: %d %s", rec.Code, rec.Body)
+	}
+	after, unknown := e.deliver("widgets", sign("the-newest-secret-of-16+", "d-3")), e.deliver("nosuch", sign("the-newest-secret-of-16+", "d-3"))
+	rec := e.get("/workspaces/widgets/forge/deliveries", apiKeyAuth())
+	if after.Code != http.StatusNotFound || after.Body.String() != unknown.Body.String() || len(e.deliveryRows()) != 2 || !strings.Contains(rec.Body.String(), `"delivery_id":"d-2"`) || len(em.recorded()) != 4 {
+		t.Errorf("after the unset: %d %s (unknown slug %s), %d rows, %d events, list %s; want the same 404, the 2 earlier rows and the 4 earlier events", after.Code, after.Body, unknown.Body, len(e.deliveryRows()), len(em.recorded()), rec.Body)
+	}
+	e.send(http.MethodPut, webhookPath, apiKeyAuth(), `{"secret":"a-secret-set-again-16+"}`)
+	if outcome := outcomeOf(t, e.deliver("widgets", sign("a-secret-set-again-16+", "d-4"))); outcome != "relayed" {
+		t.Errorf("after the PUT: outcome = %q; want relayed", outcome)
 	}
 }
 
-// A body over 1 MiB is 413 body_too_large, whether its length is announced or not and
-// whether an instance-wide limit is installed, without reading past the cap; exactly 1 MiB
-// passes.
+// A body over 1 MiB is 413 body_too_large, whether its length is announced or not, without
+// reading past the cap; exactly 1 MiB passes.
 func TestIngress_BodyLimit(t *testing.T) {
 	const mib = 1 << 20
 	padded := func(size int) string { return `{"zen":"` + strings.Repeat("x", size-len(`{"zen":""}`)) + `"}` }
-	for name, global := range map[string]int64{"no global limit": 0, "a raised global limit": 4 * mib} {
-		e, em := ingressEnv(t)
-		if global > 0 {
-			e.echo.Use(apikit.BodySizeLimitMiddleware(global))
-		}
-		over := githubDelivery(ingressSecret, "d-over", "ping", padded(mib+1))
-		for _, length := range []int64{int64(len(over.body)), -1} {
-			rec := e.post("widgets", over, strings.NewReader(over.body), length)
-			if rec.Code != http.StatusRequestEntityTooLarge || testutil.Error(t, rec).ErrorType != "body_too_large" {
-				t.Errorf("%s, length %d: %d %s; want 413 body_too_large", name, length, rec.Code, rec.Body)
-			}
-		}
-		if rows, events := e.deliveryRows(), em.recorded(); len(rows) != 0 || len(events) != 0 {
-			t.Errorf("%s: %d rows and %d events; want none", name, len(rows), len(events))
-		}
-		if outcome := outcomeOf(t, e.deliver("widgets", githubDelivery(ingressSecret, "d-exact", "ping", padded(mib)))); outcome != "ignored" {
-			t.Errorf("%s: exactly 1 MiB: outcome = %q; want ignored", name, outcome)
+	e, em := ingressEnv(t)
+	over := githubDelivery(ingressSecret, "d-over", "ping", padded(mib+1))
+	for _, length := range []int64{int64(len(over.body)), -1} {
+		rec := e.post("widgets", over, strings.NewReader(over.body), length)
+		if rec.Code != http.StatusRequestEntityTooLarge || testutil.Error(t, rec).ErrorType != "body_too_large" {
+			t.Errorf("length %d: %d %s; want 413 body_too_large", length, rec.Code, rec.Body)
 		}
 	}
-	e, _ := ingressEnv(t)
+	if rows, events := e.deliveryRows(), em.recorded(); len(rows) != 0 || len(events) != 0 {
+		t.Errorf("%d rows and %d events; want none", len(rows), len(events))
+	}
+	if outcome := outcomeOf(t, e.deliver("widgets", githubDelivery(ingressSecret, "d-exact", "ping", padded(mib)))); outcome != "ignored" {
+		t.Errorf("exactly 1 MiB: outcome = %q; want ignored", outcome)
+	}
 	if rec := e.post("widgets", githubDelivery(ingressSecret, "d-1", "ping", "{}"), &failReader{t: t}, mib+1); rec.Code != http.StatusRequestEntityTooLarge {
 		t.Errorf("an announced length over the cap: %d; want 413 without reading", rec.Code)
 	}
@@ -282,7 +286,7 @@ func TestIngress_RecordsARow(t *testing.T) {
 	for name, d := range map[string]signedDelivery{
 		"GitHub without an id": ping.without("X-GitHub-Delivery"), "GitHub without an event": ping.without("X-GitHub-Event"), "an empty event": ping.with("X-GitHub-Event", ""),
 		"GitLab without either id header": glPing.without("Idempotency-Key"), "GitLab without an event": glPing.without("X-Gitlab-Event"),
-		"an id of 256 characters": ping.with("X-GitHub-Delivery", strings.Repeat("a", 256)), "an id outside ASCII": ping.with("X-GitHub-Delivery", "d-\u00e9"), "an id with a control character": ping.with("X-GitHub-Delivery", "d-\x01"),
+		"an id of 256 characters": ping.with("X-GitHub-Delivery", strings.Repeat("a", 256)), "an id outside ASCII": ping.with("X-GitHub-Delivery", "d-\u00e9\x01"),
 	} {
 		if rec := e.deliver("widgets", d); rec.Code != http.StatusBadRequest {
 			t.Errorf("%s: %d %s; want 400", name, rec.Code, rec.Body)

@@ -54,8 +54,11 @@ func TestScopes_ReadAndWrite(t *testing.T) {
 func TestAccess_SharedChecksOnEveryRoute(t *testing.T) {
 	e := memberEnv(t)
 	addWorkspace(t, e.db, "theirs", withOwner(otherID))
-	addWorkspace(t, e.db, "retired", archived)
+	addWorkspace(t, e.db, "retired", archived, func(w *testutil.Workspace) { w.OrgID = "org-1" })
 	addWorkspace(t, e.db, "theirs-retired", withOwner(otherID), archived)
+	if _, err := e.secrets.CreateSecrets("workspace", "widgets", []secrets.EntryInput{{Key: webhookSecretKey, Value: "s3cret-hook-of-16"}}); err != nil {
+		t.Fatal(err)
+	}
 	stranger := testutil.User("user-stranger")
 	mystery := &apikit.AuthInfo{UserID: ownerID, CredentialType: "mystery", Permissions: []string{"forge:read", "forge:write"}}
 	member := testutil.User(memberID)
@@ -110,6 +113,9 @@ func TestAccess_SharedChecksOnEveryRoute(t *testing.T) {
 	if n := e.originCalls.Load() + e.upstreamCalls.Load() + e.varCalls.Load() + int64(e.stub.count()); n != 0 {
 		t.Errorf("%d credential, variable or forge lookups for refused requests; want none", n)
 	}
+	if stored, _ := e.storedSecret("widgets"); stored != "s3cret-hook-of-16" {
+		t.Errorf("the webhook secret = %q after the refused requests; want it kept", stored)
+	}
 }
 
 // The credentials the checks let through: a write-only PAT reads, an api_key and an
@@ -150,39 +156,5 @@ func TestAccess_AllowedCredentials(t *testing.T) {
 		if rec := e.sendRoute(r, "widgets", patAuth("forge:write")); rec.Code == 401 || rec.Code == 403 || rec.Code == 404 {
 			t.Errorf("%s as a PAT with forge:write: status = %d; want the checks passed", r.name, rec.Code)
 		}
-	}
-}
-
-// A member's writes change nothing: no forge request and the webhook secret as it was.
-func TestAccess_MemberWritesChangeNothing(t *testing.T) {
-	e := memberEnv(t)
-	if _, err := e.secrets.CreateSecrets("workspace", "widgets", []secrets.EntryInput{{Key: webhookSecretKey, Value: "s3cret-hook-of-16"}}); err != nil {
-		t.Fatal(err)
-	}
-	for _, r := range append(writeRoutes, otherRoutes[1], otherRoutes[2]) {
-		if rec := e.sendRoute(r, "widgets", testutil.PAT(memberID, "forge:write")); rec.Code != http.StatusForbidden {
-			t.Errorf("%s: status = %d; want 403", r.name, rec.Code)
-		}
-	}
-	if stored, _ := e.storedSecret("widgets"); stored != "s3cret-hook-of-16" || e.stub.count() != 0 {
-		t.Errorf("secret = %q, forge requests %d; want the secret kept and no request", stored, e.stub.count())
-	}
-}
-
-// A PAT bound to another workspace does not see this one, with the 404 of an unknown slug.
-func TestAccess_BoundTokenOfAnotherWorkspaceIs404(t *testing.T) {
-	e := widgetsEnv(t)
-	addWorkspace(t, e.db, "other")
-	testutil.BindToken(t, e.db, "tok-1", "other")
-	bound := testutil.BoundPAT(ownerID, "tok-1", "forge:read", "forge:write")
-	for _, r := range []route{readRoutes[1], writeRoutes[0], otherRoutes[0]} {
-		if rec := e.sendRoute(r, "widgets", bound); rec.Code != http.StatusNotFound {
-			t.Errorf("%s: status = %d; want 404\n%s", r.name, rec.Code, rec.Body)
-		}
-	}
-	e.stub.setHandler(respond(http.StatusOK, repositoryBody))
-	e.setVar("other", "FORGE_API_URL", e.stub.URL)
-	if rec := e.get("/workspaces/other/forge/repository", bound); rec.Code != http.StatusOK {
-		t.Errorf("the bound workspace: status = %d; want 200\n%s", rec.Code, rec.Body)
 	}
 }

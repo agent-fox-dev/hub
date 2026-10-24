@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -57,12 +58,14 @@ func TestRecoverActive(t *testing.T) {
 	if out := logs.String(); !strings.Contains(out, "podman rm failed") || strings.Contains(out, "user:pw") || !strings.Contains(out, stuck) {
 		t.Errorf("the log:\n%s", out)
 	}
-	if left := env.boxes.ids(); len(left) != 2 || activeGauge(t, env.metrics, "widgets") != 1 || activeGauge(t, env.metrics, "gadgets") != 0 {
-		t.Errorf("boxes left %v, gauge widgets %v gadgets %v; want box-1 and box-3, 1 and 0", left, activeGauge(t, env.metrics, "widgets"), activeGauge(t, env.metrics, "gadgets"))
+	// The box is destroyed before the lease is ended, so the stuck lease's box is
+	// gone too; the failed destroy is left for the sweep's orphan step.
+	if left := env.boxes.ids(); !slices.Equal(left, []string{"box-1"}) || activeGauge(t, env.metrics, "widgets") != 1 || activeGauge(t, env.metrics, "gadgets") != 0 {
+		t.Errorf("boxes left %v, gauge widgets %v gadgets %v; want box-1, 1 and 0", left, activeGauge(t, env.metrics, "widgets"), activeGauge(t, env.metrics, "gadgets"))
 	}
 	testutil.Exec(t, env.db, `DROP TRIGGER refuse`)
 	env.sweep()
-	if left := env.boxes.ids(); len(left) != 1 || left[0] != "box-3" {
+	if left := env.boxes.ids(); len(left) != 0 {
 		t.Errorf("after a sweep the boxes left are %v; want the orphan box-1 destroyed", left)
 	}
 }
@@ -118,7 +121,7 @@ func TestSweeperShutdown(t *testing.T) {
 	now := env.clock.Now()
 	a := env.seed(1, "active", seedFields{boxID: "box-1", expires: now.Add(time.Hour)})
 	b := env.seed(2, "active", seedFields{workspace: "gadgets", boxID: "box-2", expires: now.Add(time.Hour)})
-	leased := env.seed(3, "leased", seedFields{leaseExpires: timePtr(now.Add(-time.Minute))})
+	leased := env.seed(3, "leased", seedFields{leaseExpires: timePtr(now.Add(time.Hour))})
 	leasedBefore := rowText(t, env.db, leased)
 	env.prov.set(func(p *recordingProvider) { p.reapDelay = 100 * time.Millisecond })
 	swept := make(chan struct{})

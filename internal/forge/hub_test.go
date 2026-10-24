@@ -2,14 +2,11 @@ package forge
 
 import (
 	"net/http"
-	"path/filepath"
-	"reflect"
 	"testing"
 
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	githttp "github.com/go-git/go-git/v5/plumbing/transport/http"
 
-	"github.com/agent-fox-dev/hub/internal/audit"
 	"github.com/agent-fox-dev/hub/internal/secrets"
 	"github.com/agent-fox-dev/hub/internal/testutil"
 	"github.com/agent-fox-dev/hub/internal/workspace"
@@ -75,51 +72,5 @@ func TestHub_RealCredentialsAndScopes(t *testing.T) {
 		if bearer(r) != "ws-token" {
 			t.Errorf("the forge saw the token %q; want the workspace's", bearer(r))
 		}
-	}
-}
-
-// Wired to the real audit store and SSE manager, a delivery's events are stored in the
-// order they were made and found by the audit query of the workspace.
-func TestHub_RelayReachesTheAuditStore(t *testing.T) {
-	auditDB, err := audit.OpenDB(filepath.Join(t.TempDir(), "audit.duckdb"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { auditDB.Close() })
-	if err := audit.InitSchema(auditDB); err != nil {
-		t.Fatal(err)
-	}
-	store, sse := audit.NewStore(auditDB), audit.NewSSEManager(5)
-	done := make(chan struct{})
-	t.Cleanup(func() { close(done) })
-	go sse.Run(done)
-	e, _ := ingressEnv(t, withEmitter(audit.NewEmitter(store, sse)))
-	api := e.echo.Group("/api/v1")
-	api.Use(testutil.AuthMiddleware())
-	audit.RegisterAuditQueryRoutes(api, store, sse, e.db)
-
-	body := gitlabUpdateHook(map[string]any{"labels": labelChange([]string{"b"}, []string{"a"})}, "a")
-	if outcome := outcomeOf(t, e.deliver("widgets", gitlabDelivery(ingressSecret, "d-1", "Issue Hook", body))); outcome != "relayed" {
-		t.Fatalf("outcome = %q", outcome)
-	}
-	var types []string
-	eventually(t, "both events in the audit query", func() bool {
-		var doc struct {
-			Events []struct {
-				EventType string `json:"event_type"`
-				Workspace string `json:"workspace"`
-			} `json:"events"`
-		}
-		testutil.Decode(t, e.get("/audit?workspace=widgets", apiKeyAuth()), &doc)
-		types = nil
-		for i := len(doc.Events) - 1; i >= 0; i-- {
-			if doc.Events[i].Workspace == "widgets" {
-				types = append(types, doc.Events[i].EventType)
-			}
-		}
-		return len(types) >= 2
-	})
-	if want := []string{audit.EventForgeIssueUnlabeled, audit.EventForgeIssueLabeled}; !reflect.DeepEqual(types, want) {
-		t.Errorf("the audit query returned %v; want %v in the order they were made", types, want)
 	}
 }

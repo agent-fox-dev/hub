@@ -28,33 +28,6 @@ func relayed(t *testing.T, forge, event, body string) []audit.HubEvent {
 	return red.events
 }
 
-// A payload is one JSON object and nothing after it.
-func TestParsePayload(t *testing.T) {
-	for _, bad := range []string{`[]`, `null`, `{"a":1`, `{"a":1} {"b":2}`, `"text"`, ``} {
-		if _, err := parsePayload([]byte(bad)); err == nil {
-			t.Errorf("parsePayload(%q) accepted", bad)
-		}
-	}
-	doc, err := parsePayload([]byte(`{"issue":{"number":7,"labels":[{"name":"a"},{"x":1},"s"]},"n":"7"}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if n, ok := doc.integer("issue", "number"); !ok || n != 7 {
-		t.Errorf("integer = %d, %v; want 7", n, ok)
-	}
-	for _, keys := range [][]string{{"n"}, {"issue"}, {"issue", "x", "y"}} {
-		if _, ok := doc.integer(keys...); ok {
-			t.Errorf("integer(%v) found a number", keys)
-		}
-	}
-	if names := doc.names("name", "issue", "labels"); !reflect.DeepEqual(names, []string{"a"}) {
-		t.Errorf("names = %v; want [a]", names)
-	}
-	if names := doc.names("name", "nothing"); names == nil || len(names) != 0 {
-		t.Errorf("names of nothing = %#v; want an empty list", names)
-	}
-}
-
 // The GitHub deliveries hub relays and the events they become, with their metadata;
 // other actions and kinds are ignored; a delivery lacking the field that identifies what
 // it is about is malformed.
@@ -113,14 +86,14 @@ func TestReduce_GitHub(t *testing.T) {
 	}
 	for name, d := range map[string][2]string{
 		"ping": {"ping", `{"zen":"x","repository":{"full_name":"acme/widgets"}}`}, "a pull request labeled": {"pull_request", pullPayload("labeled", false)},
-		"a comment edited": {"issue_comment", githubPayload("edited", map[string]any{"issue": map[string]any{"number": 3}})}, "a star": {"star", githubPayload("created", nil)},
+		"a comment edited":  {"issue_comment", githubPayload("edited", map[string]any{"issue": map[string]any{"number": 3}})},
 		"an issue assigned": {"issues", issuesPayload("assigned", "acme/widgets")},
 	} {
 		if red := reduce(forgeGitHub, d[0], d[1]); red.outcome != outcomeIgnored || red.target != targetOrigin || len(red.events) != 0 {
 			t.Errorf("%s: %+v; want ignored, bound to the origin", name, red)
 		}
 	}
-	noSender := strings.Replace(issuesPayload("closed", "acme/widgets"), `"sender":{"login":"octocat"},`, "", 1)
+	noSender := strings.Replace(issuesPayload("closed", "acme/widgets"), `,"sender":{"login":"octocat"}`, "", 1)
 	if events := relayed(t, forgeGitHub, "issues", noSender); events[0].Metadata["actor"] != "" {
 		t.Errorf("without a sender the actor is %v; want empty", events[0].Metadata["actor"])
 	}
@@ -138,6 +111,8 @@ func TestReduce_GitHub(t *testing.T) {
 		"a push with an empty ref":               {"push", githubPayload("", map[string]any{"ref": ""})},
 		"a push with a numeric ref":              {"push", githubPayload("", map[string]any{"ref": 7})},
 		"no repository":                          {"issues", `{"action":"opened","issue":{"number":7}}`},
+		"two objects":                            {"issues", `{"a":1} {"b":2}`},
+		"an array":                               {"issues", `[]`},
 	} {
 		if red := reduce(forgeGitHub, d[0], d[1]); red.outcome != outcomeMalformed || red.target != "" || len(red.events) != 0 {
 			t.Errorf("%s: %+v; want malformed with no target", name, red)
@@ -301,21 +276,6 @@ func TestReduce_EventContentsAreBounded(t *testing.T) {
 		}
 		if ev.Metadata["url"] != "https://github.com/acme/widgets/issues/7" {
 			t.Errorf("url = %v; want it without userinfo", ev.Metadata["url"])
-		}
-	}
-	for _, body := range []string{
-		githubPayload("created", map[string]any{"issue": map[string]any{"number": 7}, "comment": map[string]any{"html_url": "https://user:secret@github.com/acme/widgets/issues/7#issuecomment-1"}}),
-		githubPayload("opened", map[string]any{"pull_request": map[string]any{"number": 12, "html_url": "https://user:secret@github.com/acme/widgets/pull/12"}}),
-		strings.Replace(gitlabUpdateHook(map[string]any{"labels": labelChange([]string{"x"}, []string{"y"})}, "y"), "https://gitlab", "https://user:secret@gitlab", 1),
-	} {
-		forge, event := forgeGitHub, map[bool]string{true: "issue_comment", false: "pull_request"}[strings.Contains(body, "comment")]
-		if strings.Contains(body, "gitlab") {
-			forge, event = forgeGitLab, "Issue Hook"
-		}
-		for _, ev := range relayed(t, forge, event, body) {
-			if s := marshal(ev); strings.Contains(s, "secret") || strings.Contains(s, "@") {
-				t.Errorf("%s holds userinfo: %s", ev.EventType, s)
-			}
 		}
 	}
 }

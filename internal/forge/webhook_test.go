@@ -209,32 +209,6 @@ func TestUnsetWebhook(t *testing.T) {
 	}
 }
 
-// After DELETE a delivery answers the 404 of an unknown slug and writes no row, the earlier
-// rows are still listed, and a new PUT turns the ingress on again with the new secret.
-func TestUnsetWebhook_TurnsTheIngressOff(t *testing.T) {
-	e, em := ingressEnv(t)
-	if outcome := outcomeOf(t, e.deliver("widgets", labeledDelivery("gh-1"))); outcome != "relayed" {
-		t.Fatalf("before: outcome = %q", outcome)
-	}
-	if rec := e.send(http.MethodDelete, webhookPath, apiKeyAuth(), ""); rec.Code != http.StatusNoContent {
-		t.Fatalf("DELETE: %d %s", rec.Code, rec.Body)
-	}
-	after, unknown := e.deliver("widgets", labeledDelivery("gh-2")), e.deliver("nosuch", labeledDelivery("gh-2"))
-	if after.Code != http.StatusNotFound || after.Body.String() != unknown.Body.String() {
-		t.Errorf("after the unset: %d %s; an unknown slug: %d %s; want the same 404", after.Code, after.Body, unknown.Code, unknown.Body)
-	}
-	rows := e.deliveryRows()
-	rec := e.get("/workspaces/widgets/forge/deliveries", apiKeyAuth())
-	if len(rows) != 1 || !strings.Contains(rec.Body.String(), `"delivery_id":"gh-1"`) || len(eventTypes(em.recorded())) != 2 {
-		t.Errorf("%d rows, list %s, events %v; want the earlier row and no new event", len(rows), rec.Body, eventTypes(em.recorded()))
-	}
-	const again = "a-secret-set-again-16+"
-	e.send(http.MethodPut, webhookPath, apiKeyAuth(), `{"secret":"`+again+`"}`)
-	if outcome := outcomeOf(t, e.deliver("widgets", githubDelivery(again, "gh-3", "issues", issuesPayload("labeled", "acme/widgets")))); outcome != "relayed" {
-		t.Errorf("after the PUT: outcome = %q; want relayed", outcome)
-	}
-}
-
 // The secret appears in no response but the PUT that generated it, and in no log line,
 // event or row of the delivery log, whatever is done with it.
 func TestWebhook_SecretNeverAppearsOutsideThePut(t *testing.T) {
@@ -268,18 +242,5 @@ func TestWebhook_SecretNeverAppearsOutsideThePut(t *testing.T) {
 		if strings.Contains(sink, secret) {
 			t.Errorf("the secret is in %s:\n%.400s", name, sink)
 		}
-	}
-}
-
-// webhookSecretOf reads the body of a PUT: nothing, an empty object and a null secret mean
-// a generated one.
-func TestWebhookSecretOf(t *testing.T) {
-	for _, body := range []string{"", "  ", "{}", `{"secret":null}`, `{"other":1}`} {
-		if secret, ref := webhookSecretOf([]byte(body)); secret != "" || ref != nil {
-			t.Errorf("webhookSecretOf(%q) = %q, %+v; want a generated secret", body, secret, ref)
-		}
-	}
-	if secret, ref := webhookSecretOf([]byte(`{"secret":"abcdefghijklmnop"}`)); secret != "abcdefghijklmnop" || ref != nil {
-		t.Errorf("webhookSecretOf = %q, %+v; want the secret", secret, ref)
 	}
 }

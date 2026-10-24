@@ -168,7 +168,7 @@ func TestValidate_GatewayURL(t *testing.T) {
 		"https://gw.example?x=1":         "query",
 		"https://gw.example#f":           "fragment",
 		"https://u:p@gw.example":         "user information",
-		"http://u:p@gw.example:9000":     "user information",
+		"http://u:p@gw.example:9000":     "plaintext",
 		"https://u:p@gw.example/api?x=1": "user information",
 		"https://u:p@gw.example:99999":   "port",
 	} {

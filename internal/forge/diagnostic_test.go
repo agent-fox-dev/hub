@@ -50,7 +50,8 @@ func getDiagnostic(t *testing.T, e *env, slug string) (diagnostic, string) {
 // as issuex uses it (the default of the host, or the variable without a trailing slash
 // and with GitLab's /api/v4), the repository with its full namespace, the kind of the
 // credential and never its value; unknown and null where the remote cannot be read or
-// classified; and the webhook block.
+// classified; and the webhook block. An invalid API URL variable is 422, checked before the
+// remote, and only the variables of the blocks shown are consulted.
 func TestDiagnostic_DescribesTheRemotes(t *testing.T) {
 	counting := &countingTransport{}
 	e := newEnv(t, func(cfg *Config) { cfg.Transport = counting })
@@ -68,6 +69,9 @@ func TestDiagnostic_DescribesTheRemotes(t *testing.T) {
 	addWorkspace(t, e.db, "forkunknown", carryPatch("https://git.other.example/up/widgets"))
 	e.setVar("forkunknown", "FORGE_API_URL", "https://api.github.example/origin")
 	addWorkspace(t, e.db, "leftover", func(w *testutil.Workspace) { w.UpstreamURL = "https://github.com/up/widgets" })
+	e.setVar("widgets", "UPSTREAM_FORGE_API_URL", "ftp://x") // not consulted on a standard workspace
+	addWorkspace(t, e.db, "bad", withGitURL("https://host"))
+	e.setVar("bad", "FORGE_API_URL", "http://insecure")
 
 	_, body := getDiagnostic(t, e, "widgets")
 	const want = `{"forge":"github","api_url":"https://api.github.com","repository":{"host":"github.com","owner":"acme","name":"widgets"},"credential":"basic","upstream":null,"webhook":{"configured":false,"url":"https://hub.example.com/hooks/forge/widgets","last_delivery_at":null}}`
@@ -107,29 +111,11 @@ func TestDiagnostic_DescribesTheRemotes(t *testing.T) {
 	if d, _ := getDiagnostic(t, e, "leftover"); d.Upstream != nil {
 		t.Errorf("leftover: upstream = %+v; want null on a standard workspace", d.Upstream)
 	}
+	if rec := e.get("/workspaces/bad/forge", apiKeyAuth()); rec.Code != http.StatusUnprocessableEntity || testutil.Error(t, rec).ErrorType != "forge_api_url_invalid" {
+		t.Errorf("an invalid API URL: %d %s; want 422 forge_api_url_invalid, before the unparseable remote", rec.Code, rec.Body)
+	}
 	if n := counting.n.Load(); n != 0 {
 		t.Errorf("the transport saw %d requests; want none", n)
-	}
-}
-
-// An invalid API URL variable is 422, checked before the remote, and only the variables
-// of the blocks that are shown are consulted.
-func TestDiagnostic_RejectsAnInvalidAPIURL(t *testing.T) {
-	e := newEnv(t)
-	addWorkspace(t, e.db, "origin", withGitURL("https://host"))
-	e.setVar("origin", "FORGE_API_URL", "http://insecure")
-	addWorkspace(t, e.db, "fork", carryPatch("https://github.com/up/widgets"))
-	e.setVar("fork", "UPSTREAM_FORGE_API_URL", "ftp://x")
-	addWorkspace(t, e.db, "standard")
-	e.setVar("standard", "UPSTREAM_FORGE_API_URL", "ftp://x")
-	for _, slug := range []string{"origin", "fork"} {
-		rec := e.get("/workspaces/"+slug+"/forge", apiKeyAuth())
-		if rec.Code != http.StatusUnprocessableEntity || testutil.Error(t, rec).ErrorType != "forge_api_url_invalid" {
-			t.Errorf("%s: %d %s; want 422 forge_api_url_invalid", slug, rec.Code, rec.Body)
-		}
-	}
-	if rec := e.get("/workspaces/standard/forge", apiKeyAuth()); rec.Code != http.StatusOK {
-		t.Errorf("standard: status = %d; want 200, its upstream variable is not consulted", rec.Code)
 	}
 }
 

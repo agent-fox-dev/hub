@@ -67,20 +67,19 @@ func TestIssue_CreatedWithTokenAndProfileSnapshot(t *testing.T) {
 		t.Errorf("the row holds the token or the secret: %s", row)
 	}
 
-	p := env.profile.profiles[0]
-	p.Env["SECRET_ENV"], p.Secrets[0], env.profile.profiles[0].Image = "changed", "CHANGED", "registry.example/changed:9"
-	got := env.lease(id)
-	if got.Image != "registry.example/tools:1" || got.Env["SECRET_ENV"] != "envval" || got.Secrets[0] != "GIT_PAT" || got.TTLSeconds != 3600 || got.Labels["Run.Id"] != "42" {
-		t.Errorf("the stored lease follows the edited profile: %+v", got)
-	}
-	// The lease Issue returns owns its lists and maps too.
 	params, _ := env.svc.newIssueParams(issueRequest{})
 	lease, _, err := env.svc.Issue(context.Background(), "widgets", ownerKey(), params)
 	if err != nil {
 		t.Fatal(err)
 	}
-	env.profile.profiles[0].OptionalSecrets[0] = "CHANGED"
-	if lease.OptionalSecrets[0] != "EXTRA_TOKEN" {
+	p := env.profile.profiles[0]
+	p.Env["SECRET_ENV"], p.Secrets[0], p.OptionalSecrets[0], env.profile.profiles[0].Image = "changed", "CHANGED", "CHANGED", "registry.example/changed:9"
+	got := env.lease(id)
+	if got.Image != "registry.example/tools:1" || got.Env["SECRET_ENV"] != "envval" || got.Secrets[0] != "GIT_PAT" || got.TTLSeconds != 3600 || got.Labels["Run.Id"] != "42" {
+		t.Errorf("the stored lease follows the edited profile: %+v", got)
+	}
+	// The lease Issue returns owns its lists and maps too.
+	if lease.OptionalSecrets[0] != "EXTRA_TOKEN" || lease.Env["SECRET_ENV"] != "envval" {
 		t.Error("the lease shares its lists with the profile")
 	}
 }

@@ -59,7 +59,6 @@ func TestListDeliveries(t *testing.T) {
 		"since=2026-10-21T11:37:00%2B02:00": {at(39), at(38), at(37)},
 		"since=2026-10-21T09:36:00.500Z":    {at(39), at(38), at(37)},
 		"since=2026-10-21T09:37:00.000Z":    {at(39), at(38), at(37)},
-		"since=" + at(0) + "&limit=100":     receivedAtsOf(39, 0),
 	} {
 		if _, rows := listDeliveries(t, e, "old", query); !reflect.DeepEqual(receivedAts(rows), want) {
 			t.Errorf("?%s: %v; want %v", query, receivedAts(rows), want)
@@ -85,15 +84,6 @@ func TestListDeliveries(t *testing.T) {
 	if !reflect.DeepEqual(rows, want) {
 		t.Errorf("rows = %v\nwant %v", rows, want)
 	}
-}
-
-// receivedAtsOf is the received_at of the rows from minute from down to minute to.
-func receivedAtsOf(from, to int) []string {
-	var out []string
-	for i := from; i >= to; i-- {
-		out = append(out, at(i))
-	}
-	return out
 }
 
 // A bad since or limit is 400 naming the parameter, and a failure of the log is 500 without

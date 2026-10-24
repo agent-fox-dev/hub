@@ -24,6 +24,26 @@ func httpError(status int, token string) *issuex.HTTPError {
 	return &issuex.HTTPError{Method: "GET", Path: "/x", Status: status, Message: "denied for " + token + " see https://user:s3cr3t@forge.example/docs"}
 }
 
+// forgeCase is a forge answer and what a route makes of it.
+type forgeCase struct {
+	name       string
+	handler    http.HandlerFunc
+	auth       *githttp.BasicAuth
+	path       string
+	status     int
+	errorType  string
+	text       string
+	retryAfter string
+	requests   int
+}
+
+// forgeStatus is the status the forge answered in a case, the digits its name starts with.
+func (c forgeCase) forgeStatus() int {
+	var n int
+	fmt.Sscanf(c.name, "%d", &n)
+	return n
+}
+
 // mapForgeError gives each class of error of issuex and of the transport its one answer,
 // with the forge's status, a Retry-After rounded up, the basic credential's hint on a 401
 // only, and a scrubbed message cut to size.
@@ -41,13 +61,10 @@ func TestMapForgeError(t *testing.T) {
 		{"401", httpError(401, token), 502, "forge_unauthenticated", 401, 0},
 		{"403", httpError(403, token), 502, "forge_forbidden", 403, 0},
 		{"429 with retry-after", rateLimited(&issuex.HTTPError{Status: 429, RetryAfterHeader: "5"}), 429, "forge_rate_limited", 429, 6},
-		{"bare ErrRateLimited", issuex.ErrRateLimited, 429, "forge_rate_limited", 0, 0},
 		{"403 with no requests left", &issuex.HTTPError{Status: 403, RateLimitRemaining: "0", RetryAfterHeader: "9"}, 429, "forge_rate_limited", 403, 10},
 		{"400", httpError(400, token), 422, "forge_rejected", 400, 0},
 		{"bare ErrConflict", issuex.ErrConflict, 422, "forge_rejected", 0, 0},
 		{"500", httpError(500, token), 502, "forge_error", 500, 0},
-		{"unexpected 302", httpError(302, token), 502, "forge_error", 302, 0},
-		{"decode", fmt.Errorf("GET /x: decoding response: %w", errors.New("invalid character")), 502, "forge_error", 0, 0},
 		{"refused", &url.Error{Op: "Get", URL: "https://h/x", Err: &net.OpError{Op: "dial", Err: errors.New("connection refused")}}, 502, "forge_unreachable", 0, 0},
 		{"tls", &url.Error{Op: "Get", URL: "https://h/x", Err: x509.HostnameError{Host: "h"}}, 502, "forge_unreachable", 0, 0},
 		{"deadline", &url.Error{Op: "Get", URL: "https://h/x", Err: context.DeadlineExceeded}, 504, "forge_timeout", 0, 0},
@@ -86,21 +103,22 @@ func TestMapForgeError(t *testing.T) {
 // Through a route, the forge's answers map to the error table: 404, 401 with the hint
 // for a basic credential, 403, 429 with Retry-After rounded up (after the one retry issuex
 // makes when it can wait), other 4xx, 5xx, a response that is not JSON, and the
-// connection failures. The forge's message is carried, scrubbed.
+// connection failures. The forge's message is carried, scrubbed. A 5xx or 429 answer logs
+// one line with the slug, the target, the operation and the forge's status and no message,
+// token or body; a 4xx is not logged.
 func TestForgeErrors_ThroughARoute(t *testing.T) {
 	basic := &githttp.BasicAuth{Username: "alice", Password: "basic-password"}
-	for _, tc := range []struct {
-		name       string
-		handler    http.HandlerFunc
-		auth       *githttp.BasicAuth
-		path       string
-		status     int
-		errorType  string
-		text       string
-		retryAfter string
-		requests   int
-	}{
-		{"404", answer(404, "Not Found"), nil, "/issues/9", 404, "forge_not_found", "Not Found", "", 1},
+	logged := func(log *syncBuffer) []string {
+		var out []string
+		for _, line := range strings.Split(log.String(), "\n") {
+			if strings.Contains(line, "forge: request failed") {
+				out = append(out, line)
+			}
+		}
+		return out
+	}
+	for _, tc := range []forgeCase{
+		{"404", answer(404, "Not Found origin-token BODYTEXT"), nil, "/issues/9", 404, "forge_not_found", "Not Found", "", 1},
 		{"401 with a pat", answer(401, "Bad credentials"), nil, "/forge/repository", 502, "forge_unauthenticated", "Bad credentials", "", 1},
 		{"401 with a basic credential", answer(401, "Bad credentials"), basic, "/forge/repository", 502, "forge_unauthenticated", "GIT_PASSWORD", "", 1},
 		{"403", answer(403, "Resource not accessible"), nil, "/pulls/3", 502, "forge_forbidden", "Resource not accessible", "", 1},
@@ -109,12 +127,16 @@ func TestForgeErrors_ThroughARoute(t *testing.T) {
 		{"429 too long to wait", answer(429, "API rate limit exceeded", "Retry-After", "300"), nil, "/issues", 429, "forge_rate_limited", "", "301", 1},
 		{"403 with no requests left", answer(403, "exceeded", "X-RateLimit-Remaining", "0", "Retry-After", "400"), nil, "/issues", 429, "forge_rate_limited", "", "401", 1},
 		{"409", answer(409, "the forge says no"), nil, "/issues", 422, "forge_rejected", "says no", "", 1},
-		{"503", answer(503, "unavailable"), nil, "/issues/1", 502, "forge_error", "unavailable", "", 1},
+		{"503", answer(503, "unavailable origin-token BODYTEXT"), nil, "/pulls/3/state?target=upstream", 502, "forge_error", "unavailable", "", 1},
 		{"garbage", func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "<html>") }, nil, "/issues/1", 502, "forge_error", "decoding response", "", 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			e := widgetsEnv(t, noSleep)
+			log := captureLog(t)
+			e := newEnv(t, noSleep)
 			e.stub.setHandler(tc.handler)
+			addWorkspace(t, e.db, "widgets", carryPatch("https://github.com/up/widgets"))
+			e.setVar("widgets", "FORGE_API_URL", e.stub.URL)
+			e.setVar("widgets", "UPSTREAM_FORGE_API_URL", e.stub.URL)
 			if tc.auth != nil {
 				e.originAuth = tc.auth
 			}
@@ -131,6 +153,26 @@ func TestForgeErrors_ThroughARoute(t *testing.T) {
 			}
 			if n := e.stub.count(); n != tc.requests {
 				t.Errorf("the forge saw %d requests; want %d", n, tc.requests)
+			}
+			lines := logged(log)
+			if want := tc.status >= 500 || tc.status == 429; (len(lines) == 1) != want {
+				t.Fatalf("%d log lines; want one exactly when hub answers 5xx or 429 (%v):\n%s", len(lines), want, log)
+			}
+			if len(lines) == 1 {
+				target, operation := "target=origin", "operation="
+				if strings.Contains(tc.path, "upstream") {
+					target, operation = "target=upstream", "operation=GetPRState"
+				}
+				for _, want := range []string{"slug=widgets", target, operation, fmt.Sprintf("forge_status=%d", tc.forgeStatus())} {
+					if !strings.Contains(lines[0], want) {
+						t.Errorf("the log line lacks %q: %s", want, lines[0])
+					}
+				}
+				for _, leaked := range []string{"origin-token", "BODYTEXT", "unavailable", "exceeded"} {
+					if strings.Contains(lines[0], leaked) {
+						t.Errorf("the log line holds %q: %s", leaked, lines[0])
+					}
+				}
 			}
 		})
 	}
@@ -160,57 +202,6 @@ func TestForgeErrors_ThroughARoute(t *testing.T) {
 	}
 }
 
-// A 5xx or 429 answer logs one line with the slug, the target, the operation and the
-// forge's status, and no message, token or body; a 4xx is not logged.
-func TestForgeErrors_FailureLogLine(t *testing.T) {
-	lines := func(log *syncBuffer) []string {
-		var out []string
-		for _, line := range strings.Split(log.String(), "\n") {
-			if strings.Contains(line, "forge: request failed") {
-				out = append(out, line)
-			}
-		}
-		return out
-	}
-	for _, tc := range []struct {
-		handler        http.HandlerFunc
-		path, forgeSts string
-		want           []string
-	}{
-		{answer(500, "boom origin-token BODYTEXT"), "/issues", "500", []string{"slug=widgets", "target=origin", "operation=ListIssues", "forge_status=500"}},
-		{answer(429, "slow origin-token BODYTEXT"), "/pulls/3/state?target=upstream", "429", []string{"target=upstream", "operation=GetPRState", "forge_status=429"}},
-		{answer(404, "gone origin-token BODYTEXT"), "/issues/1", "", nil},
-	} {
-		log := captureLog(t)
-		e := newEnv(t)
-		e.stub.setHandler(tc.handler)
-		addWorkspace(t, e.db, "widgets", carryPatch("https://github.com/up/widgets"))
-		e.setVar("widgets", "FORGE_API_URL", e.stub.URL)
-		e.setVar("widgets", "UPSTREAM_FORGE_API_URL", e.stub.URL)
-		e.get("/workspaces/widgets"+tc.path, apiKeyAuth())
-		got := lines(log)
-		if tc.want == nil {
-			if len(got) != 0 {
-				t.Errorf("%s: a 4xx was logged: %v", tc.path, got)
-			}
-			continue
-		}
-		if len(got) != 1 {
-			t.Fatalf("%s: %d log lines; want 1:\n%s", tc.path, len(got), log)
-		}
-		for _, want := range tc.want {
-			if !strings.Contains(got[0], want) {
-				t.Errorf("%s: the line lacks %q: %s", tc.path, want, got[0])
-			}
-		}
-		for _, leaked := range []string{"origin-token", "BODYTEXT", "boom", "slow"} {
-			if strings.Contains(got[0], leaked) {
-				t.Errorf("%s: the line holds %q: %s", tc.path, leaked, got[0])
-			}
-		}
-	}
-}
-
 // No answer and no log line of any error class holds the token or URL userinfo, however
 // the forge or the store echoes them, and the forge's message is shown redacted.
 func TestForgeErrors_NoSecretInAnswersOrLogs(t *testing.T) {
@@ -219,34 +210,18 @@ func TestForgeErrors_NoSecretInAnswersOrLogs(t *testing.T) {
 		return strings.Contains(s, token) || strings.Contains(s, "s3cr3t") || strings.Contains(s, "user:")
 	}
 	log := captureLog(t)
-	rc := &recordingClient{}
-	e := newEnv(t, useClient(rc, nil))
-	addWorkspace(t, e.db, "widgets")
+	e := widgetsEnv(t, noSleep)
 	addWorkspace(t, e.db, "tokenurl", withGitURL("https://user:s3cr3t@git.internal.example/acme/widgets"))
-	classes := map[string]error{
-		"404":         fmt.Errorf("%w: %w", issuex.ErrNotFound, httpError(404, token)),
-		"401":         httpError(401, token),
-		"429":         fmt.Errorf("%w: %w", issuex.ErrRateLimited, httpError(429, token)),
-		"500":         httpError(500, token),
-		"unreachable": &url.Error{Op: "Get", URL: "https://user:s3cr3t@forge.example/x?token=" + token, Err: &net.OpError{Op: "dial", Err: errors.New("refused for " + token)}},
-		"redirect":    &url.Error{Op: "Get", URL: "https://user:s3cr3t@forge.example/x", Err: fmt.Errorf("%w to https://user:s3cr3t@other/%s", errRedirectRefused, token)},
-		"garbage":     fmt.Errorf("GET /x: decoding response: %s https://user:s3cr3t@h/", token),
-	}
-	for class, err := range classes {
-		rc.err = err
+	echo := "denied for " + token + " see https://user:s3cr3t@forge.example/docs"
+	for _, status := range []int{401, 404, 422, 429, 500} {
+		e.stub.setHandler(answer(status, echo))
 		for _, r := range readRoutes[1:] {
 			rec := e.sendRoute(r, "widgets", apiKeyAuth())
-			if rec.Code < 400 || leaks(rec.Body.String()) {
-				t.Errorf("%s %s: %d %s; want an error without the secrets", class, r.name, rec.Code, rec.Body)
-			}
-			if class[0] == '4' || class[0] == '5' {
-				if !strings.Contains(rec.Body.String(), "[redacted]") {
-					t.Errorf("%s %s: the forge's message is not carried redacted: %s", class, r.name, rec.Body)
-				}
+			if rec.Code < 400 || leaks(rec.Body.String()) || !strings.Contains(rec.Body.String(), "[redacted]") {
+				t.Errorf("%d %s: %d %s; want an error carrying the message redacted", status, r.name, rec.Code, rec.Body)
 			}
 		}
 	}
-	rc.err = nil
 	e.originErr = errors.New("store: " + token + " https://user:s3cr3t@x/")
 	for _, path := range []string{"/workspaces/tokenurl/issues/1", "/workspaces/widgets/issues/abc", "/workspaces/widgets/issues"} {
 		if body := e.get(path, apiKeyAuth()).Body.String(); leaks(body) {

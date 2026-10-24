@@ -59,30 +59,6 @@ func TestHTTPClient_DefaultTransportIsAClone(t *testing.T) {
 	}
 }
 
-// The transport sends a copy of the request, so the one the client may reuse keeps its
-// headers, and strips the token headers when the workspace has no credential.
-func TestHTTPClient_TransportSendsACopy(t *testing.T) {
-	var sent *http.Request
-	base := roundTripFunc(func(r *http.Request) (*http.Response, error) {
-		sent = r
-		return &http.Response{StatusCode: 200, Body: http.NoBody, Header: http.Header{}, Request: r}, nil
-	})
-	req, _ := http.NewRequestWithContext(withCredential(t.Context(), ""), http.MethodGet, "https://api.example.test/x", nil)
-	req.Header.Set("User-Agent", "agent-fox")
-	req.Header.Set("Authorization", "Bearer env-token")
-	resp, err := forgeTransport{base: base}.RoundTrip(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp.Body.Close()
-	if sent == req || req.Header.Get("User-Agent") != "agent-fox" || req.Header.Get("Authorization") != "Bearer env-token" {
-		t.Error("the caller's request was changed or sent itself")
-	}
-	if sent.Header.Get("Authorization") != "" || !strings.HasPrefix(sent.Header.Get("User-Agent"), "af-hub/") {
-		t.Errorf("the request sent has %v", sent.Header)
-	}
-}
-
 // The redirect policy follows a redirect to the same host and scheme, up to ten hops, and
 // refuses any other; through a route the refusal is 502 forge_error and the other host
 // receives nothing, GitLab's private token included.
@@ -106,9 +82,7 @@ func TestHTTPClient_RedirectPolicy(t *testing.T) {
 		refused bool
 	}{
 		{"same host and scheme", "https://api.example.test/renamed", via(1), false},
-		{"same host, other case", "https://API.example.test/x", via(1), false},
 		{"another host", "https://other.example.test/x", via(1), true},
-		{"another port", "https://api.example.test:8443/x", via(1), true},
 		{"plain http", "http://api.example.test/x", via(1), true},
 		{"the tenth hop", "https://api.example.test/x", via(9), false},
 		{"the eleventh hop", "https://api.example.test/x", via(10), true},

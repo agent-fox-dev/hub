@@ -121,7 +121,7 @@ func TestRender_ExactFieldsAndNoLeak(t *testing.T) {
 
 	wantFields := []string{"created_at", "created_by", "end_reason", "ended_at", "error", "expires_at", "gateway_url", "id", "image", "labels", "lease_expires_at", "network",
 		"optional_secrets", "profile", "purpose", "require_landlock", "resources", "sandbox_id", "secrets", "state", "updated_at", "workspace"}
-	if got := slices.Sorted(maps.Keys(issued)); !slices.Equal(got, append(slices.Clone(wantFields), "token")) {
+	if got := slices.Sorted(maps.Keys(issued)); !slices.Equal(got, slices.Sorted(slices.Values(append(slices.Clone(wantFields), "token")))) {
 		t.Errorf("POST keys = %v", got)
 	}
 	check := func(what string, body string, lease map[string]any) {

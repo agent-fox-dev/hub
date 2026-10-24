@@ -12,10 +12,16 @@ import (
 	"github.com/agent-fox-dev/hub/internal/audit"
 )
 
-// seedActive inserts a lease with a box as the gateway would leave it.
+// seedActive inserts a lease and moves it to active with a box, as the gateway
+// does, so that the gauge counts it.
 func (e *sweepEnv) seedActive(n int, boxID string) *Lease {
 	e.t.Helper()
-	return e.lease(e.seed(n, "active", seedFields{boxID: boxID}))
+	id := e.insertLeaseAt(n, "widgets", "leased", e.clock.Now())
+	if changed, err := e.store.MarkActive(id, boxID); err != nil || !changed {
+		e.t.Fatalf("MarkActive = (%v, %v)", changed, err)
+	}
+	e.boxes.add(boxID, map[string]string{"hub.lease": id})
+	return e.lease(id)
 }
 
 // The expiry path lapses a leased lease and destroys the box of an active one,

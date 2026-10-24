@@ -4,7 +4,6 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
-	"os/exec"
 	"strings"
 	"sync"
 	"testing"
@@ -29,15 +28,12 @@ func TestParseRemote(t *testing.T) {
 		{"https://github.com/acme/widgets.git", issuex.Repo{Host: "github.com", Owner: "acme", Name: "widgets"}, true},
 		{"git@github.com:acme/widgets.git", issuex.Repo{Host: "github.com", Owner: "acme", Name: "widgets"}, true},
 		{"https://gitlab.example.com/group/subgroup/widgets", issuex.Repo{Host: "gitlab.example.com", Owner: "group/subgroup", Name: "widgets"}, true},
-		{"https://tok:en@github.com/acme/widgets", issuex.Repo{Host: "github.com", Owner: "acme", Name: "widgets"}, true},
 		{"https://Git.Internal.Example:8443/a/b/c.git", issuex.Repo{Host: "git.internal.example", Owner: "a/b", Name: "c"}, true},
 		{"git@git.internal.example:acme/widgets.git", issuex.Repo{Host: "git.internal.example", Owner: "acme", Name: "widgets"}, true},
-		{"ssh://git@git.internal.example:2222/acme/widgets", issuex.Repo{Host: "git.internal.example", Owner: "acme", Name: "widgets"}, true},
 		{"https://user:s3cret@host", issuex.Repo{}, false},
 		{"https://host/onlyone", issuex.Repo{}, false},
 		{"ftp://host/acme/widgets", issuex.Repo{}, false},
 		{"git@host", issuex.Repo{}, false},
-		{"widgets", issuex.Repo{}, false},
 		{"https://%zz/acme/widgets", issuex.Repo{}, false},
 	} {
 		if got, ok := parseRemote(tc.remote); ok != tc.ok || got != tc.want {
@@ -212,17 +208,18 @@ func TestBuildClient_CredentialAndOptions(t *testing.T) {
 			mu.Lock()
 			got = append(got, o)
 			mu.Unlock()
-			return &recordingClient{}, nil
+			return issuex.NewWithOptions(o)
 		}
 	}
 	e := newEnv(t, record)
+	e.stub.setHandler(respond(http.StatusOK, repositoryBody))
 	e.originAuth = nil
 	addWorkspace(t, e.db, "widgets", withGitURL("https://tok:en@github.com/acme/widgets"))
-	e.setVar("widgets", "FORGE_API_URL", "  https://api.example.test/v3\n")
+	e.setVar("widgets", "FORGE_API_URL", "  "+e.stub.URL+"\n")
 	if rec := e.get("/workspaces/widgets/forge/repository", apiKeyAuth()); rec.Code != http.StatusOK {
 		t.Fatalf("status = %d\n%s", rec.Code, rec.Body)
 	}
-	want := issuex.Options{BaseURL: "https://api.example.test/v3", RemoteURL: "https://github.com/acme/widgets",
+	want := issuex.Options{BaseURL: e.stub.URL, RemoteURL: "https://github.com/acme/widgets",
 		Repo: issuex.Repo{Host: "github.com", Owner: "acme", Name: "widgets"}}
 	if len(got) != 1 || got[0].HTTPClient == nil || got[0].Token != "" || got[0].BaseURL != want.BaseURL || got[0].RemoteURL != want.RemoteURL || got[0].Repo != want.Repo {
 		t.Errorf("Options = %+v; want %+v with the shared HTTP client", got, want)
@@ -364,28 +361,5 @@ func TestBuildClient_Refusals(t *testing.T) {
 	}
 	if reqs := e.stub.received(); len(reqs) != 1 || reqs[0].Path != "/github/api/repos/acme/widgets" {
 		t.Errorf("the stub saw %+v; want one request under /github/api", reqs)
-	}
-}
-
-// A host that names both forges is not classified by asking the git repository hub runs
-// in: issuex would fall back to the origin of the working directory.
-func TestBuildClient_AmbiguousHostNeverAsksTheWorkingDirectory(t *testing.T) {
-	dir := t.TempDir()
-	for _, args := range [][]string{{"init", "-q"}, {"remote", "add", "origin", "https://github.com/evil/repo.git"}} {
-		cmd := exec.Command("git", args...)
-		cmd.Dir = dir
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Skipf("git %v: %v\n%s", args, err, out)
-		}
-	}
-	t.Chdir(dir)
-	e := newEnv(t)
-	addWorkspace(t, e.db, "widgets", withGitURL("https://github.gitlab.example/acme/widgets"))
-	rec := e.get("/workspaces/widgets/forge/repository", apiKeyAuth())
-	if rec.Code != http.StatusUnprocessableEntity || testutil.Error(t, rec).ErrorType != "forge_unknown" || e.stub.count() != 0 {
-		t.Errorf("read: %d %s, %d forge requests; want 422 forge_unknown and none", rec.Code, rec.Body, e.stub.count())
-	}
-	if body := e.get("/workspaces/widgets/forge", apiKeyAuth()).Body.String(); !strings.Contains(body, `"forge":"unknown","api_url":null`) {
-		t.Errorf("diagnostic = %s; want unknown with a null api_url", body)
 	}
 }

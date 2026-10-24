@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -144,8 +145,9 @@ func TestRemote_ErrorConformance(t *testing.T) {
 				t.Errorf("Close: %v, lease %s", err, env.lease(id).State)
 			}
 			oneMore("a refused Close")
+			// A Reap belongs to no lease, so its text carries no lease secret to scrub.
 			env.prov.setCloseErr(nil)
-			env.prov.setReap(nil, form)
+			env.prov.setReap(nil, status.Error(codes.PermissionDenied, "refused"))
 			if err := env.gw.sweeper.Sweep(context.Background()); err == nil {
 				t.Error("the sweep did not report the failing Reap")
 			}
@@ -267,8 +269,9 @@ func TestRemote_LeaseLifecycleOnTheRemote(t *testing.T) {
 func TestRemote_OutageAndRecovery(t *testing.T) {
 	env := newRemoteEnv(t, leaseEnvOptions{metrics: audit.NewMetrics()})
 	secrets := []string{remoteToken, env.remote.url(), env.remote.host()}
-	active, activeToken, box := env.activeLease()
+	active, activeToken, _ := env.activeLease()
 	overdue, _, _ := env.activeLease()
+	closing, _, box := env.activeLease()
 	env.remote.stop()
 
 	down := env.mustIssue("")
@@ -296,8 +299,8 @@ func TestRemote_OutageAndRecovery(t *testing.T) {
 	} else {
 		p.Close()
 	}
-	if err := box.Close(context.Background()); err == nil || env.lease(active).State != "active" {
-		t.Errorf("Close = %v, lease %s; want an error and active", err, env.lease(active).State)
+	if err := box.Close(context.Background()); err == nil || env.lease(closing).State != "active" {
+		t.Errorf("Close = %v, lease %s; want an error and active", err, env.lease(closing).State)
 	}
 	for range 2 {
 		if _, err := box.Tools(context.Background(), sandbox.ToolOptions{}); err != nil {
@@ -308,7 +311,8 @@ func TestRemote_OutageAndRecovery(t *testing.T) {
 	if err := env.gw.sweeper.Sweep(context.Background()); err == nil {
 		t.Error("the sweep reported no failure")
 	}
-	if l := env.lease(overdue); l.State != "destroyed" || *l.EndReason != "expired" || len(env.gw.backend.heldBoxes()) != 2 {
+	held := len(env.gw.backend.heldBoxes())
+	if l := env.lease(overdue); l.State != "destroyed" || *l.EndReason != "expired" || held != 3 {
 		t.Errorf("after the sweep: lease %s/%v, held %v", l.State, l.EndReason, env.gw.backend.heldBoxes())
 	}
 	containsNone(t, "the log", env.logs.String(), secrets...)
@@ -325,10 +329,13 @@ func TestRemote_OutageAndRecovery(t *testing.T) {
 		sb = got
 		return err == nil
 	})
-	waitLong(t, "a sweep to destroy the held boxes", func() bool {
-		return env.gw.sweeper.Sweep(context.Background()) == nil && len(env.gw.backend.heldBoxes()) == 1
+	// Every box held before the outage is overdue by now; the sweep destroys them
+	// through the client, and only the new box stays held.
+	waitLong(t, "a sweep to destroy the old boxes", func() bool {
+		held := env.gw.backend.heldBoxes()
+		return env.gw.sweeper.Sweep(context.Background()) == nil && len(held) == 1 && held[0].ID == sb.ID()
 	})
-	if live := env.remoteLive(); len(live) != 1 || live[0] != sb.ID() || env.factory.callCount() != 1 {
+	if live := env.remoteLive(); !slices.Equal(live, []string{sb.ID()}) || env.factory.callCount() != 1 {
 		t.Errorf("the remote holds %v, the factory was called %d times; want the new box only and one dial", live, env.factory.callCount())
 	}
 }
