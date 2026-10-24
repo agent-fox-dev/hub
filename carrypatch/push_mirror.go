@@ -42,8 +42,8 @@ const mirrorTimeout = 120 * time.Second
 // Applicability is decided in this order, cheapest and most specific first,
 // so that nothing is read or resolved for a push that cannot be mirrored:
 //  1. all mirror dependencies are supplied;
-//  2. the workspace is a carry_patch workspace (22-REQ-1.5: no variable is
-//     read for a standard workspace);
+//  2. the workspace is a carry_patch workspace (no variable is read for a
+//     standard workspace);
 //  3. PUSH_PATCHES_TO_ORIGIN is "true" and PATCH_BRANCH_SOURCE is "hub";
 //  4. at least one pushed branch is a registered, non-integration patch;
 //  5. only then are the origin credentials resolved.
@@ -55,16 +55,15 @@ func mirrorBranches(
 	getVariable GetVariableFunc,
 	logger *slog.Logger,
 ) {
-	// 22-REQ-6.4: Only mirror when all dependencies are supplied.
+	// Only mirror when all dependencies are supplied; a nil emitter alone
+	// disables mirroring, since failures could not be reported.
 	if !deps.mirrorEnabled() {
-		// When the emitter is nil but other deps are present, mirroring
-		// is still disabled per 22-REQ-6.6.
 		return
 	}
 
 	// Load workspace info for applicability checks. This comes before any
-	// variable read: 22-REQ-1.5 says neither variable is read for a
-	// standard workspace.
+	// variable read so that neither variable is read for a standard
+	// workspace.
 	wsInfo, err := loadWorkspaceInfo(db, slug)
 	if err != nil {
 		if err != sql.ErrNoRows {
@@ -76,17 +75,17 @@ func mirrorBranches(
 		return
 	}
 
-	// 22-REQ-6.4: Only mirror for carry_patch workspaces.
+	// Only mirror for carry_patch workspaces.
 	if wsInfo.mode != "carry_patch" {
 		return
 	}
 
-	// 22-REQ-6.4: Only mirror when PUSH_PATCHES_TO_ORIGIN is exactly "true".
+	// Only mirror when PUSH_PATCHES_TO_ORIGIN is exactly "true".
 	if !pushPatchesEnabled(getVariable, slug) {
 		return
 	}
 
-	// 22-REQ-6.4: Only mirror when PATCH_BRANCH_SOURCE resolves to "hub".
+	// Only mirror when PATCH_BRANCH_SOURCE resolves to "hub".
 	source := ParsePatchBranchSource(getVariable, slug)
 	if source != "hub" {
 		return
@@ -95,12 +94,12 @@ func mirrorBranches(
 	// Select the branches that are applicable before touching credentials.
 	var applicable []string
 	for _, branch := range branches {
-		// 22-REQ-6.4: Skip the integration branch.
+		// Skip the integration branch.
 		if branch == wsInfo.integrationBranch {
 			continue
 		}
 
-		// 22-REQ-6.4: Skip unregistered branches.
+		// Skip unregistered branches.
 		registered, regErr := isRegisteredPatchBranch(db, slug, branch)
 		if regErr != nil {
 			logger.Warn("mirror: failed to check patch registration",
@@ -123,8 +122,8 @@ func mirrorBranches(
 	// Resolve origin credentials once for all applicable branches.
 	auth, authErr := deps.ResolveAuth(slug)
 	if authErr != nil {
-		// 22-REQ-7.1, 22-REQ-7.3: Every branch that could not be mirrored
-		// is a failed mirror: log once, and emit one event per branch.
+		// Every branch that could not be mirrored is a failed mirror: log
+		// once, and emit one event per branch.
 		safeErr := "failed to resolve origin credentials: " + stripUserinfoText(authErr.Error())
 		logger.Warn("mirror: failed to resolve origin credentials",
 			"slug", slug,
@@ -138,7 +137,7 @@ func mirrorBranches(
 	}
 
 	for _, branch := range applicable {
-		// 22-REQ-6.1: Force-push the branch to origin.
+		// Force-push the branch to origin.
 		mirrorErr := mirrorBranchToOrigin(deps.WorkspaceRoot, slug, branch, auth, logger)
 		if mirrorErr != nil {
 			// The error is free text that may embed the remote URL, so
@@ -150,7 +149,6 @@ func mirrorBranches(
 				"error", safeErr,
 			)
 
-			// 22-REQ-7.1: Emit hub.patch.mirror_failed event.
 			emitMirrorFailedEvent(deps.Audit, slug, branch, safeErr, logger)
 		} else {
 			logger.Info("mirror: pushed branch to origin",
@@ -177,7 +175,7 @@ func mirrorBranchToOrigin(
 	ctx, cancel := context.WithTimeout(context.Background(), mirrorTimeout)
 	defer cancel()
 
-	// 22-REQ-6.1: Force push via the '+' prefix in the refspec.
+	// Force push via the '+' prefix in the refspec.
 	refspec := config.RefSpec(fmt.Sprintf("+refs/heads/%s:refs/heads/%s", branch, branch))
 	opts := &git.PushOptions{
 		RemoteName: "origin",

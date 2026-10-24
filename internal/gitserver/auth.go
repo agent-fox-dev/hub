@@ -52,7 +52,7 @@ func GitAuthMiddleware(db *sql.DB) echo.MiddlewareFunc {
 				return c.NoContent(http.StatusUnauthorized)
 			}
 
-			// Split into username:password. Per 06-REQ-2.E2 the username is
+			// Split into username:password. The username is
 			// ignored; the password is the hub credential.
 			parts := strings.SplitN(string(decoded), ":", 2)
 			if len(parts) != 2 {

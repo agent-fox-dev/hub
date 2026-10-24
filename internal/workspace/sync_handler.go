@@ -45,7 +45,7 @@ type SyncFetchAndCompareFuncType func(ctx context.Context, repoPath string, auth
 //   - branch: workspace branch name (nil = default branch)
 //   - newSHA: the SHA to fast-forward to (upstream HEAD)
 //
-// Returns an error if the ref update fails (13-REQ-4.E6).
+// Returns an error if the ref update fails.
 type SyncUpdateLocalRefFuncType func(repoPath string, branch *string, newSHA string) error
 
 // syncFetchAndCompareFn is the injectable function for the fetch-and-compare
@@ -73,11 +73,9 @@ func InitSyncFunctions() {
 // success sets upstream_head_sha and last_sync_at and clears sync_error, a
 // failure sets sync_error. A sync in progress is only the lock; a second
 // sync meanwhile is refused with 409 workspace_busy.
-//
-// Requirements: 13-REQ-3, 13-REQ-4, 13-REQ-9
 func handleSyncWorkspace(db *sql.DB) echo.HandlerFunc {
 	return func(c echo.Context) error {
-		// ---- Auth check (13-REQ-3.E1) ----
+		// ---- Auth check ----
 		auth := apikit.GetAuthInfo(c)
 		if auth == nil {
 			return respondError(c, http.StatusUnauthorized, "authentication required")
@@ -89,29 +87,28 @@ func handleSyncWorkspace(db *sql.DB) echo.HandlerFunc {
 
 		slug := c.Param("slug")
 
-		// ---- Precondition checks (13-REQ-3) ----
+		// ---- Precondition checks ----
 
-		// 13-REQ-3.5: Workspace must exist and the caller must own it or
-		// hold an admin token (spec 35: a member of its org gets 403, anyone
-		// else 404).
+		// The workspace must exist and the caller must own it or hold an
+		// admin token; a member of its org gets 403, anyone else 404.
 		ws, access := lookupWorkspaceForAuth(c, db, slug, auth, wsaccess.NeedWrite)
 		if ws == nil {
 			return nil // Response already written by lookupWorkspaceForAuth.
 		}
 
-		// 13-REQ-3.1, 13-REQ-3.2: the workspace must be ready.
+		// The workspace must be ready.
 		if ws.Status != "ready" {
 			return respondError(c, http.StatusBadRequest,
 				"workspace is not ready; sync requires a ready workspace")
 		}
 
-		// 13-REQ-3.3: the sync_enabled setting must be true.
+		// The sync_enabled setting must be true.
 		if !ws.Settings.SyncEnabled {
 			return respondError(c, http.StatusBadRequest,
 				"sync is disabled for this workspace; set the sync_enabled setting to true to enable")
 		}
 
-		// ---- carry_patch mode delegation (16-REQ-5) ----
+		// ---- carry_patch mode delegation ----
 		// If the workspace is in carry_patch mode and a carry-patch sync hook
 		// is registered, delegate to it. The extension handles upstream fetch,
 		// merge detection, and auto-rebuild enqueue independently of the
@@ -148,7 +145,7 @@ func handleSyncWorkspace(db *sql.DB) echo.HandlerFunc {
 		}
 		defer unlock()
 
-		// ---- Deferred cleanup (13-REQ-4.5) ----
+		// ---- Deferred cleanup ----
 		// Record a sync_error if no outcome was recorded before returning.
 		// This handles panics, context cancellation, and any code path that
 		// fails to record one.
@@ -170,11 +167,11 @@ func handleSyncWorkspace(db *sql.DB) echo.HandlerFunc {
 		// Open repo path.
 		repoPath := filepath.Join(defaultWorkspaceRoot, slug, "trunk")
 
-		// Resolve fetch credentials (13-REQ-4.1).
+		// Resolve fetch credentials.
 		store := secrets.NewStore(db)
 		fetchAuth, authErr := resolveCloneAuth(store, slug)
 		if authErr != nil {
-			// 13-REQ-4.E5: Credential resolution failure.
+			// Credential resolution failure.
 			syncError := fmt.Sprintf("credential resolution failed: %v", authErr)
 			_ = recordSyncFailure(db, slug, nil, syncError)
 			syncCompleted = true
@@ -182,12 +179,12 @@ func handleSyncWorkspace(db *sql.DB) echo.HandlerFunc {
 				"sync failed: credential resolution error")
 		}
 
-		// ---- Check for reset-to-upstream mode (13-REQ-6) ----
+		// ---- Check for reset-to-upstream mode ----
 		if c.QueryParam("reset_to_upstream") == "true" {
 			return handleResetToUpstream(c, db, slug, ws, access, repoPath, fetchAuth, &syncCompleted)
 		}
 
-		// ---- Standard sync: git operations (13-REQ-4.1 through 13-REQ-4.4) ----
+		// ---- Standard sync: git operations ----
 
 		// Check for context cancellation before fetch.
 		if c.Request().Context().Err() != nil {
@@ -204,7 +201,7 @@ func handleSyncWorkspace(db *sql.DB) echo.HandlerFunc {
 			localHeadSHA = *ws.HeadSHA
 		}
 
-		// Perform fetch and compare (13-REQ-4.1 through 13-REQ-4.4).
+		// Perform fetch and compare.
 		if syncFetchAndCompareFn == nil {
 			syncError := "sync system not initialized"
 			_ = recordSyncFailure(db, slug, nil, syncError)
@@ -225,7 +222,7 @@ func handleSyncWorkspace(db *sql.DB) echo.HandlerFunc {
 		}
 
 		if fetchErr != nil {
-			// 13-REQ-4.E2: Fetch failure (network, auth, or repo open).
+			// Fetch failure (network, auth, or repo open).
 			syncError := fmt.Sprintf("upstream fetch failed: %v", fetchErr)
 			_ = recordSyncFailure(db, slug, nil, syncError)
 			syncCompleted = true
@@ -237,7 +234,7 @@ func handleSyncWorkspace(db *sql.DB) echo.HandlerFunc {
 
 		switch outcome {
 		case "up_to_date":
-			// 13-REQ-4.2: Upstream HEAD equals local HEAD.
+			// Upstream HEAD equals local HEAD.
 			if err := recordSyncSuccess(db, slug, nil, &upstreamHeadSHA); err != nil {
 				syncError := fmt.Sprintf("failed to update sync status: %v", err)
 				_ = recordSyncFailure(db, slug, nil, syncError)
@@ -249,7 +246,6 @@ func handleSyncWorkspace(db *sql.DB) echo.HandlerFunc {
 			if err != nil || updated == nil {
 				return respondError(c, http.StatusInternalServerError, "failed to read workspace after sync")
 			}
-			// 18-REQ-1.5: Emit hub.workspace.sync audit event.
 			emitHubAudit(c, audit.HubEvent{
 				EventType:    "hub.workspace.sync",
 				ResourceType: "workspace",
@@ -261,9 +257,9 @@ func handleSyncWorkspace(db *sql.DB) echo.HandlerFunc {
 			return respondWorkspace(c, http.StatusOK, updated, db, access)
 
 		case "fast_forward":
-			// 13-REQ-4.3: Fast-forward the integration branch.
+			// Fast-forward the integration branch.
 			if refErr := syncUpdateLocalRefFn(repoPath, ws.Branch, upstreamHeadSHA); refErr != nil {
-				// 13-REQ-4.E6: Ref update failure.
+				// Ref update failure.
 				syncError := fmt.Sprintf("ref update failed: %v", refErr)
 				_ = recordSyncFailure(db, slug, nil, syncError)
 				syncCompleted = true
@@ -283,7 +279,6 @@ func handleSyncWorkspace(db *sql.DB) echo.HandlerFunc {
 			if err != nil || updated == nil {
 				return respondError(c, http.StatusInternalServerError, "failed to read workspace after sync")
 			}
-			// 18-REQ-1.5: Emit hub.workspace.sync audit event.
 			emitHubAudit(c, audit.HubEvent{
 				EventType:    "hub.workspace.sync",
 				ResourceType: "workspace",
@@ -295,7 +290,7 @@ func handleSyncWorkspace(db *sql.DB) echo.HandlerFunc {
 			return respondWorkspace(c, http.StatusOK, updated, db, access)
 
 		case "diverged":
-			// 13-REQ-4.4: Upstream has diverged (force-push detected).
+			// Upstream has diverged (force-push detected).
 			syncError := "upstream history has diverged; use --reset-to-upstream to recover"
 			_ = recordSyncFailure(db, slug, &upstreamHeadSHA, syncError)
 			syncCompleted = true
@@ -310,8 +305,8 @@ func handleSyncWorkspace(db *sql.DB) echo.HandlerFunc {
 	}
 }
 
-// handleResetToUpstream implements the reset-to-upstream recovery path
-// (13-REQ-6). It fetches from upstream, force-updates the local integration
+// handleResetToUpstream implements the reset-to-upstream recovery path.
+// It fetches from upstream, force-updates the local integration
 // branch ref to upstream HEAD (ignoring ancestry), and updates workspace state.
 //
 // This function is called from handleSyncWorkspace when reset_to_upstream=true.
@@ -332,7 +327,7 @@ func handleResetToUpstream(c echo.Context, db *sql.DB, slug string, ws *Workspac
 		localHeadSHA = *ws.HeadSHA
 	}
 
-	// Step 1: Fetch from upstream (13-REQ-6.1).
+	// Step 1: Fetch from upstream.
 	// We reuse syncFetchAndCompareFn to perform the fetch. The outcome
 	// (up_to_date, fast_forward, diverged) is ignored — reset-to-upstream
 	// always force-updates the local ref regardless of ancestry.
@@ -341,7 +336,7 @@ func handleResetToUpstream(c echo.Context, db *sql.DB, slug string, ws *Workspac
 	)
 
 	if fetchErr != nil {
-		// 13-REQ-6.E1: Fetch failure — set error, do NOT modify head_sha.
+		// Fetch failure — set error, do NOT modify head_sha.
 		syncError := fmt.Sprintf("reset-to-upstream fetch failed: %v", fetchErr)
 		_ = recordSyncFailure(db, slug, nil, syncError)
 		*syncCompleted = true
@@ -349,7 +344,7 @@ func handleResetToUpstream(c echo.Context, db *sql.DB, slug string, ws *Workspac
 			"reset-to-upstream failed: upstream fetch error")
 	}
 
-	// Step 2: Force-update the local integration branch ref (13-REQ-6.1).
+	// Step 2: Force-update the local integration branch ref.
 	if syncUpdateLocalRefFn == nil {
 		syncError := "sync system not initialized"
 		_ = recordSyncFailure(db, slug, nil, syncError)
@@ -358,7 +353,7 @@ func handleResetToUpstream(c echo.Context, db *sql.DB, slug string, ws *Workspac
 	}
 
 	if refErr := syncUpdateLocalRefFn(repoPath, ws.Branch, upstreamHeadSHA); refErr != nil {
-		// 13-REQ-6.E2: Ref update failure — set error, do NOT update head_sha.
+		// Ref update failure — set error, do NOT update head_sha.
 		syncError := fmt.Sprintf("reset-to-upstream ref update failed: %v", refErr)
 		_ = recordSyncFailure(db, slug, nil, syncError)
 		*syncCompleted = true
@@ -366,7 +361,7 @@ func handleResetToUpstream(c echo.Context, db *sql.DB, slug string, ws *Workspac
 			"reset-to-upstream failed: could not update integration branch")
 	}
 
-	// Step 3: Update workspace state (13-REQ-6.1, 13-PROP-8).
+	// Step 3: Update workspace state.
 	// Set head_sha=upstream HEAD, upstream_head_sha=upstream HEAD,
 	// last_sync_at=now, sync_error=NULL.
 	if err := recordSyncSuccess(db, slug, &upstreamHeadSHA, &upstreamHeadSHA); err != nil {
@@ -383,7 +378,6 @@ func handleResetToUpstream(c echo.Context, db *sql.DB, slug string, ws *Workspac
 		return respondError(c, http.StatusInternalServerError,
 			"failed to read workspace after reset-to-upstream")
 	}
-	// 18-REQ-1.5: Emit hub.workspace.sync audit event for reset-to-upstream.
 	emitHubAudit(c, audit.HubEvent{
 		EventType:    "hub.workspace.sync",
 		ResourceType: "workspace",
@@ -397,7 +391,7 @@ func handleResetToUpstream(c echo.Context, db *sql.DB, slug string, ws *Workspac
 
 // recordSyncFailure records a failed sync: sync_error takes msg and, when
 // upstreamHeadSHA is given, upstream_head_sha takes it. head_sha and
-// last_sync_at are left as they are (13-REQ-4.4, 13-PROP-2, 13-PROP-7).
+// last_sync_at are left as they are.
 func recordSyncFailure(db *sql.DB, slug string, upstreamHeadSHA *string, msg string) error {
 	now := time.Now().UTC().Format(timestampFormat)
 	_, err := db.Exec(

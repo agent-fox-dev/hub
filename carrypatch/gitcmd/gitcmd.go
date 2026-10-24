@@ -142,13 +142,13 @@ func New(workDir string, extraEnv []string) (*GitRunner, error) {
 	}
 
 	// Execute git --version with a 30-second timeout to avoid hanging
-	// indefinitely (11-REQ-1.E3).
+	// indefinitely.
 	versionCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	// Assemble the environment: os.Environ() + extraEnv + safety vars.
 	// Safety variables are appended last so they always take precedence
-	// over any conflicting values in extraEnv (11-REQ-2.2, 11-REQ-2.3).
+	// over any conflicting values in extraEnv.
 	env := assembleEnv(extraEnv)
 
 	cmd := exec.CommandContext(versionCtx, "git", "--version")
@@ -181,7 +181,7 @@ func New(workDir string, extraEnv []string) (*GitRunner, error) {
 // assembleEnv builds the full environment slice for git subprocesses.
 // Order: filtered os.Environ() + extraEnv + identity/editor defaults (only
 // when not already set) + hardcoded safety variables. The safety variables
-// are last so they always take precedence (11-REQ-2.2, 11-REQ-2.3).
+// are last so they always take precedence.
 func assembleEnv(extraEnv []string) []string {
 	base := os.Environ()
 	env := make([]string, 0, len(base)+len(extraEnv)+len(defaultedEnvVars)+4)
@@ -240,7 +240,7 @@ func (r *GitRunner) runWithExitCode(ctx context.Context, args ...string) (stdout
 
 	runErr := cmd.Run()
 	if runErr != nil {
-		// Context cancellation/timeout takes priority (11-REQ-3.3).
+		// Context cancellation/timeout takes priority.
 		if ctx.Err() != nil {
 			return "", -1, strings.TrimSpace(stderrBuf.String()), ctx.Err()
 		}
@@ -355,27 +355,25 @@ func (r *GitRunner) MergeTree(ctx context.Context, base, head string) (string, e
 //
 // If the rebase encounters a conflict, git rebase --abort is called
 // automatically before returning, so the repository is never left in
-// rebase state when a *RebaseConflictError is returned (11-PROP-3).
+// rebase state when a *RebaseConflictError is returned.
 //
 // Important distinction:
 //   - Conflict: returns *RebaseConflictError — repository is cleaned up
 //     automatically via internal abort.
 //   - Context cancellation/timeout: returns the context error — the
 //     repository may still be in rebase state. The caller must invoke
-//     RebaseAbort to clean up (11-REQ-6.E1).
+//     RebaseAbort to clean up.
 //   - Abort failure after conflict: returns an error wrapping both the
-//     conflict information and the abort failure (11-REQ-6.E2).
-//   - Invalid onto ref: returns *GitError with exit code and stderr
-//     (11-REQ-6.E3).
-//   - rev-parse failure after successful rebase: returns *GitError
-//     (11-REQ-6.E4).
+//     conflict information and the abort failure.
+//   - Invalid onto ref: returns *GitError with exit code and stderr.
+//   - rev-parse failure after successful rebase: returns *GitError.
 func (r *GitRunner) Rebase(ctx context.Context, onto string) (string, error) {
 	args := []string{"rebase", endOfOptions, onto}
 
 	stdout, exitCode, stderr, err := r.runWithExitCode(ctx, args...)
 	if err != nil {
 		// Context cancellation: don't try to abort, just return.
-		// The caller is responsible for calling RebaseAbort (11-REQ-6.E1).
+		// The caller is responsible for calling RebaseAbort.
 		return "", err
 	}
 
@@ -394,7 +392,7 @@ func (r *GitRunner) Rebase(ctx context.Context, onto string) (string, error) {
 			// Attempt automatic abort.
 			abortErr := r.RebaseAbort(ctx)
 			if abortErr != nil {
-				// 11-REQ-6.E2: wrap both the conflict info and abort failure.
+				// Wrap both the conflict info and the abort failure.
 				return "", fmt.Errorf(
 					"rebase conflict (%s) and abort failed: %w",
 					strings.Join(conflictFiles, ", "), abortErr)

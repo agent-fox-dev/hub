@@ -9,7 +9,7 @@ import (
 	"github.com/txsvc/apikit"
 )
 
-// Constants for SSE connection manager (18-REQ-9.4).
+// Constants for the SSE connection manager.
 // HeartbeatInterval and StaleConnectionTimeout are hardcoded constants,
 // NOT read from environment variables.
 const (
@@ -60,7 +60,7 @@ type sseFilters struct {
 type SSEOption func(*SSEManager)
 
 // WithTickerFactory replaces the default time.NewTicker used for heartbeat
-// and stale-connection reaping (18-REQ-8.9). This allows test-time clock
+// and stale-connection reaping. This allows test-time clock
 // injection.
 func WithTickerFactory(fn func(d time.Duration) *time.Ticker) SSEOption {
 	return func(m *SSEManager) {
@@ -70,7 +70,7 @@ func WithTickerFactory(fn func(d time.Duration) *time.Ticker) SSEOption {
 	}
 }
 
-// SSEManager is the concrete SSE connection manager (18-REQ-9.1).
+// SSEManager is the concrete SSE connection manager.
 // It maintains a broadcaster goroutine, per-connection goroutines,
 // a heartbeat goroutine, and a mutex-protected connection registry.
 type SSEManager struct {
@@ -83,8 +83,8 @@ type SSEManager struct {
 }
 
 // NewSSEManager creates a new SSE connection manager with the given
-// maximum connection limit and optional configuration (18-REQ-8.9).
-// If maxConns is <= 0, it falls back to DefaultMaxConnections (18-REQ-9.E2).
+// maximum connection limit and optional configuration.
+// If maxConns is <= 0, it falls back to DefaultMaxConnections.
 func NewSSEManager(maxConns int, opts ...SSEOption) *SSEManager {
 	if maxConns <= 0 {
 		maxConns = DefaultMaxConnections
@@ -108,7 +108,7 @@ func NewSSEManager(maxConns int, opts ...SSEOption) *SSEManager {
 
 // Register adds a new SSE client connection to the manager.
 // Returns the sseConn if successful, or nil and an error if the connection
-// limit has been reached (18-REQ-8.E1).
+// limit has been reached.
 func (m *SSEManager) Register(filters sseFilters) (*sseConn, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -150,7 +150,7 @@ func (m *SSEManager) ConnCount() int {
 
 // Broadcast publishes an event to the broadcast channel non-blocking.
 // If the broadcast channel is full, the event is dropped and logged
-// at debug level (18-REQ-9.E1, 18-PROP-8).
+// at debug level.
 func (m *SSEManager) Broadcast(event HubEvent) {
 	select {
 	case m.broadcast <- event:
@@ -172,10 +172,10 @@ func (m *SSEManager) Run(done <-chan struct{}) {
 
 // broadcasterLoop reads events from the broadcast channel and fans out to
 // all registered connections, respecting per-connection filters and
-// backpressure (18-REQ-9.E3).
+// backpressure.
 func (m *SSEManager) broadcasterLoop(done <-chan struct{}) {
 	for {
-		// Recover from panics in the broadcaster (18-REQ-9.E3).
+		// Recover from panics in the broadcaster.
 		func() {
 			defer func() {
 				if r := recover(); r != nil {
@@ -208,8 +208,7 @@ func (m *SSEManager) broadcasterLoop(done <-chan struct{}) {
 }
 
 // fanOut sends an event to all registered connections that pass their filters.
-// When a per-client channel is full, the oldest event is dropped to make room
-// (18-REQ-8.5).
+// When a per-client channel is full, the oldest event is dropped to make room.
 func (m *SSEManager) fanOut(event HubEvent) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -291,7 +290,7 @@ func (m *SSEManager) sendHeartbeat() {
 }
 
 // reapStaleConnections removes connections that haven't read for longer
-// than StaleConnectionTimeout (18-REQ-9.4).
+// than StaleConnectionTimeout.
 func (m *SSEManager) reapStaleConnections() {
 	m.mu.Lock()
 	var stale []connID

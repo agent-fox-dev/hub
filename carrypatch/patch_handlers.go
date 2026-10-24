@@ -13,7 +13,7 @@ import (
 	"github.com/txsvc/apikit"
 )
 
-// validPatchStatuses defines the accepted patch status values (15-REQ-10.3).
+// validPatchStatuses defines the accepted patch status values.
 var validPatchStatuses = map[string]bool{
 	"active":          true,
 	"merged_upstream": true,
@@ -117,7 +117,7 @@ type addPatchRequest struct {
 	IfNotExists     *bool   `json:"if_not_exists"`
 }
 
-// handleAddPatch handles POST /api/v1/workspaces/:slug/patches (15-REQ-8).
+// handleAddPatch handles POST /api/v1/workspaces/:slug/patches.
 // Supports single object or array body for batch insertion.
 // When if_not_exists is true and the branch already exists, returns 200 with
 // the existing record instead of 409.
@@ -140,7 +140,7 @@ func handleAddPatch(cfg APIConfig) echo.HandlerFunc {
 			return respondError(c, http.StatusBadRequest, "workspace is archived")
 		}
 
-		// 15-REQ-8.3: Reject for standard workspaces.
+		// Reject for standard workspaces.
 		if ws.WorkspaceMode != "carry_patch" {
 			return respondError(c, http.StatusBadRequest, "workspace is not in carry_patch mode")
 		}
@@ -155,7 +155,7 @@ func handleAddPatch(cfg APIConfig) echo.HandlerFunc {
 			return respondError(c, http.StatusBadRequest, "invalid request body: "+err.Error())
 		}
 
-		// 21-REQ-1.5: Scope the request so a request-scoped value (the
+		// Scope the request so a request-scoped value (the
 		// PATCH_BRANCH_SOURCE mode read by the branch-check hook) is read once
 		// for the whole request, not once per batch element.
 		c.SetRequest(c.Request().WithContext(withRequestScope(c.Request().Context())))
@@ -179,7 +179,7 @@ func handleAddPatch(cfg APIConfig) echo.HandlerFunc {
 // handleAddPatchSingle handles the single-object add patch path.
 func handleAddPatchSingle(c echo.Context, cfg APIConfig, slug string, ws *workspaceRow, req addPatchRequest) error {
 	db := cfg.DB
-	// 15-REQ-8.6: branch_name required and must be a valid git ref name.
+	// branch_name is required and must be a valid git ref name.
 	if req.BranchName == "" {
 		return respondError(c, http.StatusBadRequest, "branch_name is required")
 	}
@@ -187,7 +187,7 @@ func handleAddPatchSingle(c echo.Context, cfg APIConfig, slug string, ws *worksp
 		return respondError(c, http.StatusBadRequest, "invalid branch_name: "+err.Error())
 	}
 
-	// 15-REQ-8.5: Reject if branch_name equals integration_branch.
+	// Reject if branch_name equals integration_branch.
 	if ws.IntegrationBranch != nil && req.BranchName == *ws.IntegrationBranch {
 		return respondError(c, http.StatusBadRequest, "branch_name cannot be the integration branch")
 	}
@@ -209,7 +209,7 @@ func handleAddPatchSingle(c echo.Context, cfg APIConfig, slug string, ws *worksp
 
 	ifNotExists := req.IfNotExists != nil && *req.IfNotExists
 
-	// 15-REQ-8.4: Check if branch_name already exists.
+	// Check if branch_name already exists.
 	exists, err := branchExistsInPatches(db, slug, req.BranchName)
 	if err != nil {
 		return respondError(c, http.StatusInternalServerError, "internal server error")
@@ -226,7 +226,7 @@ func handleAddPatchSingle(c echo.Context, cfg APIConfig, slug string, ws *worksp
 		return respondError(c, http.StatusConflict, "branch already exists in patch list")
 	}
 
-	// 15-REQ-8.E3: Reject position < 1.
+	// Reject position < 1.
 	if req.Position != nil && *req.Position < 1 {
 		return respondError(c, http.StatusBadRequest, "position must be >= 1")
 	}
@@ -248,12 +248,12 @@ func handleAddPatchSingle(c echo.Context, cfg APIConfig, slug string, ws *worksp
 		return respondError(c, http.StatusInternalServerError, "failed to add patch: "+err.Error())
 	}
 
-	// 18-REQ-3.1: Emit hub.patch.create audit event.
+	// Emit the hub.patch.create audit event.
 	auditMeta := map[string]any{
 		"branch_name": p.BranchName,
 		"position":    p.Position,
 	}
-	// 21-REQ-8: Add branch_resolution when a hook is registered.
+	// Add branch_resolution when a hook is registered.
 	if branchResolution != "" {
 		auditMeta["branch_resolution"] = branchResolution
 	}
@@ -298,7 +298,8 @@ func handleAddPatchBatch(c echo.Context, cfg APIConfig, slug string, ws *workspa
 		}
 	}
 
-	// 21-REQ-6.1: Resolve all elements in array order before any insert.
+	// Resolve all elements in array order before any insert, so a batch
+	// with one unresolvable branch registers nothing.
 	for i, req := range reqs {
 		skipCheck := req.SkipBranchCheck != nil && *req.SkipBranchCheck
 		if !skipCheck && cfg.ResolveBranch != nil {
@@ -359,7 +360,7 @@ func handleAddPatchBatch(c echo.Context, cfg APIConfig, slug string, ws *workspa
 	return c.JSON(http.StatusCreated, result)
 }
 
-// handleGetPatch handles GET /api/v1/workspaces/:slug/patches/:id (23-REQ-1).
+// handleGetPatch handles GET /api/v1/workspaces/:slug/patches/:id.
 // Returns the patch object with replaced_sha when a backup ref exists.
 func handleGetPatch(cfg APIConfig) echo.HandlerFunc {
 	return func(c echo.Context) error {
@@ -409,7 +410,7 @@ func handleGetPatch(cfg APIConfig) echo.HandlerFunc {
 	}
 }
 
-// handleListPatches handles GET /api/v1/workspaces/:slug/patches (15-REQ-9).
+// handleListPatches handles GET /api/v1/workspaces/:slug/patches.
 func handleListPatches(cfg APIConfig) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		db := cfg.DB
@@ -420,13 +421,13 @@ func handleListPatches(cfg APIConfig) echo.HandlerFunc {
 
 		slug := c.Param("slug")
 
-		// 15-REQ-9.E1: workspace not found (or not owned) returns 404.
+		// A workspace not found (or not readable) returns 404.
 		ws := lookupPatchWorkspace(c, db, slug, auth, NeedRead)
 		if ws == nil {
 			return nil
 		}
 
-		// 15-REQ-9.E2: Standard workspaces return an empty array (they have no patches).
+		// Standard workspaces return an empty array (they have no patches).
 		if ws.WorkspaceMode != "carry_patch" {
 			return c.JSON(http.StatusOK, []map[string]any{})
 		}
@@ -445,7 +446,7 @@ func handleListPatches(cfg APIConfig) echo.HandlerFunc {
 	}
 }
 
-// handleUpdatePatch handles PATCH /api/v1/workspaces/:slug/patches/:id (15-REQ-10).
+// handleUpdatePatch handles PATCH /api/v1/workspaces/:slug/patches/:id.
 func handleUpdatePatch(cfg APIConfig) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		db := cfg.DB
@@ -466,7 +467,6 @@ func handleUpdatePatch(cfg APIConfig) echo.HandlerFunc {
 		if err != nil {
 			return respondError(c, http.StatusInternalServerError, "internal server error")
 		}
-		// 15-REQ-10.2: patch not found.
 		if p == nil {
 			return respondError(c, http.StatusNotFound, "patch not found")
 		}
@@ -484,7 +484,7 @@ func handleUpdatePatch(cfg APIConfig) echo.HandlerFunc {
 			}
 		}
 
-		// 15-REQ-10.3: Validate status. "deleted" is a rebuild outcome (soft
+		// Validate status. "deleted" is a rebuild outcome (soft
 		// delete with deleted_at) and cannot be set directly; use DELETE to
 		// remove a patch and POST .../restore to bring a soft-deleted one back.
 		if req.Status != nil {
@@ -497,7 +497,7 @@ func handleUpdatePatch(cfg APIConfig) echo.HandlerFunc {
 			p.Status = *req.Status
 		}
 
-		// 15-REQ-10.E3: Validate position range.
+		// Validate the position range.
 		if req.Position != nil {
 			count, err := patchCount(db, slug)
 			if err != nil {
@@ -539,7 +539,7 @@ func handleUpdatePatch(cfg APIConfig) echo.HandlerFunc {
 	}
 }
 
-// handleRemovePatch handles DELETE /api/v1/workspaces/:slug/patches/:id (15-REQ-11).
+// handleRemovePatch handles DELETE /api/v1/workspaces/:slug/patches/:id.
 func handleRemovePatch(cfg APIConfig) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		db := cfg.DB
@@ -555,11 +555,11 @@ func handleRemovePatch(cfg APIConfig) echo.HandlerFunc {
 			return nil
 		}
 
-		// Look up patch before deletion for audit metadata (18-REQ-3.2)
-		// and for the branch name needed by backup-ref cleanup (23-REQ-7.1).
+		// Look up the patch before deletion for the audit metadata and for
+		// the branch name needed by the backup-ref cleanup.
 		patchInfo, _ := getPatch(db, slug, patchID)
 
-		// 15-REQ-11.1, 15-REQ-11.2: Delete and compact.
+		// Delete and compact.
 		if err := deletePatchAndCompact(db, slug, patchID); err != nil {
 			// Check if the error indicates not found.
 			if err.Error() == "patch \""+patchID+"\" not found in workspace \""+slug+"\"" {
@@ -568,7 +568,7 @@ func handleRemovePatch(cfg APIConfig) echo.HandlerFunc {
 			return respondError(c, http.StatusInternalServerError, "failed to delete patch")
 		}
 
-		// 18-REQ-3.2: Emit hub.patch.delete audit event.
+		// Emit the hub.patch.delete audit event.
 		if patchInfo != nil {
 			emitAudit(c, cfg.Audit, Event{
 				EventType:    "hub.patch.delete",
@@ -582,9 +582,9 @@ func handleRemovePatch(cfg APIConfig) echo.HandlerFunc {
 			})
 		}
 
-		// 23-REQ-7.1: Remove the backup ref for the deleted patch.
-		// Best effort: a failure never changes the response (the row is
-		// already gone). No workspace lock is taken (23-REQ-7.5).
+		// Remove the backup ref for the deleted patch. Best effort: a
+		// failure never changes the response (the row is already gone). No
+		// workspace lock is taken.
 		if patchInfo != nil {
 			hook := cfg.Recovery
 			if hook != nil {
@@ -677,7 +677,7 @@ func handleRestorePatch(cfg APIConfig) echo.HandlerFunc {
 	}
 }
 
-// handleReorderPatches handles POST /api/v1/workspaces/:slug/patches/reorder (15-REQ-12).
+// handleReorderPatches handles POST /api/v1/workspaces/:slug/patches/reorder.
 func handleReorderPatches(cfg APIConfig) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		db := cfg.DB

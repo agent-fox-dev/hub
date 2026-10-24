@@ -9,7 +9,7 @@ import (
 )
 
 // APIKitRouteGuard returns the deny-only middleware for the root Echo
-// instance that refuses bound tokens on apikit's own routes (spec 33).
+// instance that refuses bound tokens on apikit's own routes.
 //
 // apikit registers its routes before hub can add middleware to the API
 // group, so BindingGuard never runs on them. This guard runs on the root

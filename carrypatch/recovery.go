@@ -87,7 +87,7 @@ func (s *RecoveryService) RemoveBackup(ctx context.Context, slug, branch string)
 // up first because git update-ref -d exits 0 for a ref that does not exist,
 // so the delete alone could not tell "removed" from "nothing to remove": the
 // lookup keeps a missing ref from being logged as removed, and puts the removed
-// SHA in the log (23-REQ-10.7). Any other failure is returned.
+// SHA in the log. Any other failure is returned.
 func removeBackupRef(
 	ctx context.Context,
 	workspaceRoot, slug, branch string,
@@ -145,16 +145,16 @@ func removeBackupRef(
 // event all describe it, and a retry would find the tips equal and answer
 // action "none", so an error would not lead the operator to a repaired work
 // tree. The failure is logged at error level instead, with the slug and
-// branch, and the reset reports the move. The patch refresh in spec 20 keeps
+// branch, and the reset reports the move. The patch refresh of the sync keeps
 // the same outcome for the same failure and additionally reports the failed
-// reset to its caller; see docs/errata/23_patch_divergence_recovery_divergences.md.
+// reset to its caller (ADR 01).
 func (s *RecoveryService) RunReset(ctx context.Context, slug string, patch ResetPatchInfo, auth *apikit.AuthInfo) (ResetResult, error) {
 	var result ResetResult
 
 	// Required dependencies. Both are checked before anything is taken or
 	// written. A missing Fetch in particular must not degrade to "use the
 	// tracking ref as it is": a stale refs/remotes/origin/<branch> would look
-	// like a successful reset (Design Decision 4).
+	// like a successful reset.
 	if s.LockFunc == nil {
 		slog.Error("recovery: reset is not configured: lock function missing",
 			"slug", slug,
@@ -176,7 +176,7 @@ func (s *RecoveryService) RunReset(ctx context.Context, slug string, patch Reset
 		}
 	}
 
-	// 23-REQ-3: Take the workspace lock.
+	// Take the workspace lock.
 	unlock, ok := s.LockFunc(slug)
 	if !ok {
 		return result, &ResetError{
@@ -188,7 +188,7 @@ func (s *RecoveryService) RunReset(ctx context.Context, slug string, patch Reset
 
 	repoPath := s.trunkPath(slug)
 
-	// 23-REQ-3.1: Resolve origin credentials. A nil ResolveAuth means
+	// Resolve origin credentials. A nil ResolveAuth means
 	// anonymous access to origin.
 	var originAuth transport.AuthMethod
 	if s.ResolveAuth != nil {
@@ -208,16 +208,16 @@ func (s *RecoveryService) RunReset(ctx context.Context, slug string, patch Reset
 		originAuth = resolved
 	}
 
-	// 23-REQ-3.1: Fetch the single branch from the fork.
+	// Fetch the single branch from the fork.
 	if fetchErr := s.Fetch(ctx, repoPath, patch.BranchName, originAuth); fetchErr != nil {
-		// 23-REQ-3.3: Classify "branch not found on origin".
+		// Classify "branch not found on origin".
 		if errors.Is(fetchErr, ErrBranchNotOnOrigin) {
 			return result, &ResetError{
 				Kind:    ResetErrMissingOnOrigin,
 				Message: "branch does not exist on origin",
 			}
 		}
-		// 23-REQ-3.2: Log the underlying error but don't echo it.
+		// Log the underlying error but don't echo it.
 		slog.Error("recovery: origin fetch failed",
 			"slug", slug,
 			"branch", patch.BranchName,
@@ -243,7 +243,7 @@ func (s *RecoveryService) RunReset(ctx context.Context, slug string, patch Reset
 	branchRef := "refs/heads/" + patch.BranchName
 	originRef := "refs/remotes/origin/" + patch.BranchName
 
-	// 23-REQ-3.1: Resolve fork tip.
+	// Resolve the fork tip.
 	forkTip, forkErr := resolveRefSHA(ctx, runner, originRef)
 	if forkErr != nil {
 		// This shouldn't happen after a successful fetch, but handle it.
@@ -254,13 +254,13 @@ func (s *RecoveryService) RunReset(ctx context.Context, slug string, patch Reset
 	}
 	result.OriginSHA = forkTip
 
-	// 23-REQ-3.1: Resolve local tip (may be absent).
+	// Resolve the local tip (may be absent).
 	localTip, localErr := resolveRefSHA(ctx, runner, branchRef)
 	if localErr == nil {
 		result.LocalSHA = localTip
 	}
 
-	// 23-REQ-3.4-3.6: Apply the first matching rule.
+	// Apply the first matching rule.
 	if localErr != nil {
 		// Rule: Local branch missing → create.
 		if recErr := moveBranchToFork(ctx, runner, repoPath, slug, patch, forkTip, zeroSHA); recErr != nil {
@@ -304,7 +304,7 @@ func (s *RecoveryService) RunReset(ctx context.Context, slug string, patch Reset
 			// Rule: Diverged or fork-behind → write backup, then move.
 			backupRef := "refs/hub/replaced/" + patch.BranchName
 
-			// 23-REQ-3.6: Write the backup ref (force-write, overwriting any earlier backup).
+			// Write the backup ref (force-write, overwriting any earlier backup).
 			if err := runner.UpdateRef(ctx, backupRef, localTip); err != nil {
 				return result, &ResetError{
 					Kind:    ResetErrOther,
@@ -314,7 +314,7 @@ func (s *RecoveryService) RunReset(ctx context.Context, slug string, patch Reset
 			}
 
 			// Move the branch to the fork tip using CAS.
-			// 23-REQ-3.8: A lost race keeps the backup already written.
+			// A lost race keeps the backup already written.
 			if recErr := moveBranchToFork(ctx, runner, repoPath, slug, patch, forkTip, localTip); recErr != nil {
 				return result, recErr
 			}
@@ -332,7 +332,7 @@ func (s *RecoveryService) RunReset(ctx context.Context, slug string, patch Reset
 	}
 
 	// ===========================================================
-	// 23-REQ-4.1: Persist origin sync state (origin mode only)
+	// Persist origin sync state (origin mode only)
 	// ===========================================================
 	if s.PatchStore != nil {
 		patchSource := ParsePatchBranchSource(s.GetVariable, slug)
@@ -350,7 +350,7 @@ func (s *RecoveryService) RunReset(ctx context.Context, slug string, patch Reset
 	}
 
 	// ===========================================================
-	// 23-REQ-4.3: Rebuild trigger (the same enqueue as sync)
+	// Rebuild trigger (the same enqueue as sync)
 	// ===========================================================
 	branchMoved := result.Action == ResetActionCreated || result.Action == ResetActionFastForwarded || result.Action == ResetActionReplaced
 	rebuildEligible := patch.Status == PatchStatusActive || patch.Status == PatchStatusConflict

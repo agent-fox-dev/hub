@@ -17,8 +17,7 @@ import (
 // is off: the routes still exist and answer 404 sandboxes_disabled, so a
 // caller can tell a disabled feature from a mistyped path.
 func RegisterRoutes(api *echo.Group, svc *Service) {
-	// The listing names no workspace, so a token bound to one may read it
-	// (spec 33).
+	// The listing names no workspace, so a token bound to one may read it.
 	wsaccess.AllowBoundTokens(api.GET("/sandbox-profiles", handleListProfiles(svc)))
 }
 

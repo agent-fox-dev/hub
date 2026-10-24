@@ -21,8 +21,8 @@ var errAccessDenied = errors.New("git access denied")
 // rule (wsaccess.AuthorizeWorkspaceAt): the owner, admin tokens and members
 // of the workspace's org may read (clone and fetch); only the owner and
 // admin tokens may write (push), and a member's push is refused with 403.
-// A PAT bound to another workspace (spec 33) is refused with 404 and the
-// refusal is reported with the git site (spec 34).
+// A PAT bound to another workspace is refused with 404 and the refusal is
+// reported with the git site.
 //
 // Refusals are pkt-line errors: wsaccess's 404 as "repository not found"
 // (anti-enumeration), its 403 with its message, anything else, a database

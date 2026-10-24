@@ -1,6 +1,6 @@
 // Package boundtoken issues, lists and retires personal access tokens bound
-// to one workspace (spec 34). A bound token is minted by apikit's own PAT
-// route, served in-process, and hub adds only the binding (spec 33's
+// to one workspace. A bound token is minted by apikit's own PAT
+// route, served in-process, and hub adds only the binding (the
 // token_workspace_bindings row); the SQL on that table lives in
 // internal/wsaccess.
 package boundtoken
@@ -27,8 +27,7 @@ type Config struct {
 }
 
 // RegisterRoutes mounts POST and GET /workspaces/:slug/tokens on the API
-// group, behind
-// apikit's authentication and spec 33's binding guard.
+// group, behind apikit's authentication and the binding guard.
 func RegisterRoutes(api *echo.Group, cfg Config) {
 	api.POST("/workspaces/:slug/tokens", handleMint(cfg))
 	api.GET("/workspaces/:slug/tokens", handleList(cfg))
@@ -37,7 +36,7 @@ func RegisterRoutes(api *echo.Group, cfg Config) {
 // refuseBoundToken answers the caller's PAT with 403 token_bound when it is
 // bound to a workspace, and reports the refusal; a failed lookup answers 500.
 // It returns true when it has answered. Bound tokens may neither mint nor
-// list bound tokens, whatever workspace the path names (spec 34, Decision 5).
+// list bound tokens, whatever workspace the path names.
 func refuseBoundToken(c echo.Context, db *sql.DB, auth *apikit.AuthInfo) bool {
 	boundSlug, bound, err := wsaccess.BoundSlug(db, auth)
 	if err != nil {

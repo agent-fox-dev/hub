@@ -115,7 +115,7 @@ func requireWorkspaceWrite(c echo.Context, auth *apikit.AuthInfo, slug string, s
 
 // authorizeWorkspace applies the workspace access rule for need, binding
 // first: a PAT bound to another workspace is refused with 404 and reported
-// once with the request's method, route and status (spec 34), and then
+// once with the request's method, route and status, and then
 // wsaccess.AuthorizeWorkspace decides, its own binding check passing
 // silently. A failed lookup is 500. Returns false after writing the refusal.
 func authorizeWorkspace(c echo.Context, auth *apikit.AuthInfo, slug string, sqliteDB *sql.DB, need wsaccess.Need) bool {
@@ -141,8 +141,8 @@ func authorizeWorkspace(c echo.Context, auth *apikit.AuthInfo, slug string, sqli
 // workspaces; for a PAT bound to a workspace at most that one), or nil for
 // no restriction (admin tokens, or no SQLite handle). A failed lookup is 500.
 // A requested workspace outside the set answers 404 workspace not found, and
-// is reported as a binding refusal when the caller's binding is the cause
-// (spec 34): ReadableSlugs has already confined a bound token, so that
+// is reported as a binding refusal when the caller's binding is the cause:
+// ReadableSlugs has already confined a bound token, so that
 // second lookup only decides whether to report, and its error leaves the
 // refusal as it is. It returns false after writing an answer.
 func readableWorkspaces(c echo.Context, auth *apikit.AuthInfo, sqliteDB *sql.DB, requested string) (map[string]bool, bool) {
@@ -186,7 +186,7 @@ func refused(writeErr error) error {
 // checkWorkspaceAccess enforces workspace-level access control for audit
 // ingestion endpoints. It checks:
 // 1. Workspace exists (404)
-// 2. A PAT bound to another workspace (spec 33) sees it as missing (404)
+// 2. A PAT bound to another workspace sees it as missing (404)
 // 3. Workspace is not archived (409 workspace_archived)
 // 4. Generic PAT/API key owner has write access to the workspace (403 workspace_access_denied)
 //

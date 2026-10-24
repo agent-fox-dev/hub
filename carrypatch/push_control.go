@@ -67,7 +67,7 @@ func newPreReceiveHookCore(deps PreReceiveHookDeps, logger *slog.Logger, pushFn 
 			return nil
 		}
 
-		// Load workspace info. Fail open on errors (22-REQ-8.1).
+		// Load workspace info. Fail open on errors.
 		// An unknown workspace (sql.ErrNoRows) is a lookup failure like any
 		// other and is logged too.
 		wsInfo, err := loadWorkspaceInfo(db, slug)
@@ -80,19 +80,19 @@ func newPreReceiveHookCore(deps PreReceiveHookDeps, logger *slog.Logger, pushFn 
 			return nil
 		}
 
-		// 22-REQ-1.4: standard workspaces are not controlled.
-		// 22-REQ-1.5: neither variable is read for standard workspaces.
+		// Standard workspaces are not controlled, and neither variable is
+		// read for them.
 		if wsInfo.mode != "carry_patch" {
 			return nil
 		}
 
-		// 22-REQ-1.3: skip the integration branch even if a patch row exists.
+		// Skip the integration branch even if a patch row exists.
 		if branchName == wsInfo.integrationBranch {
 			return nil
 		}
 
 		// Check if the branch is a registered patch (status != 'deleted').
-		// Fail open on query errors (22-REQ-8.1).
+		// Fail open on query errors.
 		registered, err := isRegisteredPatchBranch(db, slug, branchName)
 		if err != nil {
 			logger.Warn("push control: failed to check patch registration",
@@ -106,16 +106,16 @@ func newPreReceiveHookCore(deps PreReceiveHookDeps, logger *slog.Logger, pushFn 
 			return nil
 		}
 
-		// 22-REQ-1.2: Read PATCH_BRANCH_SOURCE on every controlled update.
+		// Read PATCH_BRANCH_SOURCE on every controlled update.
 		source := ParsePatchBranchSource(deps.GetVariable, slug)
 
 		// In hub mode, the hook returns nil (no rejection).
-		// Hub-mode mirror is handled in the post-push hook (task 6).
+		// Hub-mode mirroring is handled in the post-push hook.
 		if source != "origin" {
 			return nil
 		}
 
-		// 22-REQ-1.1: Read PUSH_PATCHES_TO_ORIGIN on every controlled update.
+		// Read PUSH_PATCHES_TO_ORIGIN on every controlled update.
 		forwarding := pushPatchesEnabled(deps.GetVariable, slug)
 
 		actorID := "unknown"
@@ -124,7 +124,7 @@ func newPreReceiveHookCore(deps PreReceiveHookDeps, logger *slog.Logger, pushFn 
 		}
 
 		if !forwarding {
-			// Reject mode (22-REQ-3): refuse the push with a message
+			// Reject mode: refuse the push with a message
 			// naming the fork URL (userinfo stripped).
 			safeURL := stripUserinfo(wsInfo.gitURL)
 			msg := fmt.Sprintf("branch is synced from origin; push to %s instead", safeURL)
@@ -136,10 +136,10 @@ func newPreReceiveHookCore(deps PreReceiveHookDeps, logger *slog.Logger, pushFn 
 			return fmt.Errorf("%s", msg)
 		}
 
-		// Forward mode (22-REQ-4): forward the push to the fork
+		// Forward mode: forward the push to the fork
 		// before the hub writes its ref.
 
-		// 22-REQ-4.7: Deletes in forward mode are rejected without
+		// Deletes in forward mode are rejected without
 		// contacting origin.
 		if upd.New == plumbing.ZeroHash {
 			logger.Info("push control: rejecting delete of registered patch branch in forward mode",
@@ -150,22 +150,22 @@ func newPreReceiveHookCore(deps PreReceiveHookDeps, logger *slog.Logger, pushFn 
 			return fmt.Errorf("branch is synced from origin; delete it on the fork instead")
 		}
 
-		// 22-REQ-4.3: Resolve origin credentials.
+		// Resolve origin credentials.
 		if deps.ResolveAuth == nil {
-			// 22-REQ-4.4: No resolver configured.
+			// No resolver configured.
 			return fmt.Errorf("failed to resolve origin credentials")
 		}
 		auth, authErr := deps.ResolveAuth(slug)
 		if authErr != nil {
-			// 22-REQ-4.4: Credential resolution failure rejects
+			// A credential resolution failure rejects
 			// without contacting origin.
 			return fmt.Errorf("failed to resolve origin credentials")
 		}
 
-		// 22-REQ-4.1, 22-REQ-4.2: Forward the create or update to
+		// Forward the create or update to
 		// the fork via a temporary ref.
 		if fwdErr := forwardToOrigin(ctx, deps.WorkspaceRoot, slug, branchName, upd.New, auth, logger, pushFn); fwdErr != nil {
-			// 22-REQ-4.5, 22-REQ-8.2: Forward failure rejects the
+			// A forward failure rejects the
 			// update. Never accept silently. The error is free text that
 			// may embed the remote URL, so remove userinfo with the
 			// text sanitiser, not the URL helper.
@@ -280,7 +280,7 @@ func forwardToOrigin(
 		return fmt.Errorf("open trunk: %w", err)
 	}
 
-	// 22-REQ-4.2: Create a temporary ref so the commit is resolvable.
+	// Create a temporary ref so the commit is resolvable.
 	tempRefName := plumbing.ReferenceName("refs/hub/forward/" + branchName)
 	tempRef := plumbing.NewHashReference(tempRefName, newHash)
 	if err := repo.Storer.SetReference(tempRef); err != nil {
@@ -296,11 +296,11 @@ func forwardToOrigin(
 		}
 	}()
 
-	// 22-REQ-4.3: Bound the forward by a 120 second timeout.
+	// Bound the forward by a timeout.
 	pushCtx, cancel := context.WithTimeout(ctx, forwardTimeout)
 	defer cancel()
 
-	// 22-REQ-4.1: Push with Force: false and no '+' in the refspec.
+	// Push with Force: false and no '+' in the refspec.
 	refspec := config.RefSpec(fmt.Sprintf("%s:refs/heads/%s", tempRefName, branchName))
 	opts := &git.PushOptions{
 		RemoteName: "origin",

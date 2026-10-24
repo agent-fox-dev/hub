@@ -17,7 +17,6 @@ import (
 
 // ---------------------------------------------------------------------------
 // Unified audit query handler — GET /api/v1/audit
-// Requirements: 18-REQ-6
 // ---------------------------------------------------------------------------
 
 // UnifiedAuditEvent represents a single event in the unified query response.
@@ -80,16 +79,16 @@ const (
 )
 
 // handleAuditQuery implements GET /api/v1/audit — the unified audit event
-// query handler (18-REQ-6).
+// query handler.
 func handleAuditQuery(store Store, sqliteDB *sql.DB) echo.HandlerFunc {
 	return func(c echo.Context) error {
-		// Auth check: audit:read required (18-REQ-6.E3, 18-REQ-6.E4).
+		// Auth check: audit:read required.
 		auth := requireAuditRead(c)
 		if auth == nil {
 			return nil
 		}
 
-		// Parse query parameters (18-REQ-6.2).
+		// Parse query parameters.
 		params, err := parseUnifiedQueryParams(c)
 		if err != nil {
 			return apikit.WriteAPIError(c, http.StatusBadRequest, err.Error())
@@ -128,8 +127,7 @@ func handleAuditQuery(store Store, sqliteDB *sql.DB) echo.HandlerFunc {
 }
 
 // parseUnifiedQueryParams extracts and validates query parameters for the
-// unified audit query (18-REQ-6.2, 18-REQ-6.3, 18-REQ-6.E1, 18-REQ-6.E5,
-// 18-REQ-6.E7, 18-REQ-6.E8).
+// unified audit query.
 func parseUnifiedQueryParams(c echo.Context) (unifiedQueryParams, error) {
 	params := unifiedQueryParams{
 		source:          c.QueryParam("source"),
@@ -147,7 +145,7 @@ func parseUnifiedQueryParams(c echo.Context) (unifiedQueryParams, error) {
 		cursor:          c.QueryParam("cursor"),
 	}
 
-	// Parse and clamp limit (18-REQ-6.3, 18-REQ-6.E5).
+	// Parse and clamp limit.
 	params.limit = defaultAuditQueryLimit
 	if limitStr := c.QueryParam("limit"); limitStr != "" {
 		l, err := strconv.Atoi(limitStr)
@@ -159,7 +157,7 @@ func parseUnifiedQueryParams(c echo.Context) (unifiedQueryParams, error) {
 		params.limit = maxAuditQueryLimit
 	}
 
-	// Validate cursor (18-REQ-6.E1).
+	// Validate cursor.
 	if params.cursor != "" {
 		ts, id, err := decodeCursor(params.cursor)
 		if err != nil {
@@ -173,7 +171,7 @@ func parseUnifiedQueryParams(c echo.Context) (unifiedQueryParams, error) {
 		params.cursorID = id
 	}
 
-	// Validate since/until timestamps (18-REQ-6.E8) and normalize them to
+	// Validate since/until timestamps and normalize them to
 	// UTC so DuckDB parses them unambiguously.
 	var sinceTime, untilTime time.Time
 	if params.since != "" {
@@ -193,7 +191,7 @@ func parseUnifiedQueryParams(c echo.Context) (unifiedQueryParams, error) {
 		params.until = t.UTC().Format(time.RFC3339Nano)
 	}
 
-	// Validate since < until (18-REQ-6.E7).
+	// Validate since < until.
 	if params.since != "" && params.until != "" {
 		if !sinceTime.Before(untilTime) {
 			return unifiedQueryParams{}, fmt.Errorf("since must be before until")
@@ -204,7 +202,7 @@ func parseUnifiedQueryParams(c echo.Context) (unifiedQueryParams, error) {
 }
 
 // executeUnifiedQuery builds and executes the UNION ALL query over
-// hub_audit_events and agent_audit_events (18-REQ-6.1).
+// hub_audit_events and agent_audit_events.
 func executeUnifiedQuery(db *sql.DB, params unifiedQueryParams) ([]UnifiedAuditEvent, string, bool, error) {
 	// Determine which sources to include based on filters.
 	includeHub := params.source == "" || params.source == "hub"
@@ -285,7 +283,7 @@ func executeUnifiedQuery(db *sql.DB, params unifiedQueryParams) ([]UnifiedAuditE
 		return nil, "", false, fmt.Errorf("unified query iterate: %w", err)
 	}
 
-	// Determine pagination (18-REQ-6.3).
+	// Determine pagination.
 	hasMore := len(events) > params.limit
 	if hasMore {
 		events = events[:params.limit]
@@ -363,7 +361,7 @@ func buildHubSubQuery(params unifiedQueryParams) (string, []any) {
 		args = append(args, params.action)
 	}
 
-	// Cursor-based pagination (18-REQ-6.3).
+	// Cursor-based pagination.
 	if params.cursor != "" {
 		conditions = append(conditions,
 			"("+hubTimestampMicros+" < ? OR ("+hubTimestampMicros+" = ? AND id < ?))")
@@ -425,7 +423,7 @@ func buildAgentSubQuery(params unifiedQueryParams) (string, []any) {
 		args = append(args, params.runID)
 	}
 
-	// Cursor-based pagination (18-REQ-6.3).
+	// Cursor-based pagination.
 	if params.cursor != "" {
 		conditions = append(conditions,
 			"(epoch_us(timestamp) < ? OR (epoch_us(timestamp) = ? AND id < ?))")
@@ -481,8 +479,7 @@ func nullableString(ns sql.NullString) *string {
 }
 
 // ---------------------------------------------------------------------------
-// Transcript handler stub — GET /api/v1/workspaces/:slug/runs/:run_id/transcript
-// Requirements: 18-REQ-7 (full implementation in task group 7)
+// Transcript handler — GET /api/v1/workspaces/:slug/runs/:run_id/transcript
 // ---------------------------------------------------------------------------
 
 // handleTranscript implements GET /api/v1/workspaces/:slug/runs/:run_id/transcript.
@@ -501,7 +498,7 @@ func handleTranscript(store Store, sqliteDB *sql.DB) echo.HandlerFunc {
 			return nil
 		}
 
-		// 18-REQ-7.E1: node_id is required.
+		// node_id is required.
 		if nodeID == "" {
 			return apikit.WriteAPIError(c, http.StatusBadRequest, "node_id is required")
 		}
@@ -543,12 +540,12 @@ var traceEventTypeToRole = map[string]string{
 
 // queryTranscriptMessages queries agent_traces and maps them to transcript
 // messages. Filters by workspace, run_id, and node_id. Unrecognized event
-// types are skipped (18-REQ-7.E5).
+// types are skipped.
 func queryTranscriptMessages(db *sql.DB, workspace, runID, nodeID string) ([]transcriptMsg, error) {
 	var conditions []string
 	var args []any
 
-	// 18-REQ-7.1: Filter by workspace to ensure cross-workspace isolation.
+	// Filter by workspace to ensure cross-workspace isolation.
 	conditions = append(conditions, "workspace = ?")
 	args = append(args, workspace)
 
@@ -576,7 +573,7 @@ func queryTranscriptMessages(db *sql.DB, workspace, runID, nodeID string) ([]tra
 			return nil, fmt.Errorf("transcript scan: %w", err)
 		}
 
-		// 18-REQ-7.E5: Skip unrecognized event types.
+		// Skip unrecognized event types.
 		role, ok := traceEventTypeToRole[eventType]
 		if !ok {
 			continue
@@ -613,7 +610,6 @@ func queryTranscriptMessages(db *sql.DB, workspace, runID, nodeID string) ([]tra
 
 // ---------------------------------------------------------------------------
 // SSE handler — GET /api/v1/events
-// Requirements: 18-REQ-8 (full implementation in task group 7)
 // ---------------------------------------------------------------------------
 
 // handleSSEStream implements GET /api/v1/events — the SSE streaming endpoint.
@@ -632,7 +628,7 @@ func handleSSEStream(store Store, mgr *SSEManager, sqliteDB *sql.DB) echo.Handle
 			return nil
 		}
 
-		// Check connection limit (18-REQ-8.E1).
+		// Check connection limit.
 		if mgr != nil {
 			filters := sseFilters{
 				workspace:         c.QueryParam("workspace"),
@@ -653,8 +649,7 @@ func handleSSEStream(store Store, mgr *SSEManager, sqliteDB *sql.DB) echo.Handle
 			c.Response().Header().Set("Connection", "keep-alive")
 			c.Response().WriteHeader(http.StatusOK)
 
-			// Send initial heartbeat event to confirm the connection is live
-			// (18-REQ-8.8).
+			// Send initial heartbeat event to confirm the connection is live.
 			hb := heartbeatEvent()
 			hbData, _ := json.Marshal(map[string]string{"timestamp": hb.Timestamp})
 			if _, writeErr := fmt.Fprintf(c.Response(), "event: heartbeat\ndata: %s\n\n", hbData); writeErr != nil {
@@ -687,7 +682,7 @@ func handleSSEStream(store Store, mgr *SSEManager, sqliteDB *sql.DB) echo.Handle
 						_, writeErr = fmt.Fprintf(c.Response(), "event: audit_event\ndata: %s\n\n", eventData)
 					}
 
-					// 18-REQ-8.E7: Treat write errors as client disconnect.
+					// Treat write errors as client disconnect.
 					if writeErr != nil {
 						slog.Debug("sse: write failed, treating as disconnect",
 							"conn_id", conn.id, "error", writeErr)

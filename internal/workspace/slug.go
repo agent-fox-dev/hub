@@ -36,7 +36,7 @@ func sanitizeSlug(username, userID string) string {
 
 	// Step 5: If the result is shorter than 2 characters, use fallback.
 	// This check comes before the digit-prefix step because a single digit
-	// (e.g. "7") must trigger the fallback (spec 04-REQ-5.E3), not get
+	// (e.g. "7") must trigger the fallback, not get
 	// the u- prefix which would make it "u-7" and bypass the fallback.
 	if len(s) < 2 {
 		uid := userID

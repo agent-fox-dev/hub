@@ -14,17 +14,17 @@ import (
 // secrets store and returns the appropriate transport.AuthMethod for use in
 // clone operations.
 //
-// Lookup order (09-REQ-6.1, 09-REQ-6.2, 09-REQ-6.3):
+// Lookup order:
 //  1. GIT_PAT → &BasicAuth{Username: "x-token-auth", Password: <pat>}
 //  2. GIT_USERNAME + GIT_PASSWORD → &BasicAuth{Username: <user>, Password: <pass>}
 //  3. No credentials → nil (public repo, pre-feature behavior preserved)
 //
 // Returns a non-nil error (other than NotFoundError) if the secrets store
-// lookup fails unexpectedly (09-REQ-6.E1). Partial credentials
+// lookup fails unexpectedly. Partial credentials
 // (GIT_USERNAME without GIT_PASSWORD) are logged as a warning and treated
-// as no credentials (09-REQ-6.E2).
+// as no credentials.
 func resolveCloneAuth(store *secrets.Store, slug string) (transport.AuthMethod, error) {
-	// Step 1: Look up GIT_PAT (09-REQ-6.1).
+	// Step 1: Look up GIT_PAT.
 	pat, err := store.GetSecretValue("workspace", slug, "GIT_PAT")
 	if err == nil {
 		return &githttp.BasicAuth{
@@ -36,13 +36,13 @@ func resolveCloneAuth(store *secrets.Store, slug string) (transport.AuthMethod, 
 		return nil, fmt.Errorf("lookup GIT_PAT for workspace %q: %w", slug, err)
 	}
 
-	// Step 2: GIT_PAT not found — try GIT_USERNAME + GIT_PASSWORD (09-REQ-6.2).
+	// Step 2: GIT_PAT not found — try GIT_USERNAME + GIT_PASSWORD.
 	username, err := store.GetSecretValue("workspace", slug, "GIT_USERNAME")
 	if err != nil {
 		if !isNotFoundError(err) {
 			return nil, fmt.Errorf("lookup GIT_USERNAME for workspace %q: %w", slug, err)
 		}
-		// Neither GIT_PAT nor GIT_USERNAME found — no credentials (09-REQ-6.3).
+		// Neither GIT_PAT nor GIT_USERNAME found — no credentials.
 		return nil, nil
 	}
 
@@ -52,7 +52,7 @@ func resolveCloneAuth(store *secrets.Store, slug string) (transport.AuthMethod, 
 		if !isNotFoundError(err) {
 			return nil, fmt.Errorf("lookup GIT_PASSWORD for workspace %q: %w", slug, err)
 		}
-		// GIT_USERNAME found but GIT_PASSWORD missing — inconsistent (09-REQ-6.E2).
+		// GIT_USERNAME found but GIT_PASSWORD missing — inconsistent.
 		log.Printf("WARNING: workspace %q has GIT_USERNAME but no GIT_PASSWORD; treating as no credentials", slug)
 		return nil, nil
 	}
@@ -72,14 +72,14 @@ func ResolveCloneAuth(store *secrets.Store, slug string) (transport.AuthMethod, 
 
 // resolveUpstreamAuth looks up upstream-specific credentials for a carry_patch
 // workspace. Falls back to resolveCloneAuth if no upstream-specific secrets
-// are found (15-REQ-5.1).
+// are found.
 //
 // Lookup order:
 //  1. UPSTREAM_GIT_PAT → &BasicAuth{Username: "x-token-auth", Password: <pat>}
 //  2. UPSTREAM_GIT_USERNAME + UPSTREAM_GIT_PASSWORD → &BasicAuth{...}
 //  3. Fall back to resolveCloneAuth (origin credentials or nil)
 func resolveUpstreamAuth(store *secrets.Store, slug string) (transport.AuthMethod, error) {
-	// Step 1: Look up UPSTREAM_GIT_PAT (15-REQ-5.1).
+	// Step 1: Look up UPSTREAM_GIT_PAT.
 	pat, err := store.GetSecretValue("workspace", slug, "UPSTREAM_GIT_PAT")
 	if err == nil {
 		return &githttp.BasicAuth{
@@ -88,15 +88,14 @@ func resolveUpstreamAuth(store *secrets.Store, slug string) (transport.AuthMetho
 		}, nil
 	}
 	if !isNotFoundError(err) {
-		// 15-REQ-5.E2: propagate store errors rather than silently falling back.
+		// Propagate store errors rather than silently falling back.
 		return nil, fmt.Errorf("lookup UPSTREAM_GIT_PAT for workspace %q: %w", slug, err)
 	}
 
-	// Step 2: UPSTREAM_GIT_PAT not found — try UPSTREAM_GIT_USERNAME + UPSTREAM_GIT_PASSWORD (15-REQ-5.1).
+	// Step 2: UPSTREAM_GIT_PAT not found — try UPSTREAM_GIT_USERNAME + UPSTREAM_GIT_PASSWORD.
 	username, err := store.GetSecretValue("workspace", slug, "UPSTREAM_GIT_USERNAME")
 	if err != nil {
 		if !isNotFoundError(err) {
-			// 15-REQ-5.E2: propagate store errors.
 			return nil, fmt.Errorf("lookup UPSTREAM_GIT_USERNAME for workspace %q: %w", slug, err)
 		}
 		// Neither UPSTREAM_GIT_PAT nor UPSTREAM_GIT_USERNAME found — fall back to origin (step 3).
@@ -107,10 +106,9 @@ func resolveUpstreamAuth(store *secrets.Store, slug string) (transport.AuthMetho
 	password, err := store.GetSecretValue("workspace", slug, "UPSTREAM_GIT_PASSWORD")
 	if err != nil {
 		if !isNotFoundError(err) {
-			// 15-REQ-5.E2: propagate store errors.
 			return nil, fmt.Errorf("lookup UPSTREAM_GIT_PASSWORD for workspace %q: %w", slug, err)
 		}
-		// 15-REQ-5.E1: UPSTREAM_GIT_USERNAME set but UPSTREAM_GIT_PASSWORD absent —
+		// UPSTREAM_GIT_USERNAME set but UPSTREAM_GIT_PASSWORD absent —
 		// skip username/password branch, fall back to resolveCloneAuth.
 		return resolveCloneAuth(store, slug)
 	}
@@ -122,7 +120,7 @@ func resolveUpstreamAuth(store *secrets.Store, slug string) (transport.AuthMetho
 }
 
 // ResolveUpstreamAuth is an exported wrapper around resolveUpstreamAuth for
-// use by the carry-patch package (16-REQ-5.1). It validates that upstream
+// use by the carry-patch package. It validates that upstream
 // credentials can be resolved for the given workspace slug.
 func ResolveUpstreamAuth(store *secrets.Store, slug string) error {
 	_, err := resolveUpstreamAuth(store, slug)

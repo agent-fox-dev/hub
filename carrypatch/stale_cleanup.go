@@ -8,7 +8,7 @@ import (
 )
 
 // CleanupStaleRebuildWorktrees removes the rebuild worktrees left behind by a
-// hub that died mid-run (01-REQ-8.3). For every <workspaceRoot>/*/rebuild
+// hub that died mid-run. For every <workspaceRoot>/*/rebuild
 // directory it deletes the directory and then runs `git worktree prune` in the
 // matching <workspaceRoot>/<slug>/trunk, which drops the registrations whose
 // directories are gone. Each removal is logged at info level with the slug
@@ -16,9 +16,9 @@ import (
 //
 // It is meant to run once at startup, before the job queue starts, so that no
 // rebuild is using one of those directories. It never touches the trunk's
-// checkout and never fails: a missing trunk is skipped with a warning
-// (01-REQ-8.4), and removal or prune errors are logged and the remaining
-// workspaces are still processed (01-REQ-8.5).
+// checkout and never fails: a missing trunk is skipped with a warning,
+// and removal or prune errors are logged and the remaining workspaces are
+// still processed.
 func CleanupStaleRebuildWorktrees(ctx context.Context, workspaceRoot string, logger *slog.Logger) {
 	if logger == nil {
 		logger = slog.New(slog.DiscardHandler)

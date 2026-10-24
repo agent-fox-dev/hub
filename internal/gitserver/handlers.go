@@ -55,7 +55,7 @@ func RegisterPostPushHook(fn PostPushHookFunc) {
 //
 // Must be called after NewServer and before Start.
 func MountGitHandlers(e *echo.Echo, db *sql.DB, workspaceRoot string) error {
-	// The git server applies token workspace bindings (spec 33), so it never
+	// The git server applies token workspace bindings, so it never
 	// runs without their table; nothing is registered if it cannot be made.
 	if err := wsaccess.InitBindingSchema(db); err != nil {
 		return fmt.Errorf("token binding schema init: %w", err)
@@ -151,8 +151,8 @@ func handleInfoRefs(db *sql.DB, srv transport.Transport) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		service := c.QueryParam("service")
 		if service != "git-upload-pack" && service != "git-receive-pack" {
-			// Per 06-REQ-1.E1, reject invalid service with HTTP 403 and
-			// a pkt-line error body.
+			// Reject an invalid service with HTTP 403 and a pkt-line error
+			// body.
 			c.Response().Header().Set("Content-Type", "text/plain")
 			c.Response().WriteHeader(http.StatusForbidden)
 			_, _ = c.Response().Write(encodePktLine("ERR invalid or missing service parameter\n"))
@@ -305,7 +305,7 @@ func handleReceivePack(db *sql.DB, baseLoader *WorkspaceLoader, wsRoot string) e
 		// before producing any per-ref results (e.g. unpack error
 		// without report-status capability).
 		//
-		// 22-REQ-8.3: The exception is a hook rejection. A client that did
+		// The exception is a hook rejection. A client that did
 		// not request report-status gets (nil, firstErr) from go-git, and
 		// firstErr may be the hook's rejection text. A hook rejection
 		// happens at ref-write time, after a successful unpack, so it is not
@@ -327,20 +327,20 @@ func handleReceivePack(db *sql.DB, baseLoader *WorkspaceLoader, wsRoot string) e
 			}
 		}
 
-		// Update head_sha after successful push (06-REQ-6.1).
+		// Update head_sha after the push.
 		// Errors are logged but do not fail the push response.
-		// 22-REQ-5.4: updateHeadSHA is called for every push, including
+		// updateHeadSHA is called for every push, including
 		// rejected-only pushes. It reads the trunk HEAD and is harmless
 		// when nothing changed.
 		updateHeadSHA(db, slug, wsRoot)
 
-		// 22-REQ-5.1: Determine which ref updates were accepted.
+		// Determine which ref updates were accepted.
 		// An update is accepted when its report-status entry is "ok",
 		// or, when no report status is available, unless the pre-receive
 		// hook rejected it.
 		accepted := acceptedCommands(req.Commands, rs, hookRejected)
 
-		// 22-REQ-5.2, 22-REQ-5.3: Only accepted commands drive audit
+		// Only accepted commands drive audit
 		// and post-push hook. If no update was accepted, emit no event
 		// and run no hook.
 		if len(accepted) > 0 {
@@ -414,7 +414,7 @@ func writeRefAdvertisement(w io.Writer, ar *packp.AdvRefs) {
 
 // updateHeadSHA reads the current HEAD commit SHA from the local clone
 // and updates the head_sha column in the database. Errors are logged
-// but do not fail the push response per 06-REQ-6.E1 and 06-REQ-6.E2.
+// but do not fail the push response.
 func updateHeadSHA(db *sql.DB, slug, wsRoot string) {
 	repoPath := filepath.Join(wsRoot, slug, "trunk")
 	repo, err := git.PlainOpen(repoPath)
@@ -486,7 +486,7 @@ func requireGitScope(c echo.Context, service string) error {
 }
 
 // hasGitScope checks whether the permissions list satisfies the required scope.
-// git:write implies git:read per 06-REQ-3.2.
+// git:write implies git:read.
 func hasGitScope(permissions []string, required string) bool {
 	for _, p := range permissions {
 		if p == required {

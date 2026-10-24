@@ -71,7 +71,7 @@ func (h *Handler) HandleMergeJob(ctx context.Context, payload json.RawMessage) (
 		return nil, false, newMergeJobError("invalid_payload", nil)
 	}
 
-	// 18-REQ-2.3: Emit hub.merge.fail on any error return from this function.
+	// Emit hub.merge.fail on any error return from this function.
 	defer func() {
 		if retErr != nil {
 			h.emitMergeAudit(ctx, p.WorkspaceSlug, "hub.merge.fail", map[string]any{
@@ -116,7 +116,7 @@ func (h *Handler) HandleMergeJob(ctx context.Context, payload json.RawMessage) (
 
 	// Step 2: Fetch latest target branch state from upstream remote.
 	if err := h.FetchTarget(ctx, p.WorkspaceSlug, p.TargetBranch); err != nil {
-		return nil, true, err // retryable (12-REQ-6.E5)
+		return nil, true, err // retryable
 	}
 
 	// Step 3: Capture baseSHA (target HEAD after fetch, before merge).
@@ -159,7 +159,7 @@ func (h *Handler) HandleMergeJob(ctx context.Context, payload json.RawMessage) (
 
 	// Step 6: Update target branch ref to rebased source HEAD (fast-forward).
 	if err := h.UpdateTargetRef(ctx, p.WorkspaceSlug, p.TargetBranch, mergedSHA); err != nil {
-		return nil, true, err // retryable (12-REQ-6.E4)
+		return nil, true, err // retryable
 	}
 
 	// Step 7: Delete source branch ref. Move HEAD off the source branch
@@ -183,7 +183,6 @@ func (h *Handler) HandleMergeJob(ctx context.Context, payload json.RawMessage) (
 		return nil, false, err
 	}
 
-	// 18-REQ-2.2: Emit hub.merge.complete audit event.
 	h.emitMergeAudit(ctx, p.WorkspaceSlug, "hub.merge.complete", map[string]any{
 		"base_sha":   baseSHA,
 		"merged_sha": mergedSHA,

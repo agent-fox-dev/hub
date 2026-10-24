@@ -30,8 +30,8 @@ type SingleBranchFetchFunc func(ctx context.Context, repoPath, branch string, au
 // an unset variable, or a lookup error. This is the shared helper that both
 // sync_handlers.go and the branch resolver use.
 //
-// Rules (20-REQ-1.2 / 20-REQ-1.3): only the exact, case-sensitive string
-// "origin" selects origin mode. Everything else means hub.
+// Only the exact, case-sensitive string "origin" selects origin mode.
+// Everything else means hub.
 func ParsePatchBranchSource(getVariable GetVariableFunc, slug string) string {
 	if getVariable == nil {
 		return "hub"
@@ -46,7 +46,7 @@ func ParsePatchBranchSource(getVariable GetVariableFunc, slug string) string {
 // NewBranchResolverHook returns the BranchResolverFunc that resolves
 // a branch name in a workspace trunk.
 //
-// PATCH_BRANCH_SOURCE is read once per request (21-REQ-1.5): when the context
+// PATCH_BRANCH_SOURCE is read once per request: when the context
 // carries a wsaccess request scope, the first resolution in that request reads
 // the variable and every later resolution in the same request (the remaining
 // elements of a batch) reuses that value. Without a request scope each call
@@ -88,7 +88,7 @@ func newBranchResolverHookWithLockFunc(
 			return "", fmt.Errorf("branch resolver: open runner for %s: %w", slug, err)
 		}
 
-		// 21-REQ-1.5: Read PATCH_BRANCH_SOURCE once per request. The memo
+		// Read PATCH_BRANCH_SOURCE once per request. The memo
 		// lives in the request scope the handler installs on the context, so
 		// every element of a batch resolves in the same mode.
 		mode := requestScoped(ctx, "PATCH_BRANCH_SOURCE/"+slug, func() string {
@@ -102,7 +102,7 @@ func newBranchResolverHookWithLockFunc(
 		}
 
 		// Step 1 failed — we need to write, so take the lock.
-		// 21-REQ-7.1: Take host.TryLock before writing anything.
+		// Take the workspace lock before writing anything.
 		unlock, ok := lockFunc(slug)
 		if !ok {
 			return "", newBranchResolveError(BranchResolveKindWorkspaceBusy,
@@ -110,7 +110,8 @@ func newBranchResolverHookWithLockFunc(
 		}
 		defer unlock()
 
-		// 21-REQ-7.2: Re-check step 1 under the lock.
+		// Re-check step 1 under the lock: another request may have created
+		// the branch meanwhile.
 		method, err = resolveStep1(ctx, runner, branch)
 		if err == nil {
 			return method, nil
@@ -161,10 +162,10 @@ func revParseRef(ctx context.Context, runner GitRunner, ref string) (string, err
 // update-ref. If the CAS fails because the ref now exists, it re-runs step 1
 // and reports "local". Any other failure is an internal error.
 func createLocalBranch(ctx context.Context, runner GitRunner, slug, branch, sha, method string) (string, error) {
-	// 21-REQ-2.1: Use update-ref with the all-zero old value for CAS.
+	// Use update-ref with the all-zero old value for CAS.
 	_, err := runner.Run(ctx, "update-ref", "refs/heads/"+branch, sha, zeroSHA)
 	if err != nil {
-		// 21-REQ-2.2: If CAS fails because the ref now exists, report local.
+		// If CAS fails because the ref now exists, report local.
 		existingSHA, checkErr := revParseRef(ctx, runner, "refs/heads/"+branch)
 		if checkErr == nil && existingSHA != "" {
 			return resolutionLocal, nil
@@ -193,7 +194,7 @@ var ErrBranchNotOnOrigin = errors.New("branch not found on origin")
 //
 // The caller must hold the workspace lock before calling this function.
 func resolveOriginFetch(ctx context.Context, runner GitRunner, slug, branch, repoPath string, resolveAuth ResolveAuthFunc, fetch SingleBranchFetchFunc) (string, error) {
-	// 21-REQ-3.5: Resolve origin credentials first.
+	// Resolve origin credentials first.
 	auth, err := resolveAuth(slug)
 	if err != nil {
 		slog.Error("branch resolver: failed to resolve origin credentials",
@@ -204,20 +205,19 @@ func resolveOriginFetch(ctx context.Context, runner GitRunner, slug, branch, rep
 		return "", newBranchResolveError(BranchResolveKindOriginCredentials, err)
 	}
 
-	// 21-REQ-3.1: Fetch the single branch from the fork.
+	// Fetch the single branch from the fork. NoErrAlreadyUpToDate is success.
 	err = fetch(ctx, repoPath, branch, auth)
-	// 21-REQ-3.2: NoErrAlreadyUpToDate is success.
 	if errors.Is(err, git.NoErrAlreadyUpToDate) {
 		err = nil
 	}
 	if err != nil {
-		// 21-REQ-3.3 / 21-REQ-3.6: Classify "branch not found on origin"
-		// from the sentinel error, never from error text.
+		// Classify "branch not found on origin" from the sentinel error,
+		// never from error text.
 		if errors.Is(err, ErrBranchNotOnOrigin) {
 			return "", newBranchResolveError(BranchResolveKindNotFound,
 				fmt.Errorf("branch %q not found on origin for workspace %s", branch, slug))
 		}
-		// 21-REQ-3.4: Any other fetch failure is an origin fetch failure.
+		// Any other fetch failure is an origin fetch failure.
 		slog.Error("branch resolver: origin fetch failed",
 			"slug", slug,
 			"branch", branch,
@@ -226,8 +226,8 @@ func resolveOriginFetch(ctx context.Context, runner GitRunner, slug, branch, rep
 		return "", newBranchResolveError(BranchResolveKindOriginFetchFailed, err)
 	}
 
-	// 21-REQ-3.2: Fetch succeeded (including NoErrAlreadyUpToDate).
-	// Re-check the tracking ref.
+	// Fetch succeeded (including NoErrAlreadyUpToDate). Re-check the
+	// tracking ref.
 	trackingSHA, err := revParseRef(ctx, runner, "refs/remotes/origin/"+branch)
 	if err != nil {
 		// Tracking ref still absent after a successful fetch → not found.

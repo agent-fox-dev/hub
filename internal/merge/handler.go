@@ -79,9 +79,8 @@ type Handler struct {
 }
 
 // emitMergeAudit emits a hub-internal audit event for merge operations.
-// If the Audit emitter is nil, emission is silently skipped (18-REQ-2.5,
-// 18-PROP-7). If Emit returns an error, the error is logged and the caller
-// is unaffected (18-REQ-2.E1, 18-PROP-1).
+// If the Audit emitter is nil, emission is silently skipped. If Emit returns
+// an error, the error is logged and the caller is unaffected.
 func (h *Handler) emitMergeAudit(ctx context.Context, workspace, eventType string, metadata map[string]any) {
 	if h.Audit == nil {
 		return

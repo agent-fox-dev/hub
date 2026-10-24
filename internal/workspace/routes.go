@@ -34,14 +34,14 @@ var recordedAPIKitRoutes []*echo.Route
 // workspace-specific permission scopes, then registers workspace routes.
 //
 // It also creates the token workspace bindings table and installs the two
-// guards that confine a bound token (spec 33): the apikit route guard on the
+// guards that confine a bound token: the apikit route guard on the
 // root Echo instance for the routes MountHandlers added, and the binding
 // guard on the API group, ahead of every hub route registered afterwards.
 //
 // Must be called after NewServer and before Start.
 func MountWorkspaceHandlers(s *apikit.Server, db *apikit.DB, extraPerms ...apikit.Permission) error {
 	// Initialise the workspaces table schema, then the token workspace
-	// bindings (spec 33), before anything is registered.
+	// bindings, before anything is registered.
 	if err := InitSchema(db.SqlDB); err != nil {
 		return fmt.Errorf("workspace schema init: %w", err)
 	}
@@ -64,7 +64,7 @@ func MountWorkspaceHandlers(s *apikit.Server, db *apikit.DB, extraPerms ...apiki
 		return fmt.Errorf("mount handlers: %w", err)
 	}
 
-	// Confine tokens bound to a workspace (spec 33). apikit's routes exist
+	// Confine tokens bound to a workspace. apikit's routes exist
 	// now and never see group middleware added later, so the routes
 	// MountHandlers added are guarded on the root instance, before apikit
 	// authenticates; every hub route registered on the API group from here
@@ -93,7 +93,7 @@ func MountWorkspaceHandlers(s *apikit.Server, db *apikit.DB, extraPerms ...apiki
 func RegisterRoutes(api *echo.Group, db *sql.DB) error {
 	api.POST("/workspaces", handleCreateWorkspace(db))
 	// A bound token may list workspaces: the handler confines the list to
-	// its own (spec 33).
+	// its own.
 	wsaccess.AllowBoundTokens(api.GET("/workspaces", handleListWorkspaces(db)))
 	api.GET("/workspaces/:slug", handleGetWorkspace(db))
 	api.PATCH("/workspaces/:slug", handleUpdateWorkspace(db))
@@ -102,7 +102,7 @@ func RegisterRoutes(api *echo.Group, db *sql.DB) error {
 	api.POST("/workspaces/:slug/sync", handleSyncWorkspace(db))
 	api.POST("/workspaces/:slug/reclone", handleRecloneWorkspace(db))
 	api.DELETE("/workspaces/:slug", handleDeleteWorkspace(db))
-	// Push one branch of the trunk to origin (spec 38). Workspace-scoped, so
+	// Push one branch of the trunk to origin. Workspace-scoped, so
 	// a bound token reaches it on its own slug only.
 	api.POST("/workspaces/:slug/branches/:name/push", handleBranchPush(db))
 

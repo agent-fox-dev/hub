@@ -23,11 +23,9 @@ import (
 // resets workspace state (status='pending', clears sync_error and
 // upstream_head_sha), enqueues a clone job, and returns the workspace with
 // status='pending'.
-//
-// Requirements: 13-REQ-7
 func handleRecloneWorkspace(db *sql.DB) echo.HandlerFunc {
 	return func(c echo.Context) error {
-		// ---- Auth check (13-REQ-7.E5, 13-REQ-8) ----
+		// ---- Auth check ----
 		auth := apikit.GetAuthInfo(c)
 		if auth == nil {
 			return respondError(c, http.StatusUnauthorized, "authentication required")
@@ -39,7 +37,7 @@ func handleRecloneWorkspace(db *sql.DB) echo.HandlerFunc {
 
 		slug := c.Param("slug")
 
-		// ---- Look up workspace (13-REQ-7.E6) ----
+		// ---- Look up workspace ----
 		// Reclone discards the local clone, so it is restricted to the
 		// workspace owner (or an admin token); a member of its org gets 403,
 		// anyone else 404.
@@ -55,7 +53,7 @@ func handleRecloneWorkspace(db *sql.DB) echo.HandlerFunc {
 				"workspace is archived and must be reactivated before recloning")
 		}
 
-		// ---- Reject concurrent reclone (13-REQ-7.E7) ----
+		// ---- Reject a concurrent reclone ----
 		if ws.Status == "pending" || ws.Status == "cloning" {
 			return respondError(c, http.StatusConflict,
 				"clone operation already in progress; cannot reclone while status is '"+ws.Status+"'")
@@ -70,14 +68,13 @@ func handleRecloneWorkspace(db *sql.DB) echo.HandlerFunc {
 		defer unlock()
 
 		// A rebuild keeps a worktree under the workspace directory without
-		// holding the lock; refuse to delete it while one is active
-		// (01-REQ-5.6).
+		// holding the lock; refuse to delete it while one is active.
 		if wslock.RebuildActive(slug) {
 			return respondErrorWithType(c, http.StatusConflict,
 				"another operation is running on this workspace; retry later", "workspace_busy")
 		}
 
-		// ---- Archive flow: push local commits (13-REQ-7.1, 13-REQ-7.E1) ----
+		// ---- Archive flow: push local commits ----
 		repoPath := filepath.Join(defaultWorkspaceRoot, slug, "trunk")
 
 		// Record current HEAD SHA before deletion for logging purposes.
@@ -92,7 +89,7 @@ func handleRecloneWorkspace(db *sql.DB) echo.HandlerFunc {
 
 		// Attempt to push local commits to upstream with the workspace's
 		// stored credentials.
-		// 13-ERR-11: If push fails, log a warning and continue with reclone.
+		// If the push fails, log a warning and continue with the reclone.
 		if archiveOpenAndPushFn != nil {
 			pushAuth, authErr := resolveCloneAuth(secrets.NewStore(db), slug)
 			if authErr != nil {
@@ -103,16 +100,16 @@ func handleRecloneWorkspace(db *sql.DB) echo.HandlerFunc {
 			}
 		}
 
-		// ---- Delete local clone directory (13-REQ-7.E2) ----
+		// ---- Delete local clone directory ----
 		wsDir := filepath.Join(defaultWorkspaceRoot, slug)
 		if err := os.RemoveAll(wsDir); err != nil {
-			// 13-ERR-12: Directory deletion failed. Do not enqueue clone job;
+			// Directory deletion failed. Do not enqueue a clone job;
 			// workspace state is not transitioned to 'pending'.
 			return respondError(c, http.StatusInternalServerError,
 				fmt.Sprintf("failed to delete workspace directory: %v", err))
 		}
 
-		// ---- Atomic DB update (13-REQ-7.1, 13-REQ-7.2) ----
+		// ---- Atomic DB update ----
 		// Set status='pending', clear sync_error and upstream_head_sha.
 		now := time.Now().UTC().Format(timestampFormat)
 		_, err := db.Exec(
@@ -124,7 +121,7 @@ func handleRecloneWorkspace(db *sql.DB) echo.HandlerFunc {
 				"failed to update workspace state for reclone")
 		}
 
-		// ---- Enqueue clone job (13-REQ-7.1, 13-REQ-7.4) ----
+		// ---- Enqueue clone job ----
 		// The queue may be nil during tests that don't initialize it.
 		if defaultQueue != nil {
 			defaultQueue.Enqueue(CloneJob{
@@ -134,7 +131,7 @@ func handleRecloneWorkspace(db *sql.DB) echo.HandlerFunc {
 			})
 		}
 
-		// ---- Return updated workspace (13-REQ-7.1) ----
+		// ---- Return updated workspace ----
 		updated, err := getWorkspaceBySlug(db, slug)
 		if err != nil || updated == nil {
 			return respondError(c, http.StatusInternalServerError,

@@ -51,12 +51,12 @@ type Workspace struct {
 	CreatedAt   string
 	UpdatedAt   string
 
-	// Sync-related fields (13-REQ-1).
+	// Sync-related fields.
 	UpstreamHeadSHA *string // nullable: upstream HEAD SHA at last fetch
 	LastSyncAt      *string // nullable: RFC 3339 timestamp of last successful sync
 	SyncError       *string // nullable: the last sync's error; nil when it succeeded
 
-	// Carry-patch fields (15-REQ-1).
+	// Carry-patch fields.
 	WorkspaceMode     string  // standard (default) or carry_patch
 	UpstreamURL       *string // nullable: upstream repo URL for carry_patch workspaces
 	IntegrationBranch *string // nullable: integration branch name for carry_patch workspaces
@@ -68,7 +68,7 @@ type Workspace struct {
 // insertWorkspace inserts a new workspace record into the workspaces table.
 // It sets created_at and updated_at to the current time in RFC 3339 format.
 // If Status is empty, it defaults to "pending".
-// If WorkspaceMode is empty, it defaults to "standard" (15-REQ-1.3).
+// If WorkspaceMode is empty, it defaults to "standard".
 func insertWorkspace(db *sql.DB, ws *Workspace) error {
 	now := time.Now().UTC().Format(timestampFormat)
 	ws.CreatedAt = now
@@ -122,7 +122,7 @@ func scanWorkspaceRow(scanner interface{ Scan(dest ...any) error }) (*Workspace,
 	} else {
 		ws.Settings = DefaultSettings()
 	}
-	// 15-REQ-1: Coalesce NULL workspace_mode to default.
+	// A NULL workspace_mode (a row from before the column) reads as the default.
 	if workspaceMode != nil {
 		ws.WorkspaceMode = *workspaceMode
 	} else {
@@ -215,15 +215,14 @@ func reactivateWorkspaceDB(db *sql.DB, slug string) (*Workspace, error) {
 }
 
 // deleteWorkspace physically removes a workspace row and cascade-deletes all
-// associated secrets and variables within a single database transaction
-// (07-REQ-17.1, 07-REQ-17.2).
+// associated secrets and variables within a single database transaction.
 func deleteWorkspace(db *sql.DB, slug string) error {
 	_, err := deleteWorkspaceRevoked(db, slug)
 	return err
 }
 
 // deleteWorkspaceRevoked is deleteWorkspace, which also retires the tokens
-// bound to the workspace in the same transaction (34-REQ-5.1): before the
+// bound to the workspace in the same transaction: before the
 // workspace row goes, it revokes the live ones and deletes every binding of
 // the slug. It returns the sorted ids it revoked, empty when none; a failure
 // of any step rolls the whole deletion back.
@@ -251,12 +250,12 @@ func deleteWorkspaceRevoked(db *sql.DB, slug string) ([]string, error) {
 		return nil, fmt.Errorf("workspace %q not found", slug)
 	}
 
-	// Cascade-delete associated patches (15-REQ-13.1).
+	// Cascade-delete associated patches.
 	if _, err := tx.Exec(`DELETE FROM patches WHERE workspace_slug = ?`, slug); err != nil {
 		return nil, fmt.Errorf("delete workspace %q patches: %w", slug, err)
 	}
 
-	// Cascade-delete associated secrets and variables (07-REQ-17.1).
+	// Cascade-delete associated secrets and variables.
 	if _, err := tx.Exec(`DELETE FROM secrets WHERE owner_type = 'workspace' AND owner_id = ?`, slug); err != nil {
 		return nil, fmt.Errorf("delete workspace %q secrets: %w", slug, err)
 	}

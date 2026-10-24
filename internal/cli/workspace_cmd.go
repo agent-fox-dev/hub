@@ -153,7 +153,7 @@ func newCreateCmd() *cobra.Command {
 					"git credentials require an HTTPS git_url"))
 			}
 
-			// 15-REQ-2: Validate --workspace-mode and carry-patch flags.
+			// Validate --workspace-mode and the carry-patch flags before any API call.
 			if cmd.Flags().Changed("workspace-mode") {
 				validWsModes := map[string]bool{"standard": true, "carry_patch": true}
 				if !validWsModes[workspaceMode] {
@@ -541,7 +541,6 @@ func newDeleteCmd() *cobra.Command {
 // stdout; the message naming the branches goes to stderr. When combined with
 // --wait, the diverged check runs after the rebuild wait finishes, and a wait
 // failure (exit 1) takes precedence.
-// Requirements: 13-REQ-2.3, 13-REQ-8, 20-REQ-6.4, 20-REQ-6.5, 20-REQ-6.6
 func newSyncCmd() *cobra.Command {
 	var (
 		resetToUpstream bool
@@ -652,7 +651,6 @@ func checkDiverged(cmd *cobra.Command, result any, failOnDiverged bool) error {
 // newRecloneCmd returns the 'workspace reclone' subcommand.
 // It triggers a nuclear reclone: archives the workspace, deletes the
 // local clone, and re-clones from upstream.
-// Requirements: 13-REQ-7.3, 13-REQ-7.E4
 func newRecloneCmd() *cobra.Command {
 	var confirm bool
 
@@ -665,7 +663,7 @@ func newRecloneCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			slug := args[0]
 
-			// 13-REQ-7.E4: --confirm flag is required as a CLI-only safety check.
+			// --confirm is a CLI-only safety check; the API has no such flag.
 			if !confirm {
 				return apikit.CLIHandleError(cmd, apikit.NewCLIError(2,
 					"--confirm flag is required to reclone a workspace"))
@@ -694,8 +692,6 @@ func newRecloneCmd() *cobra.Command {
 // newPushCmd returns the 'workspace push' subcommand. It sends
 // POST /api/v1/workspaces/:slug/branches/:name/push with {"force": <bool>},
 // the branch name as one escaped path segment, and prints the response.
-//
-// Requirements: 38-REQ-9
 func newPushCmd() *cobra.Command {
 	var force bool
 

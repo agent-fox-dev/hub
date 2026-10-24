@@ -38,7 +38,6 @@ func SandboxCmd() *cobra.Command {
 // newSandboxProfilesCmd returns the 'sandbox profiles' subcommand.
 // It sends GET /api/v1/sandbox-profiles and prints the response, the list of
 // the deployment's sandbox profiles, as one JSON document.
-// Requirements: 25-REQ-9.1, 25-REQ-9.2, 25-REQ-9.3
 func newSandboxProfilesCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:           "profiles",
@@ -75,7 +74,6 @@ var writeTokenFile = func(f *os.File, token string) error {
 // response carries the lease token, which hub shows once: without --token-file
 // it is printed with the lease and stderr says so; with --token-file it is
 // written to the file with mode 0600 and kept out of stdout.
-// Requirements: 26-REQ-10
 func newSandboxCreateCmd() *cobra.Command {
 	var profile, purpose, ttl, tokenFile string
 	var labels []string

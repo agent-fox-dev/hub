@@ -132,7 +132,7 @@ func handleCompleteSession(store Store, metrics *Metrics, sqliteDB *sql.DB) echo
 		if !wsaccess.IsAdmin(auth) && auth.UserID != sess.CredentialID {
 			return apikit.WriteAPIError(c, http.StatusForbidden, "not session owner")
 		}
-		// A PAT bound to another workspace does not own the session (spec 33).
+		// A PAT bound to another workspace does not own the session.
 		if sqliteDB != nil {
 			denied, err := wsaccess.DeniesWorkspace(sqliteDB, auth, sess.WorkspaceSlug, wsaccess.SiteOf(c, http.StatusForbidden))
 			if err != nil {
@@ -215,7 +215,7 @@ func handleReportUsage(store Store, metrics *Metrics, sqliteDB *sql.DB) echo.Han
 		if !wsaccess.IsAdmin(auth) && auth.UserID != sess.CredentialID {
 			return apikit.WriteAPIError(c, http.StatusForbidden, "not session owner")
 		}
-		// A PAT bound to another workspace does not own the session (spec 33).
+		// A PAT bound to another workspace does not own the session.
 		if sqliteDB != nil {
 			denied, err := wsaccess.DeniesWorkspace(sqliteDB, auth, sess.WorkspaceSlug, wsaccess.SiteOf(c, http.StatusForbidden))
 			if err != nil {
@@ -523,7 +523,7 @@ func handleWorkspaceCost(store Store, sqliteDB *sql.DB) echo.HandlerFunc {
 // hasWorkspaceAccess reports whether the caller may read the sessions and
 // cost of the workspace slug: the binding first (a PAT bound to another
 // workspace is refused, and reported with the request's method, route and
-// status 403, spec 34), then wsaccess.AuthorizeWorkspace with NeedRead (an
+// status 403), then wsaccess.AuthorizeWorkspace with NeedRead (an
 // admin token, the owner or a member of the workspace's org), and the
 // workspace must not be archived. Any failed lookup denies access.
 func hasWorkspaceAccess(c echo.Context, sqliteDB *sql.DB, auth *apikit.AuthInfo, slug string) bool {

@@ -34,7 +34,6 @@ func RerereCmd() *cobra.Command {
 // newRerereListCmd returns the 'rerere list' subcommand.
 // It sends GET /api/v1/workspaces/:slug/rerere and prints the list of
 // recorded resolutions.
-// Requirements: 16-REQ-8.1
 func newRerereListCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:           "list <workspace-slug>",
@@ -61,10 +60,8 @@ func newRerereListCmd() *cobra.Command {
 
 // newRerereForgetCmd returns the 'rerere forget' subcommand.
 // It sends DELETE /api/v1/workspaces/:slug/rerere/<pathspec> and prints
-// confirmation.
-// 16-REQ-8.E1: The pathspec is appended as a path segment after /rerere/
+// confirmation. The pathspec is appended as a path segment after /rerere/
 // without additional URL encoding of slashes.
-// Requirements: 16-REQ-8.2
 func newRerereForgetCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:           "forget <workspace-slug> <pathspec>",
@@ -78,7 +75,7 @@ func newRerereForgetCmd() *cobra.Command {
 				return apikit.CLIHandleError(cmd, err)
 			}
 
-			// 16-REQ-8.E1: the pathspec keeps its slashes (wildcard route);
+			// The pathspec keeps its slashes (wildcard route);
 			// each element is percent-encoded. A rerere id works the same way.
 			path := apiPath("workspaces", args[0], "rerere") + "/" + escapePathKeepSlashes(args[1])
 

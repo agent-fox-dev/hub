@@ -27,7 +27,6 @@ func newForgeWebhookCmd() *cobra.Command {
 // or an empty object for --generate and for none of them, and prints the hub's answer: the URL to
 // give the forge and, when the hub made the secret up, the secret. That is the one time the hub
 // shows it, so a line on stderr says so.
-// Requirements: 32-REQ-10.1, 32-REQ-10.2, 32-REQ-10.3, 32-REQ-10.4
 func newWebhookSetCmd() *cobra.Command {
 	var secret string
 	var fromStdin, generate bool
@@ -83,7 +82,6 @@ func newWebhookSetCmd() *cobra.Command {
 // newWebhookUnsetCmd returns the 'forge webhook unset' subcommand.
 // It sends DELETE /api/v1/workspaces/:slug/forge/webhook, after which the hub refuses the
 // forge's deliveries, and prints {"status":"unset","workspace":...}.
-// Requirements: 32-REQ-10.5
 func newWebhookUnsetCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:           "unset <workspace-slug>",
@@ -104,7 +102,6 @@ func newWebhookUnsetCmd() *cobra.Command {
 // It sends GET /api/v1/workspaces/:slug/forge/deliveries with --since and --limit when they are
 // set, as given: the hub validates them. It prints the log of the forge's deliveries, newest
 // first.
-// Requirements: 32-REQ-10.6
 func newForgeDeliveriesCmd() *cobra.Command {
 	var since, limit string
 	cmd := &cobra.Command{

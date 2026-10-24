@@ -11,8 +11,6 @@ import (
 
 // PatchCmd returns the 'patch' parent cobra.Command with subcommands
 // for add, list, remove, reorder, and update.
-//
-// Requirements: 15-REQ-14
 func PatchCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:           "patch",
@@ -37,7 +35,6 @@ func PatchCmd() *cobra.Command {
 // newPatchAddCmd returns the 'patch add' subcommand.
 // It sends POST /api/v1/workspaces/:slug/patches with the provided branch name
 // and optional position, upstream-pr, and description flags.
-// Requirements: 15-REQ-14.1
 func newPatchAddCmd() *cobra.Command {
 	var (
 		branch          string
@@ -61,7 +58,6 @@ The resolution method is recorded in the hub.patch.create audit event.`,
 		SilenceErrors: true,
 		SilenceUsage:  true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// 15-REQ-14.E1: --branch is required.
 			if branch == "" {
 				return apikit.CLIHandleError(cmd, apikit.NewCLIError(2, "--branch flag is required"))
 			}
@@ -112,7 +108,6 @@ The resolution method is recorded in the hub.patch.create audit event.`,
 // newPatchListCmd returns the 'patch list' subcommand.
 // It sends GET /api/v1/workspaces/:slug/patches and prints the patch list
 // in position order.
-// Requirements: 15-REQ-14.2
 func newPatchListCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:           "list <workspace-slug>",
@@ -138,7 +133,6 @@ func newPatchListCmd() *cobra.Command {
 
 // newPatchRemoveCmd returns the 'patch remove' subcommand.
 // It sends DELETE /api/v1/workspaces/:slug/patches/:id and prints confirmation.
-// Requirements: 15-REQ-14.3
 func newPatchRemoveCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:           "remove <workspace-slug> <patch-id>",
@@ -174,7 +168,6 @@ func newPatchRemoveCmd() *cobra.Command {
 // newPatchReorderCmd returns the 'patch reorder' subcommand.
 // It sends POST /api/v1/workspaces/:slug/patches/reorder with the provided
 // patch IDs in the given order and prints the reordered list.
-// Requirements: 15-REQ-14.4
 func newPatchReorderCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:           "reorder <workspace-slug> <patch-id-1> [patch-id-2] ...",
@@ -205,7 +198,6 @@ func newPatchReorderCmd() *cobra.Command {
 // newPatchUpdateCmd returns the 'patch update' subcommand.
 // It sends PATCH /api/v1/workspaces/:slug/patches/:id with the provided fields
 // and prints the updated patch.
-// Requirements: 15-REQ-14.5
 func newPatchUpdateCmd() *cobra.Command {
 	var (
 		status      string
@@ -290,8 +282,6 @@ func newPatchRestoreCmd() *cobra.Command {
 // newPatchResetToOriginCmd returns the 'patch reset-to-origin' subcommand.
 // It sends POST /api/v1/workspaces/:slug/patches/:id/reset-to-origin with no
 // body to move a patch branch to the fork's current tip.
-//
-// Requirements: 23-REQ-5
 func newPatchResetToOriginCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "reset-to-origin <workspace-slug> <patch-id>",

@@ -72,9 +72,9 @@ func SiteOf(c echo.Context, status int) RefusalSite {
 }
 
 // DeniesWorkspace reports whether the credential in auth is a PAT bound to a
-// workspace other than slug. It is the rule every enforcing layer applies
-// (spec 33): to such a token, slug does not exist. A denial is a refusal, so
-// it is reported once to the refusal observer with the given site (spec 34).
+// workspace other than slug. It is the rule every enforcing layer applies:
+// to such a token, slug does not exist. A denial is a refusal, so it is
+// reported once to the refusal observer with the given site.
 // Credentials that cannot be bound are never denied and cause no query. A
 // failed lookup is returned with denied true, and the caller must deny.
 func DeniesWorkspace(db *sql.DB, auth *apikit.AuthInfo, slug string, site RefusalSite) (bool, error) {

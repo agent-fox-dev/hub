@@ -159,16 +159,16 @@ type SyncAPIConfig struct {
 
 	// FetchOrigin fetches the origin remote of the trunk repository.
 	// Used when PATCH_BRANCH_SOURCE=origin. Nil means origin fetch is
-	// not configured (20-REQ-2.6).
+	// not configured, which is an error for an origin-mode sync.
 	FetchOrigin FetchFunc
 
 	// ResolveOriginAuth resolves credentials for the origin remote.
-	// Used when PATCH_BRANCH_SOURCE=origin (20-REQ-2.1).
+	// Used when PATCH_BRANCH_SOURCE=origin.
 	ResolveOriginAuth ResolveAuthFunc
 
 	// Audit is the optional audit event emitter. When non-nil, origin-mode
 	// syncs emit hub.patch.sync and hub.patch.replace events. When nil,
-	// audit emission is silently skipped (20-REQ-8.6).
+	// audit emission is silently skipped.
 	Audit Emitter
 }
 
@@ -449,17 +449,17 @@ func handleSubmitRebuild(cfg APIConfig) echo.HandlerFunc {
 			return apikit.WriteAPIError(c, http.StatusInternalServerError, "database error")
 		}
 
-		// 16-REQ-1.E1: workspace must be carry_patch mode.
+		// The workspace must be in carry_patch mode.
 		if mode != "carry_patch" {
 			return apikit.WriteAPIErrorWithType(c, http.StatusBadRequest, "rebuild is only supported for carry_patch workspaces", "workspace_mode_mismatch")
 		}
 
-		// 16-REQ-1.E2: workspace must be ready.
+		// The workspace must be ready.
 		if status != "ready" {
 			return apikit.WriteAPIError(c, http.StatusBadRequest, "workspace is not ready")
 		}
 
-		// 16-REQ-1.E3: at least one patch with status 'active' or 'conflict'.
+		// At least one patch must have status 'active' or 'conflict'.
 		var patchCount int
 		err = cfg.DB.QueryRow(
 			`SELECT COUNT(*) FROM patches
@@ -498,9 +498,8 @@ func handleSubmitRebuild(cfg APIConfig) echo.HandlerFunc {
 			}
 		}
 
-		// 16-REQ-1.1 / NS-REQ-4 / 16-PROP-3: capture REBUILD_STRATEGY and
-		// REBUILD_FAIL_MODE at enqueue time; body values override the
-		// workspace settings.
+		// Capture REBUILD_STRATEGY and REBUILD_FAIL_MODE at enqueue time;
+		// body values override the workspace settings.
 		ib := nullStr(integrationBranch)
 		payload := BuildRebuildPayload(slug, ib, auth.UserID, cfg.GetVariable, bodyStrategy, bodyFailMode)
 		payloadJSON, err := json.Marshal(payload)
@@ -508,7 +507,7 @@ func handleSubmitRebuild(cfg APIConfig) echo.HandlerFunc {
 			return apikit.WriteAPIError(c, http.StatusInternalServerError, "failed to marshal payload")
 		}
 
-		// 16-REQ-1.1: enqueue with key=workspace_slug, group_key=<slug>:<integration_branch>.
+		// Enqueue with key=workspace_slug, group_key=<slug>:<integration_branch>.
 		groupKey := slug + ":" + ib
 		nonce := uuid.New().String()
 
@@ -524,12 +523,12 @@ func handleSubmitRebuild(cfg APIConfig) echo.HandlerFunc {
 			return apikit.WriteAPIError(c, http.StatusInternalServerError, "failed to enqueue rebuild job")
 		}
 
-		// 16-REQ-1.E4: duplicate queued/running job.
+		// A rebuild is already queued or running for this workspace.
 		if duplicate {
 			return apikit.WriteAPIErrorWithType(c, http.StatusConflict, "a rebuild job is already queued or running for this workspace", "concurrent_rebuild")
 		}
 
-		// 18-REQ-3.3: Emit hub.rebuild.enqueue audit event.
+		// Emit the hub.rebuild.enqueue audit event.
 		if cfg.Audit != nil {
 			event := Event{
 				EventType:    "hub.rebuild.enqueue",
@@ -633,7 +632,7 @@ func handleGetRebuild(cfg APIConfig) echo.HandlerFunc {
 			return apikit.WriteAPIError(c, http.StatusNotFound, "rebuild job not found")
 		}
 
-		// 16-REQ-2.E2: prevent cross-workspace information leakage.
+		// Prevent cross-workspace information leakage.
 		if j.Key != slug || j.Type != "rebuild" {
 			return apikit.WriteAPIError(c, http.StatusNotFound, "rebuild job not found")
 		}
@@ -889,7 +888,7 @@ func jobToRebuildRecord(j *jobqueue.Job) RebuildJobRecord {
 		}
 	}
 
-	// For running jobs, expose intermediate progress as patch_results (NS-REQ-5).
+	// For running jobs, expose intermediate progress as patch_results.
 	if j.Status == jobqueue.StatusRunning && j.Progress != nil && rec.PatchResults == nil {
 		rec.PatchResults = j.Progress
 	}
@@ -903,12 +902,12 @@ func jobToRebuildRecord(j *jobqueue.Job) RebuildJobRecord {
 
 // handlePatchStatus handles GET /api/v1/workspaces/:slug/patch-status.
 //
-// 16-REQ-6.1: Aggregates workspace metadata, last rebuild, patches with
+// It aggregates workspace metadata, the last rebuild, the patches with their
 // last_rebuild_result, and summary counts including total_rerere_resolutions.
-// 16-REQ-6.E1: Returns 400 if workspace is not in carry_patch mode.
-// 16-REQ-6.E2: Returns 403 if PAT lacks 'workspaces:read' scope.
-// 16-REQ-6.E3: Returns empty patches array and zero summary if no patches.
-// 16-REQ-6.E4: Sets total_rerere_resolutions to 0 if rr-cache is inaccessible.
+// A workspace that is not in carry_patch mode is a 400, and a PAT without the
+// 'workspaces:read' scope a 403. A workspace without patches gets an empty
+// patches array and a zero summary, and an inaccessible rr-cache leaves
+// total_rerere_resolutions at 0.
 func handlePatchStatus(cfg APIConfig) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		// Auth check.
@@ -942,14 +941,14 @@ func handlePatchStatus(cfg APIConfig) echo.HandlerFunc {
 			return apikit.WriteAPIError(c, http.StatusInternalServerError, "database error")
 		}
 
-		// 16-REQ-6.E1: workspace must be carry_patch mode.
+		// The workspace must be in carry_patch mode.
 		if mode != "carry_patch" {
 			return apikit.WriteAPIError(c, http.StatusBadRequest, "patch-status is only available for carry_patch workspaces")
 		}
 
 		// Query patches from the database, ordered by position.
 		// Exclude soft-deleted patches from the patch-status dashboard.
-		// 20-REQ-7.6: Include origin_sync_state, origin_sha, origin_synced_at.
+		// Include origin_sync_state, origin_sha, origin_synced_at.
 		patchRows, queryErr := cfg.DB.Query(
 			`SELECT id, workspace_slug, branch_name, position, status, conflict_files,
 			        origin_sync_state, origin_sha, origin_synced_at
@@ -1017,7 +1016,7 @@ func handlePatchStatus(cfg APIConfig) echo.HandlerFunc {
 		}
 
 		// Count rr-cache entries for the workspace.
-		// 16-REQ-6.E4: If rr-cache is inaccessible, count remains 0.
+		// If the rr-cache is inaccessible, the count remains 0.
 		totalRerereResolutions := len(listRerereEntries(filepath.Join(cfg.WorkspaceRoot, slug, "trunk", ".git")))
 
 		// Build patches array.
@@ -1043,8 +1042,8 @@ func handlePatchStatus(cfg APIConfig) echo.HandlerFunc {
 			patchEntries = append(patchEntries, entry)
 		}
 
-		// 16-REQ-6.2: Compute summary counts from patch statuses.
-		// 20-REQ-7.6: Add patches_diverged and patches_missing_on_origin.
+		// Compute summary counts from patch statuses, including
+		// patches_diverged and patches_missing_on_origin.
 		summary := PatchStatusSummary{
 			TotalPatches:           len(patchEntries),
 			TotalRerereResolutions: totalRerereResolutions,

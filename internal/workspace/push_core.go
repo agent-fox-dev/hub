@@ -17,7 +17,7 @@ func (e *trunkError) Error() string { return "trunk unavailable: " + e.err.Error
 func (e *trunkError) Unwrap() error { return e.err }
 
 // pushToOrigin is the one push to origin that the archive, the reclone and the
-// branch push share (38-REQ-10.1). It opens the trunk at repoPath and pushes
+// branch push share. It opens the trunk at repoPath and pushes
 // refSpecs to its remote origin at gitURL with auth (nil for none), on ctx. force
 // sets PushOptions.Force; progress, when not nil, receives what the remote reports
 // while it runs, such as the reason a hook gives for refusing a ref.

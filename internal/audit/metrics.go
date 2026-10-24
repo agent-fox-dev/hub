@@ -79,7 +79,7 @@ func recordSSEConnections(n int) {
 
 // NewMetrics creates a new Metrics instance with a custom Prometheus registry
 // and registers all afhub_* metrics. Vec metrics are pre-initialized with
-// placeholder labels so they appear in /metrics output immediately (19-REQ-10.E2).
+// placeholder labels so they appear in /metrics output immediately.
 func NewMetrics() *Metrics {
 	reg := prometheus.NewRegistry()
 
@@ -152,7 +152,7 @@ func NewMetrics() *Metrics {
 	)
 
 	// Pre-initialize all Vec metrics with placeholder label values so they
-	// appear in /metrics output immediately after startup (19-REQ-10.E2).
+	// appear in /metrics output immediately after startup.
 	// afhub_jobqueue_depth is excluded — its label combinations are
 	// initialized by the durable_job_queue subsystem.
 	m.HTTPRequestsTotal.WithLabelValues("", "", "")

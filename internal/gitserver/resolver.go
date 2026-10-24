@@ -47,7 +47,7 @@ func resolveWorkspaceFromDB(db *sql.DB, orgSlug, wsSlug string) (*workspaceInfo,
 	}
 
 	// Verify org match: look up the org by slug and compare IDs.
-	// This prevents enumeration of workspaces across orgs (06-REQ-4.3).
+	// This prevents enumeration of workspaces across orgs.
 	var orgID string
 	err = db.QueryRow(
 		`SELECT id FROM orgs WHERE slug = ?`,
@@ -120,7 +120,7 @@ func gitResolverMiddleware(db *sql.DB, wsRoot string) echo.MiddlewareFunc {
 			ws, err := resolveWorkspaceFromDB(db, orgSlug, slug)
 			if err != nil {
 				// Database error → HTTP 500. Log the error but do not
-				// expose details to the client (06-REQ-4.E3).
+				// expose details to the client.
 				log.Printf("git resolver: database error for %s/%s: %v", orgSlug, slug, err)
 				c.Response().Header().Set("Content-Type", "text/plain")
 				c.Response().WriteHeader(http.StatusInternalServerError)
@@ -128,11 +128,11 @@ func gitResolverMiddleware(db *sql.DB, wsRoot string) echo.MiddlewareFunc {
 			}
 			if ws == nil {
 				// Workspace not found or org mismatch → HTTP 404 with
-				// pkt-line error (06-REQ-4.2, 06-REQ-4.3).
+				// pkt-line error.
 				return writePktLineError(c, http.StatusNotFound, "repository not found")
 			}
 
-			// Verify the workspace is ready (06-REQ-4.4).
+			// Only a ready workspace has a repository to serve.
 			if ws.Status != "ready" {
 				return writePktLineError(c, http.StatusNotFound, "repository not available")
 			}
@@ -150,8 +150,8 @@ func gitResolverMiddleware(db *sql.DB, wsRoot string) echo.MiddlewareFunc {
 				return err
 			}
 
-			// Open the repository via PlainOpen to verify it exists on disk
-			// (06-REQ-4.E1). Filesystem errors → HTTP 500.
+			// Open the repository via PlainOpen to verify it exists on disk.
+			// Filesystem errors → HTTP 500.
 			repoPath := filepath.Join(wsRoot, slug, "trunk")
 			_, err = git.PlainOpen(repoPath)
 			if err != nil {

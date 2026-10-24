@@ -4,7 +4,7 @@ import "github.com/agent-fox-dev/hub/internal/audit"
 
 // defaultAuditEmitter is the package-level audit emitter set during server
 // initialization. When nil, audit emission is silently skipped in the
-// post-push hook (18-REQ-5.3, 18-PROP-7).
+// post-push hook.
 var defaultAuditEmitter audit.Emitter
 
 // GitServerConfig holds optional configuration for the git server,
@@ -19,7 +19,7 @@ type GitServerConfig struct {
 
 // SetAuditEmitter sets the package-level audit emitter for git server
 // operations. Called during server initialization with the emitter from
-// GitServerConfig.Audit (18-REQ-5.2).
+// GitServerConfig.Audit.
 func SetAuditEmitter(emitter audit.Emitter) {
 	defaultAuditEmitter = emitter
 }

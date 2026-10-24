@@ -30,7 +30,7 @@ type OrgMembershipCheckFunc func(db *sql.DB, userID, orgID string) (int, string)
 
 // orgMembershipCheckFn is the function used to check org membership.
 // Defaults to checkOrgMembership. Tests can replace it to inject service
-// errors or timeouts — see TS-03-E14.
+// errors or timeouts.
 var orgMembershipCheckFn OrgMembershipCheckFunc = checkOrgMembership
 
 // respondError writes a JSON error envelope {"error":{"code":N,"message":"..."}}
@@ -55,8 +55,7 @@ func respondWorkspace(c echo.Context, code int, ws *Workspace, db *sql.DB, acces
 
 // respondWorkspaceWithExtras writes a workspace JSON object augmented with
 // additional top-level fields. It is used by the sync endpoint, which must
-// return carry-patch fields "in addition to standard sync fields"
-// (16-REQ-5.1).
+// return carry-patch fields in addition to the standard sync fields.
 //
 // Extras are applied on top of the workspace fields, so a key collision
 // resolves in favour of the extra. Passing a nil or empty map is equivalent
@@ -70,11 +69,11 @@ func respondWorkspaceWithExtras(c echo.Context, code int, ws *Workspace, db *sql
 }
 
 // workspaceResponse converts a Workspace to a JSON-serializable map, for a
-// caller with the given access (spec 35). orgSlug is the slug of the
+// caller with the given access. orgSlug is the slug of the
 // workspace's org, nil when it has none; it is rendered as org_slug and
 // builds the hub_url.
 func workspaceResponse(ws *Workspace, orgSlug *string, access wsaccess.Access) map[string]any {
-	// 15-REQ-4: Coalesce empty workspace_mode to default.
+	// An empty workspace_mode reads as the default.
 	wsMode := ws.WorkspaceMode
 	if wsMode == "" {
 		wsMode = "standard"
@@ -164,7 +163,7 @@ type createWorkspaceRequest struct {
 	DisplayName *string `json:"display_name"` // nullable: nil or empty → slug
 	Description *string `json:"description"`  // nullable: nil → ""
 
-	// Carry-patch fields (15-REQ-2).
+	// Carry-patch fields.
 	WorkspaceMode     *string `json:"workspace_mode"`     // nullable: nil → "standard"
 	UpstreamURL       *string `json:"upstream_url"`       // required for carry_patch mode
 	IntegrationBranch *string `json:"integration_branch"` // nullable: nil → "deploy" for carry_patch
@@ -173,7 +172,7 @@ type createWorkspaceRequest struct {
 	// defaults.
 	Settings json.RawMessage `json:"settings"`
 
-	// Optional git credential fields (09-REQ-2.1).
+	// Optional git credential fields.
 	// PAT and username/password are mutually exclusive.
 	GitPAT      *string `json:"git_pat,omitempty"`
 	GitUsername *string `json:"git_username,omitempty"`
@@ -205,7 +204,7 @@ var afterAccessDecision func(slug string)
 // lookupWorkspaceForAuth decides the caller's access to the workspace with
 // wsaccess.AuthorizeWorkspaceAt for an endpoint that needs need, then loads
 // the full workspace row. A binding refusal is reported with the request's
-// method and route (spec 34). It returns the workspace and the caller's
+// method and route. It returns the workspace and the caller's
 // access; on a refusal, or when the row is gone by the time it is loaded, it
 // writes the error response and returns nil.
 func lookupWorkspaceForAuth(c echo.Context, db *sql.DB, slug string, auth *apikit.AuthInfo, need wsaccess.Need) (*Workspace, wsaccess.Access) {
@@ -254,14 +253,14 @@ func handleCreateWorkspace(db *sql.DB) echo.HandlerFunc {
 			return respondError(c, http.StatusBadRequest, "invalid request body: "+err.Error())
 		}
 
-		// 09-REQ-7.1: Capture credential values and zero out the fields on
+		// Capture credential values and zero out the fields on
 		// the struct immediately after binding — before any logging can access
 		// the struct. This ensures credential values never appear in logs
 		// regardless of middleware capabilities.
 		//
 		// Track whether each field was present in JSON (pointer non-nil)
 		// separately from the field's string value. An empty string ("") is
-		// present-but-empty, which is an error (09-REQ-2.E1/E2).
+		// present-but-empty, which is an error.
 		var gitPAT, gitUsername, gitPassword string
 		providedPAT := req.GitPAT != nil
 		providedUsername := req.GitUsername != nil
@@ -280,9 +279,9 @@ func handleCreateWorkspace(db *sql.DB) echo.HandlerFunc {
 		}
 		hasCreds := providedPAT || providedUsername || providedPassword
 
-		// ---- Credential structural validation (09-REQ-2) ----
+		// ---- Credential structural validation ----
 
-		// 09-REQ-2.E1 / 09-REQ-2.E2: Reject empty credential values.
+		// Reject empty credential values.
 		// A JSON field present as "" (empty string) is invalid.
 		if providedPAT && gitPAT == "" {
 			return respondError(c, http.StatusBadRequest, "git_pat must not be empty")
@@ -294,23 +293,23 @@ func handleCreateWorkspace(db *sql.DB) echo.HandlerFunc {
 			return respondError(c, http.StatusBadRequest, "git_password must not be empty")
 		}
 
-		// 09-REQ-2.2 / 09-REQ-2.E3: Mutual exclusion — PAT and
+		// Mutual exclusion — PAT and
 		// username/password cannot be provided together.
 		if providedPAT && (providedUsername || providedPassword) {
 			return respondError(c, http.StatusBadRequest,
 				"git_pat and git_username/git_password are mutually exclusive")
 		}
 
-		// 09-REQ-2.3: Pair completeness — username and password must both
+		// Pair completeness — username and password must both
 		// be present or both absent.
 		if providedUsername != providedPassword {
 			return respondError(c, http.StatusBadRequest,
 				"git_username and git_password must both be provided together")
 		}
 
-		// 09-REQ-2.4: HTTPS requirement — credentials require an https:// URL.
-		// This check runs before general git_url validation to ensure the
-		// spec-required error message is returned.
+		// HTTPS requirement — credentials require an https:// URL. This check
+		// runs before general git_url validation so that this, more specific,
+		// error message is returned.
 		if hasCreds && !strings.HasPrefix(req.GitURL, "https://") {
 			return respondError(c, http.StatusBadRequest,
 				"git credentials require an HTTPS git_url")
@@ -345,9 +344,9 @@ func handleCreateWorkspace(db *sql.DB) echo.HandlerFunc {
 			return respondError(c, http.StatusBadRequest, "description must not exceed 1024 characters")
 		}
 
-		// ---- Carry-patch workspace mode validation (15-REQ-2) ----
+		// ---- Carry-patch workspace mode validation ----
 
-		// 15-REQ-2.E1: Validate workspace_mode value if provided.
+		// Validate workspace_mode value if provided.
 		workspaceMode := "standard" // default
 		if req.WorkspaceMode != nil && *req.WorkspaceMode != "" {
 			if !validWorkspaceModes[*req.WorkspaceMode] {
@@ -361,18 +360,18 @@ func handleCreateWorkspace(db *sql.DB) echo.HandlerFunc {
 		var integrationBranch *string
 
 		if workspaceMode == "carry_patch" {
-			// 15-REQ-2.2: upstream_url is required for carry_patch mode.
+			// upstream_url is required for carry_patch mode.
 			if req.UpstreamURL == nil || *req.UpstreamURL == "" {
 				return respondError(c, http.StatusBadRequest,
 					"upstream_url is required when workspace_mode is 'carry_patch'")
 			}
-			// 15-REQ-2.3: Validate upstream_url using the same rules as git_url.
+			// Validate upstream_url using the same rules as git_url.
 			if err := validateGitURL(*req.UpstreamURL); err != nil {
 				return respondError(c, http.StatusBadRequest, "invalid upstream_url: "+err.Error())
 			}
 			upstreamURL = req.UpstreamURL
 
-			// 15-REQ-2.6 / 15-REQ-2.E2: Default integration_branch to "deploy"
+			// Default integration_branch to "deploy"
 			// if omitted or empty.
 			ib := "deploy"
 			if req.IntegrationBranch != nil && *req.IntegrationBranch != "" {
@@ -383,7 +382,7 @@ func handleCreateWorkspace(db *sql.DB) echo.HandlerFunc {
 			}
 			integrationBranch = &ib
 		} else {
-			// 15-REQ-2.5: Standard mode must not include upstream_url or
+			// Standard mode must not include upstream_url or
 			// integration_branch.
 			if req.UpstreamURL != nil {
 				return respondError(c, http.StatusBadRequest,
@@ -403,13 +402,13 @@ func handleCreateWorkspace(db *sql.DB) echo.HandlerFunc {
 			}
 		}
 
-		// ---- Credential validation via ls-remote (09-REQ-3) ----
+		// ---- Credential validation via ls-remote ----
 
 		if hasCreds && validateCredentialsFn != nil {
 			// Construct the appropriate BasicAuth for the credential type.
 			var authMethod *githttp.BasicAuth
 			if providedPAT {
-				// 09-REQ-3.E4: PAT uses "x-token-auth" as the username.
+				// A PAT uses "x-token-auth" as the username.
 				authMethod = &githttp.BasicAuth{
 					Username: "x-token-auth",
 					Password: gitPAT,
@@ -421,9 +420,9 @@ func handleCreateWorkspace(db *sql.DB) echo.HandlerFunc {
 				}
 			}
 
-			// 09-REQ-3.1: Validate credentials before any database operation.
+			// Validate credentials before any database operation.
 			if err := validateCredentialsFn(c.Request().Context(), req.GitURL, authMethod); err != nil {
-				// 09-REQ-3.2 / 09-REQ-7.2: Log the raw error server-side at
+				// Log the raw error server-side at
 				// ERROR level but return only a sanitised message to the client.
 				log.Printf("ERROR: credential validation failed for %s: %v", req.GitURL, err)
 				return respondError(c, http.StatusBadRequest,
@@ -433,7 +432,7 @@ func handleCreateWorkspace(db *sql.DB) echo.HandlerFunc {
 
 		// Validate org_id if provided, or auto-assign personal org if omitted.
 		if req.OrgID != nil && *req.OrgID != "" {
-			// Explicit org_id: validate membership as before (04-REQ-8.2).
+			// Explicit org_id: validate membership as before.
 			orgCode, orgMsg := orgMembershipCheckFn(db, auth.UserID, *req.OrgID)
 			if orgCode != 0 {
 				return respondError(c, orgCode, orgMsg)
@@ -443,15 +442,15 @@ func handleCreateWorkspace(db *sql.DB) echo.HandlerFunc {
 				req.OrgID = &canonicalID
 			}
 		} else {
-			// No org_id: look up user's personal org (04-REQ-8.1).
+			// No org_id: look up the user's personal org.
 			personalOrgID, err := lookupPersonalOrg(db, auth.UserID)
 			if err == errNoPersonalOrg {
-				// 04-REQ-8.3: user has no personal org.
+				// The user has no personal org.
 				return respondError(c, http.StatusBadRequest,
 					"user has no personal organization; contact an administrator")
 			}
 			if err != nil {
-				// 04-REQ-8.E1: database error during personal org lookup.
+				// Database error during personal org lookup.
 				return respondError(c, http.StatusInternalServerError, "internal server error")
 			}
 			req.OrgID = &personalOrgID
@@ -490,7 +489,7 @@ func handleCreateWorkspace(db *sql.DB) echo.HandlerFunc {
 			return respondError(c, http.StatusInternalServerError, "failed to create workspace")
 		}
 
-		// ---- Atomic credential storage (09-REQ-4) ----
+		// ---- Atomic credential storage ----
 
 		if hasCreds {
 			var entries []secrets.EntryInput
@@ -503,17 +502,17 @@ func handleCreateWorkspace(db *sql.DB) echo.HandlerFunc {
 
 			store := secrets.NewStore(db)
 			if _, err := store.CreateSecrets("workspace", ws.Slug, entries); err != nil {
-				// 09-REQ-4.2: CreateSecrets failed after workspace INSERT.
+				// CreateSecrets failed after the workspace INSERT.
 				// Issue a compensating DELETE to undo the workspace row.
 				// Uses compensatingDeleteFn (a direct DELETE on the workspaces
 				// table rather than deleteWorkspace() which cascade-deletes
 				// secrets/variables and would fail if the secrets table is
 				// unavailable). Tests can replace compensatingDeleteFn to
-				// simulate the double-failure path (09-REQ-4.3).
+				// simulate the double-failure path.
 				log.Printf("ERROR: CreateSecrets failed for workspace %q: %v", ws.Slug, err)
 
 				if delErr := compensatingDeleteFn(db, ws.Slug); delErr != nil {
-					// 09-REQ-4.3 / 09-REQ-7.E2: Both operations failed.
+					// Both operations failed.
 					// Log at CRITICAL level with the slug but no credential values.
 					log.Printf("CRITICAL: compensating DELETE failed for workspace %q: %v", ws.Slug, delErr)
 				}
@@ -532,7 +531,7 @@ func handleCreateWorkspace(db *sql.DB) echo.HandlerFunc {
 			})
 		}
 
-		// 18-REQ-1.4: Emit hub.workspace.create audit event with git_url and branch.
+		// Emit hub.workspace.create with git_url and branch.
 		branch := ""
 		if ws.Branch != nil {
 			branch = *ws.Branch
@@ -604,7 +603,7 @@ var errNoPersonalOrg = errors.New("no personal organization found")
 // Returns the org id on success, errNoPersonalOrg when no row exists, or a
 // wrapped database error on query failure.
 //
-// When multiple rows exist (data inconsistency, 04-REQ-8.E2) the first result
+// When multiple rows exist (data inconsistency) the first result
 // is returned and a warning is logged.
 func lookupPersonalOrg(db *sql.DB, userID string) (string, error) {
 	rows, err := db.Query("SELECT id FROM orgs WHERE owner_id = ?", userID)
@@ -625,7 +624,7 @@ func lookupPersonalOrg(db *sql.DB, userID string) (string, error) {
 		return "", fmt.Errorf("personal org lookup scan: %w", err)
 	}
 
-	// 04-REQ-8.E2: log warning if multiple personal orgs exist.
+	// Log a warning if multiple personal orgs exist.
 	if rows.Next() {
 		log.Printf("WARNING: user %s has multiple personal organizations; using first result", userID)
 	}
@@ -673,7 +672,7 @@ func handleUpdateWorkspace(db *sql.DB) echo.HandlerFunc {
 			return respondError(c, http.StatusBadRequest, "invalid request body: "+err.Error())
 		}
 
-		// Reject immutable fields in the PATCH body (15-REQ-3.1).
+		// Reject immutable fields in the PATCH body.
 		immutableFields := []string{"slug", "git_url", "branch", "owner_id", "workspace_mode", "upstream_url", "integration_branch"}
 		for _, field := range immutableFields {
 			if _, present := rawBody[field]; present {
@@ -796,7 +795,6 @@ func handleUpdateWorkspace(db *sql.DB) echo.HandlerFunc {
 			return respondError(c, http.StatusInternalServerError, "failed to update workspace")
 		}
 
-		// 18-REQ-1.1: Emit hub.workspace.update audit event.
 		var updatedFields []string
 		if fields.SetDisplayName {
 			updatedFields = append(updatedFields, "display_name")
@@ -839,7 +837,7 @@ func handleListWorkspaces(db *sql.DB) echo.HandlerFunc {
 
 		includeArchived := c.QueryParam("include_archived") == "true"
 
-		// The caller's readable set decides the listing (spec 35): every
+		// The caller's readable set decides the listing: every
 		// workspace for an admin token, else the caller's own workspaces and
 		// those of the caller's orgs, at most the bound one for a bound PAT.
 		readable, all, err := wsaccess.ReadableSlugs(db, auth)
@@ -924,7 +922,7 @@ func handleArchiveWorkspace(db *sql.DB) echo.HandlerFunc {
 
 		switch ws.Status {
 		case "cloning":
-			// 05-REQ-6.3: Reject archive while clone is in progress.
+			// Reject archive while a clone is in progress.
 			return respondError(c, http.StatusConflict,
 				"clone in progress; try again after it completes")
 
@@ -940,7 +938,7 @@ func handleArchiveWorkspace(db *sql.DB) echo.HandlerFunc {
 
 			// A rebuild applies patches in a worktree under the workspace
 			// directory without holding the lock; deleting that directory
-			// now would pull the worktree out from under it (01-REQ-5.5).
+			// now would pull the worktree out from under it.
 			if wslock.RebuildActive(slug) {
 				return respondErrorWithType(c, http.StatusConflict,
 					"another operation is running on this workspace; retry later", "workspace_busy")
@@ -950,7 +948,7 @@ func handleArchiveWorkspace(db *sql.DB) echo.HandlerFunc {
 
 			headSHA, headErr := archiveHeadFn(repoPath)
 			if headErr != nil {
-				// 05-REQ-6.E2: HEAD read failure aborts the archive;
+				// A HEAD read failure aborts the archive;
 				// workspace directory is NOT deleted.
 				return respondError(c, http.StatusInternalServerError, headErr.Error())
 			}
@@ -977,7 +975,7 @@ func handleArchiveWorkspace(db *sql.DB) echo.HandlerFunc {
 			if keepDir {
 				log.Printf("archive %q: local clone retained at %q", slug, wsDir)
 			} else if rmErr := os.RemoveAll(wsDir); rmErr != nil {
-				// 05-REQ-6.E3: Log warning but continue with DB update.
+				// Log a warning but continue with the DB update.
 				log.Printf("warning: failed to delete workspace directory %q: %v", wsDir, rmErr)
 			}
 
@@ -989,8 +987,7 @@ func handleArchiveWorkspace(db *sql.DB) echo.HandlerFunc {
 			updated = u
 
 		default:
-			// 05-REQ-6.2: pending or failed. No git push; just clean up and
-			// archive.
+			// Pending or failed: nothing to push; clean up and archive.
 			wsDir := filepath.Join(defaultWorkspaceRoot, slug)
 			_ = os.RemoveAll(wsDir) // Ignore not-exist errors.
 
@@ -1001,15 +998,14 @@ func handleArchiveWorkspace(db *sql.DB) echo.HandlerFunc {
 			updated = u
 		}
 
-		// 19-REQ-8.1: Force-close all active sessions for the archived workspace.
+		// Force-close all active sessions for the archived workspace.
 		archiveTime := apikit.NowUTC()
 		if fcErr := forceCloseWorkspaceSessions(c.Request().Context(), slug, "workspace archived", archiveTime); fcErr != nil {
-			// 19-REQ-8.E1: Log warning and proceed with the archive response.
+			// Log a warning and proceed with the archive response.
 			slog.Warn("force-close sessions failed during archive",
 				"workspace", slug, "error", fcErr)
 		}
 
-		// 18-REQ-1.1: Emit hub.workspace.archive audit event.
 		archiveMetadata := map[string]any{}
 		if updated.HeadSHA != nil {
 			archiveMetadata["head_sha"] = *updated.HeadSHA
@@ -1045,16 +1041,15 @@ func handleReactivateWorkspace(db *sql.DB) echo.HandlerFunc {
 			return nil // Response already written by lookupWorkspaceForAuth.
 		}
 
-		// 05-REQ-7.E3: Only archived workspaces can be reactivated.
+		// Only archived workspaces can be reactivated.
 		if ws.Status != "archived" {
 			return respondError(c, http.StatusConflict, "workspace is not archived")
 		}
 
-		// 05-REQ-7.1: Set status='pending', clear clone_error, and refresh
-		// updated_at.
+		// Set status='pending', clear clone_error, and refresh updated_at.
 		updated, err := reactivateWorkspaceDB(db, slug)
 		if err != nil {
-			// 05-REQ-7.E4: DB failure returns 500 without enqueuing a job.
+			// A DB failure returns 500 without enqueuing a job.
 			return respondError(c, http.StatusInternalServerError, "failed to reactivate workspace")
 		}
 
@@ -1067,7 +1062,6 @@ func handleReactivateWorkspace(db *sql.DB) echo.HandlerFunc {
 			})
 		}
 
-		// 18-REQ-1.1: Emit hub.workspace.reactivate audit event.
 		emitHubAudit(c, audit.HubEvent{
 			EventType:    "hub.workspace.reactivate",
 			ResourceType: "workspace",
@@ -1099,49 +1093,47 @@ func handleDeleteWorkspace(db *sql.DB) echo.HandlerFunc {
 			return nil // Response already written by lookupWorkspaceForAuth.
 		}
 
-		// 05-REQ-8.E2: Only archived workspaces can be deleted.
+		// Only archived workspaces can be deleted.
 		if ws.Status != "archived" {
 			return respondError(c, http.StatusConflict, "workspace must be archived before deletion")
 		}
 
-		// 19-REQ-9.1: Force-close all active sessions BEFORE workspace
+		// Force-close all active sessions BEFORE workspace
 		// row deletion so session records are cleanly terminated.
 		deleteTime := apikit.NowUTC()
 		if fcErr := forceCloseWorkspaceSessions(c.Request().Context(), slug, "workspace deleted", deleteTime); fcErr != nil {
-			// 19-REQ-9.E1: Log warning and proceed with deletion.
+			// Log a warning and proceed with deletion.
 			slog.Warn("force-close sessions failed during delete",
 				"workspace", slug, "error", fcErr)
 		}
 
-		// 05-REQ-8.1: Check whether workspace directory exists and remove it.
+		// Check whether the workspace directory exists and remove it.
 		wsDir := filepath.Join(defaultWorkspaceRoot, slug)
 		if _, statErr := os.Stat(wsDir); statErr == nil {
 			if rmErr := os.RemoveAll(wsDir); rmErr != nil {
-				// 05-REQ-8.E5: Log warning but proceed with DB deletion.
+				// Log a warning but proceed with the DB deletion.
 				log.Printf("WARN: failed to remove workspace dir %s: %v", wsDir, rmErr)
 			}
 		}
 
-		// 19-REQ-9.2: Audit data (agent_sessions, token_usage) is retained
+		// Audit data (agent_sessions, token_usage) is retained
 		// in DuckDB; only the SQLite workspace row is deleted. Orphaned
 		// audit data is cleaned up by the retention worker after
 		// orphan_retention_days.
 		revoked, err := deleteWorkspaceRevoked(db, slug)
 		if err != nil {
-			// 19-REQ-9.E2: SQLite failure after DuckDB close — sessions remain
+			// SQLite failure after the DuckDB close — sessions remain
 			// safely terminated in DuckDB regardless.
 			return respondError(c, http.StatusInternalServerError, "failed to delete workspace")
 		}
 
-		// 18-REQ-1.1: Emit hub.workspace.delete audit event.
 		emitHubAudit(c, audit.HubEvent{
 			EventType:    "hub.workspace.delete",
 			ResourceType: "workspace",
 			ResourceID:   slug,
 			Action:       "delete",
 			Workspace:    slug,
-			// The tokens bound to the workspace that this deletion revoked
-			// (34-REQ-5.4).
+			// The tokens bound to the workspace that this deletion revoked.
 			Metadata: map[string]any{"revoked_tokens": revoked},
 		})
 

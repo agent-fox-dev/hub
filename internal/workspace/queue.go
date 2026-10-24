@@ -87,7 +87,7 @@ func NewJobQueue(ctx context.Context, db *sql.DB, workspaceRoot string, workers 
 						return
 					}
 					// Check context again before processing — if cancelled
-					// while we were waiting, discard the job (05-REQ-4.E1).
+					// while we were waiting, discard the job.
 					if workerCtx.Err() != nil {
 						return
 					}
@@ -154,7 +154,7 @@ func processCloneJob(ctx context.Context, db *sql.DB, workspaceRoot string, job 
 		return
 	}
 
-	// Step 2.5: Look up stored git credentials (09-REQ-6.1, 09-REQ-6.2, 09-REQ-6.3).
+	// Step 2.5: Look up stored git credentials.
 	store := secrets.NewStore(db)
 	auth, authErr := resolveCloneAuth(store, slug)
 	if authErr != nil {
@@ -194,12 +194,11 @@ func processCloneJob(ctx context.Context, db *sql.DB, workspaceRoot string, job 
 		return
 	}
 
-	// Step 5.5: Post-clone carry-patch setup (15-REQ-6).
+	// Step 5.5: Post-clone carry-patch setup.
 	// If workspace_mode is 'carry_patch', add upstream remote, set rerere
 	// config, and create integration branch. Standard workspaces skip this
-	// entirely (15-REQ-6.3). All post-clone setup failures are logged as
-	// warnings and do not prevent the workspace from being marked ready
-	// (15-REQ-6.2).
+	// entirely. All post-clone setup failures are logged as warnings and do
+	// not prevent the workspace from being marked ready.
 	ws, wsErr := getWorkspaceBySlug(db, slug)
 	if wsErr == nil && ws != nil && ws.WorkspaceMode == "carry_patch" {
 		carryPatchPostCloneSetup(ctx, trunkDir, ws, store)
@@ -214,7 +213,7 @@ func processCloneJob(ctx context.Context, db *sql.DB, workspaceRoot string, job 
 // carryPatchPostCloneSetup performs post-clone configuration for carry_patch
 // workspaces: adds the upstream remote, enables rerere, and creates the
 // integration branch. All errors are logged as warnings; none prevent the
-// workspace from being marked ready (15-REQ-6.2).
+// workspace from being marked ready.
 func carryPatchPostCloneSetup(ctx context.Context, trunkDir string, ws *Workspace, store *secrets.Store) {
 	runner, err := gitcmd.New(trunkDir, nil)
 	if err != nil {
@@ -222,7 +221,7 @@ func carryPatchPostCloneSetup(ctx context.Context, trunkDir string, ws *Workspac
 		return
 	}
 
-	// Step 1: Add upstream remote (15-REQ-6.1) and fetch it so that the
+	// Step 1: Add upstream remote and fetch it so that the
 	// integration branch can start at the upstream default branch instead
 	// of the fork's HEAD.
 	if ws.UpstreamURL != nil && *ws.UpstreamURL != "" {
@@ -239,7 +238,7 @@ func carryPatchPostCloneSetup(ctx context.Context, trunkDir string, ws *Workspac
 		}
 	}
 
-	// Step 2: Set rerere configuration (15-REQ-6.1).
+	// Step 2: Set rerere configuration.
 	if err := runner.ConfigSet(ctx, "rerere.enabled", "true"); err != nil {
 		log.Printf("clone job %q: warning: carry-patch setup: ConfigSet rerere.enabled: %v", ws.Slug, err)
 	}
@@ -247,11 +246,9 @@ func carryPatchPostCloneSetup(ctx context.Context, trunkDir string, ws *Workspac
 		log.Printf("clone job %q: warning: carry-patch setup: ConfigSet rerere.autoupdate: %v", ws.Slug, err)
 	}
 
-	// Step 3: Create integration branch (15-REQ-6.1).
-	// Ideally the branch would be created at the upstream tracking branch
-	// HEAD, but upstream refs are not available until the first fetch/sync.
-	// Check for the upstream tracking ref; if absent, fall back to HEAD
-	// and log a warning (15-REQ-6.E1).
+	// Step 3: Create integration branch at the upstream tracking branch HEAD
+	// when the fetch above made it available. If the upstream tracking ref
+	// is absent, fall back to HEAD and log a warning.
 	if ws.IntegrationBranch != nil && *ws.IntegrationBranch != "" {
 		startPoint := "HEAD"
 		if _, err := runner.Run(ctx, "rev-parse", "--verify", "refs/remotes/upstream/HEAD"); err != nil {
