@@ -68,8 +68,11 @@ func InitSyncFunctions() {
 }
 
 // handleSyncWorkspace handles POST /api/v1/workspaces/:slug/sync.
-// It validates preconditions, sets sync_status='syncing', performs fetch
-// and fast-forward operations, and updates workspace state accordingly.
+// It validates preconditions, takes the workspace lock, performs fetch and
+// fast-forward operations, and records the outcome on the workspace: a
+// success sets upstream_head_sha and last_sync_at and clears sync_error, a
+// failure sets sync_error. A sync in progress is only the lock; a second
+// sync meanwhile is refused with 409 workspace_busy.
 //
 // Requirements: 13-REQ-3, 13-REQ-4, 13-REQ-9
 func handleSyncWorkspace(db *sql.DB) echo.HandlerFunc {
@@ -96,28 +99,16 @@ func handleSyncWorkspace(db *sql.DB) echo.HandlerFunc {
 			return nil // Response already written by lookupWorkspaceForAuth.
 		}
 
-		// 13-REQ-3.1: Workspace status must be 'active'.
-		if ws.Status != "active" {
+		// 13-REQ-3.1, 13-REQ-3.2: the workspace must be ready.
+		if ws.Status != "ready" {
 			return respondError(c, http.StatusBadRequest,
-				"workspace is not active; sync requires an active workspace")
+				"workspace is not ready; sync requires a ready workspace")
 		}
 
-		// 13-REQ-3.2: Clone status must be 'ready'.
-		if ws.CloneStatus != "ready" {
+		// 13-REQ-3.3: the sync_enabled setting must be true.
+		if !ws.Settings.SyncEnabled {
 			return respondError(c, http.StatusBadRequest,
-				"workspace clone is not ready; clone_status must be 'ready' to sync")
-		}
-
-		// 13-REQ-3.3: Sync mode must not be 'disabled'.
-		if ws.SyncMode == "disabled" {
-			return respondError(c, http.StatusBadRequest,
-				"sync is disabled for this workspace; update sync_mode to enable")
-		}
-
-		// 13-REQ-3.4 / 13-REQ-9.E1: Reject concurrent syncs.
-		if ws.SyncStatus == "syncing" {
-			return respondError(c, http.StatusConflict,
-				"sync already in progress for this workspace")
+				"sync is disabled for this workspace; set the sync_enabled setting to true to enable")
 		}
 
 		// ---- carry_patch mode delegation (16-REQ-5) ----
@@ -157,25 +148,10 @@ func handleSyncWorkspace(db *sql.DB) echo.HandlerFunc {
 		}
 		defer unlock()
 
-		// ---- Set sync_status='syncing' (13-REQ-4.1, 13-REQ-9.1) ----
-		// The transition is conditional so that two concurrent requests that
-		// both passed the precondition check cannot both proceed.
-		claimed, err := claimSyncStatus(db, slug)
-		if err != nil {
-			// 13-REQ-9.E2: DB failure at transition start.
-			return respondError(c, http.StatusInternalServerError,
-				"failed to update sync status")
-		}
-		if !claimed {
-			return respondError(c, http.StatusConflict,
-				"sync already in progress for this workspace")
-		}
-
 		// ---- Deferred cleanup (13-REQ-4.5) ----
-		// Register deferred function that sets sync_status='error' if we
-		// haven't set a final state before returning. This handles panics,
-		// context cancellation, and any code path that fails to set a
-		// terminal sync_status.
+		// Record a sync_error if no outcome was recorded before returning.
+		// This handles panics, context cancellation, and any code path that
+		// fails to record one.
 		syncCompleted := false
 		defer func() {
 			if !syncCompleted {
@@ -183,7 +159,7 @@ func handleSyncWorkspace(db *sql.DB) echo.HandlerFunc {
 				if c.Request().Context().Err() != nil {
 					errMsg = fmt.Sprintf("sync interrupted: %v", c.Request().Context().Err())
 				}
-				if setErr := setSyncStatus(db, slug, "error", nil, &errMsg, nil); setErr != nil {
+				if setErr := recordSyncFailure(db, slug, nil, errMsg); setErr != nil {
 					log.Printf("ERROR: deferred cleanup failed for workspace %q: %v", slug, setErr)
 				}
 			}
@@ -200,7 +176,7 @@ func handleSyncWorkspace(db *sql.DB) echo.HandlerFunc {
 		if authErr != nil {
 			// 13-REQ-4.E5: Credential resolution failure.
 			syncError := fmt.Sprintf("credential resolution failed: %v", authErr)
-			_ = setSyncStatus(db, slug, "error", nil, &syncError, nil)
+			_ = recordSyncFailure(db, slug, nil, syncError)
 			syncCompleted = true
 			return respondError(c, http.StatusBadGateway,
 				"sync failed: credential resolution error")
@@ -216,7 +192,7 @@ func handleSyncWorkspace(db *sql.DB) echo.HandlerFunc {
 		// Check for context cancellation before fetch.
 		if c.Request().Context().Err() != nil {
 			errMsg := fmt.Sprintf("sync interrupted: %v", c.Request().Context().Err())
-			_ = setSyncStatus(db, slug, "error", nil, &errMsg, nil)
+			_ = recordSyncFailure(db, slug, nil, errMsg)
 			syncCompleted = true
 			return respondError(c, http.StatusGatewayTimeout,
 				"sync interrupted: request context cancelled")
@@ -231,7 +207,7 @@ func handleSyncWorkspace(db *sql.DB) echo.HandlerFunc {
 		// Perform fetch and compare (13-REQ-4.1 through 13-REQ-4.4).
 		if syncFetchAndCompareFn == nil {
 			syncError := "sync system not initialized"
-			_ = setSyncStatus(db, slug, "error", nil, &syncError, nil)
+			_ = recordSyncFailure(db, slug, nil, syncError)
 			syncCompleted = true
 			return respondError(c, http.StatusBadGateway, "sync system not initialized")
 		}
@@ -242,7 +218,7 @@ func handleSyncWorkspace(db *sql.DB) echo.HandlerFunc {
 		// Check for context cancellation after fetch attempt.
 		if c.Request().Context().Err() != nil {
 			errMsg := fmt.Sprintf("sync interrupted: %v", c.Request().Context().Err())
-			_ = setSyncStatus(db, slug, "error", nil, &errMsg, nil)
+			_ = recordSyncFailure(db, slug, nil, errMsg)
 			syncCompleted = true
 			return respondError(c, http.StatusGatewayTimeout,
 				"sync interrupted: request context cancelled")
@@ -251,7 +227,7 @@ func handleSyncWorkspace(db *sql.DB) echo.HandlerFunc {
 		if fetchErr != nil {
 			// 13-REQ-4.E2: Fetch failure (network, auth, or repo open).
 			syncError := fmt.Sprintf("upstream fetch failed: %v", fetchErr)
-			_ = setSyncStatus(db, slug, "error", nil, &syncError, nil)
+			_ = recordSyncFailure(db, slug, nil, syncError)
 			syncCompleted = true
 			return respondError(c, http.StatusBadGateway,
 				"sync failed: upstream fetch error")
@@ -259,14 +235,12 @@ func handleSyncWorkspace(db *sql.DB) echo.HandlerFunc {
 
 		// ---- Process sync outcome ----
 
-		now := time.Now().UTC().Format(timestampFormat)
-
 		switch outcome {
 		case "up_to_date":
 			// 13-REQ-4.2: Upstream HEAD equals local HEAD.
-			if err := setSyncStatus(db, slug, "idle", &upstreamHeadSHA, nil, &now); err != nil {
+			if err := recordSyncSuccess(db, slug, nil, &upstreamHeadSHA); err != nil {
 				syncError := fmt.Sprintf("failed to update sync status: %v", err)
-				_ = setSyncStatus(db, slug, "error", nil, &syncError, nil)
+				_ = recordSyncFailure(db, slug, nil, syncError)
 				syncCompleted = true
 				return respondError(c, http.StatusInternalServerError, "failed to update sync status")
 			}
@@ -291,16 +265,16 @@ func handleSyncWorkspace(db *sql.DB) echo.HandlerFunc {
 			if refErr := syncUpdateLocalRefFn(repoPath, ws.Branch, upstreamHeadSHA); refErr != nil {
 				// 13-REQ-4.E6: Ref update failure.
 				syncError := fmt.Sprintf("ref update failed: %v", refErr)
-				_ = setSyncStatus(db, slug, "error", nil, &syncError, nil)
+				_ = recordSyncFailure(db, slug, nil, syncError)
 				syncCompleted = true
 				return respondError(c, http.StatusBadGateway,
 					"sync failed: could not fast-forward integration branch")
 			}
 
-			// Update head_sha, upstream_head_sha, sync_status, last_sync_at.
-			if err := setSyncStatusWithHeadSHA(db, slug, "idle", &upstreamHeadSHA, &upstreamHeadSHA, nil, &now); err != nil {
+			// Update head_sha, upstream_head_sha, sync_error, last_sync_at.
+			if err := recordSyncSuccess(db, slug, &upstreamHeadSHA, &upstreamHeadSHA); err != nil {
 				syncError := fmt.Sprintf("failed to update sync status: %v", err)
-				_ = setSyncStatus(db, slug, "error", nil, &syncError, nil)
+				_ = recordSyncFailure(db, slug, nil, syncError)
 				syncCompleted = true
 				return respondError(c, http.StatusInternalServerError, "failed to update sync status")
 			}
@@ -323,13 +297,13 @@ func handleSyncWorkspace(db *sql.DB) echo.HandlerFunc {
 		case "diverged":
 			// 13-REQ-4.4: Upstream has diverged (force-push detected).
 			syncError := "upstream history has diverged; use --reset-to-upstream to recover"
-			_ = setSyncStatusDiverged(db, slug, &upstreamHeadSHA, &syncError)
+			_ = recordSyncFailure(db, slug, &upstreamHeadSHA, syncError)
 			syncCompleted = true
 			return respondError(c, http.StatusConflict, syncError)
 
 		default:
 			syncError := fmt.Sprintf("unexpected sync outcome: %s", outcome)
-			_ = setSyncStatus(db, slug, "error", nil, &syncError, nil)
+			_ = recordSyncFailure(db, slug, nil, syncError)
 			syncCompleted = true
 			return respondError(c, http.StatusInternalServerError, "unexpected sync outcome")
 		}
@@ -347,7 +321,7 @@ func handleResetToUpstream(c echo.Context, db *sql.DB, slug string, ws *Workspac
 	// Verify sync functions are initialized.
 	if syncFetchAndCompareFn == nil {
 		syncError := "sync system not initialized"
-		_ = setSyncStatus(db, slug, "error", nil, &syncError, nil)
+		_ = recordSyncFailure(db, slug, nil, syncError)
 		*syncCompleted = true
 		return respondError(c, http.StatusBadGateway, "sync system not initialized")
 	}
@@ -369,7 +343,7 @@ func handleResetToUpstream(c echo.Context, db *sql.DB, slug string, ws *Workspac
 	if fetchErr != nil {
 		// 13-REQ-6.E1: Fetch failure — set error, do NOT modify head_sha.
 		syncError := fmt.Sprintf("reset-to-upstream fetch failed: %v", fetchErr)
-		_ = setSyncStatus(db, slug, "error", nil, &syncError, nil)
+		_ = recordSyncFailure(db, slug, nil, syncError)
 		*syncCompleted = true
 		return respondError(c, http.StatusBadGateway,
 			"reset-to-upstream failed: upstream fetch error")
@@ -378,7 +352,7 @@ func handleResetToUpstream(c echo.Context, db *sql.DB, slug string, ws *Workspac
 	// Step 2: Force-update the local integration branch ref (13-REQ-6.1).
 	if syncUpdateLocalRefFn == nil {
 		syncError := "sync system not initialized"
-		_ = setSyncStatus(db, slug, "error", nil, &syncError, nil)
+		_ = recordSyncFailure(db, slug, nil, syncError)
 		*syncCompleted = true
 		return respondError(c, http.StatusBadGateway, "sync system not initialized")
 	}
@@ -386,7 +360,7 @@ func handleResetToUpstream(c echo.Context, db *sql.DB, slug string, ws *Workspac
 	if refErr := syncUpdateLocalRefFn(repoPath, ws.Branch, upstreamHeadSHA); refErr != nil {
 		// 13-REQ-6.E2: Ref update failure — set error, do NOT update head_sha.
 		syncError := fmt.Sprintf("reset-to-upstream ref update failed: %v", refErr)
-		_ = setSyncStatus(db, slug, "error", nil, &syncError, nil)
+		_ = recordSyncFailure(db, slug, nil, syncError)
 		*syncCompleted = true
 		return respondError(c, http.StatusBadGateway,
 			"reset-to-upstream failed: could not update integration branch")
@@ -394,11 +368,10 @@ func handleResetToUpstream(c echo.Context, db *sql.DB, slug string, ws *Workspac
 
 	// Step 3: Update workspace state (13-REQ-6.1, 13-PROP-8).
 	// Set head_sha=upstream HEAD, upstream_head_sha=upstream HEAD,
-	// sync_status='idle', last_sync_at=now, sync_error=NULL.
-	now := time.Now().UTC().Format(timestampFormat)
-	if err := setSyncStatusWithHeadSHA(db, slug, "idle", &upstreamHeadSHA, &upstreamHeadSHA, nil, &now); err != nil {
+	// last_sync_at=now, sync_error=NULL.
+	if err := recordSyncSuccess(db, slug, &upstreamHeadSHA, &upstreamHeadSHA); err != nil {
 		syncError := fmt.Sprintf("failed to update workspace state: %v", err)
-		_ = setSyncStatus(db, slug, "error", nil, &syncError, nil)
+		_ = recordSyncFailure(db, slug, nil, syncError)
 		*syncCompleted = true
 		return respondError(c, http.StatusInternalServerError,
 			"reset-to-upstream failed: could not update workspace state")
@@ -422,80 +395,26 @@ func handleResetToUpstream(c echo.Context, db *sql.DB, slug string, ws *Workspac
 	return respondWorkspace(c, http.StatusOK, updated, db, access)
 }
 
-// claimSyncStatus atomically transitions sync_status to 'syncing' and reports
-// whether this caller won the transition (false when another sync already
-// holds it).
-func claimSyncStatus(db *sql.DB, slug string) (bool, error) {
+// recordSyncFailure records a failed sync: sync_error takes msg and, when
+// upstreamHeadSHA is given, upstream_head_sha takes it. head_sha and
+// last_sync_at are left as they are (13-REQ-4.4, 13-PROP-2, 13-PROP-7).
+func recordSyncFailure(db *sql.DB, slug string, upstreamHeadSHA *string, msg string) error {
 	now := time.Now().UTC().Format(timestampFormat)
-	res, err := db.Exec(
-		`UPDATE workspaces SET sync_status = 'syncing', sync_error = NULL, updated_at = ?
-		 WHERE slug = ? AND sync_status != 'syncing'`,
-		now, slug,
-	)
-	if err != nil {
-		return false, err
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return false, err
-	}
-	return n == 1, nil
-}
-
-// setSyncStatus updates the sync_status, upstream_head_sha, sync_error, and
-// optionally last_sync_at for the workspace identified by slug.
-// Only updates upstream_head_sha and last_sync_at if non-nil.
-func setSyncStatus(db *sql.DB, slug, syncStatus string, upstreamHeadSHA *string, syncError *string, lastSyncAt *string) error {
-	now := time.Now().UTC().Format(timestampFormat)
-
-	if upstreamHeadSHA != nil && lastSyncAt != nil {
-		_, err := db.Exec(
-			`UPDATE workspaces SET sync_status = ?, upstream_head_sha = ?, sync_error = ?, last_sync_at = ?, updated_at = ? WHERE slug = ?`,
-			syncStatus, upstreamHeadSHA, syncError, lastSyncAt, now, slug,
-		)
-		return err
-	}
-	if upstreamHeadSHA != nil {
-		_, err := db.Exec(
-			`UPDATE workspaces SET sync_status = ?, upstream_head_sha = ?, sync_error = ?, updated_at = ? WHERE slug = ?`,
-			syncStatus, upstreamHeadSHA, syncError, now, slug,
-		)
-		return err
-	}
-	if lastSyncAt != nil {
-		_, err := db.Exec(
-			`UPDATE workspaces SET sync_status = ?, sync_error = ?, last_sync_at = ?, updated_at = ? WHERE slug = ?`,
-			syncStatus, syncError, lastSyncAt, now, slug,
-		)
-		return err
-	}
 	_, err := db.Exec(
-		`UPDATE workspaces SET sync_status = ?, sync_error = ?, updated_at = ? WHERE slug = ?`,
-		syncStatus, syncError, now, slug,
+		`UPDATE workspaces SET sync_error = ?, upstream_head_sha = COALESCE(?, upstream_head_sha), updated_at = ? WHERE slug = ?`,
+		msg, upstreamHeadSHA, now, slug,
 	)
 	return err
 }
 
-// setSyncStatusWithHeadSHA updates sync_status, head_sha, upstream_head_sha,
-// sync_error, and last_sync_at. Used after a successful fast-forward to update
-// both the local head_sha and upstream tracking state.
-func setSyncStatusWithHeadSHA(db *sql.DB, slug, syncStatus string, headSHA, upstreamHeadSHA *string, syncError *string, lastSyncAt *string) error {
+// recordSyncSuccess records a successful sync: last_sync_at is now,
+// sync_error is cleared, upstream_head_sha takes upstreamHeadSHA, and
+// head_sha takes headSHA when given (after a fast-forward or reset).
+func recordSyncSuccess(db *sql.DB, slug string, headSHA, upstreamHeadSHA *string) error {
 	now := time.Now().UTC().Format(timestampFormat)
 	_, err := db.Exec(
-		`UPDATE workspaces SET sync_status = ?, head_sha = ?, upstream_head_sha = ?, sync_error = ?, last_sync_at = ?, updated_at = ? WHERE slug = ?`,
-		syncStatus, headSHA, upstreamHeadSHA, syncError, lastSyncAt, now, slug,
-	)
-	return err
-}
-
-// setSyncStatusDiverged updates sync_status to 'error', sets upstream_head_sha,
-// and records the divergence error message. Does NOT modify head_sha or last_sync_at
-// (13-REQ-4.4, 13-PROP-2, 13-PROP-7).
-func setSyncStatusDiverged(db *sql.DB, slug string, upstreamHeadSHA *string, syncError *string) error {
-	now := time.Now().UTC().Format(timestampFormat)
-	_, err := db.Exec(
-		`UPDATE workspaces SET sync_status = 'error', upstream_head_sha = ?, sync_error = ?, updated_at = ? WHERE slug = ?`,
-		upstreamHeadSHA, syncError, now, slug,
+		`UPDATE workspaces SET sync_error = NULL, last_sync_at = ?, upstream_head_sha = ?, head_sha = COALESCE(?, head_sha), updated_at = ? WHERE slug = ?`,
+		now, upstreamHeadSHA, headSHA, now, slug,
 	)
 	return err
 }

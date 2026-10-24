@@ -200,7 +200,7 @@ func TestCLI_WorkspaceCreate_WaitFailedCloneExitsNonZero(t *testing.T) {
 		if r.Method == http.MethodGet {
 			status = "failed"
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"slug": "ws", "clone_status": status})
+		_ = json.NewEncoder(w).Encode(map[string]any{"slug": "ws", "status": status})
 	}))
 	t.Cleanup(srv.Close)
 	stdout, _, err := runAfc(t, srv.URL, "", "workspace", "create", "--slug", "ws", "--git-url", "https://example.com/r.git",

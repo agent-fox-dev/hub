@@ -965,8 +965,8 @@ func TestSyncRebuild_LastSyncAtAlwaysWritten_TS2033(t *testing.T) {
 			// Seed workspace with old timestamps.
 			now := time.Now().UTC().Format(time.RFC3339Nano)
 			_, err := env.db.Exec(
-				`INSERT INTO workspaces (slug, git_url, owner_id, status, clone_status, workspace_mode, integration_branch, upstream_url, upstream_head_sha, last_sync_at, created_at, updated_at)
-				 VALUES (?, ?, ?, 'active', 'ready', 'carry_patch', ?, ?, ?, ?, ?, ?)`,
+				`INSERT INTO workspaces (slug, git_url, owner_id, status, workspace_mode, integration_branch, upstream_url, upstream_head_sha, last_sync_at, created_at, updated_at)
+				 VALUES (?, ?, ?, 'ready', 'carry_patch', ?, ?, ?, ?, ?, ?)`,
 				"my-workspace", "https://github.com/example/repo", "alice",
 				"integration", "https://github.com/example/upstream",
 				storedSHA, oldSyncAt, now, oldUpdatedAt,

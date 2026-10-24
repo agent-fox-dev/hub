@@ -47,8 +47,8 @@ func TestReadableSlugs_NoUser_TS_35_16(t *testing.T) {
 func TestReadableSlugs_OwnerAndMember_TS_35_17(t *testing.T) {
 	db := openAccessDB(t, true)
 	if _, err := db.Exec(`INSERT INTO workspaces (slug, owner_id, org_id, status) VALUES
-		('W1', 'u2', NULL, 'active'), ('W2', 'u2', 'P', 'archived'), ('W3', 'u1', 'O', 'archived'),
-		('W4', 'u1', 'O', 'active'), ('W5', 'u2', 'O', 'active'), ('W6', 'u1', 'Z', 'active')`); err != nil {
+		('W1', 'u2', NULL, 'ready'), ('W2', 'u2', 'P', 'archived'), ('W3', 'u1', 'O', 'archived'),
+		('W4', 'u1', 'O', 'ready'), ('W5', 'u2', 'O', 'ready'), ('W6', 'u1', 'Z', 'ready')`); err != nil {
 		t.Fatal(err)
 	}
 	addMember(t, db, "O", "u2")

@@ -56,13 +56,13 @@ func TestWorkspacePermissions_PATReadAccess(t *testing.T) {
 		Slug:    "alice-ws-1",
 		GitURL:  "https://github.com/org/repo1",
 		OwnerID: "alice-id",
-		Status:  "active",
+		Status:  "pending",
 	})
 	env.seedWorkspace(t, &Workspace{
 		Slug:    "alice-ws-2",
 		GitURL:  "https://github.com/org/repo2",
 		OwnerID: "alice-id",
-		Status:  "active",
+		Status:  "pending",
 	})
 
 	auth := patAuth("alice-id", "workspaces:read")

@@ -16,7 +16,7 @@ func TestStateMachine_IntegrationWithDB(t *testing.T) {
 		Slug:    "sm-test-ws",
 		GitURL:  "https://github.com/org/repo",
 		OwnerID: "user-1",
-		Status:  "active",
+		Status:  "pending",
 	}
 	if err := insertWorkspace(db, ws); err != nil {
 		t.Fatalf("seed workspace: %v", err)
@@ -34,15 +34,15 @@ func TestStateMachine_IntegrationWithDB(t *testing.T) {
 	}
 
 	for _, tr := range transitions {
-		if err := updateCloneStatus(db, ws.Slug, tr.to, tr.headSHA, tr.cloneErr); err != nil {
-			t.Fatalf("updateCloneStatus(%q -> %q): %v", ws.Slug, tr.to, err)
+		if err := setStatus(db, ws.Slug, tr.to, tr.headSHA, tr.cloneErr); err != nil {
+			t.Fatalf("setStatus(%q -> %q): %v", ws.Slug, tr.to, err)
 		}
-		cloneStatus, _, _, err := getCloneFields(db, ws.Slug)
+		status, _, _, err := getCloneFields(db, ws.Slug)
 		if err != nil {
 			t.Fatalf("getCloneFields after %q: %v", tr.to, err)
 		}
-		if cloneStatus != tr.to {
-			t.Errorf("clone_status = %q after transition; want %q", cloneStatus, tr.to)
+		if status != tr.to {
+			t.Errorf("status = %q after transition; want %q", status, tr.to)
 		}
 	}
 }
@@ -52,8 +52,8 @@ func strPtr(s string) *string {
 	return &s
 }
 
-// TS-05-26: The only way to transition clone_status from 'archived' to
-// 'pending' is via the reactivate endpoint.
+// TS-05-26: The only way to transition status from 'archived' to 'pending'
+// is via the reactivate endpoint.
 // Requirement: 05-REQ-9.2
 func TestStateMachine_ArchivedToPendingOnlyViaReactivate(t *testing.T) {
 	env := newTestEnv(t)
@@ -64,11 +64,6 @@ func TestStateMachine_ArchivedToPendingOnlyViaReactivate(t *testing.T) {
 		OwnerID: "user-1",
 		Status:  "archived",
 	})
-
-	// Set clone_status to 'archived'.
-	if err := updateCloneStatus(env.db, "archived-ws", "archived", nil, nil); err != nil {
-		t.Fatalf("updateCloneStatus('archived'): %v", err)
-	}
 
 	// Reactivate the workspace via the HTTP endpoint.
 	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/archived-ws/reactivate", "",
@@ -86,20 +81,17 @@ func TestStateMachine_ArchivedToPendingOnlyViaReactivate(t *testing.T) {
 		t.Fatalf("failed to decode response: %v", err)
 	}
 
-	// Assert clone_status transitioned to 'pending'.
-	if ws.CloneStatus == nil {
-		t.Fatal("clone_status is nil; want 'pending'")
-	}
-	if *ws.CloneStatus != "pending" {
-		t.Errorf("clone_status = %q; want %q", *ws.CloneStatus, "pending")
+	// Assert status transitioned to 'pending'.
+	if ws.Status != "pending" {
+		t.Errorf("status = %q; want %q", ws.Status, "pending")
 	}
 
 	// Verify in the database as well.
-	cloneStatus, _, _, err := getCloneFields(env.db, "archived-ws")
+	status, _, _, err := getCloneFields(env.db, "archived-ws")
 	if err != nil {
 		t.Fatalf("getCloneFields: %v", err)
 	}
-	if cloneStatus != "pending" {
-		t.Errorf("DB clone_status = %q; want %q", cloneStatus, "pending")
+	if status != "pending" {
+		t.Errorf("DB status = %q; want %q", status, "pending")
 	}
 }

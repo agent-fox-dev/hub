@@ -65,7 +65,7 @@ func TestSpec03_Group2_ExistingScopesUnchanged(t *testing.T) {
 		Slug:    "existing-ws",
 		GitURL:  "https://git.example.com/repo",
 		OwnerID: "u1-id",
-		Status:  "active",
+		Status:  "pending",
 	})
 
 	t.Run("PAT-read GET returns 200", func(t *testing.T) {
@@ -105,7 +105,7 @@ func TestSpec03_Group2_WriteImpliesRead(t *testing.T) {
 		Slug:    "write-ws",
 		GitURL:  "https://git.example.com/repo",
 		OwnerID: "u1-id",
-		Status:  "active",
+		Status:  "pending",
 	})
 
 	auth := patAuth("u1-id", "workspaces:write")
@@ -137,7 +137,7 @@ func TestSpec03_Group2_OtherScopeDoesNotImplyRead(t *testing.T) {
 		Slug:    "delete-only-ws",
 		GitURL:  "https://git.example.com/repo",
 		OwnerID: "u1-id",
-		Status:  "active",
+		Status:  "pending",
 	})
 
 	auth := patAuth("u1-id", "patches:write")
@@ -188,7 +188,7 @@ func TestSpec03_Group2_AdminFullMutationAccess(t *testing.T) {
 		Slug:    "admin-target-ws",
 		GitURL:  "https://git.example.com/repo",
 		OwnerID: "u2-id",
-		Status:  "active",
+		Status:  "pending",
 	})
 
 	auth := adminAuth()
@@ -271,7 +271,7 @@ func TestSpec03_Group2_OwnerAPIKeyFullAccess(t *testing.T) {
 		Slug:    "owner-ws",
 		GitURL:  "https://git.example.com/repo",
 		OwnerID: "u1-id",
-		Status:  "active",
+		Status:  "pending",
 	})
 
 	auth := userAuth("u1-id")
@@ -340,7 +340,7 @@ func TestSpec03_Group2_WritePATMutationAccess(t *testing.T) {
 		Slug:    "write-target-ws",
 		GitURL:  "https://git.example.com/repo",
 		OwnerID: "u1-id",
-		Status:  "active",
+		Status:  "pending",
 	})
 
 	auth := patAuth("u1-id", "workspaces:write")
@@ -409,7 +409,7 @@ func TestSpec03_Group2_ReadPATsDeniedOnMutation(t *testing.T) {
 		Slug:    "acl-test-ws",
 		GitURL:  "https://git.example.com/repo",
 		OwnerID: "u1-id",
-		Status:  "active",
+		Status:  "pending",
 	})
 
 	pats := []struct {
@@ -464,7 +464,7 @@ func TestSpec03_Group2_NonOwnerAntiEnumeration(t *testing.T) {
 		Slug:    "other-user-ws",
 		GitURL:  "https://git.example.com/repo",
 		OwnerID: "u1-id",
-		Status:  "active",
+		Status:  "pending",
 	})
 
 	// u2 attempts all operations on u1's workspace.

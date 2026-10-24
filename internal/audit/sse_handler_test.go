@@ -535,7 +535,7 @@ func TestSSE_SetFixedAtConnect_TS_36_24(t *testing.T) {
 	env, mgr := newMemberQueryEnv(t)
 	ts := memberStreamServer(t, env)
 	stream := openMemberStream(t, ts, mgr, patAuth("u2", "audit:read"), 1)
-	env.seedWorkspaceInOrg(t, "w-new", "u1", "N", "active")
+	env.seedWorkspaceInOrg(t, "w-new", "u1", "N", "ready")
 	if _, err := env.sqliteDB.Exec(`DELETE FROM org_members WHERE org_id = 'O' AND user_id = 'u2'`); err != nil {
 		t.Fatal(err)
 	}

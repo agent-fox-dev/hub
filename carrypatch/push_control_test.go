@@ -114,7 +114,7 @@ func TestPushControl_TS22_12_ControlAppliesRegisteredPatches(t *testing.T) {
 	createPatchesTable(t, db)
 
 	// Seed a carry_patch workspace with integration_branch 'main-int'.
-	seedWorkspaceWithGitURL(t, db, "myws", "user-1", "active", "ready",
+	seedWorkspaceWithGitURL(t, db, "myws", "user-1", "ready",
 		"carry_patch", "main-int", "https://github.com/example/repo")
 
 	// Seed patches with statuses active, pending (not a valid status, but
@@ -168,10 +168,10 @@ func TestPushControl_TS22_13_NonApplicableUpdatesPassThrough(t *testing.T) {
 	createPatchesTable(t, db)
 
 	// carry_patch workspace
-	seedWorkspaceWithGitURL(t, db, "cpws", "user-1", "active", "ready",
+	seedWorkspaceWithGitURL(t, db, "cpws", "user-1", "ready",
 		"carry_patch", "main-int", "https://github.com/example/repo")
 	// standard workspace
-	seedWorkspaceWithGitURL(t, db, "stdws", "user-1", "active", "ready",
+	seedWorkspaceWithGitURL(t, db, "stdws", "user-1", "ready",
 		"standard", "main", "https://github.com/example/repo")
 
 	// Patches for cpws
@@ -234,7 +234,7 @@ func TestPushControl_TS22_14_StandardWorkspaceNoVariableReads(t *testing.T) {
 	createWorkspacesTable(t, db)
 	createPatchesTable(t, db)
 
-	seedWorkspaceWithGitURL(t, db, "stdws", "user-1", "active", "ready",
+	seedWorkspaceWithGitURL(t, db, "stdws", "user-1", "ready",
 		"standard", "main", "https://github.com/example/repo")
 
 	var callCount int32
@@ -337,7 +337,7 @@ func TestPushControl_TS22_44_FailOpenOnQueryErrors(t *testing.T) {
 		createWorkspacesTable(t, db)
 		// Do NOT create patches table → query will fail
 
-		seedWorkspaceWithGitURL(t, db, "myws", "user-1", "active", "ready",
+		seedWorkspaceWithGitURL(t, db, "myws", "user-1", "ready",
 			"carry_patch", "main-int", "https://github.com/example/repo")
 
 		var logBuf bytes.Buffer
@@ -386,7 +386,7 @@ func TestPushControl_TS22_11_VariablesReReadPerUpdate(t *testing.T) {
 	createWorkspacesTable(t, db)
 	createPatchesTable(t, db)
 
-	seedWorkspaceWithGitURL(t, db, "myws", "user-1", "active", "ready",
+	seedWorkspaceWithGitURL(t, db, "myws", "user-1", "ready",
 		"carry_patch", "main-int", "https://github.com/example/repo")
 	seedPatch(t, db, "p1", "myws", "feature/a", 1, "active")
 
@@ -581,13 +581,13 @@ func TestStripUserinfo(t *testing.T) {
 // Helper: seedWorkspaceWithGitURL
 // ===========================================================================
 
-func seedWorkspaceWithGitURL(t *testing.T, db *sql.DB, slug, ownerID, status, cloneStatus, mode, integrationBranch, gitURL string) {
+func seedWorkspaceWithGitURL(t *testing.T, db *sql.DB, slug, ownerID, status, mode, integrationBranch, gitURL string) {
 	t.Helper()
 	now := "2024-01-01T00:00:00Z"
 	_, err := db.Exec(
-		`INSERT INTO workspaces (slug, git_url, owner_id, status, clone_status, workspace_mode, integration_branch, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		slug, gitURL, ownerID, status, cloneStatus, mode, integrationBranch, now, now,
+		`INSERT INTO workspaces (slug, git_url, owner_id, status, workspace_mode, integration_branch, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		slug, gitURL, ownerID, status, mode, integrationBranch, now, now,
 	)
 	if err != nil {
 		t.Fatalf("seedWorkspaceWithGitURL(%q) returned error: %v", slug, err)

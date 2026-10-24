@@ -15,7 +15,7 @@ func TestMemberGitReadOnly_TS_35_56(t *testing.T) {
 	env.seedOrg(t, "org-1", "My Org", "myorg")
 	env.seedOrgMember(t, "org-1", "user-a")
 	env.seedOrgMember(t, "org-1", "user-b")
-	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-a", "org-1", "active")
+	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-a", "org-1", "ready")
 	env.initWorkspaceRepo(t, "myws")
 
 	readOnly := string(encodePktLine("ERR org members have read-only access to this workspace\n"))

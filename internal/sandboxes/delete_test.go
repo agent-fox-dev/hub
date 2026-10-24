@@ -84,7 +84,7 @@ func TestDelete_TerminalLeaseUnchanged_TS_26_50(t *testing.T) {
 // Requirement: 26-REQ-8.3
 func TestDelete_NotFound_TS_26_51(t *testing.T) {
 	env := newLeaseEnv(t, leaseEnvOptions{})
-	env.addWorkspace("other", leaseOwner, "", "active")
+	env.addWorkspace("other", leaseOwner, "", "ready")
 	foreign := env.insertLeaseAt(1, "other", "leased", env.clock.Now())
 	before := env.readState(foreign)
 

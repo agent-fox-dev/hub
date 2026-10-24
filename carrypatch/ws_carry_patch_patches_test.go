@@ -756,8 +756,8 @@ func TestPatchStore_ConflictFilesRoundTrip(t *testing.T) {
 	// Insert a workspace.
 	now := time.Now().UTC().Format(time.RFC3339)
 	_, err = db.Exec(
-		`INSERT INTO workspaces (slug, git_url, owner_id, status, clone_status, workspace_mode, created_at, updated_at)
-		 VALUES (?, ?, ?, 'active', 'ready', 'carry_patch', ?, ?)`,
+		`INSERT INTO workspaces (slug, git_url, owner_id, status, workspace_mode, created_at, updated_at)
+		 VALUES (?, ?, ?, 'ready', 'carry_patch', ?, ?)`,
 		"ws-cf-rt", "https://github.com/org/repo", "user-1", now, now,
 	)
 	if err != nil {
@@ -817,8 +817,8 @@ func TestPatchStore_ConflictFilesNullHandling(t *testing.T) {
 	// Insert a workspace and patch without conflict_files.
 	now := time.Now().UTC().Format(time.RFC3339)
 	_, err = db.Exec(
-		`INSERT INTO workspaces (slug, git_url, owner_id, status, clone_status, workspace_mode, created_at, updated_at)
-		 VALUES (?, ?, ?, 'active', 'ready', 'carry_patch', ?, ?)`,
+		`INSERT INTO workspaces (slug, git_url, owner_id, status, workspace_mode, created_at, updated_at)
+		 VALUES (?, ?, ?, 'ready', 'carry_patch', ?, ?)`,
 		"ws-cf-null", "https://github.com/org/repo", "user-1", now, now,
 	)
 	if err != nil {

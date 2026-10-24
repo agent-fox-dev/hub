@@ -36,7 +36,7 @@ func TestMint_BindEvent_TS_34_52(t *testing.T) {
 		{"expiry", `"2027-01-19T10:00:00Z"`, "2027-01-19T10:00:00Z"},
 	} {
 		db := openTestDB(t)
-		seedWorkspace(t, db, "s", "u1", "active")
+		seedWorkspace(t, db, "s", "u1", "ready")
 		em := &recordingEmitter{}
 		body := `{"token_id":"T1","name":"svc","token":"ak_pat_T1_x","permissions":["a","b"],"expires_at":` + c.expires + `,"created_at":"2026-10-21T10:00:00Z"}`
 		env := newTestEnv(t, Config{DB: db, APIKit: mintingStub(db, "T1", "", nil, body), Audit: em})
@@ -65,7 +65,7 @@ func TestMint_BindEvent_TS_34_52(t *testing.T) {
 // does not cancel. Requirement: 34-REQ-9.3
 func TestMint_BindEventContext_TS_34_53(t *testing.T) {
 	db := openTestDB(t)
-	seedWorkspace(t, db, "s", "u1", "active")
+	seedWorkspace(t, db, "s", "u1", "ready")
 	em := &recordingEmitter{}
 	e := echo.New()
 	api := e.Group("/api/v1")
@@ -99,17 +99,17 @@ func TestMint_NoBindEventOnFailure_TS_34_54(t *testing.T) {
 	}
 	ok := func(db *sql.DB) http.Handler { return mintingStub(db, "T1", "ak_pat_T1_x", nil, "") }
 	for _, s := range []scenario{
-		{"401", nil, "active", ok, nil},
-		{"bound pat", pat("u1", "TB", "tokens:manage"), "active", ok, func(db *sql.DB) { bind(t, db, "TB", "s") }},
-		{"admin", admin(), "active", ok, nil},
-		{"404", apiKey("u2"), "active", ok, nil},
+		{"401", nil, "ready", ok, nil},
+		{"bound pat", pat("u1", "TB", "tokens:manage"), "ready", ok, func(db *sql.DB) { bind(t, db, "TB", "s") }},
+		{"admin", admin(), "ready", ok, nil},
+		{"404", apiKey("u2"), "ready", ok, nil},
 		{"400 archived", apiKey("u1"), "archived", ok, nil},
-		{"apikit 400", apiKey("u1"), "active", func(*sql.DB) http.Handler { return newStub(400, `{"error":{"code":400,"message":"x"}}`) }, nil},
-		{"undecodable", apiKey("u1"), "active", func(db *sql.DB) http.Handler { return mintingStub(db, "T1", "", nil, `{nope`) }, nil},
-		{"vanished", apiKey("u1"), "active", func(db *sql.DB) http.Handler {
+		{"apikit 400", apiKey("u1"), "ready", func(*sql.DB) http.Handler { return newStub(400, `{"error":{"code":400,"message":"x"}}`) }, nil},
+		{"undecodable", apiKey("u1"), "ready", func(db *sql.DB) http.Handler { return mintingStub(db, "T1", "", nil, `{nope`) }, nil},
+		{"vanished", apiKey("u1"), "ready", func(db *sql.DB) http.Handler {
 			return mintingStub(db, "T1", "ak_pat_T1_x", func() { _, _ = db.Exec(`DELETE FROM workspaces`) }, "")
 		}, nil},
-		{"insert error", apiKey("u1"), "active", func(db *sql.DB) http.Handler {
+		{"insert error", apiKey("u1"), "ready", func(db *sql.DB) http.Handler {
 			return mintingStub(db, "T1", "ak_pat_T1_x", func() { _, _ = db.Exec(`DROP TABLE token_workspace_bindings`) }, "")
 		}, nil},
 	} {
@@ -141,7 +141,7 @@ func TestMint_EmitterNilOrFailing_TS_34_55(t *testing.T) {
 	} {
 		logs := captureLogs(t)
 		db := openTestDB(t)
-		seedWorkspace(t, db, "s", "u1", "active")
+		seedWorkspace(t, db, "s", "u1", "ready")
 		env := newTestEnv(t, Config{DB: db, APIKit: mintingStub(db, "T1", "ak_pat_T1_x", nil, ""), Audit: c.em})
 		rec := env.do(http.MethodPost, mintPath, apiKey("u1"), `{"name":"svc"}`, nil)
 		if rec.Code != http.StatusCreated || rec.Header().Get("Cache-Control") != "no-store" || !strings.Contains(rec.Body.String(), `"workspace":"s"`) {

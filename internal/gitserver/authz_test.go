@@ -14,7 +14,7 @@ func TestAuthz_AdminToken_FetchAndPush_AnyWorkspace(t *testing.T) {
 	// Workspace owned by user-1, NOT the admin.
 	env.seedOrg(t, "org-1", "My Org", "myorg")
 	env.seedOrgMember(t, "org-1", "user-1")
-	env.seedWorkspace(t, "otherws", "https://github.com/org/repo", "user-1", "org-1", "active")
+	env.seedWorkspace(t, "otherws", "https://github.com/org/repo", "user-1", "org-1", "ready")
 
 	env.initWorkspaceRepo(t, "otherws")
 
@@ -44,7 +44,7 @@ func TestAuthz_OwnerAPIKey_Fetch(t *testing.T) {
 
 	env.seedOrg(t, "org-1", "My Org", "myorg")
 	env.seedOrgMember(t, "org-1", "user-a")
-	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-a", "org-1", "active")
+	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-a", "org-1", "ready")
 
 	env.initWorkspaceRepo(t, "myws")
 
@@ -70,7 +70,7 @@ func TestAuthz_OwnerAPIKey_Push(t *testing.T) {
 
 	env.seedOrg(t, "org-1", "My Org", "myorg")
 	env.seedOrgMember(t, "org-1", "user-a")
-	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-a", "org-1", "active")
+	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-a", "org-1", "ready")
 
 	env.initWorkspaceRepo(t, "myws")
 
@@ -97,7 +97,7 @@ func TestAuthz_PATGitRead_Fetch(t *testing.T) {
 
 	env.seedOrg(t, "org-1", "My Org", "myorg")
 	env.seedOrgMember(t, "org-1", "user-a")
-	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-a", "org-1", "active")
+	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-a", "org-1", "ready")
 
 	env.initWorkspaceRepo(t, "myws")
 
@@ -118,7 +118,7 @@ func TestAuthz_PATGitWrite_Push(t *testing.T) {
 
 	env.seedOrg(t, "org-1", "My Org", "myorg")
 	env.seedOrgMember(t, "org-1", "user-a")
-	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-a", "org-1", "active")
+	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-a", "org-1", "ready")
 
 	env.initWorkspaceRepo(t, "myws")
 
@@ -139,7 +139,7 @@ func TestAuthz_PATGitReadOnly_PushRejected(t *testing.T) {
 
 	env.seedOrg(t, "org-1", "My Org", "myorg")
 	env.seedOrgMember(t, "org-1", "user-a")
-	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-a", "org-1", "active")
+	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-a", "org-1", "ready")
 
 	env.initWorkspaceRepo(t, "myws")
 
@@ -164,7 +164,7 @@ func TestAuthz_PATGitWrite_AlsoPermitsFetch(t *testing.T) {
 
 	env.seedOrg(t, "org-1", "My Org", "myorg")
 	env.seedOrgMember(t, "org-1", "user-a")
-	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-a", "org-1", "active")
+	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-a", "org-1", "ready")
 
 	env.initWorkspaceRepo(t, "myws")
 
@@ -188,7 +188,7 @@ func TestAuthz_PATWrongOwner_Returns404(t *testing.T) {
 	env.seedOrg(t, "org-1", "My Org", "myorg")
 	env.seedOrgMember(t, "org-1", "user-a")
 	// Workspace owned by user-a.
-	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-a", "org-1", "active")
+	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-a", "org-1", "ready")
 
 	env.initWorkspaceRepo(t, "myws")
 
@@ -227,7 +227,7 @@ func TestAuthz_APIKeyWrongOwner_Returns404(t *testing.T) {
 	env.seedOrg(t, "org-1", "My Org", "myorg")
 	env.seedOrgMember(t, "org-1", "user-a")
 	// Workspace owned by user-a.
-	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-a", "org-1", "active")
+	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-a", "org-1", "ready")
 
 	env.initWorkspaceRepo(t, "myws")
 
@@ -265,7 +265,7 @@ func TestAuthz_AdminToken_OverridesOwnership(t *testing.T) {
 	env.seedOrg(t, "org-1", "My Org", "myorg")
 	env.seedOrgMember(t, "org-1", "user-a")
 	// Workspace owned by user-a. Admin is not the owner.
-	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-a", "org-1", "active")
+	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-a", "org-1", "ready")
 
 	env.initWorkspaceRepo(t, "myws")
 
@@ -288,7 +288,7 @@ func TestAuthz_PostUploadPack_OwnerPermitted(t *testing.T) {
 
 	env.seedOrg(t, "org-1", "My Org", "myorg")
 	env.seedOrgMember(t, "org-1", "user-a")
-	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-a", "org-1", "active")
+	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-a", "org-1", "ready")
 
 	env.initWorkspaceRepo(t, "myws")
 
@@ -310,7 +310,7 @@ func TestAuthz_PostReceivePack_OwnerPermitted(t *testing.T) {
 
 	env.seedOrg(t, "org-1", "My Org", "myorg")
 	env.seedOrgMember(t, "org-1", "user-a")
-	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-a", "org-1", "active")
+	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-a", "org-1", "ready")
 
 	env.initWorkspaceRepo(t, "myws")
 

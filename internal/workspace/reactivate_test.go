@@ -11,11 +11,11 @@ import (
 // (TS-05-23)
 // ========================================================================
 
-// TS-05-23: POST /api/v1/workspaces/:slug/reactivate sets status='active',
-// clone_status='pending', clears clone_error, enqueues a reclone job, and
-// returns HTTP 200 immediately.
+// TS-05-23: POST /api/v1/workspaces/:slug/reactivate sets status='pending',
+// clears clone_error, enqueues a reclone job, and returns HTTP 200
+// immediately.
 // Requirement: 05-REQ-7.1
-func TestReactivate_Spec05_ArchivedToActive(t *testing.T) {
+func TestReactivate_Spec05_ArchivedToPending(t *testing.T) {
 	env := newTestEnv(t)
 
 	env.seedWorkspace(t, &Workspace{
@@ -25,11 +25,10 @@ func TestReactivate_Spec05_ArchivedToActive(t *testing.T) {
 		Status:  "archived",
 	})
 
-	// Set clone_status to 'archived' and add a stale clone_error to verify
-	// it gets cleared on reactivation.
+	// Add a stale clone_error to verify it gets cleared on reactivation.
 	staleError := "previous clone failure"
-	if err := updateCloneStatus(env.db, "archived-ws", "archived", nil, &staleError); err != nil {
-		t.Fatalf("updateCloneStatus('archived'): %v", err)
+	if err := setStatus(env.db, "archived-ws", "archived", nil, &staleError); err != nil {
+		t.Fatalf("setStatus('archived'): %v", err)
 	}
 
 	// Set up a test job queue to capture enqueued reclone jobs.
@@ -56,17 +55,9 @@ func TestReactivate_Spec05_ArchivedToActive(t *testing.T) {
 		t.Fatalf("failed to decode response: %v", err)
 	}
 
-	// Assert status = 'active'.
-	if ws.Status != "active" {
-		t.Errorf("status = %q; want %q", ws.Status, "active")
-	}
-
-	// Assert clone_status = 'pending'.
-	if ws.CloneStatus == nil {
-		t.Fatal("clone_status is nil; want 'pending'")
-	}
-	if *ws.CloneStatus != "pending" {
-		t.Errorf("clone_status = %q; want %q", *ws.CloneStatus, "pending")
+	// Assert status = 'pending'.
+	if ws.Status != "pending" {
+		t.Errorf("status = %q; want %q", ws.Status, "pending")
 	}
 
 	// Assert clone_error is cleared to null.
@@ -88,13 +79,13 @@ func TestReactivate_Spec05_ArchivedToActive(t *testing.T) {
 		t.Error("no reclone job was enqueued on the job queue")
 	}
 
-	// Verify DB state: status='active', clone_status='pending', clone_error=null.
-	cloneStatus, _, cloneError, err := getCloneFields(env.db, "archived-ws")
+	// Verify DB state: status='pending', clone_error=null.
+	status, _, cloneError, err := getCloneFields(env.db, "archived-ws")
 	if err != nil {
 		t.Fatalf("getCloneFields: %v", err)
 	}
-	if cloneStatus != "pending" {
-		t.Errorf("DB clone_status = %q; want %q", cloneStatus, "pending")
+	if status != "pending" {
+		t.Errorf("DB status = %q; want %q", status, "pending")
 	}
 	if cloneError != nil {
 		t.Errorf("DB clone_error = %q; want nil", *cloneError)
@@ -111,7 +102,7 @@ func TestReactivate_Spec05_NotArchivedReturns409(t *testing.T) {
 		Slug:    "active-ws",
 		GitURL:  "https://github.com/org/repo",
 		OwnerID: "user-1",
-		Status:  "active",
+		Status:  "pending",
 	})
 
 	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/active-ws/reactivate", "",
@@ -138,11 +129,6 @@ func TestReactivate_Spec05_DBFailureReturns500(t *testing.T) {
 		Status:  "archived",
 	})
 
-	// Set clone_status to 'archived'.
-	if err := updateCloneStatus(env.db, "db-fail-ws", "archived", nil, nil); err != nil {
-		t.Fatalf("updateCloneStatus('archived'): %v", err)
-	}
-
 	// Set up a test job queue to verify no job is enqueued on failure.
 	q := &JobQueue{
 		jobs: make(chan CloneJob, 10),
@@ -155,7 +141,7 @@ func TestReactivate_Spec05_DBFailureReturns500(t *testing.T) {
 	// after authorization has passed.
 	if _, err := env.db.Exec(`
 		CREATE TRIGGER prevent_reactivate_update BEFORE UPDATE ON workspaces
-		WHEN NEW.status = 'active' AND OLD.status = 'archived'
+		WHEN NEW.status = 'pending' AND OLD.status = 'archived'
 		BEGIN
 			SELECT RAISE(FAIL, 'simulated database failure');
 		END

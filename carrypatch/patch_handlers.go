@@ -136,8 +136,8 @@ func handleAddPatch(cfg APIConfig) echo.HandlerFunc {
 		if ws == nil {
 			return nil
 		}
-		if ws.Status != "active" {
-			return respondError(c, http.StatusBadRequest, "workspace is not active")
+		if ws.Status == "archived" {
+			return respondError(c, http.StatusBadRequest, "workspace is archived")
 		}
 
 		// 15-REQ-8.3: Reject for standard workspaces.
@@ -620,8 +620,8 @@ func handleRestorePatch(cfg APIConfig) echo.HandlerFunc {
 		if ws == nil {
 			return nil
 		}
-		if ws.Status != "active" {
-			return respondError(c, http.StatusBadRequest, "workspace is not active")
+		if ws.Status == "archived" {
+			return respondError(c, http.StatusBadRequest, "workspace is archived")
 		}
 		if ws.WorkspaceMode != "carry_patch" {
 			return respondError(c, http.StatusBadRequest, "workspace is not in carry_patch mode")

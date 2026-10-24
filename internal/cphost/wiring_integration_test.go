@@ -43,8 +43,8 @@ func TestWiringIntegration_TS22_9_UnchangedBehaviourWithHookWired(t *testing.T) 
 	mustExec(t, env.db, `INSERT INTO org_members (org_id, user_id, created_at) VALUES (?, ?, ?)`,
 		"org-std", "user-1", now)
 	mustExec(t, env.db,
-		`INSERT INTO workspaces (slug, git_url, owner_id, org_id, status, clone_status, workspace_mode, integration_branch, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, 'active', 'ready', 'standard', '', ?, ?)`,
+		`INSERT INTO workspaces (slug, git_url, owner_id, org_id, status, workspace_mode, integration_branch, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, 'ready', 'standard', '', ?, ?)`,
 		"stdws", "https://example.com/std.git", "user-1", "org-std", now, now)
 
 	// Initialize the standard workspace trunk.

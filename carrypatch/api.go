@@ -226,11 +226,8 @@ type PatchStatusResponse struct {
 	WorkspaceSlug      string              `json:"workspace_slug"`
 	WorkspaceMode      string              `json:"workspace_mode"`
 	Status             string              `json:"status"`
-	CloneStatus        string              `json:"clone_status"`
 	CloneError         string              `json:"clone_error,omitempty"`
-	SyncStatus         string              `json:"sync_status"`
 	SyncError          string              `json:"sync_error,omitempty"`
-	SyncMode           string              `json:"sync_mode"`
 	HeadSHA            string              `json:"head_sha"`
 	GitURL             string              `json:"git_url"`
 	UpstreamURL        string              `json:"upstream_url"`
@@ -302,12 +299,12 @@ func handleRebuildPreview(cfg APIConfig) echo.HandlerFunc {
 		}
 
 		// 2. Load workspace and validate.
-		var mode, status, cloneStatus string
+		var mode string
 		var wsBranch sql.NullString
 		err := cfg.DB.QueryRow(
-			`SELECT workspace_mode, status, clone_status, branch
+			`SELECT workspace_mode, branch
 			 FROM workspaces WHERE slug = ?`, slug,
-		).Scan(&mode, &status, &cloneStatus, &wsBranch)
+		).Scan(&mode, &wsBranch)
 		if err == sql.ErrNoRows {
 			return apikit.WriteAPIError(c, http.StatusNotFound, "workspace not found")
 		}
@@ -439,12 +436,12 @@ func handleSubmitRebuild(cfg APIConfig) echo.HandlerFunc {
 		}
 
 		// 2. Load workspace and validate.
-		var mode, status, cloneStatus string
+		var mode, status string
 		var integrationBranch sql.NullString
 		err := cfg.DB.QueryRow(
-			`SELECT workspace_mode, status, clone_status, integration_branch
+			`SELECT workspace_mode, status, integration_branch
 			 FROM workspaces WHERE slug = ?`, slug,
-		).Scan(&mode, &status, &cloneStatus, &integrationBranch)
+		).Scan(&mode, &status, &integrationBranch)
 		if err == sql.ErrNoRows {
 			return apikit.WriteAPIError(c, http.StatusNotFound, "workspace not found")
 		}
@@ -457,12 +454,9 @@ func handleSubmitRebuild(cfg APIConfig) echo.HandlerFunc {
 			return apikit.WriteAPIErrorWithType(c, http.StatusBadRequest, "rebuild is only supported for carry_patch workspaces", "workspace_mode_mismatch")
 		}
 
-		// 16-REQ-1.E2: workspace must be active with ready clone.
-		if status != "active" {
-			return apikit.WriteAPIError(c, http.StatusBadRequest, "workspace is not active")
-		}
-		if cloneStatus != "ready" {
-			return apikit.WriteAPIError(c, http.StatusBadRequest, "workspace clone is not ready")
+		// 16-REQ-1.E2: workspace must be ready.
+		if status != "ready" {
+			return apikit.WriteAPIError(c, http.StatusBadRequest, "workspace is not ready")
 		}
 
 		// 16-REQ-1.E3: at least one patch with status 'active' or 'conflict'.
@@ -932,16 +926,14 @@ func handlePatchStatus(cfg APIConfig) echo.HandlerFunc {
 		}
 
 		// Load workspace metadata.
-		var mode, wsStatus, cloneStatus, syncStatus, syncMode string
+		var mode, wsStatus string
 		var upstreamURL, upstreamHeadSHA, integrationBranch, lastSyncAt sql.NullString
 		var cloneError, syncError, headSHA, gitURL sql.NullString
 		err := cfg.DB.QueryRow(
-			`SELECT workspace_mode, status, clone_status, clone_error,
-			        sync_status, sync_error, sync_mode, head_sha, git_url,
+			`SELECT workspace_mode, status, clone_error, sync_error, head_sha, git_url,
 			        upstream_url, upstream_head_sha, integration_branch, last_sync_at
 			 FROM workspaces WHERE slug = ?`, slug,
-		).Scan(&mode, &wsStatus, &cloneStatus, &cloneError,
-			&syncStatus, &syncError, &syncMode, &headSHA, &gitURL,
+		).Scan(&mode, &wsStatus, &cloneError, &syncError, &headSHA, &gitURL,
 			&upstreamURL, &upstreamHeadSHA, &integrationBranch, &lastSyncAt)
 		if err == sql.ErrNoRows {
 			return apikit.WriteAPIError(c, http.StatusNotFound, "workspace not found")
@@ -1090,11 +1082,8 @@ func handlePatchStatus(cfg APIConfig) echo.HandlerFunc {
 			WorkspaceSlug:      slug,
 			WorkspaceMode:      mode,
 			Status:             wsStatus,
-			CloneStatus:        cloneStatus,
 			CloneError:         nullStr(cloneError),
-			SyncStatus:         syncStatus,
 			SyncError:          nullStr(syncError),
-			SyncMode:           syncMode,
 			HeadSHA:            nullStr(headSHA),
 			GitURL:             nullStr(gitURL),
 			UpstreamURL:        nullStr(upstreamURL),

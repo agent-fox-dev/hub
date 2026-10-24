@@ -55,6 +55,9 @@ type Settings struct {
 	// UpstreamForgeAPIURL is the same for the upstream_url of a carry_patch
 	// workspace; it does not fall back to ForgeAPIURL.
 	UpstreamForgeAPIURL string `json:"upstream_forge_api_url"`
+	// SyncEnabled lets POST /sync fetch the workspace's origin; false refuses
+	// every sync of the workspace.
+	SyncEnabled bool `json:"sync_enabled"`
 }
 
 // DefaultSettings are the settings of a workspace that set none.
@@ -67,6 +70,7 @@ func DefaultSettings() Settings {
 		RebuildStrategy:       "rebase",
 		RebuildFailMode:       "fail_fast",
 		SquashMergeDetection:  "both",
+		SyncEnabled:           true,
 	}
 }
 
@@ -93,6 +97,7 @@ var settingKinds = map[string]string{
 	"squash_merge_detection":          "enum",
 	"forge_api_url":                   "url",
 	"upstream_forge_api_url":          "url",
+	"sync_enabled":                    "bool",
 }
 
 // decodeSettings reads a stored settings document: the defaults, overlaid

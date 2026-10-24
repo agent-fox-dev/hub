@@ -69,7 +69,7 @@ type access struct {
 	verb string
 	// allowed reports whether the credential may use the route at all.
 	allowed func(*apikit.AuthInfo) bool
-	// active makes a workspace that is not active a 400, after the access check.
+	// active makes an archived workspace a 400, after the access check.
 	active bool
 	// need is what the route needs of the caller's access to the workspace: a
 	// member of the workspace's org reads, only its owner or an admin token writes.
@@ -80,7 +80,7 @@ var (
 	readAccess  = access{verb: "read", allowed: canReadForge, need: wsaccess.NeedRead}
 	writeAccess = access{verb: "write", allowed: canWriteForge, active: true, need: wsaccess.NeedWrite}
 	// writeAnyStatusAccess is writeAccess for a route that must work on a workspace that is
-	// not active, such as the one that turns the webhook off.
+	// archived, such as the one that turns the webhook off.
 	writeAnyStatusAccess = access{verb: "write", allowed: canWriteForge, need: wsaccess.NeedWrite}
 )
 
@@ -89,7 +89,7 @@ var (
 // of the verb or a credential type hub does not know, is 403, before the workspace
 // is looked up; a workspace that does not exist or that the caller may not read is
 // 404, without saying which, and a member of its org on a route that needs to write
-// is 403 forbidden (acc.need); a workspace that is not active is 400 where acc asks
+// is 403 forbidden (acc.need); an archived workspace is 400 where acc asks
 // for an active one. It then reads the workspace's remotes.
 //
 // It returns the request to go on with, or nil after writing the refusal, in which
@@ -111,8 +111,8 @@ func (h *handlers) authorize(c echo.Context, acc access) (req *request, err erro
 	if found == nil {
 		return nil, wsaccess.WriteRefusal(c, status, msg)
 	}
-	if acc.active && found.Status != "active" {
-		return nil, apikit.WriteAPIError(c, http.StatusBadRequest, "workspace is not active")
+	if acc.active && found.Status == "archived" {
+		return nil, apikit.WriteAPIError(c, http.StatusBadRequest, "workspace is archived")
 	}
 	remotes, err := h.loadRemotes(slug)
 	if errors.Is(err, sql.ErrNoRows) {

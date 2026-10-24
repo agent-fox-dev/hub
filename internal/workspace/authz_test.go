@@ -15,7 +15,7 @@ func TestWorkspaceAuthz_AdminFullAccess(t *testing.T) {
 		Slug:    "alice-ws",
 		GitURL:  "https://github.com/org/repo",
 		OwnerID: "alice-id",
-		Status:  "active",
+		Status:  "pending",
 	})
 
 	auth := adminAuth()
@@ -149,7 +149,7 @@ func TestEdgeWorkspaceAuthz_PATReadCannotMutate(t *testing.T) {
 		Slug:    "alice-ws",
 		GitURL:  "https://github.com/org/repo",
 		OwnerID: "alice-id",
-		Status:  "active",
+		Status:  "pending",
 	})
 
 	auth := patAuth("alice-id", "workspaces:read")
@@ -201,7 +201,7 @@ func TestWorkspaceAuthz_InsufficientScope(t *testing.T) {
 		Slug:    "alice-ws",
 		GitURL:  "https://github.com/org/repo",
 		OwnerID: "alice-id",
-		Status:  "active",
+		Status:  "pending",
 	})
 
 	// PAT with workspaces:read only — should not be able to archive.

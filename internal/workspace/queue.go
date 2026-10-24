@@ -130,16 +130,16 @@ func (q *JobQueue) Wait() {
 }
 
 // processCloneJob executes the clone operation for a single job:
-//  1. Sets clone_status to "cloning"
+//  1. Sets status to "cloning"
 //  2. Checks if workspace directory already exists (idempotency)
 //  3. Creates workspace directory and performs shallow clone
-//  4. On success: sets clone_status to "ready" and records head_sha
-//  5. On failure: sets clone_status to "failed", records error, removes partial dir
+//  4. On success: sets status to "ready" and records head_sha
+//  5. On failure: sets status to "failed", records error, removes partial dir
 func processCloneJob(ctx context.Context, db *sql.DB, workspaceRoot string, job CloneJob) {
 	slug := job.Slug
 
-	// Step 1: Set clone_status to "cloning".
-	if err := updateCloneStatus(db, slug, "cloning", nil, nil); err != nil {
+	// Step 1: Set status to "cloning".
+	if err := setStatus(db, slug, "cloning", nil, nil); err != nil {
 		log.Printf("clone job %q: failed to set cloning status: %v", slug, err)
 		return
 	}
@@ -148,7 +148,7 @@ func processCloneJob(ctx context.Context, db *sql.DB, workspaceRoot string, job 
 	wsDir := filepath.Join(workspaceRoot, slug)
 	if _, err := os.Stat(wsDir); err == nil {
 		// Directory exists; skip clone, set status to ready.
-		if err := updateCloneStatus(db, slug, "ready", nil, nil); err != nil {
+		if err := setStatus(db, slug, "ready", nil, nil); err != nil {
 			log.Printf("clone job %q: failed to set ready status (idempotent): %v", slug, err)
 		}
 		return
@@ -160,7 +160,7 @@ func processCloneJob(ctx context.Context, db *sql.DB, workspaceRoot string, job 
 	if authErr != nil {
 		log.Printf("clone job %q: credential lookup failed: %v", slug, authErr)
 		errMsg := fmt.Sprintf("credential lookup failed: %v", authErr)
-		_ = updateCloneStatus(db, slug, "failed", nil, &errMsg)
+		_ = setStatus(db, slug, "failed", nil, &errMsg)
 		return
 	}
 
@@ -168,7 +168,7 @@ func processCloneJob(ctx context.Context, db *sql.DB, workspaceRoot string, job 
 	trunkDir := filepath.Join(wsDir, "trunk")
 	if err := os.MkdirAll(trunkDir, 0o755); err != nil {
 		errMsg := err.Error()
-		_ = updateCloneStatus(db, slug, "failed", nil, &errMsg)
+		_ = setStatus(db, slug, "failed", nil, &errMsg)
 		return
 	}
 
@@ -188,7 +188,7 @@ func processCloneJob(ctx context.Context, db *sql.DB, workspaceRoot string, job 
 		// Clone failed: remove any partially created workspace directory.
 		_ = os.RemoveAll(wsDir)
 		errMsg := cloneErr.Error()
-		if err := updateCloneStatus(db, slug, "failed", nil, &errMsg); err != nil {
+		if err := setStatus(db, slug, "failed", nil, &errMsg); err != nil {
 			log.Printf("clone job %q: failed to set failed status: %v", slug, err)
 		}
 		return
@@ -206,7 +206,7 @@ func processCloneJob(ctx context.Context, db *sql.DB, workspaceRoot string, job 
 	}
 
 	// Step 6: Clone succeeded — record HEAD SHA and set status to ready.
-	if err := updateCloneStatus(db, slug, "ready", &headSHA, nil); err != nil {
+	if err := setStatus(db, slug, "ready", &headSHA, nil); err != nil {
 		log.Printf("clone job %q: failed to set ready status: %v", slug, err)
 	}
 }
@@ -270,29 +270,29 @@ func carryPatchPostCloneSetup(ctx context.Context, trunkDir string, ws *Workspac
 // production default is set by InitCloneQueue.
 var upstreamFetchFn func(ctx context.Context, repoPath string, auth transport.AuthMethod) error
 
-// updateCloneStatus updates the clone_status, head_sha, and clone_error
-// fields for the workspace identified by slug.
-func updateCloneStatus(db *sql.DB, slug string, cloneStatus string, headSHA *string, cloneError *string) error {
+// setStatus updates the status, head_sha, and clone_error fields for the
+// workspace identified by slug.
+func setStatus(db *sql.DB, slug string, status string, headSHA *string, cloneError *string) error {
 	now := time.Now().UTC().Format(timestampFormat)
 	_, err := db.Exec(
-		`UPDATE workspaces SET clone_status = ?, head_sha = ?, clone_error = ?, updated_at = ? WHERE slug = ?`,
-		cloneStatus, headSHA, cloneError, now, slug,
+		`UPDATE workspaces SET status = ?, head_sha = ?, clone_error = ?, updated_at = ? WHERE slug = ?`,
+		status, headSHA, cloneError, now, slug,
 	)
 	if err != nil {
-		return fmt.Errorf("update clone status for %q: %w", slug, err)
+		return fmt.Errorf("update status for %q: %w", slug, err)
 	}
 	return nil
 }
 
-// getCloneFields retrieves the current clone_status, head_sha, and clone_error
-// for the workspace identified by slug.
-func getCloneFields(db *sql.DB, slug string) (cloneStatus string, headSHA *string, cloneError *string, err error) {
+// getCloneFields retrieves the current status, head_sha, and clone_error for
+// the workspace identified by slug.
+func getCloneFields(db *sql.DB, slug string) (status string, headSHA *string, cloneError *string, err error) {
 	err = db.QueryRow(
-		`SELECT clone_status, head_sha, clone_error FROM workspaces WHERE slug = ?`,
+		`SELECT status, head_sha, clone_error FROM workspaces WHERE slug = ?`,
 		slug,
-	).Scan(&cloneStatus, &headSHA, &cloneError)
+	).Scan(&status, &headSHA, &cloneError)
 	if err != nil {
 		return "", nil, nil, fmt.Errorf("get clone fields for %q: %w", slug, err)
 	}
-	return cloneStatus, headSHA, cloneError, nil
+	return status, headSHA, cloneError, nil
 }

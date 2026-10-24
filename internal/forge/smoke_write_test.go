@@ -122,8 +122,8 @@ func newWriteSmoke(t *testing.T) *writeSmoke {
 // API URL variable that points at stub.
 func (s *writeSmoke) workspace(slug, gitURL, mode string, upstream *string, pat string, stub *forgeStub) {
 	s.t.Helper()
-	_, err := s.db.Exec(`INSERT INTO workspaces (slug, git_url, owner_id, status, clone_status, workspace_mode, upstream_url, created_at, updated_at)
-		VALUES (?, ?, 'user-1', 'active', 'ready', ?, ?, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`, slug, gitURL, mode, upstream)
+	_, err := s.db.Exec(`INSERT INTO workspaces (slug, git_url, owner_id, status, workspace_mode, upstream_url, created_at, updated_at)
+		VALUES (?, ?, 'user-1', 'ready', ?, ?, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`, slug, gitURL, mode, upstream)
 	if err != nil {
 		s.t.Fatal(err)
 	}

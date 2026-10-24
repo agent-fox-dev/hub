@@ -413,7 +413,7 @@ with extra fields:
 {
   "slug": "api-gateway",
   "workspace_mode": "carry_patch",
-  "sync_status": "idle",
+  "sync_error": null,
   "upstream_head_sha": "abc123def456...",
   "last_sync_at": "2024-06-15T10:30:00Z",
 

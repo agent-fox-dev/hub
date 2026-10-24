@@ -22,7 +22,7 @@ func TestSmoke03_PATWriteUpdatesDisplayName(t *testing.T) {
 		Slug:        "my-project",
 		GitURL:      "https://github.com/org/repo",
 		OwnerID:     "alice-user-id",
-		Status:      "active",
+		Status:      "pending",
 		DisplayName: "my-project",
 		Description: "",
 	})
@@ -184,8 +184,8 @@ func TestSmoke03_CreateWithDisplayNameAndDescription(t *testing.T) {
 	}
 
 	// Verify status.
-	if ws.Status != "active" {
-		t.Errorf("status = %q; want %q", ws.Status, "active")
+	if ws.Status != "pending" {
+		t.Errorf("status = %q; want %q", ws.Status, "pending")
 	}
 
 	// Verify the DB row was created with the correct fields.

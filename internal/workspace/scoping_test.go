@@ -16,14 +16,14 @@ func TestWorkspaceScoping_PATReadOnlyOwn(t *testing.T) {
 		Slug:    "alice-ws",
 		GitURL:  "https://github.com/org/repo",
 		OwnerID: "alice-id",
-		Status:  "active",
+		Status:  "pending",
 	})
 	// Bob's workspace.
 	env.seedWorkspace(t, &Workspace{
 		Slug:    "bob-ws",
 		GitURL:  "https://github.com/org/bob-repo",
 		OwnerID: "bob-id",
-		Status:  "active",
+		Status:  "pending",
 	})
 
 	auth := patAuth("alice-id", "workspaces:read")
@@ -103,7 +103,7 @@ func TestWorkspaceScoping_SlugEnumeration(t *testing.T) {
 		Slug:    "bob-secret-ws",
 		GitURL:  "https://github.com/org/secret-repo",
 		OwnerID: "bob-id",
-		Status:  "active",
+		Status:  "pending",
 	})
 
 	// Alice tries to access Bob's workspace via user API key.

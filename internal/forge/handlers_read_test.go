@@ -83,9 +83,9 @@ func TestReadsDoNotNeedTheWorkspaceLockOrAClone_TS_30_10(t *testing.T) {
 	e.stub.answerRepository()
 	for slug, mod := range map[string]func(*workspaceRow){
 		"ready":    func(*workspaceRow) {},
-		"archived": func(r *workspaceRow) { r.status = "archived"; r.cloneStatus = "archived" },
-		"pending":  func(r *workspaceRow) { r.cloneStatus = "pending" },
-		"failed":   func(r *workspaceRow) { r.cloneStatus = "failed" },
+		"archived": func(r *workspaceRow) { r.status = "archived" },
+		"pending":  func(r *workspaceRow) { r.status = "pending" },
+		"failed":   func(r *workspaceRow) { r.status = "failed" },
 		"locked":   func(*workspaceRow) {},
 	} {
 		addWorkspace(t, e.db, slug, mod)

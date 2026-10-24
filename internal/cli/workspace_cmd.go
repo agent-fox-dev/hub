@@ -81,8 +81,8 @@ func BuildRootCommand() *cobra.Command {
 }
 
 // newCreateCmd returns the 'workspace create' subcommand.
-// With --wait, it polls the workspace's clone_status until it reaches
-// "ready" or "failed".
+// With --wait, it polls the workspace's status until it reaches "ready" or
+// "failed".
 func newCreateCmd() *cobra.Command {
 	var (
 		gitURL            string
@@ -91,7 +91,6 @@ func newCreateCmd() *cobra.Command {
 		org               string
 		displayName       string
 		description       string
-		syncMode          string
 		workspaceMode     string
 		upstreamURL       string
 		integrationBranch string
@@ -154,15 +153,6 @@ func newCreateCmd() *cobra.Command {
 					"git credentials require an HTTPS git_url"))
 			}
 
-			// 13-REQ-2.E3: Validate --sync-mode flag before making any API call.
-			if cmd.Flags().Changed("sync-mode") {
-				validModes := map[string]bool{"pull_only": true, "disabled": true}
-				if !validModes[syncMode] {
-					return apikit.CLIHandleError(cmd, apikit.NewCLIError(2,
-						"invalid --sync-mode value: must be 'pull_only' or 'disabled'"))
-				}
-			}
-
 			// 15-REQ-2: Validate --workspace-mode and carry-patch flags.
 			if cmd.Flags().Changed("workspace-mode") {
 				validWsModes := map[string]bool{"standard": true, "carry_patch": true}
@@ -203,9 +193,6 @@ func newCreateCmd() *cobra.Command {
 			}
 			if cmd.Flags().Changed("description") {
 				body["description"] = description
-			}
-			if cmd.Flags().Changed("sync-mode") {
-				body["sync_mode"] = syncMode
 			}
 			if cmd.Flags().Changed("workspace-mode") {
 				body["workspace_mode"] = workspaceMode
@@ -251,7 +238,7 @@ func newCreateCmd() *cobra.Command {
 			// Print the initial create response, then poll for clone completion.
 			printJSON(cmd, result)
 
-			return pollWorkspaceCloneStatus(cmd, client, wf, slug)
+			return pollWorkspaceStatus(cmd, client, wf, slug)
 		},
 	}
 
@@ -261,7 +248,6 @@ func newCreateCmd() *cobra.Command {
 	cmd.Flags().StringVar(&org, "org", "", "Organization slug (optional)")
 	cmd.Flags().StringVar(&displayName, "display-name", "", "Workspace display name (optional)")
 	cmd.Flags().StringVar(&description, "description", "", "Workspace description (optional)")
-	cmd.Flags().StringVar(&syncMode, "sync-mode", "", "Sync mode: 'pull_only' (default) or 'disabled' (optional)")
 	cmd.Flags().StringVar(&workspaceMode, "workspace-mode", "", "Workspace mode: 'standard' (default) or 'carry_patch' (optional)")
 	cmd.Flags().StringVar(&upstreamURL, "upstream-url", "", "Upstream repo URL for carry_patch mode (required for carry_patch)")
 	cmd.Flags().StringVar(&integrationBranch, "integration-branch", "", "Integration branch name for carry_patch mode (default: 'deploy')")

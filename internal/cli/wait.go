@@ -153,23 +153,22 @@ func extractRebuildJobID(result any) string {
 	return id
 }
 
-// extractCloneStatus extracts the "clone_status" field from a workspace
-// response.
-func extractCloneStatus(result any) string {
+// extractStatus extracts the "status" field from a workspace response.
+func extractStatus(result any) string {
 	m, ok := result.(map[string]any)
 	if !ok {
 		return ""
 	}
-	status, _ := m["clone_status"].(string)
+	status, _ := m["status"].(string)
 	return status
 }
 
-// pollWorkspaceCloneStatus polls a workspace's clone_status until it
-// reaches "ready" or "failed", or the timeout expires. A failed clone
-// exits non-zero after printing the workspace record.
-func pollWorkspaceCloneStatus(cmd *cobra.Command, client *apikit.CLIClient, wf waitFlags, slug string) error {
+// pollWorkspaceStatus polls a workspace's status until it reaches "ready"
+// or "failed", or the timeout expires. A failed clone exits non-zero after
+// printing the workspace record.
+func pollWorkspaceStatus(cmd *cobra.Command, client *apikit.CLIClient, wf waitFlags, slug string) error {
 	return pollUntil(cmd, client, wf, apiPath("workspaces", slug), "workspace clone", func(m map[string]any) (bool, string) {
-		switch extractCloneStatus(m) {
+		switch extractStatus(m) {
 		case "ready":
 			return true, ""
 		case "failed":

@@ -88,16 +88,13 @@ func createWorkspacesTable(t *testing.T, db *sql.DB) {
 			branch            TEXT,
 			owner_id          TEXT NOT NULL,
 			org_id            TEXT,
-			status            TEXT NOT NULL DEFAULT 'active',
+			status            TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','cloning','ready','failed','archived')),
 			display_name      TEXT NOT NULL DEFAULT '',
 			description       TEXT NOT NULL DEFAULT '',
-			clone_status      TEXT NOT NULL DEFAULT 'pending' CHECK(clone_status IN ('pending','cloning','ready','failed','archived')),
 			head_sha          TEXT,
 			clone_error       TEXT,
 			created_at        TEXT NOT NULL,
 			updated_at        TEXT NOT NULL,
-			sync_mode         TEXT NOT NULL DEFAULT 'pull_only',
-			sync_status       TEXT NOT NULL DEFAULT 'idle',
 			upstream_head_sha TEXT,
 			last_sync_at      TEXT,
 			sync_error        TEXT,
@@ -138,13 +135,13 @@ func createPatchesTable(t *testing.T, db *sql.DB) {
 }
 
 // seedWorkspace inserts a workspace row for tests.
-func seedWorkspace(t *testing.T, db *sql.DB, slug, ownerID, status, cloneStatus, mode, integrationBranch string) {
+func seedWorkspace(t *testing.T, db *sql.DB, slug, ownerID, status, mode, integrationBranch string) {
 	t.Helper()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	_, err := db.Exec(
-		`INSERT INTO workspaces (slug, git_url, owner_id, status, clone_status, workspace_mode, integration_branch, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		slug, "https://github.com/example/repo", ownerID, status, cloneStatus, mode, integrationBranch, now, now,
+		`INSERT INTO workspaces (slug, git_url, owner_id, status, workspace_mode, integration_branch, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		slug, "https://github.com/example/repo", ownerID, status, mode, integrationBranch, now, now,
 	)
 	if err != nil {
 		t.Fatalf("seedWorkspace(%q) returned error: %v", slug, err)
@@ -996,8 +993,8 @@ func seedWorkspaceCarryPatch(t *testing.T, db *sql.DB, slug, ownerID, upstreamUR
 	t.Helper()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	_, err := db.Exec(
-		`INSERT INTO workspaces (slug, git_url, owner_id, status, clone_status, workspace_mode, integration_branch, upstream_url, upstream_head_sha, last_sync_at, created_at, updated_at)
-		 VALUES (?, ?, ?, 'active', 'ready', 'carry_patch', ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO workspaces (slug, git_url, owner_id, status, workspace_mode, integration_branch, upstream_url, upstream_head_sha, last_sync_at, created_at, updated_at)
+		 VALUES (?, ?, ?, 'ready', 'carry_patch', ?, ?, ?, ?, ?, ?)`,
 		slug, "https://github.com/example/repo", ownerID, integrationBranch, upstreamURL, upstreamHeadSHA, now, now, now,
 	)
 	if err != nil {

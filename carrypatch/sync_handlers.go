@@ -110,12 +110,12 @@ func runCarryPatchSync(cfg SyncAPIConfig, c echo.Context) (*CarryPatchSyncRespon
 	}
 
 	// Load workspace record.
-	var mode, status, cloneStatus, integrationBranch string
+	var mode, integrationBranch string
 	var upstreamHeadSHA, wsBranch sql.NullString
 	err := cfg.DB.QueryRow(
-		`SELECT workspace_mode, status, clone_status, integration_branch, upstream_head_sha, branch
+		`SELECT workspace_mode, integration_branch, upstream_head_sha, branch
 		 FROM workspaces WHERE slug = ?`, slug,
-	).Scan(&mode, &status, &cloneStatus, &integrationBranch, &upstreamHeadSHA, &wsBranch)
+	).Scan(&mode, &integrationBranch, &upstreamHeadSHA, &wsBranch)
 	if err == sql.ErrNoRows {
 		return nil, apikit.WriteAPIError(c, http.StatusNotFound, "workspace not found")
 	}

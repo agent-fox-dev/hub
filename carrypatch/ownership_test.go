@@ -11,7 +11,7 @@ import (
 // 404, admin tokens pass.
 func TestCarryPatchEndpoints_RequireWorkspaceOwner(t *testing.T) {
 	env := newRebuildTestEnv(t)
-	seedWorkspace(t, env.db, "ws1", "alice", "active", "ready", "carry_patch", "integration")
+	seedWorkspace(t, env.db, "ws1", "alice", "ready", "carry_patch", "integration")
 	seedPatch(t, env.db, "patch-1", "ws1", "feature/a", 1, PatchStatusActive)
 
 	bob := rebuildUserAuth("bob")

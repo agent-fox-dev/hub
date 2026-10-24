@@ -80,8 +80,7 @@ func createWorkspacesTable(t *testing.T, db *sql.DB) {
 			git_url        TEXT NOT NULL,
 			owner_id       TEXT NOT NULL,
 			org_id         TEXT,
-			status         TEXT NOT NULL DEFAULT 'active',
-			clone_status   TEXT NOT NULL DEFAULT 'pending',
+			status         TEXT NOT NULL DEFAULT 'pending',
 			workspace_mode TEXT,
 			upstream_url   TEXT
 		)`)
@@ -92,32 +91,31 @@ func createWorkspacesTable(t *testing.T, db *sql.DB) {
 
 // workspaceRow is a row of the workspaces table; a nil mode or upstream is NULL.
 type workspaceRow struct {
-	slug        string
-	owner       string
-	gitURL      string
-	mode        *string
-	upstream    *string
-	status      string
-	cloneStatus string
+	slug     string
+	owner    string
+	gitURL   string
+	mode     *string
+	upstream *string
+	status   string
 }
 
 func ptr(s string) *string { return &s }
 
-// addWorkspace inserts a workspace: owned by ownerID, active and cloned, a standard
+// addWorkspace inserts a workspace: owned by ownerID, ready (cloned), a standard
 // workspace on github.com/acme/widgets unless a modifier says otherwise.
 func addWorkspace(t *testing.T, db *sql.DB, slug string, mods ...func(*workspaceRow)) {
 	t.Helper()
 	row := workspaceRow{
 		slug: slug, owner: ownerID, gitURL: "https://github.com/acme/widgets",
-		mode: ptr("standard"), status: "active", cloneStatus: "ready",
+		mode: ptr("standard"), status: "ready",
 	}
 	for _, m := range mods {
 		m(&row)
 	}
 	_, err := db.Exec(
-		`INSERT INTO workspaces (slug, git_url, owner_id, status, clone_status, workspace_mode, upstream_url)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		row.slug, row.gitURL, row.owner, row.status, row.cloneStatus, row.mode, row.upstream)
+		`INSERT INTO workspaces (slug, git_url, owner_id, status, workspace_mode, upstream_url)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+		row.slug, row.gitURL, row.owner, row.status, row.mode, row.upstream)
 	if err != nil {
 		t.Fatalf("insert workspace %s: %v", slug, err)
 	}

@@ -68,7 +68,7 @@ func newPropEnv(t *testing.T, seed uint64) *propEnv {
 		clients:     map[string]sandbox.Sandbox{},
 		sensitive:   []string{secretValue, envValue},
 	}
-	env.addWorkspace("gadgets", leaseOwner, "", "active")
+	env.addWorkspace("gadgets", leaseOwner, "", "ready")
 	for _, ws := range propWorkspaces {
 		if _, err := env.secrets.UpdateSecret("workspace", ws, "GIT_PAT", secretValue); err != nil {
 			env.plantSecret("workspace", ws, "GIT_PAT", secretValue)

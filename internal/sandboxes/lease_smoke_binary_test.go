@@ -68,8 +68,8 @@ ttl     = "30m"
 
 	db := openHubDB(t, env)
 	now := time.Now().UTC().Format(time.RFC3339)
-	if _, err := db.Exec(`INSERT INTO workspaces (slug, git_url, owner_id, status, clone_status, created_at, updated_at)
-		VALUES ('widgets', 'https://example.com/widgets.git', 'user-1', 'active', 'ready', ?, ?)`, now, now); err != nil {
+	if _, err := db.Exec(`INSERT INTO workspaces (slug, git_url, owner_id, status, created_at, updated_at)
+		VALUES ('widgets', 'https://example.com/widgets.git', 'user-1', 'ready', ?, ?)`, now, now); err != nil {
 		t.Fatalf("inserting a workspace: %v", err)
 	}
 

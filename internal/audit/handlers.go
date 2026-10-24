@@ -525,23 +525,23 @@ func handleWorkspaceCost(store Store, sqliteDB *sql.DB) echo.HandlerFunc {
 // workspace is refused, and reported with the request's method, route and
 // status 403, spec 34), then wsaccess.AuthorizeWorkspace with NeedRead (an
 // admin token, the owner or a member of the workspace's org), and the
-// workspace must be active. Any failed lookup denies access.
+// workspace must not be archived. Any failed lookup denies access.
 func hasWorkspaceAccess(c echo.Context, sqliteDB *sql.DB, auth *apikit.AuthInfo, slug string) bool {
 	denied, err := wsaccess.DeniesWorkspace(sqliteDB, auth, slug, wsaccess.SiteOf(c, http.StatusForbidden))
 	if err != nil || denied {
 		return false
 	}
 	ws, status, _ := wsaccess.AuthorizeWorkspace(sqliteDB, auth, slug, wsaccess.NeedRead)
-	return status == 0 && ws.Status == "active"
+	return status == 0 && ws.Status != "archived"
 }
 
-// getAccessibleWorkspaces returns the active workspaces a non-admin caller
+// getAccessibleWorkspaces returns the unarchived workspaces a non-admin caller
 // may read: the readable set of wsaccess.ReadableSlugs (owned and member
 // workspaces; for a PAT bound to a workspace at most that one, without a
-// refusal report), kept to those whose status is active.
+// refusal report), kept to those that are not archived.
 //
 // The list is never nil, because ListSessions reads a nil list as "no
-// restriction": a caller with no readable active workspace gets an empty
+// restriction": a caller with no readable unarchived workspace gets an empty
 // one, and so does a failed lookup, which also returns its error.
 func getAccessibleWorkspaces(sqliteDB *sql.DB, auth *apikit.AuthInfo) ([]string, error) {
 	readable, _, err := wsaccess.ReadableSlugs(sqliteDB, auth)
@@ -567,14 +567,14 @@ func getAccessibleWorkspaces(sqliteDB *sql.DB, auth *apikit.AuthInfo) ([]string,
 // activeSlugsChunk bounds the number of slugs one activeSlugs query binds.
 const activeSlugsChunk = 500
 
-// activeSlugs returns those of slugs whose workspace is active.
+// activeSlugs returns those of slugs whose workspace is not archived.
 func activeSlugs(sqliteDB *sql.DB, slugs []string) ([]string, error) {
 	args := make([]any, len(slugs))
 	for i, s := range slugs {
 		args[i] = s
 	}
 	rows, err := sqliteDB.Query(
-		"SELECT slug FROM workspaces WHERE status = 'active' AND slug IN (?"+strings.Repeat(", ?", len(slugs)-1)+")",
+		"SELECT slug FROM workspaces WHERE status != 'archived' AND slug IN (?"+strings.Repeat(", ?", len(slugs)-1)+")",
 		args...,
 	)
 	if err != nil {

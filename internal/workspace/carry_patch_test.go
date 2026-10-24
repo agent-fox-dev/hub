@@ -438,7 +438,7 @@ func TestCarryPatch_UpdateImmutableWorkspaceMode(t *testing.T) {
 		Slug:    "immutable-cp-ws",
 		GitURL:  "https://github.com/org/repo",
 		OwnerID: "u1-id",
-		Status:  "active",
+		Status:  "pending",
 	})
 
 	immutableBodies := []struct {
@@ -496,7 +496,7 @@ func TestCarryPatch_UpdateImmutableSameValue(t *testing.T) {
 		Slug:    "immutable-same-ws",
 		GitURL:  "https://github.com/org/repo",
 		OwnerID: "u1-id",
-		Status:  "active",
+		Status:  "pending",
 	})
 
 	// workspace_mode is 'standard' by default; try setting it to 'standard'.
@@ -531,7 +531,7 @@ func TestCarryPatch_UpdateMixedMutableImmutableRejected(t *testing.T) {
 		Slug:        "mixed-fields-ws",
 		GitURL:      "https://github.com/org/repo",
 		OwnerID:     "u1-id",
-		Status:      "active",
+		Status:      "pending",
 		Description: "original description",
 	})
 
@@ -648,7 +648,7 @@ func TestCarryPatch_StandardResponseNullFields(t *testing.T) {
 		Slug:    "std-resp-ws",
 		GitURL:  "https://github.com/org/repo",
 		OwnerID: "u1-id",
-		Status:  "active",
+		Status:  "pending",
 	})
 
 	rec := env.doRequest(t, http.MethodGet, "/api/v1/workspaces/std-resp-ws", "", auth)
@@ -705,7 +705,7 @@ func TestCarryPatch_CarryPatchResponseNonNullFields(t *testing.T) {
 		// the columns exist.
 		_, err := env.db.Exec(
 			`INSERT INTO workspaces (slug, git_url, owner_id, status, display_name, description, created_at, updated_at, workspace_mode, upstream_url, integration_branch)
-			 VALUES ('cp-resp-ws', 'https://github.com/myfork/repo.git', 'u1-id', 'active', 'cp-resp-ws', '', '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z', 'carry_patch', 'https://github.com/upstream/repo.git', 'deploy')`,
+			 VALUES ('cp-resp-ws', 'https://github.com/myfork/repo.git', 'u1-id', 'ready', 'cp-resp-ws', '', '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z', 'carry_patch', 'https://github.com/upstream/repo.git', 'deploy')`,
 		)
 		if err != nil {
 			t.Fatalf("could not seed carry_patch workspace (columns likely missing): %v", err)

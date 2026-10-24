@@ -19,7 +19,7 @@ func TestWorkspaceList_AdminAllUsers(t *testing.T) {
 		Slug:    "alice-ws",
 		GitURL:  "https://github.com/org/alice-repo",
 		OwnerID: "alice-id",
-		Status:  "active",
+		Status:  "pending",
 	})
 	env.seedWorkspace(t, &Workspace{
 		Slug:    "alice-archived",
@@ -31,7 +31,7 @@ func TestWorkspaceList_AdminAllUsers(t *testing.T) {
 		Slug:    "bob-ws",
 		GitURL:  "https://github.com/org/bob-repo",
 		OwnerID: "bob-id",
-		Status:  "active",
+		Status:  "pending",
 	})
 
 	rec := env.doRequest(t, http.MethodGet, "/api/v1/workspaces", "", adminAuth())
@@ -83,7 +83,7 @@ func TestWorkspaceList_UserOwnOnly(t *testing.T) {
 		Slug:    "alice-ws",
 		GitURL:  "https://github.com/org/alice-repo",
 		OwnerID: "alice-id",
-		Status:  "active",
+		Status:  "pending",
 	})
 	env.seedWorkspace(t, &Workspace{
 		Slug:    "alice-archived",
@@ -95,7 +95,7 @@ func TestWorkspaceList_UserOwnOnly(t *testing.T) {
 		Slug:    "bob-ws",
 		GitURL:  "https://github.com/org/bob-repo",
 		OwnerID: "bob-id",
-		Status:  "active",
+		Status:  "pending",
 	})
 
 	t.Run("user API key", func(t *testing.T) {
@@ -166,7 +166,7 @@ func TestWorkspaceList_IncludeArchived(t *testing.T) {
 		Slug:    "alice-ws",
 		GitURL:  "https://github.com/org/alice-repo",
 		OwnerID: "alice-id",
-		Status:  "active",
+		Status:  "pending",
 	})
 	env.seedWorkspace(t, &Workspace{
 		Slug:    "alice-archived",
@@ -229,7 +229,7 @@ func TestWorkspaceGet_Success(t *testing.T) {
 		GitURL:  "https://github.com/org/alice-repo",
 		Branch:  &branch,
 		OwnerID: "alice-id",
-		Status:  "active",
+		Status:  "pending",
 	})
 
 	rec := env.doRequest(t, http.MethodGet, "/api/v1/workspaces/alice-ws", "",
@@ -252,8 +252,8 @@ func TestWorkspaceGet_Success(t *testing.T) {
 	if ws.OwnerID != "alice-id" {
 		t.Errorf("owner_id = %q; want %q", ws.OwnerID, "alice-id")
 	}
-	if ws.Status != "active" {
-		t.Errorf("status = %q; want %q", ws.Status, "active")
+	if ws.Status != "pending" {
+		t.Errorf("status = %q; want %q", ws.Status, "pending")
 	}
 	if _, err := time.Parse(time.RFC3339, ws.CreatedAt); err != nil {
 		t.Errorf("created_at %q is not valid RFC 3339: %v", ws.CreatedAt, err)
@@ -295,7 +295,7 @@ func TestWorkspaceGet_OtherUserWorkspace_Returns404(t *testing.T) {
 		Slug:    "bob-ws",
 		GitURL:  "https://github.com/org/bob-repo",
 		OwnerID: "bob-id",
-		Status:  "active",
+		Status:  "pending",
 	})
 
 	// Alice tries to access Bob's workspace.
@@ -327,7 +327,7 @@ func TestWorkspaceList_NoPagination(t *testing.T) {
 			Slug:    fmt.Sprintf("alice-ws-%02d", i),
 			GitURL:  fmt.Sprintf("https://github.com/org/repo-%02d", i),
 			OwnerID: "alice-id",
-			Status:  "active",
+			Status:  "pending",
 		})
 	}
 
@@ -367,7 +367,7 @@ func TestWorkspaceGet_HubURL(t *testing.T) {
 		GitURL:  "https://github.com/org/alice-repo",
 		OwnerID: "alice-id",
 		OrgID:   &orgID,
-		Status:  "active",
+		Status:  "pending",
 	})
 
 	t.Run("null when external URL not configured", func(t *testing.T) {
@@ -438,7 +438,7 @@ func TestWorkspaceGet_HubURL(t *testing.T) {
 			Slug:    "no-org-ws",
 			GitURL:  "https://github.com/org/no-org-repo",
 			OwnerID: "alice-id",
-			Status:  "active",
+			Status:  "pending",
 		})
 
 		rec := env.doRequest(t, http.MethodGet, "/api/v1/workspaces/no-org-ws", "",

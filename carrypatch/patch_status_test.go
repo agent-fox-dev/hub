@@ -258,7 +258,7 @@ func TestPatchStatus_NoRebuild_NullFields(t *testing.T) {
 func TestPatchStatus_StandardMode_Returns400(t *testing.T) {
 	env := newFullTestEnv(t)
 
-	seedWorkspace(t, env.db, "ws-std", "alice", "active", "ready", "standard", "")
+	seedWorkspace(t, env.db, "ws-std", "alice", "ready", "standard", "")
 
 	auth := rebuildUserAuth("alice")
 	rec := env.doRequest(t, http.MethodGet, "/api/v1/workspaces/ws-std/patch-status", "", auth)
@@ -347,10 +347,10 @@ func TestPatchStatus_IncludesWorkspaceHealthFields(t *testing.T) {
 	// Seed workspace with known values for all fields.
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	_, err := env.db.Exec(
-		`INSERT INTO workspaces (slug, git_url, owner_id, status, clone_status, workspace_mode,
-		 integration_branch, upstream_url, upstream_head_sha, last_sync_at, head_sha, sync_mode,
-		 sync_status, created_at, updated_at)
-		 VALUES (?, ?, ?, 'active', 'ready', 'carry_patch', ?, ?, ?, ?, ?, 'pull_only', 'idle', ?, ?)`,
+		`INSERT INTO workspaces (slug, git_url, owner_id, status, workspace_mode,
+		 integration_branch, upstream_url, upstream_head_sha, last_sync_at, head_sha,
+		 created_at, updated_at)
+		 VALUES (?, ?, ?, 'ready', 'carry_patch', ?, ?, ?, ?, ?, ?, ?)`,
 		"ws-health", "https://github.com/example/repo", "alice",
 		"integration",
 		"https://github.com/example/upstream",
@@ -376,23 +376,14 @@ func TestPatchStatus_IncludesWorkspaceHealthFields(t *testing.T) {
 		t.Fatalf("failed to decode response: %v", err)
 	}
 
-	if resp.Status != "active" {
-		t.Errorf("expected status='active', got %q", resp.Status)
-	}
-	if resp.CloneStatus != "ready" {
-		t.Errorf("expected clone_status='ready', got %q", resp.CloneStatus)
+	if resp.Status != "ready" {
+		t.Errorf("expected status='ready', got %q", resp.Status)
 	}
 	if resp.HeadSHA != "cccc000000000000000000000000000000000001" {
 		t.Errorf("expected head_sha='cccc...0001', got %q", resp.HeadSHA)
 	}
 	if resp.GitURL != "https://github.com/example/repo" {
 		t.Errorf("expected git_url='https://github.com/example/repo', got %q", resp.GitURL)
-	}
-	if resp.SyncMode != "pull_only" {
-		t.Errorf("expected sync_mode='pull_only', got %q", resp.SyncMode)
-	}
-	if resp.SyncStatus != "idle" {
-		t.Errorf("expected sync_status='idle', got %q", resp.SyncStatus)
 	}
 	// No sync error or clone error set — should be empty.
 	if resp.SyncError != "" {
@@ -414,9 +405,9 @@ func TestPatchStatus_SyncError_Populated(t *testing.T) {
 
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	_, err := env.db.Exec(
-		`INSERT INTO workspaces (slug, git_url, owner_id, status, clone_status, workspace_mode,
+		`INSERT INTO workspaces (slug, git_url, owner_id, status, workspace_mode,
 		 integration_branch, upstream_url, upstream_head_sha, last_sync_at, sync_error, created_at, updated_at)
-		 VALUES (?, ?, ?, 'active', 'ready', 'carry_patch', ?, ?, ?, ?, ?, ?, ?)`,
+		 VALUES (?, ?, ?, 'ready', 'carry_patch', ?, ?, ?, ?, ?, ?, ?)`,
 		"ws-sync-err", "https://github.com/example/repo", "alice",
 		"integration",
 		"https://github.com/example/upstream",
@@ -458,9 +449,9 @@ func TestPatchStatus_CloneError_Populated(t *testing.T) {
 
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	_, err := env.db.Exec(
-		`INSERT INTO workspaces (slug, git_url, owner_id, status, clone_status, workspace_mode,
+		`INSERT INTO workspaces (slug, git_url, owner_id, status, workspace_mode,
 		 integration_branch, upstream_url, clone_error, created_at, updated_at)
-		 VALUES (?, ?, ?, 'active', 'failed', 'carry_patch', ?, ?, ?, ?, ?)`,
+		 VALUES (?, ?, ?, 'failed', 'carry_patch', ?, ?, ?, ?, ?)`,
 		"ws-clone-err", "https://github.com/example/repo", "alice",
 		"integration",
 		"https://github.com/example/upstream",
@@ -487,8 +478,8 @@ func TestPatchStatus_CloneError_Populated(t *testing.T) {
 	if resp.CloneError != "authentication failure" {
 		t.Errorf("expected clone_error='authentication failure', got %q", resp.CloneError)
 	}
-	if resp.CloneStatus != "failed" {
-		t.Errorf("expected clone_status='failed', got %q", resp.CloneStatus)
+	if resp.Status != "failed" {
+		t.Errorf("expected status='failed', got %q", resp.Status)
 	}
 }
 

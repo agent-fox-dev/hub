@@ -14,7 +14,7 @@ import (
 // (TS-05-7, TS-05-8, TS-05-9)
 // ========================================================================
 
-// TS-05-7: The workspaces SQLite table includes clone_status (TEXT NOT NULL
+// TS-05-7: The workspaces SQLite table includes status (TEXT NOT NULL
 // DEFAULT 'pending'), head_sha (TEXT nullable), and clone_error (TEXT nullable).
 // Requirement: 05-REQ-3.1
 func TestWorkspaceSchema_Spec05_CloneColumns(t *testing.T) {
@@ -66,26 +66,31 @@ func TestWorkspaceSchema_Spec05_CloneColumns(t *testing.T) {
 		t.Fatalf("rows iteration error: %v", err)
 	}
 
-	// Verify clone_status column: TEXT NOT NULL DEFAULT 'pending'
-	t.Run("clone_status", func(t *testing.T) {
-		col, ok := columns["clone_status"]
+	// Verify status column: TEXT NOT NULL DEFAULT 'pending'
+	t.Run("status", func(t *testing.T) {
+		col, ok := columns["status"]
 		if !ok {
-			t.Fatal("column 'clone_status' not found in workspaces table")
+			t.Fatal("column 'status' not found in workspaces table")
 		}
 		if col.colType != "TEXT" {
-			t.Errorf("clone_status type = %q; want TEXT", col.colType)
+			t.Errorf("status type = %q; want TEXT", col.colType)
 		}
 		if !col.notNull {
-			t.Error("clone_status should be NOT NULL")
+			t.Error("status should be NOT NULL")
 		}
 		if col.dfltValue == nil || *col.dfltValue != "'pending'" {
 			got := "<nil>"
 			if col.dfltValue != nil {
 				got = *col.dfltValue
 			}
-			t.Errorf("clone_status default = %s; want 'pending'", got)
+			t.Errorf("status default = %s; want 'pending'", got)
 		}
 	})
+	for _, gone := range []string{"clone_status", "sync_status", "sync_mode"} {
+		if _, ok := columns[gone]; ok {
+			t.Errorf("column %q still present in workspaces table; want it folded into status", gone)
+		}
+	}
 
 	// Verify head_sha column: TEXT nullable
 	t.Run("head_sha", func(t *testing.T) {
@@ -116,14 +121,14 @@ func TestWorkspaceSchema_Spec05_CloneColumns(t *testing.T) {
 	})
 }
 
-// TS-05-8: All workspace API endpoints include clone_status, head_sha, and
+// TS-05-8: All workspace API endpoints include status, head_sha, and
 // clone_error fields in their JSON responses.
 // Requirement: 05-REQ-3.2
 func TestWorkspaceResponse_Spec05_IncludesCloneFields(t *testing.T) {
 	env := newTestEnv(t)
 	auth := userAuth("user-spec05")
 
-	// assertCloneFields checks that a response body contains clone_status,
+	// assertCloneFields checks that a response body contains status,
 	// head_sha, and clone_error at the top level.
 	assertCloneFields := func(t *testing.T, body []byte, endpoint string) {
 		t.Helper()
@@ -132,8 +137,11 @@ func TestWorkspaceResponse_Spec05_IncludesCloneFields(t *testing.T) {
 			t.Fatalf("%s: failed to decode response as JSON object: %v", endpoint, err)
 		}
 
-		if _, ok := resp["clone_status"]; !ok {
-			t.Errorf("%s: response missing 'clone_status' field", endpoint)
+		if _, ok := resp["status"]; !ok {
+			t.Errorf("%s: response missing 'status' field", endpoint)
+		}
+		if _, ok := resp["clone_status"]; ok {
+			t.Errorf("%s: response still has 'clone_status' field", endpoint)
 		}
 		// head_sha must be present (value may be null).
 		if _, ok := resp["head_sha"]; !ok {
@@ -146,7 +154,7 @@ func TestWorkspaceResponse_Spec05_IncludesCloneFields(t *testing.T) {
 	}
 
 	// assertCloneFieldsList checks that each element in a JSON array response
-	// contains clone_status, head_sha, and clone_error.
+	// contains status, head_sha, and clone_error.
 	assertCloneFieldsList := func(t *testing.T, body []byte, endpoint string) {
 		t.Helper()
 		var resp []map[string]any
@@ -154,8 +162,8 @@ func TestWorkspaceResponse_Spec05_IncludesCloneFields(t *testing.T) {
 			t.Fatalf("%s: failed to decode response as JSON array: %v", endpoint, err)
 		}
 		for i, item := range resp {
-			if _, ok := item["clone_status"]; !ok {
-				t.Errorf("%s[%d]: response item missing 'clone_status' field", endpoint, i)
+			if _, ok := item["status"]; !ok {
+				t.Errorf("%s[%d]: response item missing 'status' field", endpoint, i)
 			}
 			if _, ok := item["head_sha"]; !ok {
 				t.Errorf("%s[%d]: response item missing 'head_sha' field", endpoint, i)
@@ -223,10 +231,10 @@ func TestWorkspaceResponse_Spec05_IncludesCloneFields(t *testing.T) {
 	})
 }
 
-// TS-05-9: The workspaces table enforces that clone_status is one of the five
+// TS-05-9: The workspaces table enforces that status is one of the five
 // valid values: pending, cloning, ready, failed, archived.
 // Requirement: 05-REQ-3.3
-func TestWorkspaceSchema_Spec05_CloneStatusConstraint(t *testing.T) {
+func TestWorkspaceSchema_Spec05_StatusConstraint(t *testing.T) {
 	db, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
 		t.Fatalf("failed to open in-memory database: %v", err)
@@ -237,34 +245,39 @@ func TestWorkspaceSchema_Spec05_CloneStatusConstraint(t *testing.T) {
 		t.Fatalf("InitSchema() returned error: %v", err)
 	}
 
-	// Valid clone_status values should insert without error.
+	// Valid status values should insert without error.
 	validStatuses := []string{"pending", "cloning", "ready", "failed", "archived"}
 	for i, status := range validStatuses {
 		t.Run("valid_"+status, func(t *testing.T) {
 			_, err := db.Exec(
-				`INSERT INTO workspaces (slug, git_url, owner_id, status, clone_status, display_name, description, created_at, updated_at)
-				 VALUES (?, 'https://github.com/org/repo', 'user-1', 'active', ?, '', '', '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z')`,
+				`INSERT INTO workspaces (slug, git_url, owner_id, status, display_name, description, created_at, updated_at)
+				 VALUES (?, 'https://github.com/org/repo', 'user-1', ?, '', '', '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z')`,
 				"ws-status-"+validStatuses[i], status,
 			)
 			if err != nil {
-				t.Errorf("INSERT with clone_status=%q failed: %v", status, err)
+				t.Errorf("INSERT with status=%q failed: %v", status, err)
 			}
 		})
 	}
 
-	// Invalid clone_status value should be rejected by CHECK constraint.
-	t.Run("invalid_unknown_state", func(t *testing.T) {
-		_, err := db.Exec(
-			`INSERT INTO workspaces (slug, git_url, owner_id, status, clone_status, display_name, description, created_at, updated_at)
-			 VALUES ('ws-invalid', 'https://github.com/org/repo', 'user-1', 'active', 'unknown_state', '', '', '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z')`,
-		)
-		if err == nil {
-			t.Error("INSERT with clone_status='unknown_state' should be rejected by CHECK constraint")
-		}
-	})
+	// Invalid status values should be rejected by the CHECK constraint;
+	// 'active' is the old value of the column before the clone state was
+	// folded into it.
+	for _, invalid := range []string{"unknown_state", "active"} {
+		t.Run("invalid_"+invalid, func(t *testing.T) {
+			_, err := db.Exec(
+				`INSERT INTO workspaces (slug, git_url, owner_id, status, display_name, description, created_at, updated_at)
+				 VALUES (?, 'https://github.com/org/repo', 'user-1', ?, '', '', '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z')`,
+				"ws-invalid-"+invalid, invalid,
+			)
+			if err == nil {
+				t.Errorf("INSERT with status=%q should be rejected by CHECK constraint", invalid)
+			}
+		})
+	}
 }
 
-// 05-REQ-3.E1: When a workspace is first created, clone_status defaults to
+// 05-REQ-3.E1: When a workspace is first created, status defaults to
 // "pending", head_sha to NULL, and clone_error to NULL.
 func TestWorkspaceResponse_Spec05_CreateDefaults(t *testing.T) {
 	env := newTestEnv(t)
@@ -281,11 +294,11 @@ func TestWorkspaceResponse_Spec05_CreateDefaults(t *testing.T) {
 		t.Fatalf("failed to decode response: %v", err)
 	}
 
-	// clone_status should be "pending" on creation.
-	if cs, ok := resp["clone_status"]; !ok {
-		t.Error("response missing 'clone_status' field")
+	// status should be "pending" on creation.
+	if cs, ok := resp["status"]; !ok {
+		t.Error("response missing 'status' field")
 	} else if cs != "pending" {
-		t.Errorf("clone_status = %v, want %q", cs, "pending")
+		t.Errorf("status = %v, want %q", cs, "pending")
 	}
 
 	// head_sha should be null on creation.

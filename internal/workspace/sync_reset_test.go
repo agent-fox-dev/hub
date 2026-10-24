@@ -16,8 +16,8 @@ import (
 
 // TS-13-19: Verifies that POST /api/v1/workspaces/:slug/sync?reset_to_upstream=true
 // fetches upstream, resets the integration branch to upstream HEAD, and returns
-// the workspace with sync_status='idle', head_sha=upstream HEAD, last_sync_at
-// set, and sync_error=null.
+// the workspace with head_sha=upstream HEAD, last_sync_at set, and
+// sync_error=null.
 // Requirement: 13-REQ-6.1
 // Property: 13-PROP-8 (reset-to-upstream clears sync_error on success)
 func TestSyncReset_ResetToUpstreamSuccess(t *testing.T) {
@@ -30,19 +30,16 @@ func TestSyncReset_ResetToUpstreamSuccess(t *testing.T) {
 	// Seed workspace in error state (diverged history scenario).
 	localSHA := "aaaa234567890abcdef1234567890abcdef123456"
 	env.seedWorkspace(t, &Workspace{
-		Slug:        "reset-ws",
-		GitURL:      "https://github.com/example/repo.git",
-		OwnerID:     "alice-id",
-		Status:      "active",
-		CloneStatus: "ready",
-		HeadSHA:     &localSHA,
+		Slug:    "reset-ws",
+		GitURL:  "https://github.com/example/repo.git",
+		OwnerID: "alice-id",
+		Status:  "ready",
+		HeadSHA: &localSHA,
 	})
 
 	// Set sync fields to simulate post-divergence error state.
-	// Fails if sync columns do not exist (expected before schema migration).
 	_, err := env.db.Exec(
-		`UPDATE workspaces SET sync_mode = 'pull_only', sync_status = 'error',
-		 sync_error = 'upstream history has diverged; use --reset-to-upstream to recover'
+		`UPDATE workspaces SET sync_error = 'upstream history has diverged; use --reset-to-upstream to recover'
 		 WHERE slug = ?`,
 		"reset-ws",
 	)
@@ -63,11 +60,6 @@ func TestSyncReset_ResetToUpstreamSuccess(t *testing.T) {
 	var resp map[string]any
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("failed to decode response: %v", err)
-	}
-
-	// sync_status must be 'idle' after successful reset (13-PROP-8).
-	if resp["sync_status"] != "idle" {
-		t.Errorf("sync_status = %v; want %q", resp["sync_status"], "idle")
 	}
 
 	// sync_error must be null/cleared after successful reset (13-PROP-8).
@@ -118,16 +110,14 @@ func TestSyncReset_CLIResetFlag(t *testing.T) {
 
 	// Seed workspace in error state.
 	env.seedWorkspace(t, &Workspace{
-		Slug:        "cli-reset-ws",
-		GitURL:      "https://github.com/example/repo.git",
-		OwnerID:     "alice-id",
-		Status:      "active",
-		CloneStatus: "ready",
+		Slug:    "cli-reset-ws",
+		GitURL:  "https://github.com/example/repo.git",
+		OwnerID: "alice-id",
+		Status:  "ready",
 	})
 
 	_, err := env.db.Exec(
-		`UPDATE workspaces SET sync_mode = 'pull_only', sync_status = 'error',
-		 sync_error = 'upstream history has diverged; use --reset-to-upstream to recover'
+		`UPDATE workspaces SET sync_error = 'upstream history has diverged; use --reset-to-upstream to recover'
 		 WHERE slug = ?`,
 		"cli-reset-ws",
 	)
@@ -151,15 +141,15 @@ func TestSyncReset_CLIResetFlag(t *testing.T) {
 		t.Fatalf("failed to decode response: %v", err)
 	}
 
-	// After reset, sync_status should be 'idle'.
-	if resp["sync_status"] != "idle" {
-		t.Errorf("sync_status = %v; want %q", resp["sync_status"], "idle")
+	// After reset, sync_error should be cleared.
+	if resp["sync_error"] != nil {
+		t.Errorf("sync_error = %v; want nil", resp["sync_error"])
 	}
 }
 
 // 13-REQ-6.E1: Verifies that if the fetch step of reset-to-upstream fails
-// (network or auth error), the handler sets sync_status to 'error', records
-// sync_error, and does NOT modify head_sha or the integration branch.
+// (network or auth error), the handler records sync_error and does NOT
+// modify head_sha or the integration branch.
 func TestSyncReset_FetchFailureSetsError(t *testing.T) {
 	env := newTestEnv(t)
 
@@ -168,21 +158,12 @@ func TestSyncReset_FetchFailureSetsError(t *testing.T) {
 
 	originalSHA := "aaaa234567890abcdef1234567890abcdef123456"
 	env.seedWorkspace(t, &Workspace{
-		Slug:        "reset-fetch-fail-ws",
-		GitURL:      "https://github.com/example/repo.git",
-		OwnerID:     "alice-id",
-		Status:      "active",
-		CloneStatus: "ready",
-		HeadSHA:     &originalSHA,
+		Slug:    "reset-fetch-fail-ws",
+		GitURL:  "https://github.com/example/repo.git",
+		OwnerID: "alice-id",
+		Status:  "ready",
+		HeadSHA: &originalSHA,
 	})
-
-	_, err := env.db.Exec(
-		`UPDATE workspaces SET sync_mode = 'pull_only', sync_status = 'error' WHERE slug = ?`,
-		"reset-fetch-fail-ws",
-	)
-	if err != nil {
-		t.Fatalf("failed to set sync fields: %v", err)
-	}
 
 	auth := adminAuth()
 	rec := env.doRequest(t, http.MethodPost,
@@ -199,17 +180,17 @@ func TestSyncReset_FetchFailureSetsError(t *testing.T) {
 		t.Error("error.message is empty; want non-empty message about fetch failure")
 	}
 
-	// Verify database state: sync_status='error', head_sha unchanged.
-	var syncStatus string
+	// Verify database state: sync_error set, head_sha unchanged.
+	var syncError *string
 	var headSHA *string
-	err = env.db.QueryRow(
-		`SELECT sync_status, head_sha FROM workspaces WHERE slug = ?`, "reset-fetch-fail-ws",
-	).Scan(&syncStatus, &headSHA)
+	err := env.db.QueryRow(
+		`SELECT sync_error, head_sha FROM workspaces WHERE slug = ?`, "reset-fetch-fail-ws",
+	).Scan(&syncError, &headSHA)
 	if err != nil {
 		t.Fatalf("failed to query sync fields: %v", err)
 	}
-	if syncStatus != "error" {
-		t.Errorf("sync_status = %q; want %q", syncStatus, "error")
+	if syncError == nil || *syncError == "" {
+		t.Error("sync_error is null or empty; want non-empty error message")
 	}
 	if headSHA == nil || *headSHA != originalSHA {
 		got := "<nil>"
@@ -221,40 +202,37 @@ func TestSyncReset_FetchFailureSetsError(t *testing.T) {
 }
 
 // 13-REQ-6.E3: Verifies that a reset-to-upstream request is rejected by the
-// syncing guard when sync_status is already 'syncing'.
+// workspace lock while a sync is in progress.
 func TestSyncReset_RejectedWhileSyncing(t *testing.T) {
 	env := newTestEnv(t)
 
-	// Install stub: should never be reached since the syncing guard rejects first.
+	// Install stub: should never be reached since the lock guard rejects first.
 	stubSyncUpToDate(t, "eeee234567890abcdef1234567890abcdef123456")
 
 	env.seedWorkspace(t, &Workspace{
-		Slug:        "reset-syncing-ws",
-		GitURL:      "https://github.com/example/repo.git",
-		OwnerID:     "alice-id",
-		Status:      "active",
-		CloneStatus: "ready",
+		Slug:    "reset-syncing-ws",
+		GitURL:  "https://github.com/example/repo.git",
+		OwnerID: "alice-id",
+		Status:  "ready",
 	})
 
-	_, err := env.db.Exec(
-		`UPDATE workspaces SET sync_mode = 'pull_only', sync_status = 'syncing' WHERE slug = ?`,
-		"reset-syncing-ws",
-	)
-	if err != nil {
-		t.Fatalf("failed to set sync_status: %v", err)
-	}
+	// Hold the workspace lock to simulate an in-progress sync.
+	holdLock(t, "reset-syncing-ws")
 
 	auth := adminAuth()
 	rec := env.doRequest(t, http.MethodPost,
 		"/api/v1/workspaces/reset-syncing-ws/sync?reset_to_upstream=true", "", auth)
 
-	// Should be rejected with 409 Conflict by the syncing guard.
+	// Should be rejected with 409 Conflict by the lock guard.
 	if rec.Code != http.StatusConflict {
 		t.Errorf("POST /sync?reset_to_upstream=true while syncing returned %d; want %d",
 			rec.Code, http.StatusConflict)
 	}
 
 	envelope := parseErrorEnvelope(t, rec)
+	if envelope.Error.ErrorType != "workspace_busy" {
+		t.Errorf("error.error_type = %q; want %q", envelope.Error.ErrorType, "workspace_busy")
+	}
 	if envelope.Error.Message == "" {
 		t.Error("error.message is empty; want non-empty message about sync in progress")
 	}
@@ -269,11 +247,10 @@ func TestSyncReset_MissingSyncScopeRejected(t *testing.T) {
 	stubSyncUpToDate(t, "ffff234567890abcdef1234567890abcdef123456")
 
 	env.seedWorkspace(t, &Workspace{
-		Slug:        "reset-noscope-ws",
-		GitURL:      "https://github.com/example/repo.git",
-		OwnerID:     "alice-id",
-		Status:      "active",
-		CloneStatus: "ready",
+		Slug:    "reset-noscope-ws",
+		GitURL:  "https://github.com/example/repo.git",
+		OwnerID: "alice-id",
+		Status:  "ready",
 	})
 
 	// PAT with only workspaces:read, not workspaces:write.

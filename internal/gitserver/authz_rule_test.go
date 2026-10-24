@@ -41,7 +41,7 @@ func newMemberGitEnv(t *testing.T) *gitTestEnv {
 	env.seedOrg(t, "org-1", "My Org", "myorg")
 	env.seedOrgMember(t, "org-1", "user-a")
 	env.seedOrgMember(t, "org-1", "user-b")
-	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-a", "org-1", "active")
+	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-a", "org-1", "ready")
 	env.initWorkspaceRepo(t, "myws")
 	return env
 }
@@ -59,7 +59,7 @@ func authzContext(method, target, route string, info *apikit.AuthInfo) (echo.Con
 }
 
 // myws is the resolver's view of the workspace of newMemberGitEnv.
-var myws = &workspaceInfo{Slug: "myws", OwnerID: "user-a", OrgID: "org-1", CloneStatus: "ready"}
+var myws = &workspaceInfo{Slug: "myws", OwnerID: "user-a", OrgID: "org-1", Status: "ready"}
 
 // TS-37-1: the owner, a member and an admin token (no user id, no
 // membership) are granted; a stranger gets 404. Requirement: 37-REQ-1.1
@@ -216,7 +216,7 @@ func TestAuthorizeGitAccess_404Text_TS_37_16(t *testing.T) {
 	env := newMemberGitEnv(t)
 	for name, ws := range map[string]*workspaceInfo{
 		"stranger":    myws,
-		"missing row": {Slug: "nope", OwnerID: "user-2", OrgID: "org-1", CloneStatus: "ready"},
+		"missing row": {Slug: "nope", OwnerID: "user-2", OrgID: "org-1", Status: "ready"},
 	} {
 		c, rec := authzContext(http.MethodGet, "/git/myorg/x.git/info/refs?service=git-upload-pack", infoRefsRoute, &apikit.AuthInfo{CredentialType: "api_key", UserID: "user-2"})
 		err := authorizeGitAccess(c, env.db, ws)
@@ -256,8 +256,8 @@ func TestResolver_MembershipError500_TS_37_18(t *testing.T) {
 // with the 404. Requirement: 37-REQ-8.4
 func TestAuthorizeGitAccess_RowVanished_TS_37_31(t *testing.T) {
 	env := newMemberGitEnv(t)
-	env.seedWorkspace(t, "gone", "https://github.com/org/gone", "user-a", "org-1", "active")
-	gone := &workspaceInfo{Slug: "gone", OwnerID: "user-a", OrgID: "org-1", CloneStatus: "ready"}
+	env.seedWorkspace(t, "gone", "https://github.com/org/gone", "user-a", "org-1", "ready")
+	gone := &workspaceInfo{Slug: "gone", OwnerID: "user-a", OrgID: "org-1", Status: "ready"}
 	if _, err := env.db.Exec(`DELETE FROM workspaces WHERE slug = 'gone'`); err != nil {
 		t.Fatal(err)
 	}

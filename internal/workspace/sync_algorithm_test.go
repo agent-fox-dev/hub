@@ -89,43 +89,30 @@ func stubSyncBlocking(t *testing.T) {
 // Requirements: 13-REQ-4
 // ========================================================================
 
-// TS-13-12: Verifies that the sync handler sets sync_status='syncing', opens
+// TS-13-12: Verifies that the sync handler takes the workspace lock, opens
 // the repo, resolves credentials, and calls remote.Fetch() when all
 // preconditions pass.
 // Requirement: 13-REQ-4.1
 //
-// The sync handler's state machine transitions idle -> syncing -> idle on
-// success. A 200 response implicitly verifies that the handler:
-//   - set sync_status to 'syncing' before starting git operations
+// A 200 response implicitly verifies that the handler:
+//   - took the workspace lock before starting git operations
 //   - opened the local repository at <WORKSPACE_ROOT>/<slug>/trunk/
 //   - called resolveCloneAuth for credential resolution
 //   - called remote.Fetch() to fetch from upstream
-func TestSyncAlgorithm_SetsStatusSyncingAndFetches(t *testing.T) {
+func TestSyncAlgorithm_FetchesWhenReady(t *testing.T) {
 	env := newTestEnv(t)
 
 	// Install stub: sync returns up-to-date (successful sync path).
 	stubSyncUpToDate(t, "abc1234567890abcdef1234567890abcdef123456")
 
-	// Seed workspace with all preconditions passing:
-	// status='active', clone_status='ready'.
+	// Seed workspace with all preconditions passing: status='ready' and the
+	// default sync_enabled=true setting.
 	env.seedWorkspace(t, &Workspace{
-		Slug:        "sync-ws",
-		GitURL:      "https://github.com/example/repo.git",
-		OwnerID:     "alice-id",
-		Status:      "active",
-		CloneStatus: "ready",
+		Slug:    "sync-ws",
+		GitURL:  "https://github.com/example/repo.git",
+		OwnerID: "alice-id",
+		Status:  "ready",
 	})
-
-	// Set sync fields to valid precondition state.
-	// Fails if sync_mode/sync_status columns do not exist (expected before
-	// the schema migration is applied).
-	_, err := env.db.Exec(
-		`UPDATE workspaces SET sync_mode = 'pull_only', sync_status = 'idle' WHERE slug = ?`,
-		"sync-ws",
-	)
-	if err != nil {
-		t.Fatalf("failed to set sync fields: %v", err)
-	}
 
 	auth := adminAuth()
 	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/sync-ws/sync", "", auth)
@@ -141,13 +128,13 @@ func TestSyncAlgorithm_SetsStatusSyncingAndFetches(t *testing.T) {
 		t.Fatalf("failed to decode response: %v", err)
 	}
 
-	if resp["sync_status"] != "idle" {
-		t.Errorf("sync_status = %v; want %q", resp["sync_status"], "idle")
+	if resp["sync_error"] != nil {
+		t.Errorf("sync_error = %v; want nil", resp["sync_error"])
 	}
 }
 
 // TS-13-13: Verifies that when upstream HEAD equals local HEAD (already up to
-// date), sync_status is set to 'idle', last_sync_at is updated to a non-null
+// date), sync_error is cleared, last_sync_at is updated to a non-null
 // RFC 3339 timestamp, and upstream_head_sha is set.
 // Requirement: 13-REQ-4.2
 // Property: 13-PROP-3 (upstream_head_sha always reflects last fetched state)
@@ -161,22 +148,12 @@ func TestSyncAlgorithm_AlreadyUpToDate(t *testing.T) {
 	stubSyncUpToDate(t, headSHA)
 
 	env.seedWorkspace(t, &Workspace{
-		Slug:        "uptodate-ws",
-		GitURL:      "https://github.com/example/repo.git",
-		OwnerID:     "alice-id",
-		Status:      "active",
-		CloneStatus: "ready",
-		HeadSHA:     &headSHA,
+		Slug:    "uptodate-ws",
+		GitURL:  "https://github.com/example/repo.git",
+		OwnerID: "alice-id",
+		Status:  "ready",
+		HeadSHA: &headSHA,
 	})
-
-	// Set sync fields for valid preconditions.
-	_, err := env.db.Exec(
-		`UPDATE workspaces SET sync_mode = 'pull_only', sync_status = 'idle' WHERE slug = ?`,
-		"uptodate-ws",
-	)
-	if err != nil {
-		t.Fatalf("failed to set sync fields: %v", err)
-	}
 
 	auth := adminAuth()
 	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/uptodate-ws/sync", "", auth)
@@ -190,9 +167,9 @@ func TestSyncAlgorithm_AlreadyUpToDate(t *testing.T) {
 		t.Fatalf("failed to decode response: %v", err)
 	}
 
-	// sync_status must be 'idle' after an up-to-date sync.
-	if resp["sync_status"] != "idle" {
-		t.Errorf("sync_status = %v; want %q", resp["sync_status"], "idle")
+	// sync_error must be cleared after an up-to-date sync.
+	if resp["sync_error"] != nil {
+		t.Errorf("sync_error = %v; want nil", resp["sync_error"])
 	}
 
 	// last_sync_at must be a non-null RFC 3339 timestamp.
@@ -218,7 +195,7 @@ func TestSyncAlgorithm_AlreadyUpToDate(t *testing.T) {
 
 // TS-13-14: Verifies that when upstream HEAD is a descendant of local HEAD,
 // the integration branch is fast-forwarded and head_sha, upstream_head_sha,
-// sync_status, and last_sync_at are all updated correctly.
+// sync_error, and last_sync_at are all updated correctly.
 // Requirement: 13-REQ-4.3
 // Property: 13-PROP-2 (fast-forward only advances to a descendant)
 // Property: 13-PROP-3 (upstream_head_sha always reflects last fetched state)
@@ -232,26 +209,16 @@ func TestSyncAlgorithm_FastForward(t *testing.T) {
 	stubSyncFastForward(t, newSHA)
 
 	env.seedWorkspace(t, &Workspace{
-		Slug:        "ff-ws",
-		GitURL:      "https://github.com/example/repo.git",
-		OwnerID:     "alice-id",
-		Status:      "active",
-		CloneStatus: "ready",
-		HeadSHA:     &originalSHA,
+		Slug:    "ff-ws",
+		GitURL:  "https://github.com/example/repo.git",
+		OwnerID: "alice-id",
+		Status:  "ready",
+		HeadSHA: &originalSHA,
 	})
-
-	// Set sync fields for valid preconditions.
-	_, err := env.db.Exec(
-		`UPDATE workspaces SET sync_mode = 'pull_only', sync_status = 'idle' WHERE slug = ?`,
-		"ff-ws",
-	)
-	if err != nil {
-		t.Fatalf("failed to set sync fields: %v", err)
-	}
 
 	// Record the pre-sync head_sha for comparison.
 	var preSHA string
-	err = env.db.QueryRow(
+	err := env.db.QueryRow(
 		`SELECT COALESCE(head_sha, '') FROM workspaces WHERE slug = ?`, "ff-ws",
 	).Scan(&preSHA)
 	if err != nil {
@@ -270,9 +237,9 @@ func TestSyncAlgorithm_FastForward(t *testing.T) {
 		t.Fatalf("failed to decode response: %v", err)
 	}
 
-	// sync_status must be 'idle' after successful fast-forward.
-	if resp["sync_status"] != "idle" {
-		t.Errorf("sync_status = %v; want %q", resp["sync_status"], "idle")
+	// sync_error must be cleared after successful fast-forward.
+	if resp["sync_error"] != nil {
+		t.Errorf("sync_error = %v; want nil", resp["sync_error"])
 	}
 
 	// head_sha must be updated (advanced from pre-sync value).
@@ -295,8 +262,8 @@ func TestSyncAlgorithm_FastForward(t *testing.T) {
 }
 
 // 13-REQ-4.E2: Verifies that when remote.Fetch() fails due to a network error
-// or authentication failure, the handler sets sync_status='error', records the
-// error in sync_error, and does not modify head_sha or last_sync_at.
+// or authentication failure, the handler records the error in sync_error and
+// does not modify head_sha or last_sync_at.
 // Property: 13-PROP-7 (last_sync_at not updated on failure)
 func TestSyncAlgorithm_FetchFailureSetsError(t *testing.T) {
 	env := newTestEnv(t)
@@ -305,21 +272,11 @@ func TestSyncAlgorithm_FetchFailureSetsError(t *testing.T) {
 	stubSyncFetchError(t, "dial tcp: connection refused")
 
 	env.seedWorkspace(t, &Workspace{
-		Slug:        "fetch-fail-ws",
-		GitURL:      "https://github.com/example/repo.git",
-		OwnerID:     "alice-id",
-		Status:      "active",
-		CloneStatus: "ready",
+		Slug:    "fetch-fail-ws",
+		GitURL:  "https://github.com/example/repo.git",
+		OwnerID: "alice-id",
+		Status:  "ready",
 	})
-
-	// Set sync fields for valid preconditions.
-	_, err := env.db.Exec(
-		`UPDATE workspaces SET sync_mode = 'pull_only', sync_status = 'idle' WHERE slug = ?`,
-		"fetch-fail-ws",
-	)
-	if err != nil {
-		t.Fatalf("failed to set sync fields: %v", err)
-	}
 
 	auth := adminAuth()
 	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/fetch-fail-ws/sync", "", auth)
@@ -336,17 +293,13 @@ func TestSyncAlgorithm_FetchFailureSetsError(t *testing.T) {
 		t.Error("error.message is empty; want non-empty message about fetch failure")
 	}
 
-	// Verify database state: sync_status should be 'error' and sync_error set.
-	var syncStatus string
+	// Verify database state: sync_error set.
 	var syncError *string
-	err = env.db.QueryRow(
-		`SELECT sync_status, sync_error FROM workspaces WHERE slug = ?`, "fetch-fail-ws",
-	).Scan(&syncStatus, &syncError)
+	err := env.db.QueryRow(
+		`SELECT sync_error FROM workspaces WHERE slug = ?`, "fetch-fail-ws",
+	).Scan(&syncError)
 	if err != nil {
 		t.Fatalf("failed to query sync fields: %v", err)
-	}
-	if syncStatus != "error" {
-		t.Errorf("sync_status = %q; want %q", syncStatus, "error")
 	}
 	if syncError == nil || *syncError == "" {
 		t.Error("sync_error is null or empty; want non-empty error message")
@@ -376,8 +329,8 @@ func TestSyncAlgorithm_FetchFailureSetsError(t *testing.T) {
 // ========================================================================
 
 // TS-13-15: Verifies that when upstream HEAD has diverged (force-push detected),
-// sync_status is set to 'error' with the prescribed message, upstream_head_sha
-// is updated, and the integration branch is NOT advanced.
+// sync_error is set to the prescribed message, upstream_head_sha is updated,
+// and the integration branch is NOT advanced.
 // Requirement: 13-REQ-4.4
 // Property: 13-PROP-2 (integration branch not moved to non-descendant)
 // Property: 13-PROP-3 (upstream_head_sha updated regardless of outcome)
@@ -391,22 +344,12 @@ func TestSyncAlgorithm_DivergedForcePush(t *testing.T) {
 	stubSyncDiverged(t, upstreamSHA)
 
 	env.seedWorkspace(t, &Workspace{
-		Slug:        "diverged-ws",
-		GitURL:      "https://github.com/example/repo.git",
-		OwnerID:     "alice-id",
-		Status:      "active",
-		CloneStatus: "ready",
-		HeadSHA:     &originalSHA,
+		Slug:    "diverged-ws",
+		GitURL:  "https://github.com/example/repo.git",
+		OwnerID: "alice-id",
+		Status:  "ready",
+		HeadSHA: &originalSHA,
 	})
-
-	// Set sync fields for valid preconditions.
-	_, err := env.db.Exec(
-		`UPDATE workspaces SET sync_mode = 'pull_only', sync_status = 'idle' WHERE slug = ?`,
-		"diverged-ws",
-	)
-	if err != nil {
-		t.Fatalf("failed to set sync fields: %v", err)
-	}
 
 	auth := adminAuth()
 	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/diverged-ws/sync", "", auth)
@@ -427,21 +370,15 @@ func TestSyncAlgorithm_DivergedForcePush(t *testing.T) {
 	}
 
 	// Verify database state.
-	var syncStatus string
 	var syncError *string
 	var headSHA *string
 	var upstreamHeadSHA *string
-	err = env.db.QueryRow(
-		`SELECT sync_status, sync_error, head_sha, upstream_head_sha FROM workspaces WHERE slug = ?`,
+	err := env.db.QueryRow(
+		`SELECT sync_error, head_sha, upstream_head_sha FROM workspaces WHERE slug = ?`,
 		"diverged-ws",
-	).Scan(&syncStatus, &syncError, &headSHA, &upstreamHeadSHA)
+	).Scan(&syncError, &headSHA, &upstreamHeadSHA)
 	if err != nil {
 		t.Fatalf("failed to query sync fields: %v", err)
-	}
-
-	// sync_status must be 'error'.
-	if syncStatus != "error" {
-		t.Errorf("sync_status = %q; want %q", syncStatus, "error")
 	}
 
 	// sync_error must mention diverged history and recovery path.
@@ -472,10 +409,10 @@ func TestSyncAlgorithm_DivergedForcePush(t *testing.T) {
 }
 
 // TS-13-16: Verifies that the sync handler registers a deferred cleanup that
-// sets sync_status='error' and records a descriptive sync_error when the
-// request context is cancelled mid-sync.
+// records a descriptive sync_error when the request context is cancelled
+// mid-sync.
 // Requirement: 13-REQ-4.5
-// Property: 13-PROP-1 (sync_status never permanently stuck in 'syncing')
+// Property: 13-PROP-1 (an interrupted sync leaves a sync_error)
 func TestSyncAlgorithm_ContextCancellation(t *testing.T) {
 	env := newTestEnv(t)
 
@@ -483,26 +420,16 @@ func TestSyncAlgorithm_ContextCancellation(t *testing.T) {
 	stubSyncBlocking(t)
 
 	env.seedWorkspace(t, &Workspace{
-		Slug:        "ctx-ws",
-		GitURL:      "https://github.com/example/repo.git",
-		OwnerID:     "alice-id",
-		Status:      "active",
-		CloneStatus: "ready",
+		Slug:    "ctx-ws",
+		GitURL:  "https://github.com/example/repo.git",
+		OwnerID: "alice-id",
+		Status:  "ready",
 	})
-
-	// Set sync fields for valid preconditions.
-	_, err := env.db.Exec(
-		`UPDATE workspaces SET sync_mode = 'pull_only', sync_status = 'idle' WHERE slug = ?`,
-		"ctx-ws",
-	)
-	if err != nil {
-		t.Fatalf("failed to set sync fields: %v", err)
-	}
 
 	// Create a request with a very short context timeout to trigger
 	// cancellation during the sync handler's fetch operation.
 	// The handler should register a deferred cleanup that catches the
-	// cancellation and transitions sync_status to 'error'.
+	// cancellation and records a sync_error.
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 
@@ -525,19 +452,14 @@ func TestSyncAlgorithm_ContextCancellation(t *testing.T) {
 			rec.Code, http.StatusGatewayTimeout)
 	}
 
-	// Verify database state: deferred cleanup must set sync_status='error'
-	// so the workspace is not left permanently stuck in 'syncing' (13-PROP-1).
-	var syncStatus string
+	// Verify database state: deferred cleanup must record a sync_error
+	// (13-PROP-1).
 	var syncError *string
 	err = env.db.QueryRow(
-		`SELECT sync_status, sync_error FROM workspaces WHERE slug = ?`, "ctx-ws",
-	).Scan(&syncStatus, &syncError)
+		`SELECT sync_error FROM workspaces WHERE slug = ?`, "ctx-ws",
+	).Scan(&syncError)
 	if err != nil {
 		t.Fatalf("failed to query sync fields: %v", err)
-	}
-	if syncStatus != "error" {
-		t.Errorf("sync_status = %q; want %q (deferred cleanup should set error on cancellation)",
-			syncStatus, "error")
 	}
 	if syncError == nil || *syncError == "" {
 		t.Error("sync_error is null or empty; want descriptive message about context cancellation")

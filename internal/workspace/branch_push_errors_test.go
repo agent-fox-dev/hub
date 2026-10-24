@@ -201,7 +201,7 @@ func TestBranchPushForgeUnreachableAndError_TS_38_35(t *testing.T) {
 func TestBranchPushTrunkUnavailable_TS_38_36(t *testing.T) {
 	env := newBranchPushEnv(t)
 	logs := captureBranchPushLog(t)
-	env.seedWorkspace(t, &Workspace{Slug: "no-trunk", GitURL: "https://github.com/org/x", OwnerID: "user-a", Status: "active", CloneStatus: "ready"})
+	env.seedWorkspace(t, &Workspace{Slug: "no-trunk", GitURL: "https://github.com/org/x", OwnerID: "user-a", Status: "ready"})
 	env.seedPushWorkspace(t, &Workspace{Slug: "no-origin", OwnerID: "user-a"}, "feat")
 	pushGit(t, filepath.Join(env.root, "no-origin", "trunk"), "remote", "remove", "origin")
 

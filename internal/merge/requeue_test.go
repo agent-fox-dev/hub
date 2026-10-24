@@ -17,7 +17,7 @@ import (
 func TestRequeueMerge_DeadLetterJob_Returns200(t *testing.T) {
 	env := newMergeTestEnv(t, nil)
 
-	seedTestWorkspace(t, env.db, "ws1", "alice", "active", "ready")
+	seedTestWorkspace(t, env.db, "ws1", "alice", "ready")
 	seedMergeJob(t, env.db, "job-dl-requeue", jobqueue.StatusDeadLetter, "ws1", "main", "feature/a", "alice", nil, nil)
 
 	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/ws1/merges/job-dl-requeue/requeue", "", mergeUserAuth("alice"))
@@ -65,7 +65,7 @@ func TestRequeueMerge_NonDeadLetterJob_Returns409(t *testing.T) {
 		t.Run(status, func(t *testing.T) {
 			env := newMergeTestEnv(t, nil)
 
-			seedTestWorkspace(t, env.db, "ws1", "alice", "active", "ready")
+			seedTestWorkspace(t, env.db, "ws1", "alice", "ready")
 			seedMergeJob(t, env.db, "job-"+status, status, "ws1", "main", "feature/a", "alice", nil, nil)
 
 			rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/ws1/merges/job-"+status+"/requeue", "", mergeUserAuth("alice"))
@@ -86,7 +86,7 @@ func TestRequeueMerge_NonDeadLetterJob_Returns409(t *testing.T) {
 func TestRequeueMerge_ActiveJobExists_Returns409(t *testing.T) {
 	env := newMergeTestEnv(t, nil)
 
-	seedTestWorkspace(t, env.db, "ws1", "alice", "active", "ready")
+	seedTestWorkspace(t, env.db, "ws1", "alice", "ready")
 	// Dead-lettered job.
 	seedMergeJob(t, env.db, "job-dl-dup", jobqueue.StatusDeadLetter, "ws1", "main", "feature/a", "alice", nil, nil)
 	// Active queued job with the same (type, key).
@@ -113,7 +113,7 @@ func TestRequeueMerge_ActiveJobExists_Returns409(t *testing.T) {
 func TestRequeueMerge_NonexistentJob_Returns404(t *testing.T) {
 	env := newMergeTestEnv(t, nil)
 
-	seedTestWorkspace(t, env.db, "ws1", "alice", "active", "ready")
+	seedTestWorkspace(t, env.db, "ws1", "alice", "ready")
 
 	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/ws1/merges/nonexistent-id/requeue", "", mergeUserAuth("alice"))
 
@@ -126,8 +126,8 @@ func TestRequeueMerge_NonexistentJob_Returns404(t *testing.T) {
 func TestRequeueMerge_DifferentWorkspaceJob_Returns404(t *testing.T) {
 	env := newMergeTestEnv(t, nil)
 
-	seedTestWorkspace(t, env.db, "ws1", "alice", "active", "ready")
-	seedTestWorkspace(t, env.db, "ws2", "bob", "active", "ready")
+	seedTestWorkspace(t, env.db, "ws1", "alice", "ready")
+	seedTestWorkspace(t, env.db, "ws2", "bob", "ready")
 
 	seedMergeJob(t, env.db, "job-ws2-dl", jobqueue.StatusDeadLetter, "ws2", "main", "feature/a", "bob", nil, nil)
 
@@ -142,7 +142,7 @@ func TestRequeueMerge_DifferentWorkspaceJob_Returns404(t *testing.T) {
 func TestRequeueMerge_PATWithoutWriteScope_Returns403(t *testing.T) {
 	env := newMergeTestEnv(t, nil)
 
-	seedTestWorkspace(t, env.db, "ws1", "alice", "active", "ready")
+	seedTestWorkspace(t, env.db, "ws1", "alice", "ready")
 	seedMergeJob(t, env.db, "job-perm-dl", jobqueue.StatusDeadLetter, "ws1", "main", "feature/a", "alice", nil, nil)
 
 	// PAT with merges:read only (no merges:write).

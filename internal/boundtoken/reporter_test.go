@@ -181,8 +181,8 @@ func TestReporter_BoundedMemory_TS_34_62(t *testing.T) {
 // back, with emission failing. Requirement: 34-REQ-10.8
 func TestReporter_NoSecrets_TS_34_63(t *testing.T) {
 	h := newRealHub(t)
-	h.seed(t, "S", "active")
-	h.seed(t, "X", "active")
+	h.seed(t, "S", "ready")
+	h.seed(t, "X", "ready")
 	token, _ := h.mintBound(t, "S", "workspaces:read")
 	logs := captureLogs(t)
 	em := &recordingEmitter{err: errors.New("emit failed")}

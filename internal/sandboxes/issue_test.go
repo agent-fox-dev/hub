@@ -290,16 +290,16 @@ func TestIssue_WorkspaceOwnership_TS_26_11(t *testing.T) {
 	}
 }
 
-// TS-26-12: POST on a non-active workspace answers 400 'workspace is not
-// active'.
+// TS-26-12: POST on an archived workspace answers 400 'workspace is
+// archived'.
 // Requirement: 26-REQ-2.5
-func TestIssue_NonActiveWorkspace_TS_26_12(t *testing.T) {
+func TestIssue_ArchivedWorkspace_TS_26_12(t *testing.T) {
 	env := newLeaseEnv(t, leaseEnvOptions{})
 	env.addWorkspace("old", leaseOwner, "", "archived")
 
 	rec := env.post("old", `{"profile":"tools"}`, apiKeyAuth())
-	if rec.Code != http.StatusBadRequest || message(t, rec) != "workspace is not active" {
-		t.Errorf("status %d, message %q; want 400 'workspace is not active'", rec.Code, message(t, rec))
+	if rec.Code != http.StatusBadRequest || message(t, rec) != "workspace is archived" {
+		t.Errorf("status %d, message %q; want 400 'workspace is archived'", rec.Code, message(t, rec))
 	}
 	if env.countLeases() != 0 {
 		t.Errorf("%d leases stored for an archived workspace", env.countLeases())

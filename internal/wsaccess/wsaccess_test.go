@@ -394,13 +394,13 @@ func TestAuthorizeWorkspace_MemberNeeds_TS_35_11(t *testing.T) {
 // Requirement: 35-REQ-2.6
 func TestAuthorizeWorkspace_FullRecord_TS_35_12(t *testing.T) {
 	db := openAccessDB(t, true)
-	if _, err := db.Exec(`INSERT INTO workspaces (slug, owner_id, org_id, status, clone_status) VALUES
-		('w1', 'u1', 'O', 'archived', 'failed'), ('w2', 'u1', NULL, 'active', 'ready')`); err != nil {
+	if _, err := db.Exec(`INSERT INTO workspaces (slug, owner_id, org_id, status) VALUES
+		('w1', 'u1', 'O', 'archived'), ('w2', 'u1', NULL, 'ready')`); err != nil {
 		t.Fatal(err)
 	}
 	for slug, want := range map[string]wsaccess.WorkspaceAccess{
-		"w1": {Slug: "w1", OwnerID: "u1", OrgID: "O", Status: "archived", CloneStatus: "failed", Access: wsaccess.AccessOwner},
-		"w2": {Slug: "w2", OwnerID: "u1", OrgID: "", Status: "active", CloneStatus: "ready", Access: wsaccess.AccessOwner},
+		"w1": {Slug: "w1", OwnerID: "u1", OrgID: "O", Status: "archived", Access: wsaccess.AccessOwner},
+		"w2": {Slug: "w2", OwnerID: "u1", OrgID: "", Status: "ready", Access: wsaccess.AccessOwner},
 	} {
 		ws, code, msg := wsaccess.AuthorizeWorkspace(db, apiKeyOf("u1"), slug, wsaccess.NeedWrite)
 		if ws == nil || code != 0 || msg != "" {

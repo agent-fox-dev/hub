@@ -35,7 +35,7 @@ func TestMemberForgeWriteOnArchived_TS_35_52(t *testing.T) {
 		t.Errorf("member %s: %d %s; want 403 forbidden", route.name, rec.Code, rec.Body)
 	}
 	rec := e.sendRoute(route, "widgets", apiKeyAuth())
-	if rec.Code != http.StatusBadRequest || decodeError(t, rec).Message != "workspace is not active" {
+	if rec.Code != http.StatusBadRequest || decodeError(t, rec).Message != "workspace is archived" {
 		t.Errorf("owner %s: %d %s; want today's 400", route.name, rec.Code, rec.Body)
 	}
 }

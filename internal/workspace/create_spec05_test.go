@@ -11,8 +11,8 @@ import (
 // (TS-05-17)
 // ========================================================================
 
-// spec05WorkspaceJSON extends the baseline workspaceJSON with clone fields
-// added by spec 05. Using a separate struct avoids modifying the existing
+// spec05WorkspaceJSON extends the baseline workspaceJSON with the clone
+// fields added by spec 05 (status carries the clone state). Using a separate struct avoids modifying the existing
 // testhelpers_test.go shared by prior specs.
 type spec05WorkspaceJSON struct {
 	Slug        string  `json:"slug"`
@@ -23,7 +23,6 @@ type spec05WorkspaceJSON struct {
 	OwnerID     string  `json:"owner_id"`
 	OrgID       *string `json:"org_id"`
 	Status      string  `json:"status"`
-	CloneStatus *string `json:"clone_status"`
 	HeadSHA     *string `json:"head_sha"`
 	CloneError  *string `json:"clone_error"`
 	CreatedAt   string  `json:"created_at"`
@@ -31,7 +30,7 @@ type spec05WorkspaceJSON struct {
 }
 
 // TS-05-17: POST /api/v1/workspaces returns HTTP 201 immediately with
-// clone_status='pending', head_sha=null, clone_error=null without waiting
+// status='pending', head_sha=null, clone_error=null without waiting
 // for the clone to complete.
 // Requirement: 05-REQ-5.1
 func TestWorkspaceCreate_Spec05_ReturnsImmediatelyWithPending(t *testing.T) {
@@ -58,12 +57,9 @@ func TestWorkspaceCreate_Spec05_ReturnsImmediatelyWithPending(t *testing.T) {
 		t.Fatalf("failed to decode response: %v", err)
 	}
 
-	// clone_status must be present and set to "pending".
-	if ws.CloneStatus == nil {
-		t.Fatal("clone_status is missing from response; want \"pending\"")
-	}
-	if *ws.CloneStatus != "pending" {
-		t.Errorf("clone_status = %q; want %q", *ws.CloneStatus, "pending")
+	// status must be "pending".
+	if ws.Status != "pending" {
+		t.Errorf("status = %q; want %q", ws.Status, "pending")
 	}
 
 	// head_sha must be null (clone hasn't happened yet).
@@ -79,7 +75,7 @@ func TestWorkspaceCreate_Spec05_ReturnsImmediatelyWithPending(t *testing.T) {
 
 // TestWorkspaceCreate_Spec05_WithBranchReturnsImmediately verifies that
 // creating a workspace with an explicit branch still returns immediately
-// with clone_status='pending'.
+// with status='pending'.
 // Requirement: 05-REQ-5.1
 func TestWorkspaceCreate_Spec05_WithBranchReturnsImmediately(t *testing.T) {
 	env := newTestEnv(t)
@@ -104,12 +100,9 @@ func TestWorkspaceCreate_Spec05_WithBranchReturnsImmediately(t *testing.T) {
 		t.Fatalf("failed to decode response: %v", err)
 	}
 
-	// clone_status must be "pending" regardless of branch presence.
-	if ws.CloneStatus == nil {
-		t.Fatal("clone_status is missing from response; want \"pending\"")
-	}
-	if *ws.CloneStatus != "pending" {
-		t.Errorf("clone_status = %q; want %q", *ws.CloneStatus, "pending")
+	// status must be "pending" regardless of branch presence.
+	if ws.Status != "pending" {
+		t.Errorf("status = %q; want %q", ws.Status, "pending")
 	}
 
 	if ws.HeadSHA != nil {
@@ -141,7 +134,7 @@ func TestWorkspaceCreate_Spec05_DBInsertFailNoEnqueue(t *testing.T) {
 		Slug:    "spec05-dup-ws",
 		GitURL:  "https://github.com/example/repo.git",
 		OwnerID: "user-1",
-		Status:  "active",
+		Status:  "pending",
 	})
 
 	body := `{

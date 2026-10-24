@@ -18,7 +18,7 @@ import (
 func TestRerereList_Returns200WithResolutions(t *testing.T) {
 	env := newFullTestEnv(t)
 
-	seedWorkspace(t, env.db, "my-workspace", "alice", "active", "ready", "carry_patch", "integration")
+	seedWorkspace(t, env.db, "my-workspace", "alice", "ready", "carry_patch", "integration")
 
 	// Set up rr-cache with two resolution entries.
 	entries := []rrCacheEntry{
@@ -59,7 +59,7 @@ func TestRerereList_Returns200WithResolutions(t *testing.T) {
 func TestRerereList_EmptyCache_ReturnsEmptyList(t *testing.T) {
 	env := newFullTestEnv(t)
 
-	seedWorkspace(t, env.db, "my-workspace", "alice", "active", "ready", "carry_patch", "integration")
+	seedWorkspace(t, env.db, "my-workspace", "alice", "ready", "carry_patch", "integration")
 	// No rr-cache setup — directory doesn't exist.
 
 	auth := rebuildUserAuth("alice")
@@ -87,7 +87,7 @@ func TestRerereList_EmptyCache_ReturnsEmptyList(t *testing.T) {
 func TestRerereList_MalformedEntry_Skipped(t *testing.T) {
 	env := newFullTestEnv(t)
 
-	seedWorkspace(t, env.db, "my-workspace", "alice", "active", "ready", "carry_patch", "integration")
+	seedWorkspace(t, env.db, "my-workspace", "alice", "ready", "carry_patch", "integration")
 
 	// One valid entry and one malformed entry (no preimage or postimage).
 	entries := []rrCacheEntry{
@@ -119,7 +119,7 @@ func TestRerereList_MalformedEntry_Skipped(t *testing.T) {
 func TestRerereList_PATWithoutScope_Returns403(t *testing.T) {
 	env := newFullTestEnv(t)
 
-	seedWorkspace(t, env.db, "my-workspace", "alice", "active", "ready", "carry_patch", "integration")
+	seedWorkspace(t, env.db, "my-workspace", "alice", "ready", "carry_patch", "integration")
 
 	auth := rebuildPATAuth("alice", "rebuilds:read") // no workspaces:read
 	rec := env.doRequest(t, http.MethodGet, "/api/v1/workspaces/my-workspace/rerere", "", auth)
@@ -141,7 +141,7 @@ func TestRerereList_PATWithoutScope_Returns403(t *testing.T) {
 func TestRerereForget_Success_Returns204(t *testing.T) {
 	env := newFullTestEnv(t)
 
-	seedWorkspace(t, env.db, "my-workspace", "alice", "active", "ready", "carry_patch", "integration")
+	seedWorkspace(t, env.db, "my-workspace", "alice", "ready", "carry_patch", "integration")
 
 	// Set up rr-cache with a resolution for src/config.go.
 	entries := []rrCacheEntry{
@@ -173,7 +173,7 @@ func TestRerereForget_Success_Returns204(t *testing.T) {
 func TestRerereForget_NotFound_Returns404(t *testing.T) {
 	env := newFullTestEnv(t)
 
-	seedWorkspace(t, env.db, "my-workspace", "alice", "active", "ready", "carry_patch", "integration")
+	seedWorkspace(t, env.db, "my-workspace", "alice", "ready", "carry_patch", "integration")
 
 	auth := rebuildUserAuth("alice")
 	rec := env.doRequest(t, http.MethodDelete, "/api/v1/workspaces/my-workspace/rerere/nonexistent.go", "", auth)
@@ -189,7 +189,7 @@ func TestRerereForget_NotFound_Returns404(t *testing.T) {
 func TestRerereForget_PathWithSlashes_CapturedCorrectly(t *testing.T) {
 	env := newFullTestEnv(t)
 
-	seedWorkspace(t, env.db, "my-workspace", "alice", "active", "ready", "carry_patch", "integration")
+	seedWorkspace(t, env.db, "my-workspace", "alice", "ready", "carry_patch", "integration")
 
 	// Set up rr-cache with a nested path.
 	entries := []rrCacheEntry{
@@ -224,7 +224,7 @@ func TestRerereForget_PathWithSlashes_CapturedCorrectly(t *testing.T) {
 func TestRerereForget_PATWithoutScope_Returns403(t *testing.T) {
 	env := newFullTestEnv(t)
 
-	seedWorkspace(t, env.db, "my-workspace", "alice", "active", "ready", "carry_patch", "integration")
+	seedWorkspace(t, env.db, "my-workspace", "alice", "ready", "carry_patch", "integration")
 
 	auth := rebuildPATAuth("alice") // no permissions at all
 	rec := env.doRequest(t, http.MethodDelete, "/api/v1/workspaces/my-workspace/rerere/src/config.go", "", auth)
@@ -240,7 +240,7 @@ func TestRerereForget_PATWithoutScope_Returns403(t *testing.T) {
 func TestRerereForget_PATWithReadOnly_Returns403(t *testing.T) {
 	env := newFullTestEnv(t)
 
-	seedWorkspace(t, env.db, "my-workspace", "alice", "active", "ready", "carry_patch", "integration")
+	seedWorkspace(t, env.db, "my-workspace", "alice", "ready", "carry_patch", "integration")
 
 	auth := rebuildPATAuth("alice", "workspaces:read") // read-only, no write
 	rec := env.doRequest(t, http.MethodDelete, "/api/v1/workspaces/my-workspace/rerere/src/config.go", "", auth)
@@ -256,7 +256,7 @@ func TestRerereForget_PATWithReadOnly_Returns403(t *testing.T) {
 func TestRerereForget_PATWithWriteScope_Returns204(t *testing.T) {
 	env := newFullTestEnv(t)
 
-	seedWorkspace(t, env.db, "my-workspace", "alice", "active", "ready", "carry_patch", "integration")
+	seedWorkspace(t, env.db, "my-workspace", "alice", "ready", "carry_patch", "integration")
 
 	// Set up rr-cache with a resolution for src/config.go.
 	entries := []rrCacheEntry{

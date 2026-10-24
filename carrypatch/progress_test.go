@@ -250,7 +250,7 @@ func TestHandleRebuildJob_NoProgressWrittenWithoutQueue(t *testing.T) {
 func TestGetRebuild_RunningJobReturnsProgressAsPatchResults(t *testing.T) {
 	env := newRebuildTestEnv(t)
 
-	seedWorkspace(t, env.db, "ws1", "user-1", "active", "ready", "carry_patch", "integration")
+	seedWorkspace(t, env.db, "ws1", "user-1", "ready", "carry_patch", "integration")
 
 	progressJSON := `[{"patch_id":"p1","branch_name":"feature/a","position":1,"status":"success","new_head_sha":"abc123"},{"patch_id":"p2","branch_name":"feature/b","position":2,"status":"success","new_head_sha":"def456"},{"patch_id":"p3","branch_name":"feature/c","position":3,"status":"skipped","skipped_reason":"merged_upstream","new_head_sha":null}]`
 	seedRebuildJobWithProgress(t, env.db, "job-running", "running", "ws1", "rebase", progressJSON)
@@ -291,7 +291,7 @@ func TestGetRebuild_RunningJobReturnsProgressAsPatchResults(t *testing.T) {
 func TestGetRebuild_RunningJobWithoutProgressOmitsPatchResults(t *testing.T) {
 	env := newRebuildTestEnv(t)
 
-	seedWorkspace(t, env.db, "ws1", "user-1", "active", "ready", "carry_patch", "integration")
+	seedWorkspace(t, env.db, "ws1", "user-1", "ready", "carry_patch", "integration")
 	seedRebuildJob(t, env.db, "job-no-prog", "running", "ws1", "rebase", "user-1")
 
 	rec := env.doRequest(t, http.MethodGet,
@@ -315,7 +315,7 @@ func TestGetRebuild_RunningJobWithoutProgressOmitsPatchResults(t *testing.T) {
 func TestListRebuilds_RunningJobIncludesProgress(t *testing.T) {
 	env := newRebuildTestEnv(t)
 
-	seedWorkspace(t, env.db, "ws1", "user-1", "active", "ready", "carry_patch", "integration")
+	seedWorkspace(t, env.db, "ws1", "user-1", "ready", "carry_patch", "integration")
 
 	progressJSON := `[{"patch_id":"p1","branch_name":"feature/a","position":1,"status":"success","new_head_sha":"abc"}]`
 	seedRebuildJobWithProgress(t, env.db, "job-list-prog", "running", "ws1", "rebase", progressJSON)

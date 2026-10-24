@@ -200,17 +200,15 @@ func ensureCarryPatchColumns(t *testing.T, db *sql.DB) {
 	}
 }
 
-// seedCarryPatchWorkspaceRaw inserts an active carry_patch workspace owned by
-// user-1 with a pending clone.
+// seedCarryPatchWorkspaceRaw inserts a carry_patch workspace owned by user-1
+// with a pending clone (status 'pending').
 func seedCarryPatchWorkspaceRaw(t *testing.T, db *sql.DB, slug, gitURL, upstreamURL, integrationBranch string) {
 	t.Helper()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	_, err := db.Exec(
 		`INSERT INTO workspaces (slug, git_url, owner_id, status, display_name, description,
-		 clone_status, created_at, updated_at, sync_mode, sync_status,
-		 workspace_mode, upstream_url, integration_branch)
-		 VALUES (?, ?, 'user-1', 'active', '', '', 'pending', ?, ?, 'pull_only', 'idle',
-		 'carry_patch', ?, ?)`,
+		 created_at, updated_at, workspace_mode, upstream_url, integration_branch)
+		 VALUES (?, ?, 'user-1', 'pending', '', '', ?, ?, 'carry_patch', ?, ?)`,
 		slug, gitURL, now, now, upstreamURL, integrationBranch,
 	)
 	if err != nil {
@@ -218,14 +216,14 @@ func seedCarryPatchWorkspaceRaw(t *testing.T, db *sql.DB, slug, gitURL, upstream
 	}
 }
 
-// seedOwnedStandardWorkspace inserts an active standard-mode workspace with
+// seedOwnedStandardWorkspace inserts a ready standard-mode workspace with
 // the given owner.
 func (env *testEnv) seedOwnedStandardWorkspace(t *testing.T, slug, gitURL, ownerID string) {
 	t.Helper()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	_, err := env.db.Exec(
-		`INSERT INTO workspaces (slug, git_url, owner_id, status, clone_status, created_at, updated_at, workspace_mode)
-		 VALUES (?, ?, ?, 'active', 'ready', ?, ?, 'standard')`,
+		`INSERT INTO workspaces (slug, git_url, owner_id, status, created_at, updated_at, workspace_mode)
+		 VALUES (?, ?, ?, 'ready', ?, ?, 'standard')`,
 		slug, gitURL, ownerID, now, now,
 	)
 	if err != nil {

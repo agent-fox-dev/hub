@@ -1027,9 +1027,9 @@ func TestGetPostmortem_InvalidRunID400(t *testing.T) {
 func newOrgMemberEnv(t *testing.T) *auditTestEnv {
 	t.Helper()
 	env := newAuditTestEnvWithSQLite(t)
-	env.seedWorkspaceInOrg(t, "w", "u1", "O", "active")
+	env.seedWorkspaceInOrg(t, "w", "u1", "O", "ready")
 	env.seedWorkspaceInOrg(t, "w-arch", "u1", "O", "archived")
-	env.seedWorkspaceInOrg(t, "w-x", "u3", "X", "active")
+	env.seedWorkspaceInOrg(t, "w-x", "u3", "X", "ready")
 	seedOrgMember(t, env.sqliteDB, "O", "u1")
 	seedOrgMember(t, env.sqliteDB, "O", "u2")
 	seedOrgMember(t, env.sqliteDB, "X", "u3")
@@ -1099,8 +1099,8 @@ func TestCreateSession_StrangerAndUnknown404_TS_36_29(t *testing.T) {
 // workspace's org and an admin token. Requirement: 36-REQ-6.4
 func TestCreateSession_ReplayReadable_TS_36_30(t *testing.T) {
 	env := newOrgMemberEnv(t)
-	env.seedWorkspaceInOrg(t, "w1", "u1", "", "active")
-	env.seedWorkspaceInOrg(t, "w-u2", "u2", "", "active")
+	env.seedWorkspaceInOrg(t, "w1", "u1", "", "ready")
+	env.seedWorkspaceInOrg(t, "w-u2", "u2", "", "ready")
 	env.seedSession(t, &Session{ID: "sess-s", WorkspaceSlug: "w", Status: "active", CredentialID: "u1", CredentialType: "pat"})
 	before := queryTableCount(t, env.db, "agent_sessions")
 	for name, c := range map[string]struct {
@@ -1129,7 +1129,7 @@ func TestCreateSession_ReplayReadable_TS_36_30(t *testing.T) {
 // may not read answers 404 without disclosing it. Requirement: 36-REQ-6.5
 func TestCreateSession_ReplayUnreadable404_TS_36_31(t *testing.T) {
 	env := newOrgMemberEnv(t)
-	env.seedWorkspaceInOrg(t, "w1", "u1", "", "active")
+	env.seedWorkspaceInOrg(t, "w1", "u1", "", "ready")
 	env.seedSession(t, &Session{ID: "sess-x", WorkspaceSlug: "w-x", Status: "active", CredentialID: "u3", CredentialType: "pat", Model: "secret-model"})
 	rec := env.doJSON(t, http.MethodPost, "/api/v1/sessions", `{"id":"sess-x","workspace_slug":"w1"}`, patAuth("u1", "sessions:write"))
 	if rec.Code != http.StatusNotFound || errOf(t, rec).Error.Message != "workspace not found" {
@@ -1202,12 +1202,12 @@ func TestSessionReads_Member_TS_36_8(t *testing.T) {
 	}
 }
 
-// TS-36-9: session read routes refuse a workspace that is not active, not
+// TS-36-9: session read routes refuse a workspace that is archived, not
 // readable, missing or outside a bound PAT's binding with 403 workspace
 // access denied. Requirement: 36-REQ-2.2
 func TestSessionReads_Refused403_TS_36_9(t *testing.T) {
 	env := newSessionReadEnv(t)
-	env.seedWorkspaceInOrg(t, "w-u2", "u2", "", "active")
+	env.seedWorkspaceInOrg(t, "w-u2", "u2", "", "ready")
 	bindToken(t, env.sqliteDB, "tokU2", "w-u2")
 	member := patAuth("u2", "sessions:read")
 	var cases []struct {
@@ -1306,7 +1306,7 @@ func listedWorkspaces(t *testing.T, env *auditTestEnv, auth *apikit.AuthInfo) ma
 // Requirement: 36-REQ-3.1
 func TestSessionList_OwnedAndMember_TS_36_13(t *testing.T) {
 	env := newSessionReadEnv(t)
-	env.seedWorkspaceInOrg(t, "w-own", "u2", "", "active")
+	env.seedWorkspaceInOrg(t, "w-own", "u2", "", "ready")
 	env.seedSession(t, &Session{ID: "sess-own", WorkspaceSlug: "w-own", Status: "active", CredentialID: "u2", CredentialType: "pat"})
 	got := listedWorkspaces(t, env, patAuth("u2", "sessions:read"))
 	if len(got) != 2 || !got["w-own"] || !got["w"] {
@@ -1341,7 +1341,7 @@ func TestSessionList_BoundPAT_TS_36_15(t *testing.T) {
 	t.Cleanup(func() { wsaccess.SetRefusalObserver(nil) })
 
 	env := newSessionReadEnv(t)
-	env.seedWorkspaceInOrg(t, "w2", "u2", "", "active")
+	env.seedWorkspaceInOrg(t, "w2", "u2", "", "ready")
 	env.seedSession(t, &Session{ID: "sess-w2", WorkspaceSlug: "w2", Status: "active", CredentialID: "u2", CredentialType: "pat"})
 	bindToken(t, env.sqliteDB, "tokW", "w")
 	bound := boundPatAuth("u2", "tokW", "sessions:read")
@@ -1373,7 +1373,7 @@ func TestSessionList_AdminUnrestricted_TS_36_16(t *testing.T) {
 // the active workspaces the caller owns or shares an org with.
 // Requirement: 36-REQ-3.5
 func TestSessionList_PropertyReadableActive_TS_36_17(t *testing.T) {
-	users, orgs, statuses := []string{"u1", "u2", "u3", "u4"}, []string{"", "O1", "O2"}, []string{"active", "archived"}
+	users, orgs, statuses := []string{"u1", "u2", "u3", "u4"}, []string{"", "O1", "O2"}, []string{"ready", "archived"}
 	for seed := int64(1); seed <= 40; seed++ {
 		rng := rand.New(rand.NewSource(seed))
 		env := newAuditTestEnvWithSQLite(t)
@@ -1393,7 +1393,7 @@ func TestSessionList_PropertyReadableActive_TS_36_17(t *testing.T) {
 			org, status := orgs[rng.Intn(len(orgs))], statuses[rng.Intn(len(statuses))]
 			env.seedWorkspaceInOrg(t, slug, owner, org, status)
 			env.seedSession(t, &Session{ID: "sess-" + slug, WorkspaceSlug: slug, Status: "active", CredentialID: owner, CredentialType: "pat"})
-			if status == "active" && (owner == caller || (org != "" && member[[2]string{org, caller}])) {
+			if status == "ready" && (owner == caller || (org != "" && member[[2]string{org, caller}])) {
 				want[slug] = true
 			}
 		}

@@ -108,8 +108,8 @@ func newSmokeEnv(t *testing.T, opts smokeOpts) *smokeEnv {
 
 	// Seed carry_patch workspace.
 	mustExec(t, db,
-		`INSERT INTO workspaces (slug, git_url, owner_id, org_id, status, clone_status, workspace_mode, integration_branch, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, 'active', 'ready', 'carry_patch', 'main-int', ?, ?)`,
+		`INSERT INTO workspaces (slug, git_url, owner_id, org_id, status, workspace_mode, integration_branch, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, 'ready', 'carry_patch', 'main-int', ?, ?)`,
 		"myws", gitURL, "user-1", "org-1", now, now)
 
 	// Initialize the trunk repo.
@@ -249,8 +249,7 @@ func openSmokeTestDB(t *testing.T) *sql.DB {
 		branch            TEXT,
 		owner_id          TEXT NOT NULL,
 		org_id            TEXT,
-		status            TEXT NOT NULL DEFAULT 'active',
-		clone_status      TEXT NOT NULL DEFAULT 'ready',
+		status            TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','cloning','ready','failed','archived')),
 		head_sha          TEXT,
 		display_name      TEXT NOT NULL DEFAULT '',
 		description       TEXT NOT NULL DEFAULT '',

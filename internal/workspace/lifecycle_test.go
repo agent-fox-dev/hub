@@ -16,7 +16,7 @@ func TestWorkspaceArchive_Success(t *testing.T) {
 		Slug:    "alice-ws",
 		GitURL:  "https://github.com/org/repo",
 		OwnerID: "alice-id",
-		Status:  "active",
+		Status:  "pending",
 	})
 
 	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/alice-ws/archive", "",
@@ -91,7 +91,7 @@ func TestWorkspaceArchive_PATForbidden(t *testing.T) {
 		Slug:    "alice-ws",
 		GitURL:  "https://github.com/org/repo",
 		OwnerID: "alice-id",
-		Status:  "active",
+		Status:  "pending",
 	})
 
 	t.Run("PAT with workspaces:read", func(t *testing.T) {
@@ -147,7 +147,7 @@ func TestWorkspaceArchive_NotFound(t *testing.T) {
 			Slug:    "bob-ws",
 			GitURL:  "https://github.com/org/bob-repo",
 			OwnerID: "bob-id",
-			Status:  "active",
+			Status:  "pending",
 		})
 
 		rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/bob-ws/archive", "",
@@ -161,7 +161,7 @@ func TestWorkspaceArchive_NotFound(t *testing.T) {
 }
 
 // TS-01-43: Verify that POST /api/v1/workspaces/:slug/reactivate updates an
-// archived workspace to 'active' and returns HTTP 200 with the updated object.
+// archived workspace to 'pending' and returns HTTP 200 with the updated object.
 // Requirement: 01-REQ-9.1
 func TestWorkspaceReactivate_Success(t *testing.T) {
 	env := newTestEnv(t)
@@ -181,8 +181,8 @@ func TestWorkspaceReactivate_Success(t *testing.T) {
 	}
 
 	ws := parseWorkspaceJSON(t, rec)
-	if ws.Status != "active" {
-		t.Errorf("status = %q; want %q", ws.Status, "active")
+	if ws.Status != "pending" {
+		t.Errorf("status = %q; want %q", ws.Status, "pending")
 	}
 	if ws.Slug != "alice-ws" {
 		t.Errorf("slug = %q; want %q", ws.Slug, "alice-ws")
@@ -194,8 +194,8 @@ func TestWorkspaceReactivate_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("querying workspace status: %v", err)
 	}
-	if status != "active" {
-		t.Errorf("DB status = %q; want %q", status, "active")
+	if status != "pending" {
+		t.Errorf("DB status = %q; want %q", status, "pending")
 	}
 }
 
@@ -210,7 +210,7 @@ func TestWorkspaceReactivate_AlreadyActive(t *testing.T) {
 		Slug:    "alice-ws",
 		GitURL:  "https://github.com/org/repo",
 		OwnerID: "alice-id",
-		Status:  "active",
+		Status:  "pending",
 	})
 
 	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/alice-ws/reactivate", "",
@@ -335,7 +335,7 @@ func TestWorkspaceDelete_ActiveRejected(t *testing.T) {
 		Slug:    "alice-ws",
 		GitURL:  "https://github.com/org/repo",
 		OwnerID: "alice-id",
-		Status:  "active",
+		Status:  "pending",
 	})
 
 	rec := env.doRequest(t, http.MethodDelete, "/api/v1/workspaces/alice-ws", "",

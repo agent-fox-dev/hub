@@ -66,7 +66,7 @@ func TestInfoRefs_UploadPack_ContentType(t *testing.T) {
 	// Seed the org, workspace, and a local git repository.
 	env.seedOrg(t, "org-1", "My Org", "myorg")
 	env.seedOrgMember(t, "org-1", "user-1")
-	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "active")
+	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "ready")
 	env.initWorkspaceRepo(t, "myws")
 
 	rec := env.doRequest(t, http.MethodGet,
@@ -104,7 +104,7 @@ func TestInfoRefs_ReceivePack_ContentType(t *testing.T) {
 
 	env.seedOrg(t, "org-1", "My Org", "myorg")
 	env.seedOrgMember(t, "org-1", "user-1")
-	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "active")
+	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "ready")
 	env.initWorkspaceRepo(t, "myws")
 
 	rec := env.doRequest(t, http.MethodGet,
@@ -140,7 +140,7 @@ func TestUploadPack_ContentType(t *testing.T) {
 
 	env.seedOrg(t, "org-1", "My Org", "myorg")
 	env.seedOrgMember(t, "org-1", "user-1")
-	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "active")
+	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "ready")
 	env.initWorkspaceRepo(t, "myws")
 
 	// Build a minimal upload-pack request body.
@@ -171,7 +171,7 @@ func TestReceivePack_ContentType(t *testing.T) {
 
 	env.seedOrg(t, "org-1", "My Org", "myorg")
 	env.seedOrgMember(t, "org-1", "user-1")
-	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "active")
+	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "ready")
 	env.initWorkspaceRepo(t, "myws")
 
 	rec := env.doRequest(t, http.MethodPost,
@@ -198,7 +198,7 @@ func TestInfoRefs_InvalidService(t *testing.T) {
 
 	env.seedOrg(t, "org-1", "My Org", "myorg")
 	env.seedOrgMember(t, "org-1", "user-1")
-	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "active")
+	env.seedWorkspace(t, "myws", "https://github.com/org/repo", "user-1", "org-1", "ready")
 	env.initWorkspaceRepo(t, "myws")
 
 	tests := []struct {

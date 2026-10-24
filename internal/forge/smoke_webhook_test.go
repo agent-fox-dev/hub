@@ -106,8 +106,8 @@ func newWebhookSmoke(t *testing.T) *webhookSmoke {
 // workspace adds a workspace of user-1, active and cloned, a standard one on gitURL.
 func (s *webhookSmoke) workspace(slug, gitURL string) {
 	s.t.Helper()
-	_, err := s.db.Exec(`INSERT INTO workspaces (slug, git_url, owner_id, status, clone_status, workspace_mode, upstream_url, created_at, updated_at)
-		VALUES (?, ?, 'user-1', 'active', 'ready', 'standard', NULL, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`, slug, gitURL)
+	_, err := s.db.Exec(`INSERT INTO workspaces (slug, git_url, owner_id, status, workspace_mode, upstream_url, created_at, updated_at)
+		VALUES (?, ?, 'user-1', 'ready', 'standard', NULL, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`, slug, gitURL)
 	if err != nil {
 		s.t.Fatal(err)
 	}
@@ -631,8 +631,8 @@ func TestAfHubBinary_PrunesTheLogAndMountsTheIngress_TS_32_68(t *testing.T) {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE name = 'forge_deliveries'`).Scan(&tables); err != nil || tables != 1 {
 		t.Fatalf("after the first start the database has %d forge_deliveries tables (%v); want 1\n%s", tables, err, first.out)
 	}
-	if _, err := db.Exec(`INSERT INTO workspaces (slug, git_url, owner_id, status, clone_status, created_at, updated_at)
-		VALUES ('widgets', 'https://github.com/acme/widgets', 'user-1', 'active', 'ready', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`); err != nil {
+	if _, err := db.Exec(`INSERT INTO workspaces (slug, git_url, owner_id, status, created_at, updated_at)
+		VALUES ('widgets', 'https://github.com/acme/widgets', 'user-1', 'ready', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`); err != nil {
 		t.Fatalf("seeding a workspace: %v", err)
 	}
 	addDelivery(t, db, deliveryRecord{slug: "widgets", id: "old", receivedAt: ago(9 * day)})

@@ -20,9 +20,9 @@ import (
 // hexSHAPattern matches a valid 40-character lowercase hex SHA string.
 var hexSHAPattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
 
-// TS-05-18: Archiving a workspace with clone_status='ready' records head_sha,
-// deletes the workspace directory, and returns HTTP 200 with status='archived'
-// and clone_status='archived'. Upstream push is deferred.
+// TS-05-18: Archiving a workspace with status='ready' records head_sha,
+// deletes the workspace directory, and returns HTTP 200 with
+// status='archived'. Upstream push is deferred.
 // Requirement: 05-REQ-6.1
 func TestArchive_Spec05_ReadyRecordAndArchive(t *testing.T) {
 	env := newTestEnv(t)
@@ -38,12 +38,12 @@ func TestArchive_Spec05_ReadyRecordAndArchive(t *testing.T) {
 		Slug:    "ready-ws",
 		GitURL:  "https://github.com/org/repo",
 		OwnerID: "user-1",
-		Status:  "active",
+		Status:  "pending",
 	})
 
-	// Set clone_status to 'ready' (requires schema columns from group 5).
-	if err := updateCloneStatus(env.db, "ready-ws", "ready", nil, nil); err != nil {
-		t.Fatalf("updateCloneStatus('ready'): %v", err)
+	// Set status to 'ready'.
+	if err := setStatus(env.db, "ready-ws", "ready", nil, nil); err != nil {
+		t.Fatalf("setStatus('ready'): %v", err)
 	}
 
 	// Create workspace directory with trunk to simulate a cloned repo.
@@ -81,14 +81,6 @@ func TestArchive_Spec05_ReadyRecordAndArchive(t *testing.T) {
 		t.Errorf("status = %q; want %q", ws.Status, "archived")
 	}
 
-	// Assert clone_status = 'archived'.
-	if ws.CloneStatus == nil {
-		t.Fatal("clone_status is nil; want 'archived'")
-	}
-	if *ws.CloneStatus != "archived" {
-		t.Errorf("clone_status = %q; want %q", *ws.CloneStatus, "archived")
-	}
-
 	// Assert head_sha is a valid 40-char hex string.
 	if ws.HeadSHA == nil {
 		t.Fatal("head_sha is nil; want non-null 40-char hex string")
@@ -103,26 +95,26 @@ func TestArchive_Spec05_ReadyRecordAndArchive(t *testing.T) {
 		t.Errorf("workspace directory %q should be deleted after archive", wsDir)
 	}
 
-	// Verify DB state: clone_status='archived', head_sha recorded.
-	cloneStatus, headSHA, _, err := getCloneFields(env.db, "ready-ws")
+	// Verify DB state: status='archived', head_sha recorded.
+	status, headSHA, _, err := getCloneFields(env.db, "ready-ws")
 	if err != nil {
 		t.Fatalf("getCloneFields: %v", err)
 	}
-	if cloneStatus != "archived" {
-		t.Errorf("DB clone_status = %q; want %q", cloneStatus, "archived")
+	if status != "archived" {
+		t.Errorf("DB status = %q; want %q", status, "archived")
 	}
 	if headSHA == nil || *headSHA != fakeSHA {
 		t.Errorf("DB head_sha = %v; want %q", headSHA, fakeSHA)
 	}
 }
 
-// TS-05-19: Archiving a workspace with clone_status='pending' or 'failed'
-// cleans up any partial directory, sets clone_status='archived' and
-// status='archived' without attempting a git push, and returns HTTP 200.
+// TS-05-19: Archiving a workspace with status='pending' or 'failed'
+// cleans up any partial directory, sets status='archived' without attempting
+// a git push, and returns HTTP 200.
 // Requirement: 05-REQ-6.2
 func TestArchive_Spec05_PendingOrFailedNoGitPush(t *testing.T) {
 	for _, cloneState := range []string{"pending", "failed"} {
-		t.Run("clone_status="+cloneState, func(t *testing.T) {
+		t.Run("status="+cloneState, func(t *testing.T) {
 			env := newTestEnv(t)
 			wsRoot := t.TempDir()
 
@@ -135,12 +127,12 @@ func TestArchive_Spec05_PendingOrFailedNoGitPush(t *testing.T) {
 				Slug:    slug,
 				GitURL:  "https://github.com/org/repo",
 				OwnerID: "user-1",
-				Status:  "active",
+				Status:  "pending",
 			})
 
-			// Set clone_status to the target state.
-			if err := updateCloneStatus(env.db, slug, cloneState, nil, nil); err != nil {
-				t.Fatalf("updateCloneStatus(%q): %v", cloneState, err)
+			// Set status to the target state.
+			if err := setStatus(env.db, slug, cloneState, nil, nil); err != nil {
+				t.Fatalf("setStatus(%q): %v", cloneState, err)
 			}
 
 			// Create a partial workspace directory (simulating partial clone).
@@ -180,14 +172,6 @@ func TestArchive_Spec05_PendingOrFailedNoGitPush(t *testing.T) {
 				t.Errorf("status = %q; want %q", ws.Status, "archived")
 			}
 
-			// Assert clone_status = 'archived'.
-			if ws.CloneStatus == nil {
-				t.Fatal("clone_status is nil; want 'archived'")
-			}
-			if *ws.CloneStatus != "archived" {
-				t.Errorf("clone_status = %q; want %q", *ws.CloneStatus, "archived")
-			}
-
 			// Assert git push was NOT called.
 			if atomic.LoadInt32(&pushCalled) != 0 {
 				t.Error("git push was called; should not push for " + cloneState + " workspace")
@@ -201,7 +185,7 @@ func TestArchive_Spec05_PendingOrFailedNoGitPush(t *testing.T) {
 	}
 }
 
-// TS-05-20: Archiving a workspace with clone_status='cloning' returns
+// TS-05-20: Archiving a workspace with status='cloning' returns
 // HTTP 409 with message 'clone in progress; try again after it completes'.
 // Requirement: 05-REQ-6.3
 func TestArchive_Spec05_CloningReturns409(t *testing.T) {
@@ -211,12 +195,12 @@ func TestArchive_Spec05_CloningReturns409(t *testing.T) {
 		Slug:    "cloning-ws",
 		GitURL:  "https://github.com/org/repo",
 		OwnerID: "user-1",
-		Status:  "active",
+		Status:  "pending",
 	})
 
-	// Set clone_status to 'cloning'.
-	if err := updateCloneStatus(env.db, "cloning-ws", "cloning", nil, nil); err != nil {
-		t.Fatalf("updateCloneStatus('cloning'): %v", err)
+	// Set status to 'cloning'.
+	if err := setStatus(env.db, "cloning-ws", "cloning", nil, nil); err != nil {
+		t.Fatalf("setStatus('cloning'): %v", err)
 	}
 
 	rec := env.doRequest(t, http.MethodPost, "/api/v1/workspaces/cloning-ws/archive", "",
@@ -240,20 +224,12 @@ func TestArchive_Spec05_CloningReturns409(t *testing.T) {
 		t.Errorf("error.message = %q; want %q", resp.Error.Message, expectedMsg)
 	}
 
-	// Verify workspace status and clone_status remain unchanged.
-	cloneStatus, _, _, err := getCloneFields(env.db, "cloning-ws")
+	// Verify workspace status remains unchanged.
+	status, _, _, err := getCloneFields(env.db, "cloning-ws")
 	if err != nil {
 		t.Fatalf("getCloneFields: %v", err)
 	}
-	if cloneStatus != "cloning" {
-		t.Errorf("clone_status = %q; want %q (unchanged)", cloneStatus, "cloning")
-	}
-
-	var status string
-	if err := env.db.QueryRow("SELECT status FROM workspaces WHERE slug = ?", "cloning-ws").Scan(&status); err != nil {
-		t.Fatalf("query workspace status: %v", err)
-	}
-	if status != "active" {
-		t.Errorf("workspace status = %q; want %q (unchanged)", status, "active")
+	if status != "cloning" {
+		t.Errorf("status = %q; want %q (unchanged)", status, "cloning")
 	}
 }
