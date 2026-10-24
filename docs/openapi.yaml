@@ -276,7 +276,7 @@ paths:
         `afhub_agent_tokens_total`, `afhub_audit_events_total`,
         `afhub_audit_table_rows`, `afhub_retention_errors_total`,
         `afhub_retention_last_run_timestamp_seconds`, `afhub_sse_connections`,
-        `afhub_jobqueue_depth`, `afhub_sandboxes_active` (gauge by
+        `afhub_jobqueue_depth` (registered, always 0), `afhub_sandboxes_active` (gauge by
         `workspace`: leases in state `active`), `afhub_sandbox_creates_total`
         (counter by `result`, `created` or `failed`) and
         `afhub_sandbox_lease_seconds` (histogram: seconds from issue to

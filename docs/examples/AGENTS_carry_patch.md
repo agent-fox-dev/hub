@@ -1,39 +1,85 @@
 # Agent Instructions
 
-Instructions for coding agents (Cursor, Claude Code, Codex, etc.) working on
-this repository. Treat this file as mandatory policy for every coding session.
+> **About this file (for the human reader -- delete this box after copying).**
+> This is an example instruction file for coding agents (Claude Code, Cursor,
+> Codex, ...) that work in a fork maintained with the hub's
+> [carry-patch workflow](../carry_patch_workflow.md). It tells an agent that
+> the fork is a stack of patch branches on top of an upstream, that the
+> integration branch is built by the hub, and which `afc` commands to use.
+>
+> To use it:
+>
+> 1. Copy it to the root of your fork as `AGENTS.md` (or `CLAUDE.md`, or
+>    whatever file your agent reads).
+> 2. Replace every placeholder:
+>
+>    | Placeholder | Replace with | Example |
+>    |-------------|--------------|---------|
+>    | `<hub-url>` | The hub's base URL | `https://hub.example.com` |
+>    | `<org-slug>` | The organization that owns the workspace | `acme` |
+>    | `<workspace-slug>` | The carry-patch workspace's slug | `api-gateway` |
+>    | `<fork-repo-url>` | Your fork's clone URL | `https://github.com/acme/api-gateway-fork.git` |
+>    | `<fork-repo-name>` | The directory a clone of the fork creates | `api-gateway-fork` |
+>    | `<upstream-repo-url>` | The upstream's clone URL | `https://github.com/acme-oss/api-gateway.git` |
+>    | `<upstream-default-branch>` | The upstream's default branch | `main` |
+>    | `<integration-branch>` | The workspace's integration branch | `deploy` |
+>
+> 3. Adjust the conventions (branch prefix `patch/`, commit style, test
+>    command) to your project, and delete the sections about the authority
+>    mode you do not use if you want a shorter file.
+>
+> The agent needs `afc` and an API key for the hub; a personal access token
+> with `patches:write`, `rebuilds:write`, `workspaces:write` and `git:write`
+> covers everything below (see the [Permissions Reference](../permissions.md)).
 
-## Project Context (MANDATORY -- Read First)
+Instructions for coding agents working on this repository. Treat this file as
+mandatory policy for every coding session.
 
-This repository is a **carry-patch fork** managed by af-hub. It is NOT a
-standalone project. The repository maintains a set of patch branches on top of
-an upstream codebase, and the hub mechanically rebuilds an integration branch
-by replaying those patches onto the latest upstream HEAD.
+## Contents
 
-Key concepts:
+- [Project Context](#project-context)
+- [Hub Connection](#hub-connection)
+- [Understand Before You Code](#understand-before-you-code)
+- [Implementing Changes](#implementing-changes)
+- [Upstream Sync](#upstream-sync)
+- [Conflict Resolution](#conflict-resolution)
+- [Rollback](#rollback)
+- [Patch Management](#patch-management)
+- [Rebuild Strategy and Fail Mode](#rebuild-strategy-and-fail-mode)
+- [Conventions](#conventions)
+- [Commands Reference](#commands-reference)
+- [Quality Gates](#quality-gates)
+- [Scope Discipline](#scope-discipline)
 
-- **Upstream:** The canonical repository at `<upstream-repo-url>`. We do not
-  commit to upstream directly. All upstream interaction happens through the
-  hub's sync and rebuild mechanisms.
-- **Fork:** Our copy at `<fork-repo-url>`, configured as the git remote
-  `origin` of the workspace trunk.
-- **Patch branches:** Named `patch/<descriptive-name>`. Each branch contains
-  our changes to upstream. Patches are ordered by position and replayed
-  sequentially during rebuild. Depending on the workspace's
-  `PATCH_BRANCH_SOURCE` setting, patch branches are written either by pushes
-  to the hub's git server (`hub` mode, the default) or by pushes to the fork
-  (`origin` mode). See "Understand Before You Code" to determine which mode
-  applies.
-- **Integration branch:** `<integration-branch>` (typically `deploy`). This
-  branch is the primary consumable artifact. It is rebuilt automatically by the
-  hub -- never commit to it directly.
-- **Hub git server:** The hub exposes the fork at
-  `<hub-url>/git/<org-slug>/<workspace-slug>.git`. In `hub` mode, clone from
-  here and push patch branches here. In `origin` mode, push patch branches to
-  the fork instead; the hub fetches them during sync.
+## Project Context
 
-**Important:** The integration branch is machine-generated. If you need to
-change what it contains, modify a patch branch and trigger a rebuild.
+**Read this section first.**
+
+This repository is a **carry-patch fork** managed by the hub. It is NOT a
+standalone project. It holds a set of patch branches on top of an upstream
+codebase, and the hub rebuilds an integration branch by applying those patches,
+in order, onto the latest upstream.
+
+- **Upstream:** the canonical repository at `<upstream-repo-url>`. Never push
+  to it. The hub fetches it during sync and rebuild.
+- **Fork:** our copy at `<fork-repo-url>`.
+- **Patch branches:** named `patch/<descriptive-name>`. Each one holds one
+  coherent change to upstream. Patches have positions and are applied in that
+  order.
+- **Integration branch:** `<integration-branch>`. This is what gets deployed.
+  The hub rebuilds it from upstream plus the patches -- **never commit to
+  it.** To change what it contains, change a patch branch and rebuild.
+- **Hub git server:** the hub serves the workspace at
+  `<hub-url>/git/<org-slug>/<workspace-slug>.git`.
+- **Authority mode:** the workspace setting `patch_branch_source` decides
+  where patch branches are written:
+  - **`hub` mode** (the default): push patch branches to the hub's git server.
+  - **`origin` mode:** push patch branches to the fork; the hub copies them
+    in when it syncs. The hub refuses pushes of patch branches.
+
+  Every step below that differs between the modes says so. Find out which
+  mode applies before doing anything (see
+  [Understand Before You Code](#understand-before-you-code)).
 
 Do not implement anything before reading this entire file.
 
@@ -41,78 +87,79 @@ Do not implement anything before reading this entire file.
 
 ### Authentication
 
-Log in to the hub before any other `afc` commands:
+Sign in to the hub once per machine:
 
 ```
 afc login
 ```
 
-This opens a browser for OAuth authentication, obtains an API key, and stores
-it in `~/.af/config.toml`. You only need to do this once per machine.
+This stores the hub URL and an API key in `~/.af/config.toml`. In a container
+or CI job, set the `ENDPOINT_URL` and `API_KEY` environment variables instead.
 
 ### Git Credential Helper
 
-Configure git to authenticate with the hub's git server automatically:
+Let git authenticate to the hub with the same key:
 
 ```
 git config --global credential.<hub-url>.helper '!afc credential-helper'
 ```
 
-After this, `git clone`, `git push`, and `git pull` against the hub URL work
-without manual token entry.
+After this, `git clone`, `git fetch` and `git push` against the hub work
+without a token in the URL.
 
 ### Clone the Repository
+
+**`hub` mode:** clone from the hub. In this clone, `origin` is the hub.
 
 ```
 git clone <hub-url>/git/<org-slug>/<workspace-slug>.git
 cd <workspace-slug>
 ```
 
-**`hub` mode:** The clone comes from the hub, not from upstream. The hub
-manages both of its own remotes internally (`origin` = fork, `upstream` =
-canonical repo).
-
-**`origin` mode:** Work in a clone of the fork instead, and add the upstream
-remote so you can merge or rebase upstream changes into a patch branch:
+**`origin` mode:** clone the fork. In this clone, `origin` is the fork.
 
 ```
 git clone <fork-repo-url>
 cd <fork-repo-name>
+```
+
+In both modes, add the upstream as a read-only remote, so you can bring
+upstream changes into a patch branch:
+
+```
 git remote add upstream <upstream-repo-url>
 ```
 
-In a clone of the hub, `origin` is the hub; in a clone of the fork, `origin`
-is the fork. Every `origin` in the commands below means the `origin` of the
-clone you work in for your mode.
+Every `origin` in the commands below means the `origin` of the clone you work
+in for your mode.
 
-## Understand Before You Code (MANDATORY)
+## Understand Before You Code
 
-Before making any changes, orient yourself:
+**Mandatory.** Before making any changes, orient yourself:
 
-1. **Read `PATCH_BRANCH_SOURCE`** to determine the authority model:
+1. **Find the authority mode:**
    ```
-   afc vars list --workspace <workspace-slug>
+   afc workspace get <workspace-slug>
    ```
-   Look for `PATCH_BRANCH_SOURCE`. If it is `origin`, patch branches live on
-   the fork and the hub fetches them during sync. If it is unset or `hub`,
-   patch branches live on the hub's git server and you push them there
-   directly. This determines where you push, how you bring changes in, and
-   how you resolve conflicts. Read the mode-specific instructions in each
-   section below.
-2. **Read `README.md`** for project overview.
+   Read `settings.patch_branch_source`: `origin` means patch branches live on
+   the fork; `hub` means they live on the hub's git server. This decides where
+   you push, how changes reach the hub, and how you resolve conflicts. Note
+   `settings.push_patches_to_origin` and
+   `settings.rebuild_push_integration_branch` too; later steps refer to them.
+2. **Read `README.md`** for the project overview.
 3. **Check the patch stack:**
    ```
    afc patch list <workspace-slug>
    ```
-   Understand what patches exist, their order, and their statuses.
+   Understand which patches exist, their order and their statuses.
 4. **Check integration health:**
    ```
    afc workspace patch-status <workspace-slug>
    ```
-   Review the last rebuild result, per-patch status, and conflict state.
+   Review the last rebuild, each patch's status and result, and any conflicts.
 5. **Check git state:** `git log --oneline -20`, `git status --short --branch`.
-6. **Read existing patch branches** to understand what has already been
-   customized. Run `git branch -r` to see all remote patch branches.
+6. **Read the existing patch branches** (`git branch -r`) to understand what
+   has already been customized.
 7. **Read project-specific docs** in `docs/` if they exist.
 
 **Important:** Read all documents and code in depth -- do not skim.
@@ -125,23 +172,18 @@ Follow these steps in order. Do not skip steps.
 
 ### Step 1: Decide Where Your Change Belongs
 
-- **New customization to upstream:** Create a new patch branch.
-- **Modification to an existing patch:** Check out the existing patch branch.
-- **Fix to upstream that should go upstream eventually:** Still create a patch
-  branch, but note the upstream PR URL when registering the patch.
-
-**`origin` mode:** You will work in a local clone of the fork and push to the
-fork (GitHub). The hub fetches the branch during sync.
-
-**`hub` mode:** You will push the patch branch to the hub's git server. The
-hub accepts it directly.
+- **New customization of upstream:** create a new patch branch.
+- **Change to an existing customization:** work on that patch branch.
+- **Fix that should eventually go upstream:** still a patch branch; record
+  the upstream PR URL when you register it.
 
 ### Step 2: Create or Check Out the Patch Branch
 
-For a new patch:
+For a new patch, start from the upstream:
 
 ```
-git checkout -b patch/<descriptive-name>
+git fetch upstream
+git checkout -b patch/<descriptive-name> upstream/<upstream-default-branch>
 ```
 
 For an existing patch:
@@ -153,246 +195,160 @@ git pull origin patch/<existing-name>
 
 ### Step 3: Implement and Commit
 
-Make your changes. Follow project-specific coding conventions. Commit with
-conventional commit messages:
+Make your changes, following the project's coding conventions, and commit
+with conventional commit messages:
 
 ```
 git add <files>
 git commit -m "feat: add custom authentication middleware"
 ```
 
-**Commit conventions:**
-- Use `<type>: <description>` (e.g. `feat:`, `fix:`, `refactor:`, `chore:`).
-- Only commit files relevant to the current change.
-- Each patch branch should represent one coherent customization. Do not bundle
-  unrelated changes into a single patch.
+Only commit files relevant to this patch. One patch branch is one coherent
+customization; do not bundle unrelated changes.
 
 ### Step 4: Push the Patch Branch
 
-**`origin` mode:** Push to the fork. The hub never accepts pushes to
-registered patch branches in `origin` mode -- it refuses or replaces them.
-To push, clone the fork if you have not already, and push there:
-
 ```
 git push origin patch/<descriptive-name>
 ```
 
-This pushes to the fork (GitHub). Open the upstream PR from the same branch
-if the patch is intended to be upstreamed.
-
-**`hub` mode:** Push to the hub's git server:
-
-```
-git push origin patch/<descriptive-name>
-```
-
-This pushes to the hub's git server. The credential helper handles
-authentication. Never push to the upstream remote.
-
-If `PUSH_PATCHES_TO_ORIGIN=true` is set, the hub automatically mirrors
-accepted pushes to the fork. This is a mirror the agent does not need to do
-by hand.
+- **`origin` mode:** this pushes to the fork. Never push a patch branch to
+  the hub in this mode; the hub refuses it (or, with
+  `push_patches_to_origin=true`, only forwards it to the fork). Open the
+  upstream PR from this branch if the patch is meant to go upstream.
+- **`hub` mode:** this pushes to the hub's git server. If
+  `push_patches_to_origin=true`, the hub copies the branch to the fork
+  itself; do not push it there by hand.
 
 ### Step 5: Register the Patch (New Patches Only)
-
-If this is a new patch branch, register it with the hub:
 
 ```
 afc patch add <workspace-slug> \
   --branch patch/<descriptive-name> \
-  --description "Short description of what this patch does"
+  --description "Why this patch exists"
 ```
 
 Optional flags:
 
-- `--position <int>` -- Insert at a specific position in the patch order
-  (1-based). If omitted, the patch is appended at the end.
-- `--upstream-pr <url>` -- Link to an upstream pull request if this patch is
-  intended to be upstreamed eventually.
-- `--skip-branch-check` -- Skip branch existence validation. Useful when
-  registering a patch before the branch has been pushed anywhere.
-- `--if-not-exists` -- Return the existing patch instead of an error if the
-  branch is already registered. Idempotent registration for automation.
+- `--position <n>` -- insert at this 1-based position instead of appending.
+- `--upstream-pr <url>` -- the upstream pull request, if there is one. It
+  also helps the hub notice when the patch has been squash-merged upstream.
+- `--if-not-exists` -- return the existing patch instead of an error if the
+  branch is already registered.
+- `--skip-branch-check` -- register a branch that has not been pushed
+  anywhere yet.
 
-**`origin` mode:** The hub resolves the branch by checking `refs/heads/<name>`
-locally, then `refs/remotes/origin/<name>`, then fetching the single branch
-from the fork. A fork-only branch no longer needs `--skip-branch-check`.
+The branch name must not be the integration branch.
 
-**`hub` mode:** The hub checks `refs/heads/<name>` locally, then
-`refs/remotes/origin/<name>`. Use `--skip-branch-check` only for branches
-that exist nowhere yet.
+### Step 6: Get the Change into a Rebuild
 
-**Important:** The branch name must not match the integration branch name.
+- **`origin` mode:** sync. This is the only way new fork commits reach the
+  hub; a rebuild does not fetch the fork. The sync queues a rebuild:
+  ```
+  afc workspace sync <workspace-slug> --wait
+  ```
+- **`hub` mode:** the push already queued a rebuild (unless the workspace
+  turned `auto_rebuild_after_push` off). A new registration does not; queue
+  one yourself:
+  ```
+  afc rebuild submit <workspace-slug> --wait
+  ```
 
-### Step 6: Trigger a Rebuild
+`--wait` blocks until the rebuild ends (`--timeout`, default 5m). To check a
+rebuild later: `afc rebuild status <workspace-slug> <rebuild-id>`; while it
+runs, its `patch_results` show the patches processed so far.
 
-**`origin` mode:** Run `afc workspace sync` to bring the fork's branch tips
-into the hub and trigger a rebuild. A rebuild reads `refs/heads/<branch>` in
-the hub's trunk and does not fetch the fork, so `afc workspace sync` -- not
-`afc rebuild submit` -- is what brings new fork commits into the hub:
+To see whether patches would conflict before rebuilding, run
+`afc rebuild preview <workspace-slug>`. It changes nothing and reports each
+patch as `would_succeed` or `would_conflict` with the conflicting files.
 
-```
-afc workspace sync <workspace-slug>
-```
-
-**`hub` mode:** The push hook triggers a rebuild automatically (controlled by
-`AUTO_REBUILD_AFTER_PUSH`). You can also trigger one manually:
-
-```
-afc rebuild submit <workspace-slug>
-```
-
-Optional flags (for `afc rebuild submit`):
-
-- `--strategy <rebase|merge>` -- Override the workspace-level rebuild strategy
-  for this specific rebuild.
-- `--fail-mode <fail_fast|continue>` -- Control conflict handling. `fail_fast`
-  (default) stops at the first conflict. `continue` skips conflicting patches
-  and processes the rest.
-- `--wait` -- Block until the rebuild reaches a terminal state (completed,
-  failed, dead_letter, or cancelled).
-- `--timeout <duration>` -- Maximum time to wait (default: 5m). Only effective
-  with `--wait`.
-- `--poll-interval <duration>` -- Interval between status polls (default: 5s).
-  Only effective with `--wait`.
-
-### Step 7: Monitor Rebuild Status
-
-```
-afc rebuild status <workspace-slug> <rebuild-id>
-```
-
-Or check the full dashboard:
+### Step 7: Check the Result
 
 ```
 afc workspace patch-status <workspace-slug>
 ```
 
-The rebuild is complete when the job status is `completed`. If it is `failed`,
-see the Conflict Resolution section below.
+The rebuild succeeded when its status is `completed`. If it is `failed`, or a
+patch shows `conflict`, go to [Conflict Resolution](#conflict-resolution).
 
-For running rebuilds, the status response includes intermediate `patch_results`
-showing which patches have been processed so far.
+### Step 8: Verify the Integration Branch
 
-### Step 8: Preview Before Rebuilding (Optional)
+Fetch the rebuilt integration branch and run the project's test suite on it.
+It is the artifact that gets deployed and must always work.
 
-Before committing to a rebuild, you can preview which patches would conflict:
+- **`hub` mode,** or **`origin` mode** with
+  `rebuild_push_integration_branch=true` (then the fork has it too):
+  ```
+  git fetch origin
+  git checkout <integration-branch>
+  git reset --hard origin/<integration-branch>
+  ```
+- **`origin` mode** without that setting: the branch exists only on the hub:
+  ```
+  git fetch <hub-url>/git/<org-slug>/<workspace-slug>.git <integration-branch>
+  git checkout --detach FETCH_HEAD
+  ```
 
-```
-afc rebuild preview <workspace-slug>
-```
-
-This performs a read-only conflict prediction for each active patch without
-modifying any git refs or patch statuses. Each patch is reported as
-`would_succeed` or `would_conflict` (with the list of conflicting files).
-
-### Step 9: Verify the Integration Branch
-
-After a successful rebuild, verify the integration branch builds and tests
-pass:
-
-```
-git fetch origin
-git checkout <integration-branch>
-git pull origin <integration-branch>
-```
-
-**`origin` mode:** The hub pushes the integration branch to the fork only
-when `REBUILD_PUSH_INTEGRATION_BRANCH=true`. Without it, the integration
-branch exists only on the hub: fetch it from a clone of the hub's git server
-instead of from the fork.
-
-Run the project's test suite against the integration branch. The integration
-branch is the artifact that gets deployed -- it must always be in a working
-state.
+Use `reset --hard` or a detached checkout, not `git pull`: every rebuild
+rewrites the integration branch.
 
 ## Upstream Sync
 
-The hub syncs with upstream when you trigger it:
+Sync brings the latest upstream into the hub (and, in `origin` mode, the
+fork's patch branches):
 
 ```
 afc workspace sync <workspace-slug>
 ```
 
-Optional flags:
+Useful flags: `--wait` (block until the rebuild the sync queued finishes),
+`--fail-on-diverged` (exit with code 3 when patch branches have diverged from
+the fork; `origin` mode with `patch_divergence_policy=report`).
 
-- `--wait` -- Block until any auto-triggered rebuild completes.
-- `--timeout <duration>` -- Maximum time to wait (default: 5m). Only effective
-  with `--wait`.
-- `--poll-interval <duration>` -- Interval between status polls (default: 5s).
-  Only effective with `--wait`.
-- `--fail-on-diverged` -- Exit with code 3 when `patches_diverged` is
-  non-empty (`origin` mode with `PATCH_DIVERGENCE_POLICY=report`).
+During a sync the hub:
 
-### What Happens During Sync
-
-1. The hub fetches the latest commits from the upstream remote.
-2. **`origin` mode only:** The hub fetches the fork (`origin`) with pruning,
-   bringing registered patch branches to the fork's tips. Patch branches may
-   be `created`, `fast_forwarded` or `replaced` (with the previous tip backed
-   up under `refs/hub/replaced/<branch>`). Per-patch `origin_sync_state` is
-   set to `in_sync`, `diverged` or `missing_on_origin`.
-3. For each active patch, the hub checks whether the patch branch HEAD is now
-   an ancestor of the new upstream HEAD (i.e., the patch was merged upstream).
-4. Patches detected as merged are automatically transitioned to
-   `merged_upstream` status.
-5. By default, a rebuild is triggered automatically after sync when upstream
-   advanced, a patch tip moved, or a patch was newly merged. This behavior
-   is controlled by the `AUTO_REBUILD_AFTER_SYNC` workspace variable (enabled
-   by default; set to `"false"` to disable).
-
-**`hub` mode:** Sync fetches only upstream. Patch branches are not fetched
-from the fork.
-
-**`origin` mode:** Sync fetches both upstream and the fork. This is the only
-way new fork commits reach the hub, because a rebuild reads the hub's copy of
-each branch and does not fetch the fork.
+1. fetches the upstream;
+2. **`origin` mode only:** fetches the fork and brings each registered patch
+   branch to the fork's tip (`created`, `fast_forwarded` or `replaced`);
+3. marks patches that upstream has merged -- including squash merges -- as
+   `merged_upstream`;
+4. queues a rebuild when upstream or a patch branch moved, or a patch was
+   merged (unless the workspace turned `auto_rebuild_after_sync` off).
 
 ### After Sync
 
-Check the dashboard:
+Check `afc workspace patch-status <workspace-slug>`:
 
-```
-afc workspace patch-status <workspace-slug>
-```
+- `merged_upstream` patches are skipped by the next rebuild and then
+  soft-deleted. If one was wrongly detected, restore it:
+  `afc patch restore <workspace-slug> <patch-id>`.
+- A `conflict` patch means upstream changed under it. See
+  [Conflict Resolution](#conflict-resolution).
+- **`origin` mode:** check each patch's `origin_sync_state`:
+  - `diverged` -- the hub's copy and the fork's copy differ and the hub kept
+    its own (policy `report`). To make the hub take the fork's version:
+    `afc patch reset-to-origin <workspace-slug> <patch-id>`.
+  - `missing_on_origin` -- the branch is not on the fork; the hub keeps
+    applying its own copy. Push the branch to the fork, or remove the patch if
+    it is obsolete.
 
-- Patches marked `merged_upstream` will be skipped during rebuild and then
-  **soft-deleted** on the next successful rebuild. Soft-deleted patches are
-  hidden from the patch-status dashboard but retained in the database.
-- To restore a soft-deleted patch: `afc patch restore <workspace-slug> <patch-id>`.
-- If the sync introduced upstream changes that conflict with existing patches,
-  the auto-rebuild will fail and the conflicting patch will be marked
-  `conflict`. See Conflict Resolution below.
-- **`origin` mode:** Check `origin_sync_state` for each patch. A `diverged`
-  patch means the hub left its copy unchanged because the branch differs
-  from the fork's tip and `PATCH_DIVERGENCE_POLICY` is `report`; a
-  replacement is recorded as `in_sync` with the action `replaced`. A
-  `missing_on_origin` patch means the branch was not found on the fork; the
-  hub keeps applying its own copy until an operator disables or removes the
-  patch.
+  When a sync **replaced** the hub's copy, the old version is kept on the hub
+  as `refs/hub/replaced/<branch>`. Fetch it with
+  `git fetch <hub-url>/git/<org-slug>/<workspace-slug>.git refs/hub/replaced/<branch>`
+  if commits there must be saved.
 
-### Recovery After Upstream Force-Push
+### Upstream Force-Push
 
-If upstream force-pushed (rewrote history), run a normal sync:
-
-```
-afc workspace sync <workspace-slug>
-```
-
-The sync detects the rewrite and reports `force_push_detected` in its
-response. It proceeds normally and a rebuild reapplies the patches on top of
-the new upstream HEAD. Do not use `--reset-to-upstream`: it applies to
-standard workspaces only and is ignored for carry-patch workspaces.
+If upstream rewrote its history, a normal sync handles it: the response
+reports `force_push_detected: true` and the rebuild reapplies the patches.
+Do not use `--reset-to-upstream`; it does nothing for carry-patch workspaces.
 
 ## Conflict Resolution
 
-By default (fail mode `fail_fast`), rebuilds stop at the **first** patch that
-produces an unresolved conflict. All subsequent patches are not attempted.
-
-With fail mode `continue`, the rebuild skips conflicting patches and continues
-processing the remaining patches. The conflicting patches are marked with
-status `conflict` but the rebuild still completes (with those patches missing
-from the integration branch).
+By default (`fail_fast`), a rebuild stops at the **first** patch with a
+conflict the hub cannot resolve, and the integration branch stays as it was.
+With fail mode `continue`, the rebuild leaves conflicting patches out and
+completes with the rest.
 
 ### Step 1: Identify the Conflict
 
@@ -400,76 +356,43 @@ from the integration branch).
 afc workspace patch-status <workspace-slug>
 ```
 
-Look for patches with status `conflict`. The `conflict_files` field lists the
-affected files.
-
-For detailed conflict information from a specific rebuild:
-
-```
-afc rebuild status <workspace-slug> <rebuild-id>
-```
-
-The `patch_results` array shows per-patch outcomes including `conflict_files`
-for any patches that conflicted.
+Patches with status `conflict` list the affected files in `conflict_files`.
+`afc rebuild status <workspace-slug> <rebuild-id>` shows the same per rebuild.
 
 ### Step 2: Fix the Patch Branch
 
-**`hub` mode:** Resolve in the workspace trunk or by pushing a fixed branch to
-the hub's git server. Rerere records the resolution when the resolution
-happens during a rebuild.
+Bring the latest upstream into the patch branch, resolve, commit and push:
 
 ```
+git fetch upstream
 git checkout patch/<conflicting-patch>
-```
-
-Examine the conflict files, make the necessary changes to resolve the
-conflict, commit, and push:
-
-```
+git pull origin patch/<conflicting-patch>
+git merge upstream/<upstream-default-branch>   # or rebase onto it
+# resolve the conflicts
 git add <fixed-files>
 git commit -m "fix: resolve conflict with upstream changes in <area>"
 git push origin patch/<conflicting-patch>
 ```
 
-**`origin` mode:** Fix the branch in a local clone of the fork. Merge or
-rebase the latest upstream into the patch branch, resolve conflicts, commit,
-and push to the fork. Then run `afc workspace sync` to bring the new tip into
-the hub and trigger a rebuild. Do not edit the trunk or push to the hub -- a
-hub push is rejected or forwarded in `origin` mode, and a trunk edit would be
-overwritten at the next sync.
+- **`hub` mode:** this pushes to the hub, which queues a rebuild.
+- **`origin` mode:** this pushes to the fork. Then bring it into the hub,
+  which queues a rebuild:
+  ```
+  afc workspace sync <workspace-slug>
+  ```
 
-```
-git fetch upstream        # the remote added in "Clone the Repository"
-git checkout patch/<conflicting-patch>
-git merge upstream/main   # or rebase
-# resolve conflicts
-git add <fixed-files>
-git commit -m "fix: resolve conflict with upstream changes in <area>"
-git push origin patch/<conflicting-patch>
-afc workspace sync <workspace-slug>
-```
+### Step 3: Reactivate and Rebuild
 
-**Limitation (`origin` mode):** A resolution made on the fork is not recorded
-in the hub's rerere cache, so the same conflict may need to be resolved by
-hand again unless the rebuild itself resolves it. This is a known limitation,
-not a planned feature.
-
-### Step 3: Rebuild Again
-
-**`hub` mode:**
-
-```
-afc rebuild submit <workspace-slug>
-```
-
-**`origin` mode:** The sync in Step 2 already triggers a rebuild. If the
-patch status is still `conflict` after the rebuild, set it to `active` and
-rebuild:
+A patch stays `conflict` even after a rebuild applies it cleanly. Set it back
+to `active`, then rebuild if the push or sync has not already done so:
 
 ```
 afc patch update <workspace-slug> <patch-id> --status active
-afc rebuild submit <workspace-slug>
+afc rebuild submit <workspace-slug> --wait
 ```
+
+If `afc rebuild submit` answers 409, a rebuild is already queued or running;
+wait for it with `afc rebuild status`.
 
 ### Step 4: Verify
 
@@ -477,131 +400,83 @@ afc rebuild submit <workspace-slug>
 afc workspace patch-status <workspace-slug>
 ```
 
-Confirm all patches show `active` status and `last_rebuild_result` is
-`success`.
+Every patch should be `active` with `last_rebuild_result` `success`.
 
 ### Rerere (Reuse Recorded Resolution)
 
-The hub records conflict resolutions automatically via git's rerere mechanism.
-When the same conflict recurs in a future rebuild, rerere replays the recorded
-resolution without manual intervention.
-
-List recorded resolutions:
+The hub records conflict resolutions with git rerere and replays them when
+the same conflict recurs. It does not learn resolutions you make on a branch
+(as in Step 2), so the same conflict may need fixing by hand again.
 
 ```
 afc rerere list <workspace-slug>
+afc rerere forget <workspace-slug> <id>
 ```
 
-If a recorded resolution is producing wrong merge results (e.g., the
-resolution was incorrect or the context has changed), clear it:
-
-```
-afc rerere forget <workspace-slug> <pathspec>
-```
-
-After forgetting a resolution, the next rebuild will stop at that conflict
-again, allowing you to resolve it correctly.
+Forget a resolution (by the `id` from `afc rerere list`) when it produces
+wrong results; the next rebuild then stops at that conflict again.
 
 ## Rollback
 
-If a rebuild produced a bad integration branch, you can roll back to the
-previous state:
+If a rebuild produced a bad integration branch, return it to where it was
+before that rebuild:
 
 ```
 afc rebuild rollback <workspace-slug> <rebuild-id>
 ```
 
-This resets the integration branch to the HEAD SHA it had before the specified
-rebuild. Rollback is not available for the very first rebuild (there is no
-previous state). After rolling back, fix the problematic patch and trigger a
-new rebuild.
+This moves only the integration branch on the hub; patches stay as they are,
+and the next rebuild replaces the branch again. The first rebuild of a
+workspace cannot be rolled back. After rolling back, fix the problematic patch
+and rebuild.
 
 ## Patch Management
 
-### Listing Patches
+Every change to the patch list below needs a rebuild afterwards:
+`afc rebuild submit <workspace-slug>`.
 
-```
-afc patch list <workspace-slug>
-```
+- **List:** `afc patch list <workspace-slug>` -- in position order, with ids.
+- **Reorder:** `afc patch reorder <workspace-slug> <id-1> <id-2> ...` -- list
+  ALL patch ids in the new order. A patch that depends on another must come
+  after it.
+- **Move one patch:** `afc patch update <workspace-slug> <patch-id> --position <n>`.
+- **Edit metadata:**
+  ```
+  afc patch update <workspace-slug> <patch-id> \
+    --description "Updated description" \
+    --upstream-pr "https://github.com/upstream/repo/pull/42"
+  ```
+- **Change status:** `afc patch update <workspace-slug> <patch-id> --status <status>`
+  with `active`, `disabled` (skipped by rebuilds, kept), `merged_upstream`
+  (skipped, then soft-deleted by the next successful rebuild) or `conflict`.
+- **Restore a soft-deleted patch:** `afc patch restore <workspace-slug> <patch-id>`
+  -- it becomes `active` at the end of the list.
+- **Remove:** `afc patch remove <workspace-slug> <patch-id>` -- the hub
+  forgets the patch; the branch itself is not deleted (not on the hub, not on
+  the fork).
 
-Patches are returned ordered by position (ascending). Position determines
-replay order during rebuild.
+## Rebuild Strategy and Fail Mode
 
-### Reordering Patches
+The workspace settings `rebuild_strategy` and `rebuild_fail_mode` (see
+`afc workspace get`) decide how a rebuild applies patches and handles
+conflicts. Override them for one rebuild with `afc rebuild submit`:
 
-Patch order matters. Patches are replayed sequentially, and a patch that
-depends on changes from another patch must come after it.
+| Flag | Values | Meaning |
+|------|--------|---------|
+| `--strategy` | `rebase` (default) | Cherry-pick each patch's commits; linear history. |
+| | `merge` | Merge each patch branch with `--no-ff`; keeps patch boundaries. |
+| `--fail-mode` | `fail_fast` (default) | Stop at the first conflict; integration branch unchanged. |
+| | `continue` | Leave conflicting patches out; integration branch gets the rest. |
 
-```
-afc patch reorder <workspace-slug> <patch-id-1> <patch-id-2> <patch-id-3>
-```
-
-You must list ALL patch IDs in the desired order. Trigger a rebuild after
-reordering.
-
-### Updating Patch Metadata
-
-```
-afc patch update <workspace-slug> <patch-id> \
-  --description "Updated description" \
-  --upstream-pr "https://github.com/upstream/repo/pull/42"
-```
-
-You can also change status or position:
-
-```
-afc patch update <workspace-slug> <patch-id> --status disabled
-afc patch update <workspace-slug> <patch-id> --position 3
-```
-
-Valid statuses: `active`, `merged_upstream`, `conflict`, `disabled`.
-
-- `disabled` patches are skipped during rebuild but retained in the database.
-- `merged_upstream` patches are skipped during rebuild and soft-deleted after a
-  successful rebuild.
-
-### Restoring a Soft-Deleted Patch
-
-Patches that were soft-deleted (e.g., after being merged upstream) can be
-restored:
-
-```
-afc patch restore <workspace-slug> <patch-id>
-```
-
-This transitions the patch back to `active` status. Trigger a rebuild after
-restoring.
-
-### Removing a Patch
-
-```
-afc patch remove <workspace-slug> <patch-id>
-```
-
-This deletes the patch registration. Remaining patch positions are compacted
-automatically. The patch branch itself is not deleted from git -- only the
-hub's tracking record is removed. The backup ref `refs/hub/replaced/<branch>`
-is also deleted with the patch row, if one exists.
-
-**`origin` mode:** The branch on the fork is not deleted. Only the hub's
-registration and backup ref are removed.
-
-**`hub` mode:** The branch on the hub's git server is not deleted. If
-`PUSH_PATCHES_TO_ORIGIN=true`, the mirrored copy on the fork is also not
-deleted.
-
-Trigger a rebuild after removal.
+Do not change the workspace settings themselves unless asked to.
 
 ## Conventions
 
 ### Branch Naming
 
-- Patch branches: `patch/<descriptive-name>` (e.g., `patch/custom-auth-middleware`,
-  `patch/increase-rate-limits`, `patch/fix-logging-format`).
-- Never use branch names that match the integration branch.
-- Do not create a branch named `_rebuild_temp`. (Legacy: older hub versions
-  used it as a temporary rebuild branch; current versions rebuild in a
-  detached git worktree and delete a leftover legacy `_rebuild_temp` branch.)
+- Patch branches: `patch/<descriptive-name>` (e.g.
+  `patch/custom-auth-middleware`, `patch/increase-rate-limits`).
+- Never use the integration branch's name for anything else.
 
 ### Commit Messages
 
@@ -614,81 +489,44 @@ Use conventional commits: `<type>: <description>`.
 
 ### Patch Descriptions
 
-When registering a patch, write a description that explains **why** the patch
-exists, not just what it changes. Future agents and operators need to
-understand the intent.
+Describe **why** the patch exists, not just what it changes. Future agents
+and operators need the intent.
 
-Good: `"Override default session timeout to 4 hours for compliance with internal security policy"`
-Bad: `"Change timeout value"`
+- Good: `"Override default session timeout to 4 hours for compliance with internal security policy"`
+- Bad: `"Change timeout value"`
 
 ### Patch Ordering
 
 - Independent patches can be in any order.
-- If patch B depends on changes introduced by patch A, patch A must have a
-  lower position number.
-- Place patches that are likely to be upstreamed soon at the end of the stack
-  to minimize reorder churn when they are removed.
-
-## Rebuild Strategy
-
-The hub supports two rebuild strategies, controlled by the `REBUILD_STRATEGY`
-workspace variable:
-
-| Strategy | Behavior | When to use |
-|----------|----------|-------------|
-| `rebase` (default) | Cherry-picks individual commits from each patch branch onto upstream HEAD | Produces a linear history on the integration branch; preferred for most workflows |
-| `merge` | Merges each patch branch with `--no-ff` | Preserves patch branch merge boundaries; useful when patches have complex internal history |
-
-The strategy is set at the workspace level and can be overridden per-rebuild
-with `afc rebuild submit --strategy <rebase|merge>`.
-
-## Rebuild Fail Mode
-
-The hub supports two fail modes for handling conflicts during rebuild,
-controlled by the `REBUILD_FAIL_MODE` workspace variable:
-
-| Fail Mode | Behavior | When to use |
-|-----------|----------|-------------|
-| `fail_fast` (default) | Stops at the first conflict; no integration branch update | When all patches must apply cleanly |
-| `continue` | Skips conflicting patches and continues; updates the integration branch with only the successful patches | When partial integration is acceptable while conflicts are being resolved |
-
-The fail mode is set at the workspace level and can be overridden per-rebuild
-with `afc rebuild submit --fail-mode <fail_fast|continue>`.
+- If patch B depends on changes from patch A, A must have the lower position.
+- Put patches likely to be merged upstream soon at the end of the stack, so
+  their removal does not disturb the others.
 
 ## Commands Reference
 
 | Task | Command |
 |------|---------|
-| Log in to hub | `afc login` |
-| Check authority model | `afc vars list --workspace <workspace-slug>` |
-| Check patch stack | `afc patch list <workspace-slug>` |
+| Log in to the hub | `afc login` |
+| Check the authority mode and settings | `afc workspace get <workspace-slug>` |
+| Check the patch stack | `afc patch list <workspace-slug>` |
 | Check integration health | `afc workspace patch-status <workspace-slug>` |
-| Add a new patch | `afc patch add <workspace-slug> --branch <name> --description "<text>"` |
-| Update patch metadata | `afc patch update <workspace-slug> <patch-id> [--status <s>] [--description <text>] [--position <n>]` |
+| Add a patch | `afc patch add <workspace-slug> --branch <name> --description "<text>"` |
+| Update a patch | `afc patch update <workspace-slug> <patch-id> [--status <s>] [--description <text>] [--upstream-pr <url>] [--position <n>]` |
 | Remove a patch | `afc patch remove <workspace-slug> <patch-id>` |
 | Restore a soft-deleted patch | `afc patch restore <workspace-slug> <patch-id>` |
 | Reorder all patches | `afc patch reorder <workspace-slug> <id1> <id2> ...` |
-| Trigger rebuild | `afc rebuild submit <workspace-slug> [--strategy <s>] [--fail-mode <m>] [--wait]` |
-| Preview rebuild conflicts | `afc rebuild preview <workspace-slug>` |
-| Check rebuild status | `afc rebuild status <workspace-slug> <rebuild-id>` |
-| List recent rebuilds | `afc rebuild list <workspace-slug>` |
+| Reset a diverged patch to the fork (`origin` mode) | `afc patch reset-to-origin <workspace-slug> <patch-id>` |
+| Sync | `afc workspace sync <workspace-slug> [--wait] [--fail-on-diverged]` |
+| Rebuild | `afc rebuild submit <workspace-slug> [--strategy <s>] [--fail-mode <m>] [--wait]` |
+| Preview conflicts | `afc rebuild preview <workspace-slug>` |
+| Rebuild status / history | `afc rebuild status <workspace-slug> <rebuild-id>` / `afc rebuild list <workspace-slug>` |
 | Cancel a queued rebuild | `afc rebuild cancel <workspace-slug> <rebuild-id>` |
 | Requeue a dead-lettered rebuild | `afc rebuild requeue <workspace-slug> <rebuild-id>` |
 | Roll back a rebuild | `afc rebuild rollback <workspace-slug> <rebuild-id>` |
-| Sync with upstream (and origin in `origin` mode) | `afc workspace sync <workspace-slug> [--wait]` |
-| Sync and fail on diverged patches | `afc workspace sync --fail-on-diverged <workspace-slug>` |
-| Reset a diverged patch to origin's tip | `afc patch reset-to-origin <workspace-slug> <patch-id>` |
-| List rerere resolutions | `afc rerere list <workspace-slug>` |
-| Forget a rerere resolution | `afc rerere forget <workspace-slug> <pathspec>` |
-| Set upstream credentials | `afc secrets create UPSTREAM_GIT_PAT=<token> --workspace <workspace-slug>` (reserved secret name) |
+| List / forget rerere resolutions | `afc rerere list <workspace-slug>` / `afc rerere forget <workspace-slug> <id>` |
 
-**`origin` mode:** Use `afc workspace sync` to bring fork commits into the
-hub and trigger a rebuild. Use `afc patch reset-to-origin` to move a diverged
-or replaced patch branch to the fork's tip on demand.
-
-**`hub` mode:** Use `afc rebuild submit` to trigger a rebuild after pushing
-to the hub. If `PUSH_PATCHES_TO_ORIGIN=true`, accepted pushes are
-automatically mirrored to the fork.
+Full reference: the `afc` [CLI reference](../cli.md#patch-commands) and the
+[carry-patch guide](../carry_patch_workflow.md).
 
 ## Quality Gates
 
@@ -696,38 +534,33 @@ automatically mirrored to the fork.
 
 A session is not complete until all of the following are true:
 
-1. Your changes are committed and pushed to the correct target:
+1. Your changes are committed and pushed to the right place:
    - **`origin` mode:** pushed to the fork, then `afc workspace sync` run.
    - **`hub` mode:** pushed to the hub's git server.
-2. The patch is registered (if new): `afc patch list <workspace-slug>` shows it.
-3. A rebuild has been triggered and completed successfully:
-   `afc workspace patch-status <workspace-slug>` shows all active patches with
-   `last_rebuild_result: success`.
-4. The integration branch builds and passes tests. Check out the integration
-   branch and run the project's test suite.
+2. A new patch is registered: `afc patch list <workspace-slug>` shows it.
+3. A rebuild has completed and `afc workspace patch-status <workspace-slug>`
+   shows every patch you touched as `active` with `last_rebuild_result`
+   `success`.
+4. The integration branch builds and passes the project's tests.
 5. `git status` shows a clean working tree.
-6. You provide a brief handoff note summarizing what was done and what remains.
+6. You provide a brief handoff note summarizing what was done and what
+   remains.
 
 ### What NOT to Do
 
-- **Never commit to the integration branch.** It is rebuilt from scratch by
-  the hub. Any direct commits will be overwritten.
-- **Never push to the upstream remote.** All upstream interaction is managed
-  by the hub.
-- **Never push a registered patch branch to the hub in `origin` mode.** The
-  hub refuses or replaces it. Push to the fork and run `afc workspace sync`.
-- **Never touch anything under the hub's `rebuild/` worktree directory.**
-  A rebuild applies patches in a per-run detached worktree there and removes
-  it when the run ends. (Legacy: older hub versions used a transient
-  `_rebuild_temp` branch for this.)
-- **Never run `afc rebuild submit` if a rebuild is already running.** The hub
-  returns 409 Conflict in this case. Wait for the current rebuild to finish,
-  or cancel it first with `afc rebuild cancel`.
+- **Never commit to the integration branch.** Every rebuild replaces it.
+- **Never push to the upstream remote.**
+- **Never push a patch branch to the hub in `origin` mode.** Push to the
+  fork and run `afc workspace sync`.
+- **Never change workspace settings** (`afc workspace update --setting ...`)
+  unless the task asks for it.
+- **Never submit a rebuild while one is queued or running** -- the hub
+  answers 409. Wait for it to finish (`afc rebuild status`).
 
 ## Scope Discipline
 
 - Focus on one patch per session. Do not modify multiple unrelated patches.
 - Do not include "while here" fixes that belong in a different patch.
-- Priority: fix conflict-status patches before adding new patches.
+- Priority: fix patches in `conflict` before adding new patches.
 - If a patch is no longer needed (merged upstream or obsolete), remove it
   before adding new ones to keep the stack clean.
