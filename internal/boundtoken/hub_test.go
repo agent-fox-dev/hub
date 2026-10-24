@@ -14,7 +14,10 @@ import (
 	"github.com/labstack/echo/v4"
 	"github.com/txsvc/apikit"
 
+	"github.com/agent-fox-dev/carrypatch"
+
 	"github.com/agent-fox-dev/hub/internal/audit"
+	"github.com/agent-fox-dev/hub/internal/cphost"
 	"github.com/agent-fox-dev/hub/internal/gitserver"
 	"github.com/agent-fox-dev/hub/internal/secrets"
 	"github.com/agent-fox-dev/hub/internal/workspace"
@@ -22,8 +25,9 @@ import (
 
 // realHub is hub's API wired as cmd/af-hub wires it, on a real apikit server,
 // SQLite database and DuckDB audit store: workspace handlers and both binding
-// guards, the bound-token routes (minting through server.Echo()), the audit
-// session, ingestion and query routes, the secrets routes and the git server.
+// guards, the carry-patch module's patch routes, the bound-token routes
+// (minting through server.Echo()), the audit session, ingestion and query
+// routes, the secrets routes and the git server.
 type realHub struct {
 	server  *apikit.Server
 	db      *sql.DB
@@ -65,9 +69,17 @@ func newRealHub(t *testing.T) *realHub {
 	server := apikit.NewServer(cfg, func() error { return nil })
 	perms := append(audit.Permissions(), secrets.Permissions()...)
 	perms = append(perms, gitserver.GitPermissions()...)
+	perms = append(perms, carrypatch.CarryPatchPermissions()...)
 	if err := workspace.MountWorkspaceHandlers(server, database, perms...); err != nil {
 		t.Fatal(err)
 	}
+	// The patch routes are the carry-patch module's; they are mounted over
+	// the hub's locks and access rule as cmd/af-hub mounts them, since the
+	// binding guard's answers are tested through them.
+	cphost.Bind()
+	carrypatch.RegisterPatchRoutes(server.APIGroup(), carrypatch.APIConfig{
+		DB: database.SqlDB, PatchStore: carrypatch.NewSQLPatchStore(database.SqlDB), Audit: cphost.Emitter(emitter),
+	})
 	RegisterRoutes(server.APIGroup(), Config{DB: database.SqlDB, APIKit: server.Echo(), Audit: emitter})
 	workspace.SetAuditDependencies(store, emitter, nil)
 	t.Cleanup(func() { workspace.SetAuditDependencies(nil, nil, nil) })
