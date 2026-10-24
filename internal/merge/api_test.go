@@ -579,7 +579,6 @@ type mergeJobFullResponse struct {
 	BaseSHA       *string  `json:"base_sha"`
 	MergedSHA     *string  `json:"merged_sha"`
 	ConflictFiles []string `json:"conflict_files"`
-	CheckOutput   *string  `json:"check_output"`
 	Error         *string  `json:"error"`
 	RetryCount    int      `json:"retry_count"`
 	SubmittedBy   string   `json:"submitted_by"`
@@ -1224,9 +1223,6 @@ func TestProjectMergeJobResponse_QueuedJob(t *testing.T) {
 	}
 	if len(resp.ConflictFiles) != 0 {
 		t.Errorf("expected conflict_files to be empty, got %v", resp.ConflictFiles)
-	}
-	if resp.CheckOutput != nil {
-		t.Errorf("expected check_output=nil for queued job, got %v", resp.CheckOutput)
 	}
 	if resp.Error != nil {
 		t.Errorf("expected error=nil for queued job, got %v", resp.Error)

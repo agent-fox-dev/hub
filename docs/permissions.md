@@ -349,12 +349,6 @@ keys (`Role == "admin"`) pass `RequireAdmin` and gain access to:
 - **Admin tokens cannot create workspaces.** They have no user identity,
   so workspace creation is rejected with 403. For the same reason they get
   403 on the user-scoped secrets and variables endpoints (`/api/v1/user/...`).
-- **`vars:write` on a workspace is code execution on the hub.** The
-  `CHECK_COMMAND` workspace variable is run with `sh -c` inside the trunk
-  by merge jobs. Grant `vars:write`/`vars:manage` only to credentials you
-  would trust with shell access to the hub process. The command runs with a
-  minimal environment (PATH, HOME, TMPDIR, TZ, Go and git safety variables)
-  plus the workspace's resolved variables; hub secrets are not exported.
 - **API keys can create PATs with any permissions.** The privilege
   escalation check only applies when a PAT creates another PAT.
 - **Self-revocation is allowed.** A key can revoke itself because the

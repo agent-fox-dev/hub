@@ -54,9 +54,6 @@ func TestHandleMergeJob_LeavesTrunkOnTargetBranch(t *testing.T) {
 		WorkspaceRoot: root,
 		Fetch:         func(_ context.Context, _, _ string, _ transport.AuthMethod) error { return nil },
 		ResolveAuth:   func(string) (transport.AuthMethod, error) { return nil, nil },
-		GetVariable:   stubGetVariable(nil),
-		Executor:      &ShellExecutor{},
-		Rollback:      DefaultRollbackFunc(),
 	}
 
 	for _, b := range []string{"feature/one", "feature/two"} {

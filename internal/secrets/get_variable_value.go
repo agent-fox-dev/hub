@@ -16,7 +16,7 @@ import (
 //
 // This method mirrors GetSecretValue but reads from the variables table.
 // Unlike secrets, variable values may be returned through the API and are
-// used for configuration lookups (e.g., CHECK_COMMAND in merge operations).
+// used for configuration lookups (the carry-patch and forge settings).
 func (s *Store) GetVariableValue(ownerType, ownerID, key string) (string, error) {
 	if key == "" {
 		return "", fmt.Errorf("key must not be empty")

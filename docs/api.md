@@ -2650,7 +2650,6 @@ All merge job endpoints return the following JSON schema:
   "base_sha": null,
   "merged_sha": null,
   "conflict_files": [],
-  "check_output": null,
   "error": null,
   "retry_count": 0,
   "submitted_by": "alice",
@@ -2669,7 +2668,6 @@ All merge job endpoints return the following JSON schema:
 | `base_sha` | string or null | 40-char hex SHA of target branch HEAD before merge; null until completed |
 | `merged_sha` | string or null | 40-char hex SHA of target branch HEAD after merge; null until completed |
 | `conflict_files` | string[] | List of conflicting file paths; empty array if no conflicts |
-| `check_output` | string or null | Output from the CHECK_COMMAND if it ran; null otherwise |
 | `error` | string or null | Error details for failed jobs; null on success |
 | `retry_count` | int | Number of times the job has been retried |
 | `submitted_by` | string | Username of the authenticated user who submitted the job |
@@ -2717,10 +2715,7 @@ Submit a merge request to integrate a source branch into a target branch.
 | 409 | A merge job for this source and target branch is already queued or running (`error_type: duplicate_merge`) |
 
 Branch names are validated with git's ref-name rules (no leading `-`, no
-`..`, no control characters, etc.) and rejected with 400 otherwise. A
-`CHECK_COMMAND` that exits non-zero fails the job with error class
-`CheckFailed`; a missing `CHECK_COMMAND` skips the check, while any other
-error resolving it is retried rather than treated as "no check".
+`..`, no control characters, etc.) and rejected with 400 otherwise.
 
 ---
 
@@ -3874,7 +3869,6 @@ behavior and how the hub reaches a workspace's forge. They can be set via the
 | `PATCH_DIVERGENCE_POLICY` | `"replace"`, `"report"` | `"replace"` | Controls what happens when the hub's copy and the fork's copy of a patch branch have diverged. `"replace"` (default): the hub's copy is replaced with the fork's tip (the old tip is saved under `refs/hub/replaced/<branch>`). `"report"`: the hub's copy is left unchanged and the divergence is reported. Ignored when `PATCH_BRANCH_SOURCE` is `"hub"`. |
 | `PUSH_PATCHES_TO_ORIGIN` | `"true"` | (disabled) | Enables forwarding or mirroring of hub pushes to registered patch branches. Only the exact string `"true"` enables it. In `origin` mode (`PATCH_BRANCH_SOURCE=origin`): when enabled, a push to a registered patch branch is forwarded to the fork before the hub writes its ref; when disabled, the push is rejected. In `hub` mode: when enabled, accepted pushes to registered patch branches are mirrored (force-pushed) to the fork after the push is accepted. |
 | `SQUASH_MERGE_DETECTION` | `"ancestry_only"`, `"content_based"`, `"both"` | `"both"` | Controls which strategies are used to detect upstream merges during carry-patch sync. `"ancestry_only"` uses only `git merge-base --is-ancestor`. `"content_based"` uses only `git cherry` and PR-number scanning. `"both"` (default) uses all strategies. |
-| `CHECK_COMMAND` | any string | (unset) | Shell command executed via `sh -c` after a merge rebase to validate the result. If it exits non-zero, the rebase is rolled back. |
 | `FORGE_API_URL` | an absolute `https://` URL with a host, without userinfo, query or fragment | (unset) | The API URL of the forge behind the workspace's `git_url`, for the [forge read routes](#forge-endpoints). Unset, the API is found from the host (`api.github.com` for `github.com`, `<host>/api/v3` or `<host>/api/v4` for another). A value that contains exactly one of `github` and `gitlab` also tells which forge it is, and a GitLab value gets `/api/v4` appended when it does not end with it. Any other value answers `422 forge_api_url_invalid`. |
 | `UPSTREAM_FORGE_API_URL` | as `FORGE_API_URL` | (unset) | The same for the `upstream_url` of a `carry_patch` workspace (`?target=upstream`). It does not fall back to `FORGE_API_URL`: an upstream on another host must not inherit the fork's API URL. |
 

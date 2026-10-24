@@ -101,7 +101,7 @@ func main() {
 	}
 
 	// Create a secrets store for resolving clone credentials and workspace
-	// variables (CHECK_COMMAND) in the merge handler.
+	// variables.
 	store := secrets.NewStore(database.SqlDB)
 
 	// The two git credentials of a workspace, resolved from its secrets on
@@ -114,20 +114,12 @@ func main() {
 		return workspace.ResolveUpstreamAuthMethod(store, slug)
 	}
 
-	// Create and register the merge handler with all cross-spec dependencies
-	// wired:
-	//   - GitRunner (spec 11): created on-demand via runnerForWorkspace
-	//   - resolveCloneAuth (spec 05): injected via ResolveAuth field
-	//   - workspace variables (spec 07): injected via GetVariable field
-	//   - CHECK_COMMAND execution: injected via Executor field
-	//   - Rollback: injected via DefaultRollbackFunc
+	// Create and register the merge handler: the git runner is created on
+	// demand per workspace, the fetch and the credential resolver are injected.
 	mergeHandler := &merge.Handler{
 		WorkspaceRoot: cfg.Workspace.Path,
 		Fetch:         merge.DefaultFetchFunc(),
 		ResolveAuth:   resolveOriginAuth,
-		GetVariable:   store.GetVariableValue,
-		Executor:      &merge.ShellExecutor{},
-		Rollback:      merge.DefaultRollbackFunc(),
 	}
 
 	if err := merge.RegisterHandler(mergeQueue, mergeHandler); err != nil {

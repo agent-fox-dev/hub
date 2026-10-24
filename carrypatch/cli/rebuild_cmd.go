@@ -31,7 +31,6 @@ func RebuildCmd() *cobra.Command {
 		newRebuildCancelCmd(),
 		newRebuildRequeueCmd(),
 		newRebuildRollbackCmd(),
-		newRebuildWaitCmd(),
 	)
 
 	return cmd
@@ -271,27 +270,4 @@ func newRebuildRollbackCmd() *cobra.Command {
 			return apikit.CLIPrintResult(cmd, result)
 		},
 	}
-}
-
-// newRebuildWaitCmd returns the 'rebuild wait' subcommand. It polls
-// GET /api/v1/workspaces/:slug/rebuilds/:id until the job reaches a terminal
-// state, prints the final record, and exits non-zero unless it completed.
-func newRebuildWaitCmd() *cobra.Command {
-	var wf waitFlags
-	cmd := &cobra.Command{
-		Use:           "wait <workspace-slug> <rebuild-id>",
-		Short:         "Wait for a rebuild job to finish",
-		Args:          cobra.ExactArgs(2),
-		SilenceErrors: true,
-		SilenceUsage:  true,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			client, err := apikit.CLIClientFromCmd(cmd)
-			if err != nil {
-				return apikit.CLIHandleError(cmd, err)
-			}
-			return pollJobStatus(cmd, client, wf, apiPath("workspaces", args[0], "rebuilds", args[1]))
-		},
-	}
-	addPollFlags(cmd, &wf)
-	return cmd
 }

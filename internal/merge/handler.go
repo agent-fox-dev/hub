@@ -6,14 +6,11 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"strings"
-	"time"
 
 	"github.com/go-git/go-git/v5/plumbing/transport"
 
 	"github.com/agent-fox-dev/carrypatch/gitcmd"
 	"github.com/agent-fox-dev/hub/internal/audit"
-	"github.com/agent-fox-dev/hub/internal/secrets"
 )
 
 // RejectionReason is a typed constant identifying why a merge was rejected
@@ -53,16 +50,6 @@ type PreCheckResult struct {
 	Reason RejectionReason
 }
 
-// CheckCommandTimeout is the maximum duration for the workspace check command.
-const CheckCommandTimeout = 10 * time.Minute
-
-// CommandExecutor abstracts shell command execution for testing.
-type CommandExecutor interface {
-	// Run executes a command in the given directory with the provided
-	// environment variables and timeout. Returns stdout+stderr and error.
-	Run(ctx context.Context, dir string, env []string, timeout time.Duration, command string, args ...string) (string, error)
-}
-
 // FetchFunc abstracts the go-git fetch operation for testing. It fetches
 // the named ref from the upstream remote using the provided auth credentials.
 type FetchFunc func(ctx context.Context, trunkDir string, targetBranch string, auth transport.AuthMethod) error
@@ -84,16 +71,6 @@ type Handler struct {
 
 	// ResolveAuth resolves clone credentials for a workspace.
 	ResolveAuth ResolveAuthFunc
-
-	// Executor runs shell commands (e.g. CHECK_COMMAND).
-	Executor CommandExecutor
-
-	// GetVariable retrieves a workspace variable by scope, slug, and key.
-	GetVariable func(scope, slug, key string) (string, error)
-
-	// Rollback reverts the source branch to a previous SHA after a failed
-	// check command or other post-rebase failure.
-	Rollback RollbackFunc
 
 	// Audit is the optional audit event emitter. When non-nil, merge
 	// complete and fail events are emitted. When nil, audit emission
@@ -233,38 +210,30 @@ func (h *Handler) FetchTarget(ctx context.Context, workspaceSlug, targetBranch s
 	return h.Fetch(ctx, trunkDir, targetBranch, auth)
 }
 
-// RebaseSource captures the pre-rebase SHA of the source branch, then
-// invokes git rebase <target-ref> in the workspace trunk directory.
-// Returns the pre-rebase SHA on success. On conflict, returns a permanent
+// RebaseSource checks out the source branch and runs git rebase <target-ref>
+// in the workspace trunk directory. On conflict, it returns a permanent
 // *MergeRejection with WouldConflict and the conflicting file paths.
-func (h *Handler) RebaseSource(ctx context.Context, workspaceSlug, targetBranch, sourceRef string) (preRebaseSHA string, err error) {
+func (h *Handler) RebaseSource(ctx context.Context, workspaceSlug, targetBranch, sourceRef string) error {
 	runner, err := h.runnerForWorkspace(workspaceSlug)
 	if err != nil {
-		return "", fmt.Errorf("merge: rebase source: %w", err)
+		return fmt.Errorf("merge: rebase source: %w", err)
 	}
 
 	// Clear anything a crashed or cancelled job left behind (in-progress
 	// rebase/cherry-pick/merge, dirty tree) so the checkout cannot fail on
-	// stale state, then check out the source branch before capturing its SHA
-	// and rebasing.
+	// stale state, then check out the source branch and rebase it.
 	runner.ResetInProgressState(ctx)
 	if err := runner.Checkout(ctx, sourceRef); err != nil {
-		return "", fmt.Errorf("merge: checkout %q: %w", sourceRef, err)
+		return fmt.Errorf("merge: checkout %q: %w", sourceRef, err)
 	}
 
-	// Capture pre-rebase SHA of the source branch BEFORE any mutation.
-	preRebaseSHA, err = runner.RevParse(ctx, sourceRef)
-	if err != nil {
-		return "", fmt.Errorf("merge: rev-parse %q: %w", sourceRef, err)
-	}
-
-	// Invoke git rebase <target-ref>. GitRunner.Rebase auto-aborts on
-	// conflict and returns *RebaseConflictError.
+	// GitRunner.Rebase auto-aborts on conflict and returns
+	// *RebaseConflictError.
 	_, err = runner.Rebase(ctx, targetBranch)
 	if err != nil {
 		var conflictErr *gitcmd.RebaseConflictError
 		if errors.As(err, &conflictErr) {
-			return "", &MergeRejection{
+			return &MergeRejection{
 				Reason:        WouldConflict,
 				Permanent:     true,
 				ConflictFiles: conflictErr.ConflictingFiles,
@@ -276,48 +245,10 @@ func (h *Handler) RebaseSource(ctx context.Context, workspaceSlug, targetBranch,
 			// trunk usable for the next job.
 			_ = runner.RebaseAbort(context.Background())
 		}
-		return "", fmt.Errorf("merge: rebase %q onto %q: %w", sourceRef, targetBranch, err)
+		return fmt.Errorf("merge: rebase %q onto %q: %w", sourceRef, targetBranch, err)
 	}
 
-	return preRebaseSHA, nil
-}
-
-// RunCheckCommand executes the workspace CHECK_COMMAND via 'sh -c' in the
-// trunk directory with MERGE_TARGET, MERGE_SOURCE, and WORKSPACE_SLUG
-// environment variables injected, enforcing CheckCommandTimeout.
-func (h *Handler) RunCheckCommand(ctx context.Context, workspaceSlug, targetBranch, sourceRef, checkCmd string) error {
-	trunkDir := h.TrunkDir(workspaceSlug)
-	env := []string{
-		"MERGE_TARGET=" + targetBranch,
-		"MERGE_SOURCE=" + sourceRef,
-		"WORKSPACE_SLUG=" + workspaceSlug,
-	}
-	output, err := h.Executor.Run(ctx, trunkDir, env, CheckCommandTimeout, "sh", "-c", checkCmd)
-	if err != nil {
-		return &CheckCommandError{Output: truncateOutput(output, maxCheckOutputBytes), ExitCode: exitCodeOf(err)}
-	}
 	return nil
-}
-
-// maxCheckOutputBytes bounds the check command output kept in the job record.
-const maxCheckOutputBytes = 64 * 1024
-
-// truncateOutput keeps the tail of s (where the failure usually is) when it
-// exceeds limit bytes.
-func truncateOutput(s string, limit int) string {
-	if len(s) <= limit {
-		return s
-	}
-	return "...[truncated]...\n" + s[len(s)-limit:]
-}
-
-// exitCodeOf extracts the process exit code from an exec error, or -1.
-func exitCodeOf(err error) int {
-	var exitErr interface{ ExitCode() int }
-	if errors.As(err, &exitErr) {
-		return exitErr.ExitCode()
-	}
-	return -1
 }
 
 // MergeResult contains the successful outcome of a merge operation.
@@ -326,69 +257,6 @@ func exitCodeOf(err error) int {
 type MergeResult struct {
 	BaseSHA   string `json:"base_sha"`
 	MergedSHA string `json:"merged_sha"`
-}
-
-// CheckCommandError is returned when the workspace CHECK_COMMAND exits
-// with a non-zero exit code.
-type CheckCommandError struct {
-	Output   string
-	ExitCode int
-}
-
-func (e *CheckCommandError) Error() string {
-	return fmt.Sprintf("check command failed (exit %d): %s", e.ExitCode, strings.TrimSpace(e.Output))
-}
-
-// RollbackFunc reverts the source branch to a previous SHA after a failed
-// check command or other post-rebase failure. It executes
-// 'git checkout <branch> && git reset --hard <sha>' in the workspace trunk.
-type RollbackFunc func(ctx context.Context, trunkDir, branch, sha string) error
-
-// RunCheckStep looks up CHECK_COMMAND for the workspace and, if set,
-// executes it via RunCheckCommand. If CHECK_COMMAND is not set, the check
-// step is skipped (returns executed=false, nil). If the check command
-// fails or times out, it rolls back the rebase using the Rollback function
-// and returns a permanent error with the check output.
-func (h *Handler) RunCheckStep(ctx context.Context, workspaceSlug, targetBranch, sourceRef, preRebaseSHA string) (executed bool, err error) {
-	checkCmd, getErr := h.GetVariable("workspace", workspaceSlug, "CHECK_COMMAND")
-	if getErr != nil {
-		// Only a definite "not set" skips the gate. Any other store error
-		// (database unavailable, corrupt value) must not silently disable
-		// the check; fail retryable instead.
-		var notFound *secrets.NotFoundError
-		if errors.As(getErr, &notFound) {
-			return false, nil
-		}
-		return false, &MergeRejection{Permanent: false}
-	}
-	if checkCmd == "" {
-		return false, nil
-	}
-
-	// Execute the check command.
-	err = h.RunCheckCommand(ctx, workspaceSlug, targetBranch, sourceRef, checkCmd)
-	if err != nil {
-		// Check command failed — roll back the rebase to the pre-rebase state.
-		trunkDir := h.TrunkDir(workspaceSlug)
-		rollbackErr := h.Rollback(ctx, trunkDir, sourceRef, preRebaseSHA)
-		if rollbackErr != nil {
-			// Both check command and rollback failed — the repository may be
-			// in an inconsistent state. Log both errors and return permanent.
-			slog.Error("rollback failed after check command failure",
-				"original_error", err.Error(),
-				"rollback_error", rollbackErr.Error(),
-				"workspace", workspaceSlug,
-				"source", sourceRef,
-			)
-			return true, &MergeRejection{
-				Permanent: true,
-			}
-		}
-		// Rollback succeeded — return the check command error (with output).
-		return true, err
-	}
-
-	return true, nil
 }
 
 // UpdateTargetRef updates the target branch ref to point to newSHA using

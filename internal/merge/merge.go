@@ -59,17 +59,16 @@ func RegisterHandler(q *jobqueue.Queue, h *Handler) error {
 //  3. Capture baseSHA (target HEAD before merge)
 //  4. Rebase source branch onto target
 //  5. Capture mergedSHA (rebased source HEAD)
-//  6. Run check command (if configured for the workspace)
-//  7. Update target branch ref to rebased source HEAD
-//  8. Delete source branch ref
-//  9. Return MergeResult with base_sha and merged_sha
+//  6. Update target branch ref to rebased source HEAD
+//  7. Delete source branch ref
+//  8. Return MergeResult with base_sha and merged_sha
 //
 // Errors are returned as structured JSON matching mergeJobError format so that
-// ProjectMergeJobResponse can extract conflict_files and check_output fields.
+// ProjectMergeJobResponse can extract the conflict_files field.
 func (h *Handler) HandleMergeJob(ctx context.Context, payload json.RawMessage) (retResult any, retRetryable bool, retErr error) {
 	var p MergePayload
 	if err := json.Unmarshal(payload, &p); err != nil {
-		return nil, false, newMergeJobError("invalid_payload", nil, "")
+		return nil, false, newMergeJobError("invalid_payload", nil)
 	}
 
 	// 18-REQ-2.3: Emit hub.merge.fail on any error return from this function.
@@ -147,8 +146,7 @@ func (h *Handler) HandleMergeJob(ctx context.Context, payload json.RawMessage) (
 	}()
 
 	// Step 4: Rebase source branch onto target.
-	preRebaseSHA, err := h.RebaseSource(ctx, p.WorkspaceSlug, p.TargetBranch, p.SourceRef)
-	if err != nil {
+	if err := h.RebaseSource(ctx, p.WorkspaceSlug, p.TargetBranch, p.SourceRef); err != nil {
 		retryable, mergeErr := convertMergeError(err)
 		return nil, retryable, mergeErr
 	}
@@ -159,19 +157,12 @@ func (h *Handler) HandleMergeJob(ctx context.Context, payload json.RawMessage) (
 		return nil, true, fmt.Errorf("merge: resolve rebased source head: %w", err)
 	}
 
-	// Step 6: Run check command (if configured for the workspace).
-	_, err = h.RunCheckStep(ctx, p.WorkspaceSlug, p.TargetBranch, p.SourceRef, preRebaseSHA)
-	if err != nil {
-		retryable, mergeErr := convertMergeError(err)
-		return nil, retryable, mergeErr
-	}
-
-	// Step 7: Update target branch ref to rebased source HEAD (fast-forward).
+	// Step 6: Update target branch ref to rebased source HEAD (fast-forward).
 	if err := h.UpdateTargetRef(ctx, p.WorkspaceSlug, p.TargetBranch, mergedSHA); err != nil {
 		return nil, true, err // retryable (12-REQ-6.E4)
 	}
 
-	// Step 8: Delete source branch ref. Move HEAD off the source branch
+	// Step 7: Delete source branch ref. Move HEAD off the source branch
 	// first: deleting the checked-out branch leaves HEAD dangling and breaks
 	// every later git operation in the trunk.
 	if err := runner.Checkout(ctx, p.TargetBranch); err != nil {
@@ -186,7 +177,7 @@ func (h *Handler) HandleMergeJob(ctx context.Context, payload json.RawMessage) (
 		// Continue to return success — the critical ref update already succeeded.
 	}
 
-	// Step 9: Return success with base_sha and merged_sha.
+	// Step 8: Return success with base_sha and merged_sha.
 	mergeResult, err := h.Finalize(baseSHA, mergedSHA)
 	if err != nil {
 		return nil, false, err
@@ -214,12 +205,11 @@ func (e *structuredMergeError) Error() string {
 }
 
 // newMergeJobError creates a structuredMergeError with the given fields.
-func newMergeJobError(reason string, conflictFiles []string, checkOutput string) error {
+func newMergeJobError(reason string, conflictFiles []string) error {
 	return &structuredMergeError{
 		data: mergeJobError{
 			Reason:        reason,
 			ConflictFiles: conflictFiles,
-			CheckOutput:   checkOutput,
 		},
 	}
 }
@@ -232,15 +222,7 @@ func convertMergeError(err error) (retryable bool, mergeErr error) {
 	var rejection *MergeRejection
 	if errors.As(err, &rejection) {
 		retryable = !rejection.Permanent
-		return retryable, newMergeJobError(
-			string(rejection.Reason),
-			rejection.ConflictFiles,
-			"",
-		)
-	}
-	var checkErr *CheckCommandError
-	if errors.As(err, &checkErr) {
-		return false, newMergeJobError("CheckFailed", nil, checkErr.Output)
+		return retryable, newMergeJobError(string(rejection.Reason), rejection.ConflictFiles)
 	}
 	// Other errors: pass through as non-retryable.
 	return false, err

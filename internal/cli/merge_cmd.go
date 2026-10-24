@@ -29,7 +29,6 @@ func MergeCmd() *cobra.Command {
 		newMergeStatusCmd(),
 		newMergeCancelCmd(),
 		newMergeRequeueCmd(),
-		newMergeWaitCmd(),
 	)
 
 	return cmd
@@ -210,27 +209,4 @@ func newMergeRequeueCmd() *cobra.Command {
 			return apikit.CLIPrintResult(cmd, result)
 		},
 	}
-}
-
-// newMergeWaitCmd returns the 'merge wait' subcommand. It polls
-// GET /api/v1/workspaces/:slug/merges/:id until the job reaches a terminal
-// state, prints the final record, and exits non-zero unless it completed.
-func newMergeWaitCmd() *cobra.Command {
-	var wf waitFlags
-	cmd := &cobra.Command{
-		Use:           "wait <workspace-slug> <merge-id>",
-		Short:         "Wait for a merge job to finish",
-		Args:          cobra.ExactArgs(2),
-		SilenceErrors: true,
-		SilenceUsage:  true,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			client, err := apikit.CLIClientFromCmd(cmd)
-			if err != nil {
-				return apikit.CLIHandleError(cmd, err)
-			}
-			return pollJobStatus(cmd, client, wf, apiPath("workspaces", args[0], "merges", args[1]))
-		},
-	}
-	addPollFlags(cmd, &wf)
-	return cmd
 }
