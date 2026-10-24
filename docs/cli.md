@@ -645,8 +645,8 @@ git push origin main
 ## Secrets Commands
 
 Secrets are key/value pairs owned by your user, an organization or a workspace.
-Values are stored encrypted and never returned: commands show keys and
-timestamps only. A few workspace secret names have a meaning to the hub; see
+Values are write-only: the hub never returns them, and commands show keys
+and timestamps only. A few workspace secret names have a meaning to the hub; see
 [Reserved secret names](#reserved-secret-names).
 
 ### Scope flags
