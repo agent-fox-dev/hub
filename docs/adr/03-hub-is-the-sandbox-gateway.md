@@ -94,8 +94,7 @@ lets the embedder end any sandbox the server holds.
   a second `Create` shows as `Unavailable` ("lease is active") and not as
   `FailedPrecondition`, and it checks the caller's TTL and network against the
   ceilings before the backend runs. The hub's backend returns the more exact
-  codes, and the divergences are listed in
-  `docs/errata/27_sandbox_gateway_divergences.md`.
+  codes; see the divergences below.
 - **The provider may be a remote gateway, which makes the hub a gateway over a
   gateway.** With `provider = "gateway"` the hub's backend is a client of an
   `agentkit-gateway` elsewhere, under one token the hub holds, and the hub's own
@@ -113,6 +112,113 @@ lets the embedder end any sandbox the server holds.
   gateways needs `agentkit-go` to pass the sandbox id on.
 - **`afc` is unchanged and stays static.** The gRPC stack comes in with the
   gateway; neither `cmd/afc` nor `internal/cli` imports it, and a test pins that.
+
+## Divergences from the specs
+
+The sandbox specs were written before AgentKit's provider could be read and
+assumed a provider with `List`, `Destroy` and a not-found sentinel. The code
+follows AgentKit as it is, and the rules below are what it does instead.
+
+**The provider.**
+
+- `sandbox.Provider` has `Capabilities`, `Create` and `Reap`; `Sandbox.Close`
+  takes a context. The start-up probe is one `Reap` under a 10-second limit,
+  which also removes leftovers whose expiry label has passed and fails the
+  start when a removal fails. A fractional `cpus` is accepted (the field is a
+  float).
+- The sweep, restart recovery and shutdown reach boxes through a `Boxes`
+  interface (`List`, `Destroy`) that the gateway implements over the handles
+  the hub holds; a box of an earlier process is out of reach and lives until
+  the TTL the provider enforces. `gatewayd.ErrNotHeld` is the not-found.
+- `Backend.Reap` runs the sweep when called without a lease principal (the
+  gateway's periodic call, every `reap_interval`) and does nothing for a
+  lease holder; the sweep logs each failing step with the provider's text
+  scrubbed.
+
+**Leases.**
+
+- `ttl` and the clock are cut to whole seconds, so `expires_at` minus
+  `created_at` equals `ttl_seconds`. A lease with less than a second left
+  counts as expired. More than 16 labels are refused naming the lowest key
+  past the sixteenth. The issue body is decoded into a map first so that field
+  names match exactly; an unreadable body is 400 (413 over the server limit).
+- The org tier of the secret resolution chain requires the workspace owner's
+  membership whoever the caller is, so an admin token and the owner see the
+  same scopes.
+- The lease records the whole profile (fixed environment, optional secrets,
+  landlock, resources), and `Create` builds the spec from the lease, looking
+  the profile up only to see that it still exists. Fixed `env` values are in
+  the database; only secret values are kept out of it.
+- `lease_expires_at` is in the `CREATE TABLE` and added to an older table by
+  a migration. `lease_timeout` and `max_ttl` are `*string` so that an empty
+  value (an unset `${NAME}`) is refused rather than taken for absent; the
+  lease deadline is `min(created_at + lease_timeout, expires_at)`.
+
+**The gateway.**
+
+- gatewayd hands a backend error that is no spec refusal to the client as
+  `Unavailable` with the backend's text; the backend itself returns
+  `FailedPrecondition`, `Internal`, `NotFound` and `Unauthenticated`. The
+  hub makes a refused remote token `Unavailable` too, and logs the one error
+  that names `sandbox.gateway_token`. gatewayd's own logger is not set.
+- `Close` is also what gatewayd calls at a box's TTL, when pruning, at
+  shutdown and for `Destroy`, so: `DELETE` marks the lease as ended by the API
+  while it destroys the box; a `Close` in the last two seconds of the lease,
+  or after it, changes nothing; any other `Close` is the client's.
+- The backend keeps the handle of every box it made until it is closed, so a
+  retried `DELETE` after a provider failure still reaches the box, and a
+  `DELETE` that races the registration of a new box still destroys it.
+- A `Serve` that returns nil is an orderly stop; only an error ends the
+  process. Recovery and the first sweep run before the listener accepts.
+- Reserved labels (`agentkit.sandbox` and everything under
+  `agentkit.sandbox.`) are dropped with the `hub.*` keys. A box the lease
+  store cannot record is destroyed and the lease stays `leased`. The handle
+  keeps the secret and fixed environment values while its box lives, to scrub
+  errors; the scrubber repeats until the text is stable.
+- Any provider error at `Create` fails the one-shot lease, a context that
+  ends during a slow `Create` included. A failure to record a client's
+  destroy is logged and not returned.
+
+**Expiry.**
+
+- The expiry path ends the lease first and retries the box on later sweeps;
+  while a remote is down the lease reads `destroyed`/`expired`, its token is
+  refused, and the box is destroyed by a sweep after the remote is back.
+- An ending whose context has ended (the shutdown limit) does not complete,
+  and the lease is left for the next start. The lifecycle (`RecoverActive`,
+  `StartReaper`, `RunStartup`, `Shutdown`) is on the `Sweeper`, driven by
+  `Gateway.Run` and `Gateway.Shutdown`; the `Service` is read-only after start
+  except for the shutdown flag.
+- Metrics are recorded by the one statement that ends a lease and by
+  `MarkActive`. `afhub_sandboxes_active` keeps its `workspace=""` placeholder
+  while no lease is active so the metric is listed from start.
+
+**The remote gateway provider.**
+
+- `gateway.Dial(ctx, url, Options)` connects and reads capabilities; the
+  factory and the probe share one 10-second limit. The factory is a
+  `StartOption` (`WithGatewayFactory`), `DialGateway` by default. The
+  capabilities of a remote are read once and served from the snapshot; a
+  local provider is asked every time.
+- Not-found is gatewayd's `ErrNotHeld` or a gRPC `NotFound`, applied in
+  `closeProviderBox` where every destroy ends. After a failed destroy a retry
+  goes through the client's `Destroy` by id, since an attached sandbox's
+  `Close` answers nil after the first.
+- Every site that turns provider text into output scrubs the remote's token,
+  URL, host and bare host name; the capability notes are scrubbed once at
+  start; the hub dials the remote through a dialer whose failures say why and
+  not where. A TLS failure in a call gatewayd relays may still name the host.
+- `Service.Close` runs last in `Gateway.Shutdown`, bounded by the shutdown
+  limit. The relay between two gateways needed agentkit-go to pass the
+  sandbox id on (agentkit-go pull request 150).
+
+**Process and CLI.**
+
+- A bootstrap run (`af-hub --admin-email`) writes the admin token and exits 1
+  through `log.Fatal`; the sandbox section is validated after the bootstrap,
+  so an invalid section never hides the token. `afc sandbox` reports every
+  error as the JSON envelope on stdout, like every `afc` command, without the
+  server's `error_type`.
 
 ## Alternatives considered
 

@@ -231,8 +231,8 @@ lease holder ── gateway.Dial(gateway_url, token) ──▶ gatewayd.Server
   changes no outcome.
 
 Where the gateway differs from what its spec expected of AgentKit (no provider
-`List` or `Destroy`, the codes gatewayd answers with, the handle's `Close`) is in
-`docs/errata/27_sandbox_gateway_divergences.md`.
+`List` or `Destroy`, the codes gatewayd answers with, the handle's `Close`) is
+recorded in ADR 03.
 
 ### The remote gateway provider
 
@@ -300,8 +300,7 @@ sandbox's own `agentkit-sandbox-id` to the next gateway, which `agentkit-go`
 supports since its pull request 150; with an older checkout every `Create` through
 the hub fails at the agent handshake. Where this differs from the spec (the
 factory's signature, the probe, the snapshot, the destroy by id, the lease that a
-sweep ends while the remote is down) is in
-`docs/errata/29_sandbox_gateway_provider_divergences.md`.
+sweep ends while the remote is down) is recorded in ADR 03.
 
 ### Lease lifetime: the sweep, recovery, shutdown and retention
 
@@ -359,8 +358,7 @@ Gateway.Shutdown (stop)     shutdown mode ─▶ stop the reaper ─▶ end the 
   store, the backend and the sweeper as a `*audit.Metrics` that may be nil.
 
 Where this differs from the spec (the `Boxes` seam in place of the provider's `List`
-and `Destroy`, where the lifecycle methods live) is in
-`docs/errata/28_sandbox_expiry_divergences.md`.
+and `Destroy`, where the lifecycle methods live) is recorded in ADR 03.
 
 ### AgentKit dependency
 
@@ -377,8 +375,8 @@ package or gRPC.
 
 `sandbox.Provider` has no `List` or `Destroy`; the start-up probe of the Podman
 provider is therefore one `Reap` call under a 10-second timeout. The client of a
-remote gateway, `*gateway.Provider`, has both, and its probe is one `List`. See
-`docs/errata/25_sandbox_profiles_divergences.md`.
+remote gateway, `*gateway.Provider`, has both, and its probe is one `List` (ADR
+03).
 
 ## Forge client
 
@@ -493,8 +491,7 @@ check. The forge proves who it is with the signature of the workspace's `FORGE_W
 `main.go` runs `forge.PruneDeliveries` (rows older than 7 days and rows of deleted workspaces)
 once at start and then every hour; nothing else prunes the table. The delivery log is SQLite, in the store where workspaces and secrets
 live, so the insert that deduplicates is atomic; the audit store (DuckDB) stays the place of
-the events. The divergences from the spec are in
-`docs/errata/32_forge_webhook_ingress_divergences.md`.
+the events. The divergences from the spec are recorded in ADR 04.
 
 ### What the writes do themselves
 
@@ -516,8 +513,8 @@ is how tests put a fake in its place):
   request, which on both forges posts on its conversation;
 - GitLab assignees are not sent, because GitLab takes user ids and issuex sends none.
 
-These are findings for aflib. The divergences from the spec are in
-`docs/errata/31_forge_writes_divergences.md`.
+These are findings for aflib. The divergences from the spec are recorded in
+ADR 04.
 
 ### What issuex does not give the hub
 
@@ -535,8 +532,7 @@ These are findings for aflib. The divergences from the spec are in
 - `ListIssues` and `ListComments` return a struct with an `incomplete` or `truncated`
   flag; the routes answer the bare array and drop it.
 
-The divergences from the spec are in
-`docs/errata/30_forge_client_reads_divergences.md`.
+The divergences from the spec are recorded in ADR 04.
 
 ## The carry-patch module
 

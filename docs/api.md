@@ -6,9 +6,9 @@ authentication, user management, API keys, tokens, organizations, and
 administration.
 
 A machine-readable OpenAPI 3.1 description of the same surface lives in
-[`docs/openapi.yaml`](openapi.yaml). It is generated from the handler source
-rather than from this document; where the two disagree, see
-[`docs/errata/openapi_description.md`](errata/openapi_description.md).
+[`docs/openapi.yaml`](openapi.yaml). It is kept by hand from the handler
+source, as this document is; where the two disagree, the handlers decide (see
+ADR 10).
 
 ## Authentication
 
@@ -4518,7 +4518,7 @@ number, on GitLab the project's `iid`.
   empty; `labels` and `assignees` are at most 100 names each, none blank. The
   credential the forge sees is the workspace's, never the caller's bearer. On GitLab
   the assignees are accepted and not sent: issuex sends none, because GitLab takes
-  user ids (`docs/errata/31_forge_writes_divergences.md`).
+  user ids (ADR 04).
 - **`PATCH .../issues/:n`.** Only the fields the request sets change. A field that is
   absent or `null` is left alone; `title` must not be blank; `body: ""` clears the
   body; `state` is `open` or `closed`; `labels` and `assignees` replace the issue's
