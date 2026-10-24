@@ -1,10 +1,6 @@
 package secrets
 
-import (
-	"github.com/txsvc/apikit"
-
-	"github.com/agent-fox-dev/hub/internal/vars"
-)
+import "github.com/txsvc/apikit"
 
 // Secrets permission scope constants.
 var (
@@ -22,6 +18,22 @@ var (
 	SecretsDeleteScope = apikit.Permission{Resource: "secrets", Action: "delete"}
 )
 
+// Variables permission scope constants.
+var (
+	// VarsManageScope grants create, read, update, and delete access to variables.
+	// vars:manage implies vars:read, vars:write, and vars:delete.
+	VarsManageScope = apikit.Permission{Resource: "vars", Action: "manage"}
+
+	// VarsReadScope grants read access to variables and their values.
+	VarsReadScope = apikit.Permission{Resource: "vars", Action: "read"}
+
+	// VarsWriteScope grants update access to existing variables.
+	VarsWriteScope = apikit.Permission{Resource: "vars", Action: "write"}
+
+	// VarsDeleteScope grants delete access to variables.
+	VarsDeleteScope = apikit.Permission{Resource: "vars", Action: "delete"}
+)
+
 // Permissions returns the Permission values that hub registers with
 // apikit's MountHandlers for secrets and variables operations.
 // The 8 scopes are independent of the workspace scopes.
@@ -34,9 +46,9 @@ func Permissions() []apikit.Permission {
 		SecretsListScope,
 		SecretsWriteScope,
 		SecretsDeleteScope,
-		vars.VarsManageScope,
-		vars.VarsReadScope,
-		vars.VarsWriteScope,
-		vars.VarsDeleteScope,
+		VarsManageScope,
+		VarsReadScope,
+		VarsWriteScope,
+		VarsDeleteScope,
 	}
 }

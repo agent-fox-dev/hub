@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/agent-fox-dev/agentkit-go/sandbox/gatewayd"
+	"github.com/agent-fox-dev/hub/internal/scrub"
 	"github.com/txsvc/apikit"
 )
 
@@ -40,7 +41,7 @@ func newLeaseAuthenticator(lookup tokenLookup, now func() time.Time) gatewayd.Au
 				// whether a driver quotes its arguments, which hold the hash, is not
 				// for hub to find out.
 				slog.Error("sandbox gateway: looking up a lease token failed",
-					"error", scrub(err.Error(), []string{token, HashToken(token)}))
+					"error", scrub.Text(err.Error(), token, HashToken(token)))
 			}
 			return "", false
 		}

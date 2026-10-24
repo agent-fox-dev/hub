@@ -7,6 +7,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/agent-fox-dev/hub/internal/audit"
+	"github.com/agent-fox-dev/hub/internal/scrub"
 )
 
 // emit records the event of a write that sent at least one request to the forge: one
@@ -29,7 +30,7 @@ func (h *handlers) emit(c echo.Context, req *request, rt writeRoute, w *writeRun
 		metadata["number"] = w.number
 	}
 	if w.url != "" {
-		metadata["url"] = scrub(w.url, w.fc.token)
+		metadata["url"] = scrub.Text(w.url, w.fc.token)
 	}
 	for key, value := range w.extra {
 		metadata[key] = value

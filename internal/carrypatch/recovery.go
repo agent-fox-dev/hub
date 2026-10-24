@@ -12,58 +12,8 @@ import (
 	"github.com/txsvc/apikit"
 
 	"github.com/agent-fox-dev/aflib/jobqueue"
+	"github.com/agent-fox-dev/hub/internal/workspace"
 )
-
-// RecoveryErrorKind classifies errors returned by the recovery service.
-// These are carrypatch-local types; the workspace handler maps them to
-// HTTP status codes through an adapter registered in main.go.
-type RecoveryErrorKind string
-
-const (
-	RecoveryErrBusy             RecoveryErrorKind = "busy"
-	RecoveryErrMissingOnOrigin  RecoveryErrorKind = "missing_on_origin"
-	RecoveryErrFetchFailed      RecoveryErrorKind = "fetch_failed"
-	RecoveryErrCredentialFailed RecoveryErrorKind = "credential_failed"
-	RecoveryErrRefChanged       RecoveryErrorKind = "ref_changed"
-	RecoveryErrOther            RecoveryErrorKind = "other"
-)
-
-// RecoveryError is a classified error returned by the recovery service.
-type RecoveryError struct {
-	Kind    RecoveryErrorKind
-	Message string
-	Cause   error
-}
-
-func (e *RecoveryError) Error() string {
-	if e.Cause != nil {
-		return e.Message + ": " + e.Cause.Error()
-	}
-	return e.Message
-}
-
-func (e *RecoveryError) Unwrap() error {
-	return e.Cause
-}
-
-// ResetPatchInfo carries the patch data the reset operation needs.
-// Defined in carrypatch so it does not import workspace.
-type ResetPatchInfo struct {
-	ID                string
-	BranchName        string
-	Status            string
-	IntegrationBranch string
-}
-
-// ResetResult holds the outcome of a reset-to-origin operation.
-type ResetResult struct {
-	Action           string // one of ActionNone, ActionCreated, ActionFastForwarded, ActionReplaced
-	LocalSHA         string // tip before the reset; empty when the local branch was absent
-	OriginSHA        string // fork tip the branch was moved to
-	ReplacedSHA      string // backup SHA; non-empty only for action "replaced"
-	RebuildTriggered bool
-	RebuildJobID     string
-}
 
 // RebuildEnqueuer abstracts the job queue's Enqueue method so that
 // tests can inject a stub or a failing implementation.
@@ -72,11 +22,11 @@ type RebuildEnqueuer interface {
 }
 
 // RecoveryService implements backup-ref reading, backup-ref removal and
-// reset-to-origin operations. It is constructed in main.go and adapted
-// to the workspace.RecoveryHook interface.
+// reset-to-origin operations: it is the workspace.RecoveryHook that main.go
+// registers with the workspace package.
 //
 // RunReset needs LockFunc and Fetch: without them it fails with a
-// RecoveryErrOther configuration error before it writes anything. ResolveAuth
+// workspace.ResetErrOther configuration error before it writes anything. ResolveAuth
 // may be nil, which means anonymous access to origin (the same reading as spec
 // 20's ResolveOriginAuth). PatchStore and Queue are optional; without them the
 // reset records no origin sync state and enqueues no rebuild.
@@ -200,8 +150,8 @@ func removeBackupRef(
 // branch, and the reset reports the move. The patch refresh in spec 20 keeps
 // the same outcome for the same failure and additionally reports the failed
 // reset to its caller; see docs/errata/23_patch_divergence_recovery_divergences.md.
-func (s *RecoveryService) RunReset(ctx context.Context, slug string, patch ResetPatchInfo, auth *apikit.AuthInfo) (ResetResult, error) {
-	var result ResetResult
+func (s *RecoveryService) RunReset(ctx context.Context, slug string, patch workspace.ResetPatchInfo, auth *apikit.AuthInfo) (workspace.ResetResult, error) {
+	var result workspace.ResetResult
 
 	// Required dependencies. Both are checked before anything is taken or
 	// written. A missing Fetch in particular must not degrade to "use the
@@ -212,8 +162,8 @@ func (s *RecoveryService) RunReset(ctx context.Context, slug string, patch Reset
 			"slug", slug,
 			"branch", patch.BranchName,
 		)
-		return result, &RecoveryError{
-			Kind:    RecoveryErrOther,
+		return result, &workspace.ResetError{
+			Kind:    workspace.ResetErrOther,
 			Message: "lock function not configured",
 		}
 	}
@@ -222,8 +172,8 @@ func (s *RecoveryService) RunReset(ctx context.Context, slug string, patch Reset
 			"slug", slug,
 			"branch", patch.BranchName,
 		)
-		return result, &RecoveryError{
-			Kind:    RecoveryErrOther,
+		return result, &workspace.ResetError{
+			Kind:    workspace.ResetErrOther,
 			Message: "origin fetch is not configured",
 		}
 	}
@@ -231,8 +181,8 @@ func (s *RecoveryService) RunReset(ctx context.Context, slug string, patch Reset
 	// 23-REQ-3: Take the workspace lock.
 	unlock, ok := s.LockFunc(slug)
 	if !ok {
-		return result, &RecoveryError{
-			Kind:    RecoveryErrBusy,
+		return result, &workspace.ResetError{
+			Kind:    workspace.ResetErrBusy,
 			Message: "workspace is busy",
 		}
 	}
@@ -251,8 +201,8 @@ func (s *RecoveryService) RunReset(ctx context.Context, slug string, patch Reset
 				"branch", patch.BranchName,
 				"error", authErr.Error(),
 			)
-			return result, &RecoveryError{
-				Kind:    RecoveryErrCredentialFailed,
+			return result, &workspace.ResetError{
+				Kind:    workspace.ResetErrCredentialFailed,
 				Message: "failed to resolve origin credentials",
 				Cause:   authErr,
 			}
@@ -264,8 +214,8 @@ func (s *RecoveryService) RunReset(ctx context.Context, slug string, patch Reset
 	if fetchErr := s.Fetch(ctx, repoPath, patch.BranchName, originAuth); fetchErr != nil {
 		// 23-REQ-3.3: Classify "branch not found on origin".
 		if errors.Is(fetchErr, ErrBranchNotOnOrigin) {
-			return result, &RecoveryError{
-				Kind:    RecoveryErrMissingOnOrigin,
+			return result, &workspace.ResetError{
+				Kind:    workspace.ResetErrMissingOnOrigin,
 				Message: "branch does not exist on origin",
 			}
 		}
@@ -275,8 +225,8 @@ func (s *RecoveryService) RunReset(ctx context.Context, slug string, patch Reset
 			"branch", patch.BranchName,
 			"error", fetchErr.Error(),
 		)
-		return result, &RecoveryError{
-			Kind:    RecoveryErrFetchFailed,
+		return result, &workspace.ResetError{
+			Kind:    workspace.ResetErrFetchFailed,
 			Message: "origin fetch failed",
 			Cause:   fetchErr,
 		}
@@ -285,8 +235,8 @@ func (s *RecoveryService) RunReset(ctx context.Context, slug string, patch Reset
 	// Create a git runner for the trunk.
 	runner, err := s.NewGitRunner(repoPath)
 	if err != nil {
-		return result, &RecoveryError{
-			Kind:    RecoveryErrOther,
+		return result, &workspace.ResetError{
+			Kind:    workspace.ResetErrOther,
 			Message: fmt.Sprintf("failed to create git runner for %s", slug),
 			Cause:   err,
 		}
@@ -299,8 +249,8 @@ func (s *RecoveryService) RunReset(ctx context.Context, slug string, patch Reset
 	forkTip, forkErr := resolveRefSHA(ctx, runner, originRef)
 	if forkErr != nil {
 		// This shouldn't happen after a successful fetch, but handle it.
-		return result, &RecoveryError{
-			Kind:    RecoveryErrMissingOnOrigin,
+		return result, &workspace.ResetError{
+			Kind:    workspace.ResetErrMissingOnOrigin,
 			Message: "branch does not exist on origin",
 		}
 	}
@@ -318,7 +268,7 @@ func (s *RecoveryService) RunReset(ctx context.Context, slug string, patch Reset
 		if recErr := moveBranchToFork(ctx, runner, repoPath, slug, patch, forkTip, zeroSHA); recErr != nil {
 			return result, recErr
 		}
-		result.Action = ActionCreated
+		result.Action = workspace.ResetActionCreated
 
 		slog.Info("recovery: created patch branch from origin",
 			"slug", slug,
@@ -327,13 +277,13 @@ func (s *RecoveryService) RunReset(ctx context.Context, slug string, patch Reset
 		)
 	} else if localTip == forkTip {
 		// Rule: Same commit → none.
-		result.Action = ActionNone
+		result.Action = workspace.ResetActionNone
 	} else {
 		// Rule: Check if local tip is a strict ancestor of fork tip (fast-forward).
 		isAnc, ancErr := runner.IsAncestor(ctx, localTip, forkTip)
 		if ancErr != nil {
-			return result, &RecoveryError{
-				Kind:    RecoveryErrOther,
+			return result, &workspace.ResetError{
+				Kind:    workspace.ResetErrOther,
 				Message: fmt.Sprintf("failed to check ancestry for %s", patch.BranchName),
 				Cause:   ancErr,
 			}
@@ -344,7 +294,7 @@ func (s *RecoveryService) RunReset(ctx context.Context, slug string, patch Reset
 			if recErr := moveBranchToFork(ctx, runner, repoPath, slug, patch, forkTip, localTip); recErr != nil {
 				return result, recErr
 			}
-			result.Action = ActionFastForwarded
+			result.Action = workspace.ResetActionFastForwarded
 
 			slog.Info("recovery: fast-forwarded patch branch",
 				"slug", slug,
@@ -358,8 +308,8 @@ func (s *RecoveryService) RunReset(ctx context.Context, slug string, patch Reset
 
 			// 23-REQ-3.6: Write the backup ref (force-write, overwriting any earlier backup).
 			if err := runner.UpdateRef(ctx, backupRef, localTip); err != nil {
-				return result, &RecoveryError{
-					Kind:    RecoveryErrOther,
+				return result, &workspace.ResetError{
+					Kind:    workspace.ResetErrOther,
 					Message: fmt.Sprintf("failed to write backup ref for %s", patch.BranchName),
 					Cause:   err,
 				}
@@ -371,7 +321,7 @@ func (s *RecoveryService) RunReset(ctx context.Context, slug string, patch Reset
 				return result, recErr
 			}
 
-			result.Action = ActionReplaced
+			result.Action = workspace.ResetActionReplaced
 			result.ReplacedSHA = localTip
 
 			slog.Info("recovery: replaced patch branch",
@@ -404,7 +354,7 @@ func (s *RecoveryService) RunReset(ctx context.Context, slug string, patch Reset
 	// ===========================================================
 	// 23-REQ-4.3: Rebuild trigger (the same enqueue as sync)
 	// ===========================================================
-	branchMoved := result.Action == ActionCreated || result.Action == ActionFastForwarded || result.Action == ActionReplaced
+	branchMoved := result.Action == workspace.ResetActionCreated || result.Action == workspace.ResetActionFastForwarded || result.Action == workspace.ResetActionReplaced
 	rebuildEligible := patch.Status == PatchStatusActive || patch.Status == PatchStatusConflict
 
 	if branchMoved && rebuildEligible && s.Queue != nil && autoRebuildEnabledFor(s.GetVariable, slug) {
@@ -440,9 +390,9 @@ func moveBranchToFork(
 	ctx context.Context,
 	runner GitRunner,
 	repoPath, slug string,
-	patch ResetPatchInfo,
+	patch workspace.ResetPatchInfo,
 	forkTip, expectedOld string,
-) *RecoveryError {
+) *workspace.ResetError {
 	branchRef := "refs/heads/" + patch.BranchName
 
 	moved, _, err := casMoveRef(ctx, runner, repoPath, branchRef, forkTip, expectedOld)
@@ -466,12 +416,12 @@ func moveBranchToFork(
 //
 //   - the ref now holds a different commit than expectedOld, or exists when it
 //     was to be created, or is gone when it was to be moved: another writer got
-//     in first, RecoveryErrRefChanged;
+//     in first, workspace.ResetErrRefChanged;
 //   - the ref is as it was, or the ref cannot be read again: the write failed
-//     for another reason, RecoveryErrOther.
+//     for another reason, workspace.ResetErrOther.
 //
 // expectedOld is zeroSHA for a create.
-func classifyCASError(ctx context.Context, runner GitRunner, branchName, branchRef, expectedOld string, err error) *RecoveryError {
+func classifyCASError(ctx context.Context, runner GitRunner, branchName, branchRef, expectedOld string, err error) *workspace.ResetError {
 	current, found, lookupErr := lookupRefSHA(ctx, runner, branchRef)
 	if lookupErr != nil {
 		slog.Error("recovery: cannot re-read patch branch after a failed update",
@@ -483,16 +433,19 @@ func classifyCASError(ctx context.Context, runner GitRunner, branchName, branchR
 		create := expectedOld == zeroSHA
 		changed := (found && (create || current != expectedOld)) || (!found && !create)
 		if changed {
-			return &RecoveryError{
-				Kind:    RecoveryErrRefChanged,
+			return &workspace.ResetError{
+				Kind:    workspace.ResetErrRefChanged,
 				Message: "patch branch changed during reset; retry",
 			}
 		}
 	}
 
-	return &RecoveryError{
-		Kind:    RecoveryErrOther,
+	return &workspace.ResetError{
+		Kind:    workspace.ResetErrOther,
 		Message: fmt.Sprintf("failed to update patch branch %s", branchName),
 		Cause:   err,
 	}
 }
+
+// RecoveryService is the workspace package's recovery extension.
+var _ workspace.RecoveryHook = (*RecoveryService)(nil)

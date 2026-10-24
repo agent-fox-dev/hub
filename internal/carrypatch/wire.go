@@ -15,7 +15,7 @@ import (
 	"github.com/txsvc/apikit"
 
 	"github.com/agent-fox-dev/hub/internal/gitcmd"
-	"github.com/agent-fox-dev/hub/internal/upstream"
+	"github.com/agent-fox-dev/hub/internal/workspace"
 )
 
 // ===========================================================================
@@ -409,7 +409,7 @@ func PurgeExpiredDeletedPatches(ctx context.Context, store PatchStore) (int64, e
 // upstream remote is expected to be pre-configured via carry-patch clone
 // setup (spec 15).
 func DefaultFetchFunc() FetchFunc {
-	return upstream.Fetch
+	return workspace.FetchUpstream
 }
 
 // DefaultSingleBranchFetch returns a SingleBranchFetchFunc that fetches a
@@ -512,12 +512,12 @@ func DefaultPushIntegrationFunc(resolveOriginAuth func(slug string) (transport.A
 //
 // Resolution order:
 //  1. refs/remotes/upstream/HEAD — the upstream default branch, recorded by
-//     the fetch (package upstream). This is the intended base.
+//     the fetch (workspace.FetchUpstream). This is the intended base.
 //  2. refs/remotes/upstream/<branch> — the workspace branch, when the
 //     tracking ref for it exists (fetched by an older hub version).
 //  3. FETCH_HEAD — legacy fallback; only correct for single-branch upstreams.
 func resolveUpstreamBase(ctx context.Context, git GitRunner, workspaceBranch string) (string, error) {
-	candidates := []string{upstream.HeadRef}
+	candidates := []string{workspace.UpstreamHeadRef}
 	if workspaceBranch != "" {
 		candidates = append(candidates, "refs/remotes/upstream/"+workspaceBranch)
 	}
@@ -600,13 +600,4 @@ func CarryPatchPermissions() []apikit.Permission {
 // FormatGroupKey returns the group_key for rebuild job serialization.
 func FormatGroupKey(workspaceSlug, integrationBranch string) string {
 	return workspaceSlug + ":" + integrationBranch
-}
-
-// SplitGroupKey parses a group_key into workspace_slug and integration_branch.
-func SplitGroupKey(groupKey string) (workspaceSlug, integrationBranch string) {
-	parts := strings.SplitN(groupKey, ":", 2)
-	if len(parts) == 2 {
-		return parts[0], parts[1]
-	}
-	return groupKey, ""
 }

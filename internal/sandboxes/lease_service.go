@@ -15,6 +15,7 @@ import (
 	"github.com/txsvc/apikit"
 
 	"github.com/agent-fox-dev/hub/internal/audit"
+	"github.com/agent-fox-dev/hub/internal/wsaccess"
 )
 
 // LeaseConfig is what the lease service is built from.
@@ -130,7 +131,7 @@ func (s *LeaseService) profileByName(name string) (ValidatedProfile, bool) {
 // leaseCreator names who issued a lease: "admin" for an admin token, the user's
 // ID for every other credential.
 func leaseCreator(auth *apikit.AuthInfo) string {
-	if isAdmin(auth) {
+	if wsaccess.IsAdmin(auth) {
 		return "admin"
 	}
 	return auth.UserID

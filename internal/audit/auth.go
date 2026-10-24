@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"errors"
 	"net/http"
-	"slices"
 
 	"github.com/labstack/echo/v4"
 	"github.com/txsvc/apikit"
@@ -12,28 +11,13 @@ import (
 	"github.com/agent-fox-dev/hub/internal/wsaccess"
 )
 
-// isAdmin reports whether the credential is an admin token.
-func isAdmin(auth *apikit.AuthInfo) bool {
-	return auth.CredentialType == "admin_token"
-}
-
-// isPAT reports whether the credential is a Personal Access Token.
-func isPAT(auth *apikit.AuthInfo) bool {
-	return auth.CredentialType == "pat"
-}
-
 // hasScope reports whether the credential has any of the given scopes.
 // Admin and api_key credentials are implicitly granted all scopes.
 func hasScope(auth *apikit.AuthInfo, scopes ...string) bool {
-	if isAdmin(auth) || auth.CredentialType == "api_key" {
+	if wsaccess.IsAdmin(auth) || auth.CredentialType == "api_key" {
 		return true
 	}
-	for _, s := range scopes {
-		if slices.Contains(auth.Permissions, s) {
-			return true
-		}
-	}
-	return false
+	return wsaccess.HasScope(auth, scopes...)
 }
 
 // hasSessionsWrite reports whether the credential has sessions:write scope.
@@ -210,7 +194,7 @@ func refused(writeErr error) error {
 // stop.
 func checkWorkspaceAccess(c echo.Context, auth *apikit.AuthInfo, slug string, sqliteDB *sql.DB) error {
 	// Admin tokens bypass all workspace checks.
-	if isAdmin(auth) {
+	if wsaccess.IsAdmin(auth) {
 		return nil
 	}
 
@@ -258,7 +242,7 @@ func checkWorkspaceAccess(c echo.Context, auth *apikit.AuthInfo, slug string, sq
 	} else {
 		// No SQLite DB available — deny access for generic PATs without
 		// workspace scope since we cannot verify workspace membership.
-		if isPAT(auth) {
+		if wsaccess.IsPAT(auth) {
 			return refused(apikit.WriteAPIErrorWithType(c, http.StatusForbidden,
 				"token owner does not have write access to this workspace",
 				"workspace_access_denied"))

@@ -32,7 +32,7 @@ func TestSmoke_OwnerPushesBranch_TS_38_53(t *testing.T) {
 	}
 	oldStore, oldEmitter, oldMetrics := defaultAuditStore, defaultAuditEmitter, defaultAuditMetrics
 	store := audit.NewStore(duck)
-	SetAuditDependencies(store, audit.NewEmitter(store), nil)
+	SetAuditDependencies(store, audit.NewEmitter(store, nil), nil)
 	t.Cleanup(func() { SetAuditDependencies(oldStore, oldEmitter, oldMetrics) })
 	oldRoot := defaultWorkspaceRoot
 	defaultWorkspaceRoot = t.TempDir()

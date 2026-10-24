@@ -90,7 +90,7 @@ func newWebhookSmoke(t *testing.T) *webhookSmoke {
 			return workspace.ResolveUpstreamAuthMethod(store, slug)
 		},
 		GetVariable: store.GetVariableValue,
-		Audit:       audit.NewEmitterWithBroadcast(auditStore, sse),
+		Audit:       audit.NewEmitter(auditStore, sse),
 		Secrets:     store,
 		ExternalURL: "https://hub.example.com",
 	}
@@ -684,4 +684,18 @@ func TestAfHubBinary_PrunesTheLogAndMountsTheIngress_TS_32_68(t *testing.T) {
 	if strings.Contains(second.out.String(), "pruning the delivery log failed") {
 		t.Errorf("af-hub logged a failed pass:\n%s", second.out)
 	}
+}
+
+// repoRoot is the directory of the hub module.
+func repoRoot(t *testing.T) string {
+	t.Helper()
+	out, err := exec.Command("go", "env", "GOMOD").Output()
+	if err != nil {
+		t.Fatalf("go env GOMOD: %v", err)
+	}
+	mod := strings.TrimSpace(string(out))
+	if mod == "" || mod == os.DevNull {
+		t.Fatal("not inside a Go module")
+	}
+	return filepath.Dir(mod)
 }

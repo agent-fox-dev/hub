@@ -275,15 +275,6 @@ func (r *GitRunner) Run(ctx context.Context, args ...string) (string, error) {
 	return stdout, nil
 }
 
-// ErrRefNotFound is a sentinel error returned by LsRemote when git exits with
-// code 2, indicating the queried ref does not exist on the remote.
-//
-// The exit code 2 is produced by git ls-remote's --exit-code flag, which
-// distinguishes a genuinely missing ref (exit 2) from connection or
-// authentication failures (exit 1 or other non-zero). Callers should use
-// errors.Is(err, ErrRefNotFound) to test for this condition.
-var ErrRefNotFound = errors.New("ref not found on remote")
-
 // MergeConflictError is returned by MergeTree when the dry-run merge detects
 // conflicts. ConflictingFiles lists the file paths that have merge conflicts.
 type MergeConflictError struct {
@@ -306,33 +297,6 @@ type RebaseConflictError struct {
 func (e *RebaseConflictError) Error() string {
 	return fmt.Sprintf("rebase conflict in %d file(s): %s",
 		len(e.ConflictingFiles), strings.Join(e.ConflictingFiles, ", "))
-}
-
-// LsRemote executes git ls-remote --exit-code with three-way exit code
-// discrimination: exit 0 returns (stdout, nil), exit 2 returns
-// ("", ErrRefNotFound), exit 1 returns ("", *GitError).
-func (r *GitRunner) LsRemote(ctx context.Context, remote, ref string) (string, error) {
-	args := []string{"ls-remote", "--exit-code", endOfOptions, remote, ref}
-
-	stdout, exitCode, stderr, err := r.runWithExitCode(ctx, args...)
-	if err != nil {
-		return "", err
-	}
-
-	switch exitCode {
-	case 0:
-		return stdout, nil
-	case 2:
-		// Exit code 2: ref not found on remote.
-		return "", ErrRefNotFound
-	default:
-		// All other non-zero exit codes: return *GitError.
-		return "", &GitError{
-			Args:     args,
-			ExitCode: exitCode,
-			Stderr:   stderr,
-		}
-	}
 }
 
 // MergeTree executes git merge-tree --write-tree for read-only conflict
@@ -495,39 +459,6 @@ func (r *GitRunner) hasRebaseState() bool {
 func (r *GitRunner) RebaseAbort(ctx context.Context) error {
 	_, err := r.Run(ctx, "rebase", "--abort")
 	return err
-}
-
-// RebaseContinue runs `git rebase --continue` to resume a paused rebase
-// after conflicts have been resolved (e.g. by rerere).
-//
-// On success, returns (newHeadSHA, nil) where newHeadSHA is the 40-character
-// hex SHA of the resulting HEAD commit.
-//
-// If git rebase --continue exits with a non-zero code, returns ("", *GitError)
-// wrapping the exit code and stderr.
-func (r *GitRunner) RebaseContinue(ctx context.Context) (string, error) {
-	// Use -c core.editor=true to avoid editor prompts during rebase --continue.
-	args := []string{"-c", "core.editor=true", "rebase", "--continue"}
-
-	stdout, exitCode, stderr, err := r.runWithExitCode(ctx, args...)
-	if err != nil {
-		return "", err
-	}
-
-	if exitCode != 0 {
-		return "", &GitError{
-			Args:     args,
-			ExitCode: exitCode,
-			Stderr:   stderr + stdout,
-		}
-	}
-
-	newSHA, err := r.RevParse(ctx, "HEAD")
-	if err != nil {
-		return "", err
-	}
-
-	return newSHA, nil
 }
 
 // RevParse executes git rev-parse --verify to resolve a single ref to its

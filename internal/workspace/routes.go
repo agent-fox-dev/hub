@@ -45,7 +45,7 @@ var recordedAPIKitRoutes []*echo.Route
 func MountWorkspaceHandlers(s *apikit.Server, db *apikit.DB, extraPerms ...apikit.Permission) error {
 	// Initialise the workspaces table schema, then the token workspace
 	// bindings (spec 33), before anything is registered.
-	if err := initSchema(db.SqlDB); err != nil {
+	if err := InitSchema(db.SqlDB); err != nil {
 		return fmt.Errorf("workspace schema init: %w", err)
 	}
 	if err := wsaccess.InitBindingSchema(db.SqlDB); err != nil {

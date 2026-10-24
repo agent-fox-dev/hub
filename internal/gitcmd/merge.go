@@ -92,12 +92,3 @@ func (r *GitRunner) MergeNoFF(ctx context.Context, branch, message string) (stri
 
 	return newSHA, nil
 }
-
-// MergeAbort runs `git merge --abort` to abort a merge that is in progress.
-//
-// Returns nil on success, or a *GitError wrapping the exit code and stderr
-// on failure (including when no merge is in progress).
-func (r *GitRunner) MergeAbort(ctx context.Context) error {
-	_, err := r.Run(ctx, "merge", "--abort")
-	return err
-}

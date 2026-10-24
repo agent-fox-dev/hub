@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/agent-fox-dev/aflib/issuex"
+	"github.com/agent-fox-dev/hub/internal/scrub"
 	"github.com/labstack/echo/v4"
 	"github.com/txsvc/apikit"
 )
@@ -87,7 +88,7 @@ func mapForgeError(err error, kind credentialKind, token string) *forgeError {
 		forgeStatus = he.Status
 	}
 	answer := func(status int, errorType, text string) *forgeError {
-		return &forgeError{status: status, errorType: errorType, message: scrub(text, token), forgeStatus: forgeStatus}
+		return &forgeError{status: status, errorType: errorType, message: scrub.Text(text, token), forgeStatus: forgeStatus}
 	}
 
 	switch {

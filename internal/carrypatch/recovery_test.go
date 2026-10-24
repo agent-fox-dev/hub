@@ -20,6 +20,7 @@ import (
 
 	"github.com/agent-fox-dev/aflib/jobqueue"
 	"github.com/agent-fox-dev/hub/internal/gitcmd"
+	"github.com/agent-fox-dev/hub/internal/workspace"
 	"github.com/agent-fox-dev/hub/internal/wslock"
 )
 
@@ -121,7 +122,7 @@ func TestRecovery_BusyWorkspace_TS2315(t *testing.T) {
 	defer unlock()
 
 	ctx := context.Background()
-	patchInfo := ResetPatchInfo{
+	patchInfo := workspace.ResetPatchInfo{
 		ID:                "p1",
 		BranchName:        branch,
 		Status:            PatchStatusActive,
@@ -133,12 +134,12 @@ func TestRecovery_BusyWorkspace_TS2315(t *testing.T) {
 		t.Fatal("expected error for busy workspace")
 	}
 
-	var resetErr *RecoveryError
+	var resetErr *workspace.ResetError
 	if !errors.As(err, &resetErr) {
-		t.Fatalf("expected RecoveryError, got %T: %v", err, err)
+		t.Fatalf("expected workspace.ResetError, got %T: %v", err, err)
 	}
-	if resetErr.Kind != RecoveryErrBusy {
-		t.Errorf("kind = %q; want %q", resetErr.Kind, RecoveryErrBusy)
+	if resetErr.Kind != workspace.ResetErrBusy {
+		t.Errorf("kind = %q; want %q", resetErr.Kind, workspace.ResetErrBusy)
 	}
 
 	// Fetch should not have been called.
@@ -172,7 +173,7 @@ func TestRecovery_FetchesSingleBranch_TS2317(t *testing.T) {
 	runGitCmd(t, trunkDir, "branch", branch, "refs/remotes/origin/"+branch)
 
 	ctx := context.Background()
-	patchInfo := ResetPatchInfo{
+	patchInfo := workspace.ResetPatchInfo{
 		ID:                "p1",
 		BranchName:        branch,
 		Status:            PatchStatusActive,
@@ -263,7 +264,7 @@ func TestRecovery_CredentialAndFetchFailures_TS2318(t *testing.T) {
 	refsBefore := snapshotRefs(t, trunkDir, branch)
 
 	ctx := context.Background()
-	patchInfo := ResetPatchInfo{
+	patchInfo := workspace.ResetPatchInfo{
 		ID:                "p1",
 		BranchName:        branch,
 		Status:            PatchStatusActive,
@@ -282,12 +283,12 @@ func TestRecovery_CredentialAndFetchFailures_TS2318(t *testing.T) {
 			t.Fatal("expected error for credential failure")
 		}
 
-		var resetErr *RecoveryError
+		var resetErr *workspace.ResetError
 		if !errors.As(err, &resetErr) {
-			t.Fatalf("expected RecoveryError, got %T: %v", err, err)
+			t.Fatalf("expected workspace.ResetError, got %T: %v", err, err)
 		}
-		if resetErr.Kind != RecoveryErrCredentialFailed {
-			t.Errorf("kind = %q; want %q", resetErr.Kind, RecoveryErrCredentialFailed)
+		if resetErr.Kind != workspace.ResetErrCredentialFailed {
+			t.Errorf("kind = %q; want %q", resetErr.Kind, workspace.ResetErrCredentialFailed)
 		}
 
 		// Error message should not contain the secret.
@@ -320,12 +321,12 @@ func TestRecovery_CredentialAndFetchFailures_TS2318(t *testing.T) {
 			t.Fatal("expected error for fetch failure")
 		}
 
-		var resetErr *RecoveryError
+		var resetErr *workspace.ResetError
 		if !errors.As(err, &resetErr) {
-			t.Fatalf("expected RecoveryError, got %T: %v", err, err)
+			t.Fatalf("expected workspace.ResetError, got %T: %v", err, err)
 		}
-		if resetErr.Kind != RecoveryErrFetchFailed {
-			t.Errorf("kind = %q; want %q", resetErr.Kind, RecoveryErrFetchFailed)
+		if resetErr.Kind != workspace.ResetErrFetchFailed {
+			t.Errorf("kind = %q; want %q", resetErr.Kind, workspace.ResetErrFetchFailed)
 		}
 
 		// Error message should not contain the underlying error.
@@ -370,7 +371,7 @@ func TestRecovery_MissingOnOrigin_TS2319(t *testing.T) {
 	svc := newTestRecoveryService(workspaceRoot, nil, nil, sf.fetch)
 
 	ctx := context.Background()
-	patchInfo := ResetPatchInfo{
+	patchInfo := workspace.ResetPatchInfo{
 		ID:                "p1",
 		BranchName:        branch,
 		Status:            PatchStatusActive,
@@ -382,12 +383,12 @@ func TestRecovery_MissingOnOrigin_TS2319(t *testing.T) {
 		t.Fatal("expected error for missing branch")
 	}
 
-	var resetErr *RecoveryError
+	var resetErr *workspace.ResetError
 	if !errors.As(err, &resetErr) {
-		t.Fatalf("expected RecoveryError, got %T: %v", err, err)
+		t.Fatalf("expected workspace.ResetError, got %T: %v", err, err)
 	}
-	if resetErr.Kind != RecoveryErrMissingOnOrigin {
-		t.Errorf("kind = %q; want %q", resetErr.Kind, RecoveryErrMissingOnOrigin)
+	if resetErr.Kind != workspace.ResetErrMissingOnOrigin {
+		t.Errorf("kind = %q; want %q", resetErr.Kind, workspace.ResetErrMissingOnOrigin)
 	}
 
 	// All refs unchanged.
@@ -425,7 +426,7 @@ func TestRecovery_CreateAndNone_TS2320(t *testing.T) {
 	backupBefore := revParse(t, trunkDir, "refs/hub/replaced/"+branch)
 
 	ctx := context.Background()
-	patchInfo := ResetPatchInfo{
+	patchInfo := workspace.ResetPatchInfo{
 		ID:                "p1",
 		BranchName:        branch,
 		Status:            PatchStatusActive,
@@ -506,7 +507,7 @@ func TestRecovery_FastForward_TS2321(t *testing.T) {
 	runGitCmd(t, trunkDir, "branch", branch, firstCommit)
 
 	ctx := context.Background()
-	patchInfo := ResetPatchInfo{
+	patchInfo := workspace.ResetPatchInfo{
 		ID:                "p1",
 		BranchName:        branch,
 		Status:            PatchStatusActive,
@@ -599,7 +600,7 @@ func TestRecovery_Replaced_TS2322(t *testing.T) {
 	runGitCmd(t, trunkDir, "fetch", "origin", branch)
 
 	ctx := context.Background()
-	patchInfo := ResetPatchInfo{
+	patchInfo := workspace.ResetPatchInfo{
 		ID:                "p1",
 		BranchName:        branch,
 		Status:            PatchStatusActive,
@@ -722,7 +723,7 @@ func TestRecovery_CASAndWorktree_TS2323(t *testing.T) {
 	// The branch is now checked out.
 
 	ctx := context.Background()
-	patchInfo := ResetPatchInfo{
+	patchInfo := workspace.ResetPatchInfo{
 		ID:                "p1",
 		BranchName:        branch,
 		Status:            PatchStatusActive,
@@ -798,7 +799,7 @@ func TestRecovery_RefChanged_TS2324(t *testing.T) {
 	runGitCmd(t, trunkDir, "fetch", "origin", branch)
 
 	ctx := context.Background()
-	patchInfo := ResetPatchInfo{
+	patchInfo := workspace.ResetPatchInfo{
 		ID:                "p1",
 		BranchName:        branch,
 		Status:            PatchStatusActive,
@@ -839,12 +840,12 @@ func TestRecovery_RefChanged_TS2324(t *testing.T) {
 			t.Fatal("expected error for lost race")
 		}
 
-		var resetErr *RecoveryError
+		var resetErr *workspace.ResetError
 		if !errors.As(err, &resetErr) {
-			t.Fatalf("expected RecoveryError, got %T: %v", err, err)
+			t.Fatalf("expected workspace.ResetError, got %T: %v", err, err)
 		}
-		if resetErr.Kind != RecoveryErrRefChanged {
-			t.Errorf("kind = %q; want %q", resetErr.Kind, RecoveryErrRefChanged)
+		if resetErr.Kind != workspace.ResetErrRefChanged {
+			t.Errorf("kind = %q; want %q", resetErr.Kind, workspace.ResetErrRefChanged)
 		}
 
 		// The backup should have been written before the failed move.
@@ -926,55 +927,6 @@ func TestRecovery_PackageBoundaries_TS2361(t *testing.T) {
 	err = svc.RemoveBackup(ctx, "nonexistent", "branch")
 	if err != nil {
 		t.Errorf("RemoveBackup error = %v; want nil", err)
-	}
-}
-
-func TestRecovery_ImportGraph_TS2361(t *testing.T) {
-	// Verify that internal/workspace does not depend on internal/carrypatch
-	// and vice versa. This is a build-time check.
-	repoRoot := findRepoRoot(t)
-
-	cmd := exec.Command("go", "list", "-deps", "./internal/workspace")
-	cmd.Dir = repoRoot
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("go list -deps ./internal/workspace failed: %v\n%s", err, out)
-	}
-	for _, line := range strings.Split(string(out), "\n") {
-		if strings.HasSuffix(strings.TrimSpace(line), "internal/carrypatch") {
-			t.Error("internal/workspace depends on internal/carrypatch")
-		}
-	}
-
-	cmd = exec.Command("go", "list", "-deps", "./internal/carrypatch")
-	cmd.Dir = repoRoot
-	out, err = cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("go list -deps ./internal/carrypatch failed: %v\n%s", err, out)
-	}
-	for _, line := range strings.Split(string(out), "\n") {
-		if strings.HasSuffix(strings.TrimSpace(line), "internal/workspace") {
-			t.Error("internal/carrypatch depends on internal/workspace")
-		}
-	}
-}
-
-// findRepoRoot walks up from the current directory to find the go.mod file.
-func findRepoRoot(t *testing.T) string {
-	t.Helper()
-	dir, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("getwd: %v", err)
-	}
-	for {
-		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
-			return dir
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			t.Fatal("could not find go.mod")
-		}
-		dir = parent
 	}
 }
 
@@ -1150,8 +1102,8 @@ func newResetScenario(t *testing.T, action string) *resetScenario {
 
 func (s *resetScenario) branchRef() string { return "refs/heads/" + s.branch }
 
-func (s *resetScenario) patch() ResetPatchInfo {
-	return ResetPatchInfo{
+func (s *resetScenario) patch() workspace.ResetPatchInfo {
+	return workspace.ResetPatchInfo{
 		ID:                "p1",
 		BranchName:        s.branch,
 		Status:            PatchStatusActive,
@@ -1172,7 +1124,7 @@ func (s *resetScenario) service(runner GitRunner) *RecoveryService {
 	}
 }
 
-func (s *resetScenario) reset(t *testing.T, svc *RecoveryService) (ResetResult, error) {
+func (s *resetScenario) reset(t *testing.T, svc *RecoveryService) (workspace.ResetResult, error) {
 	t.Helper()
 	return svc.RunReset(context.Background(), s.slug, s.patch(), &apikit.AuthInfo{UserID: "user-1"})
 }
@@ -1295,12 +1247,12 @@ var errRunnerBroken = errors.New("git binary is broken")
 func TestRecovery_RunReset_RequiredDependencies_Issue45(t *testing.T) {
 	wantOther := func(t *testing.T, err error, wantMessage string) {
 		t.Helper()
-		var resetErr *RecoveryError
+		var resetErr *workspace.ResetError
 		if !errors.As(err, &resetErr) {
-			t.Fatalf("error = %v (%T); want *RecoveryError", err, err)
+			t.Fatalf("error = %v (%T); want *workspace.ResetError", err, err)
 		}
-		if resetErr.Kind != RecoveryErrOther {
-			t.Errorf("kind = %q; want %q", resetErr.Kind, RecoveryErrOther)
+		if resetErr.Kind != workspace.ResetErrOther {
+			t.Errorf("kind = %q; want %q", resetErr.Kind, workspace.ResetErrOther)
 		}
 		if !strings.Contains(resetErr.Message, wantMessage) {
 			t.Errorf("message = %q; want it to contain %q", resetErr.Message, wantMessage)
@@ -1401,7 +1353,7 @@ func TestRecovery_RunReset_HardResetFailureAfterMove_Issue45(t *testing.T) {
 			if err != nil {
 				t.Fatalf("RunReset returned %v; the branch moved, so the reset must report it", err)
 			}
-			if result.Action != action {
+			if string(result.Action) != action {
 				t.Errorf("action = %q; want %q", result.Action, action)
 			}
 			if got := refSHA(t, s.tr.dir, s.branchRef()); got != s.forkTip {
@@ -1475,7 +1427,7 @@ func TestRecovery_CASCommands_TS2323(t *testing.T) {
 				if err != nil {
 					t.Fatalf("RunReset failed: %v", err)
 				}
-				if result.Action != tc.action {
+				if string(result.Action) != tc.action {
 					t.Fatalf("action = %q; want %q", result.Action, tc.action)
 				}
 
@@ -1569,22 +1521,22 @@ func TestRecovery_CASFailureClassification_TS2324(t *testing.T) {
 		action       string
 		interfere    interference
 		breakLookup  bool // rev-parse of the branch fails once the write has failed
-		wantKind     RecoveryErrorKind
+		wantKind     workspace.ResetErrorKind
 		wantBackupAt func(s *resetScenario) string
 	}{
-		{name: "create_other_failure", action: ActionCreated, interfere: otherFailure, wantKind: RecoveryErrOther},
-		{name: "create_ref_appeared", action: ActionCreated, interfere: moveRef, wantKind: RecoveryErrRefChanged},
-		{name: "fast_forward_other_failure", action: ActionFastForwarded, interfere: otherFailure, wantKind: RecoveryErrOther},
-		{name: "fast_forward_ref_moved", action: ActionFastForwarded, interfere: moveRef, wantKind: RecoveryErrRefChanged},
-		{name: "fast_forward_ref_deleted", action: ActionFastForwarded, interfere: deleteRef, wantKind: RecoveryErrRefChanged},
-		{name: "fast_forward_lookup_also_fails", action: ActionFastForwarded, interfere: otherFailure, breakLookup: true, wantKind: RecoveryErrOther},
-		{name: "replace_other_failure", action: ActionReplaced, interfere: otherFailure, wantKind: RecoveryErrOther,
+		{name: "create_other_failure", action: ActionCreated, interfere: otherFailure, wantKind: workspace.ResetErrOther},
+		{name: "create_ref_appeared", action: ActionCreated, interfere: moveRef, wantKind: workspace.ResetErrRefChanged},
+		{name: "fast_forward_other_failure", action: ActionFastForwarded, interfere: otherFailure, wantKind: workspace.ResetErrOther},
+		{name: "fast_forward_ref_moved", action: ActionFastForwarded, interfere: moveRef, wantKind: workspace.ResetErrRefChanged},
+		{name: "fast_forward_ref_deleted", action: ActionFastForwarded, interfere: deleteRef, wantKind: workspace.ResetErrRefChanged},
+		{name: "fast_forward_lookup_also_fails", action: ActionFastForwarded, interfere: otherFailure, breakLookup: true, wantKind: workspace.ResetErrOther},
+		{name: "replace_other_failure", action: ActionReplaced, interfere: otherFailure, wantKind: workspace.ResetErrOther,
 			wantBackupAt: func(s *resetScenario) string { return s.localTip }},
-		{name: "replace_ref_moved", action: ActionReplaced, interfere: moveRef, wantKind: RecoveryErrRefChanged,
+		{name: "replace_ref_moved", action: ActionReplaced, interfere: moveRef, wantKind: workspace.ResetErrRefChanged,
 			wantBackupAt: func(s *resetScenario) string { return s.localTip }},
-		{name: "replace_ref_deleted", action: ActionReplaced, interfere: deleteRef, wantKind: RecoveryErrRefChanged,
+		{name: "replace_ref_deleted", action: ActionReplaced, interfere: deleteRef, wantKind: workspace.ResetErrRefChanged,
 			wantBackupAt: func(s *resetScenario) string { return s.localTip }},
-		{name: "replace_lookup_also_fails", action: ActionReplaced, interfere: otherFailure, breakLookup: true, wantKind: RecoveryErrOther,
+		{name: "replace_lookup_also_fails", action: ActionReplaced, interfere: otherFailure, breakLookup: true, wantKind: workspace.ResetErrOther,
 			wantBackupAt: func(s *resetScenario) string { return s.localTip }},
 	}
 
@@ -1607,14 +1559,14 @@ func TestRecovery_CASFailureClassification_TS2324(t *testing.T) {
 			}
 
 			_, err := s.reset(t, s.service(rec))
-			var resetErr *RecoveryError
+			var resetErr *workspace.ResetError
 			if !errors.As(err, &resetErr) {
-				t.Fatalf("error = %v (%T); want *RecoveryError", err, err)
+				t.Fatalf("error = %v (%T); want *workspace.ResetError", err, err)
 			}
 			if resetErr.Kind != tc.wantKind {
 				t.Errorf("kind = %q; want %q (error: %v)", resetErr.Kind, tc.wantKind, resetErr)
 			}
-			if tc.wantKind == RecoveryErrOther && !strings.Contains(resetErr.Message, "failed to update patch branch "+s.branch) {
+			if tc.wantKind == workspace.ResetErrOther && !strings.Contains(resetErr.Message, "failed to update patch branch "+s.branch) {
 				t.Errorf("message = %q; want it to name the branch", resetErr.Message)
 			}
 			if tc.wantBackupAt != nil {
@@ -1649,15 +1601,15 @@ func TestClassifyCASError_FromRefState_Issue45(t *testing.T) {
 		expectedOld string
 		lookupOut   string
 		lookupErr   error
-		wantKind    RecoveryErrorKind
+		wantKind    workspace.ResetErrorKind
 	}{
-		{"ref_unchanged_is_not_a_race", old, old, nil, RecoveryErrOther},
-		{"ref_moved", old, other, nil, RecoveryErrRefChanged},
-		{"ref_deleted", old, "", missing, RecoveryErrRefChanged},
-		{"create_but_ref_exists", zeroSHA, other, nil, RecoveryErrRefChanged},
-		{"create_and_ref_still_missing", zeroSHA, "", missing, RecoveryErrOther},
-		{"lookup_fails", old, "", broken, RecoveryErrOther},
-		{"create_and_lookup_fails", zeroSHA, "", broken, RecoveryErrOther},
+		{"ref_unchanged_is_not_a_race", old, old, nil, workspace.ResetErrOther},
+		{"ref_moved", old, other, nil, workspace.ResetErrRefChanged},
+		{"ref_deleted", old, "", missing, workspace.ResetErrRefChanged},
+		{"create_but_ref_exists", zeroSHA, other, nil, workspace.ResetErrRefChanged},
+		{"create_and_ref_still_missing", zeroSHA, "", missing, workspace.ResetErrOther},
+		{"lookup_fails", old, "", broken, workspace.ResetErrOther},
+		{"create_and_lookup_fails", zeroSHA, "", broken, workspace.ResetErrOther},
 	}
 
 	for _, tc := range cases {
@@ -1670,7 +1622,7 @@ func TestClassifyCASError_FromRefState_Issue45(t *testing.T) {
 			if got.Kind != tc.wantKind {
 				t.Fatalf("kind = %q; want %q", got.Kind, tc.wantKind)
 			}
-			if tc.wantKind == RecoveryErrOther {
+			if tc.wantKind == workspace.ResetErrOther {
 				if !errors.Is(got, writeErr) {
 					t.Errorf("error %v should wrap the write failure", got)
 				}

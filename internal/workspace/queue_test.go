@@ -30,11 +30,6 @@ func TestJobQueue_Initialization(t *testing.T) {
 		t.Fatal("NewJobQueue returned nil; job queue not implemented")
 	}
 
-	// Worker count must match the configured value.
-	if got := q.WorkerCount(); got != 4 {
-		t.Errorf("WorkerCount() = %d; want 4", got)
-	}
-
 	// The queue should be backed by a buffered Go channel (non-nil).
 	if q.jobs == nil {
 		t.Error("jobs channel is nil; queue should be backed by a buffered channel")
@@ -56,8 +51,8 @@ func TestJobQueue_CustomWorkerCount(t *testing.T) {
 		t.Fatal("NewJobQueue returned nil; job queue not implemented")
 	}
 
-	if got := q.WorkerCount(); got != 2 {
-		t.Errorf("WorkerCount() = %d; want 2", got)
+	if q.workers != 2 {
+		t.Errorf("workers = %d; want 2", q.workers)
 	}
 }
 

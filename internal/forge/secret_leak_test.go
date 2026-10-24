@@ -67,7 +67,7 @@ func leakAuditStore(t *testing.T) (*sql.DB, audit.Emitter) {
 	if err := audit.InitSchema(auditDB); err != nil {
 		t.Fatal(err)
 	}
-	return auditDB, audit.NewEmitter(audit.NewStore(auditDB))
+	return auditDB, audit.NewEmitter(audit.NewStore(auditDB), nil)
 }
 
 // probeSecret runs the workspace widgets of e, which has the secret, through everything that could

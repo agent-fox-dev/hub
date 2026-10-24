@@ -178,12 +178,12 @@ func TestSafetyVarPrecedence_Integration(t *testing.T) {
 	// reject the file:// protocol.
 	bareRepo := initBareTestRepo(t)
 	ctx := context.Background()
-	out, lsErr := runner.LsRemote(ctx, "file://"+bareRepo, "refs/heads/main")
+	out, lsErr := runner.Run(ctx, "ls-remote", "--exit-code", "file://"+bareRepo, "refs/heads/main")
 	if lsErr != nil {
-		t.Errorf("LsRemote with file:// URL should succeed when hardcoded "+
+		t.Errorf("ls-remote with file:// URL should succeed when hardcoded "+
 			"GIT_ALLOW_PROTOCOL wins, got error: %v", lsErr)
 	}
 	if out == "" {
-		t.Error("LsRemote should return non-empty output for existing ref")
+		t.Error("ls-remote should return non-empty output for existing ref")
 	}
 }

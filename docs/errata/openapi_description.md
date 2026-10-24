@@ -107,10 +107,9 @@ case, which is not the "standard sync response" 16-REQ-5.E4 calls for. The hook
 now reports "not handled" for a non-carry-patch workspace and the request falls
 through to the standard sync flow.
 
-`RegisterSyncRoutes` still mounts the carry-patch logic as a standalone route
-for the carrypatch package's own tests. The server binary does not use it --
-only the hook -- because the workspace record is rendered by the workspace
-package. That is documented on the function.
+The carrypatch package's own tests mount the carry-patch logic as a standalone
+route through a test helper. The server binary reaches it only through the
+hook, because the workspace record is rendered by the workspace package.
 
 Covered by `internal/workspace/sync_carry_patch_response_test.go`.
 

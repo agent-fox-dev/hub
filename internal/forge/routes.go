@@ -101,7 +101,7 @@ func (h *handlers) authorize(c echo.Context, acc access) (req *request, err erro
 	}
 	if !acc.allowed(auth) {
 		msg := fmt.Sprintf("PAT requires forge:%s scope", acc.verb)
-		if !isPAT(auth) {
+		if !wsaccess.IsPAT(auth) {
 			msg = fmt.Sprintf("credential type %q may not %s a workspace's forge", auth.CredentialType, acc.verb)
 		}
 		return nil, apikit.WriteAPIError(c, http.StatusForbidden, msg)

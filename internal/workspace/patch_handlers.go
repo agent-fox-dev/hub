@@ -30,7 +30,7 @@ var validPatchStatuses = map[string]bool{
 // requests it is the zero-based index of the failing element (only the 400
 // message gets the "patch[i]: " prefix).
 func mapBranchResolveError(c echo.Context, err error, slug, branch string, batchIndex int) error {
-	kind, classified := classifyBranchResolveError(err)
+	kind, classified := BranchResolveKindOf(err)
 	switch {
 	case classified && kind == BranchResolveKindNotFound:
 		msg := "branch does not exist in repository or on origin"
@@ -71,7 +71,7 @@ func requirePatchReadScope(c echo.Context) *apikit.AuthInfo {
 		_ = respondError(c, http.StatusUnauthorized, "authentication required")
 		return nil
 	}
-	if isPAT(auth) && !hasScope(auth, "patches:read", "patches:write") {
+	if wsaccess.IsPAT(auth) && !wsaccess.HasScope(auth, "patches:read", "patches:write") {
 		_ = respondError(c, http.StatusForbidden, "PAT requires patches:read scope")
 		return nil
 	}
@@ -87,7 +87,7 @@ func requirePatchWriteScope(c echo.Context) *apikit.AuthInfo {
 		_ = respondError(c, http.StatusUnauthorized, "authentication required")
 		return nil
 	}
-	if isPAT(auth) && !hasScope(auth, "patches:write") {
+	if wsaccess.IsPAT(auth) && !wsaccess.HasScope(auth, "patches:write") {
 		_ = respondError(c, http.StatusForbidden, "PAT requires patches:write scope")
 		return nil
 	}

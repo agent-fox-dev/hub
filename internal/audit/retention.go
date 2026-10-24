@@ -67,44 +67,6 @@ func envIntOr(name string, defaultVal int) int {
 	return v
 }
 
-// StartRetentionWorker starts the background retention worker goroutine.
-// It executes an immediate retention run before the first ticker fires,
-// then repeats every hour. The goroutine exits when the context is cancelled.
-func StartRetentionWorker(ctx context.Context, store Store, sqliteDB *sql.DB, m *Metrics) {
-	// Extract the DuckDB *sql.DB from the Store.
-	ds, ok := store.(*duckDBStore)
-	if !ok {
-		slog.Error("retention worker: store is not a *duckDBStore, cannot start")
-		return
-	}
-	duckDB := ds.db
-
-	cfg := LoadRetentionConfigFromEnv()
-
-	// Execute an immediate retention run before the first ticker fires
-	// (19-REQ-12.1, 19-REQ-12.E2).
-	runRetentionWithLogging(ctx, duckDB, sqliteDB, cfg, m)
-
-	ticker := time.NewTicker(1 * time.Hour)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			runRetentionWithLogging(ctx, duckDB, sqliteDB, cfg, m)
-		}
-	}
-}
-
-// runRetentionWithLogging runs a retention pass and logs any error.
-func runRetentionWithLogging(ctx context.Context, duckDB *sql.DB, sqliteDB *sql.DB, cfg RetentionConfig, m *Metrics) {
-	if err := RunRetention(ctx, duckDB, sqliteDB, cfg, m); err != nil {
-		slog.Error("retention run failed", "error", err)
-	}
-}
-
 // retentionStepName maps step numbers to label names for afhub_retention_errors_total.
 var retentionStepNames = []string{
 	"pre_step_force_close",      // 0: pre-step

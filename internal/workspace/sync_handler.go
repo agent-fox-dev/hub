@@ -79,7 +79,7 @@ func handleSyncWorkspace(db *sql.DB) echo.HandlerFunc {
 		if auth == nil {
 			return respondError(c, http.StatusUnauthorized, "authentication required")
 		}
-		if isPAT(auth) && !hasScope(auth, "workspaces:sync") {
+		if wsaccess.IsPAT(auth) && !wsaccess.HasScope(auth, "workspaces:sync") {
 			return respondError(c, http.StatusForbidden,
 				"PAT requires workspaces:sync scope to sync workspaces")
 		}

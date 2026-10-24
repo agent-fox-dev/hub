@@ -14,7 +14,6 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/transport"
 
 	"github.com/agent-fox-dev/hub/internal/carrypatch"
-	"github.com/agent-fox-dev/hub/internal/upstream"
 	"github.com/agent-fox-dev/hub/internal/workspace"
 )
 
@@ -92,7 +91,7 @@ func newCoFixture(t *testing.T, states []coWtState) *coFixture {
 	coGit(t, f.root, "clone", f.upstreamSrc, f.trunk)
 	coGit(t, f.trunk, "remote", "rename", "origin", "upstream")
 	// A hub workspace never has a symbolic refs/remotes/upstream/HEAD (it is
-	// written by upstream.Fetch as a plain ref); drop the one clone created.
+	// written by workspace.FetchUpstream as a plain ref); drop the one clone created.
 	coGit(t, f.trunk, "remote", "set-head", "upstream", "-d")
 	coGit(t, f.trunk, "config", "user.name", "Test")
 	coGit(t, f.trunk, "config", "user.email", "test@example.com")
@@ -169,12 +168,12 @@ func (f *coFixture) runGoGitPaths(t *testing.T) {
 		t.Errorf("trunk not clean after hard reset: %q", st)
 	}
 
-	// upstream.Fetch: upstream gains a commit, the fetch brings it in.
+	// FetchUpstream: upstream gains a commit, the fetch brings it in.
 	newSHA := coCommit(t, f.upstreamSrc, "upstream.txt", "new upstream\n", "upstream advance")
-	if err := upstream.Fetch(ctx, f.trunk, nil); err != nil {
-		t.Fatalf("upstream.Fetch: %v", err)
+	if err := workspace.FetchUpstream(ctx, f.trunk, nil); err != nil {
+		t.Fatalf("FetchUpstream: %v", err)
 	}
-	if got := coGit(t, f.trunk, "rev-parse", upstream.HeadRef); got != newSHA {
+	if got := coGit(t, f.trunk, "rev-parse", workspace.UpstreamHeadRef); got != newSHA {
 		t.Errorf("fetched upstream HEAD = %s, want %s", got, newSHA)
 	}
 

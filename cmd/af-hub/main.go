@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"flag"
 	"log"
 	"log/slog"
@@ -21,11 +20,11 @@ import (
 	"github.com/agent-fox-dev/hub/internal/carrypatch"
 	"github.com/agent-fox-dev/hub/internal/forge"
 	"github.com/agent-fox-dev/hub/internal/gitserver"
-	"github.com/agent-fox-dev/hub/internal/health"
 	"github.com/agent-fox-dev/hub/internal/merge"
 	"github.com/agent-fox-dev/hub/internal/sandboxes"
 	"github.com/agent-fox-dev/hub/internal/secrets"
 	"github.com/agent-fox-dev/hub/internal/workspace"
+	"github.com/agent-fox-dev/hub/internal/wsaccess"
 	"github.com/agent-fox-dev/hub/internal/wslock"
 )
 
@@ -104,6 +103,16 @@ func main() {
 	// variables (CHECK_COMMAND) in the merge handler.
 	store := secrets.NewStore(database.SqlDB)
 
+	// The two git credentials of a workspace, resolved from its secrets on
+	// every use: the one of its own repository (origin) and, on a carry-patch
+	// fork, the one of the upstream it tracks.
+	resolveOriginAuth := func(slug string) (transport.AuthMethod, error) {
+		return workspace.ResolveCloneAuth(store, slug)
+	}
+	resolveUpstreamAuth := func(slug string) (transport.AuthMethod, error) {
+		return workspace.ResolveUpstreamAuthMethod(store, slug)
+	}
+
 	// Create and register the merge handler with all cross-spec dependencies
 	// wired:
 	//   - GitRunner (spec 11): created on-demand via runnerForWorkspace
@@ -114,12 +123,10 @@ func main() {
 	mergeHandler := &merge.Handler{
 		WorkspaceRoot: cfg.Workspace.Path,
 		Fetch:         merge.DefaultFetchFunc(),
-		ResolveAuth: func(slug string) (transport.AuthMethod, error) {
-			return workspace.ResolveCloneAuth(store, slug)
-		},
-		GetVariable: store.GetVariableValue,
-		Executor:    &merge.ShellExecutor{},
-		Rollback:    merge.DefaultRollbackFunc(),
+		ResolveAuth:   resolveOriginAuth,
+		GetVariable:   store.GetVariableValue,
+		Executor:      &merge.ShellExecutor{},
+		Rollback:      merge.DefaultRollbackFunc(),
 	}
 
 	if err := merge.RegisterHandler(mergeQueue, mergeHandler); err != nil {
@@ -134,20 +141,16 @@ func main() {
 	cpGitRunnerFactory := carrypatch.NewGitRunnerFactory()
 
 	rebuildHandler := &carrypatch.RebuildHandler{
-		DB:            database.SqlDB,
-		Queue:         mergeQueue,
-		Logger:        slog.Default(),
-		WorkspaceRoot: cfg.Workspace.Path,
-		NewGitRunner:  cpGitRunnerFactory,
-		Fetch:         carrypatch.DefaultFetchFunc(),
-		ResolveAuth: func(slug string) (transport.AuthMethod, error) {
-			return workspace.ResolveUpstreamAuthMethod(store, slug)
-		},
-		GetVariable: store.GetVariableValue,
-		PatchStore:  cpPatchStore,
-		PushIntegration: carrypatch.DefaultPushIntegrationFunc(func(slug string) (transport.AuthMethod, error) {
-			return workspace.ResolveCloneAuth(store, slug)
-		}),
+		DB:              database.SqlDB,
+		Queue:           mergeQueue,
+		Logger:          slog.Default(),
+		WorkspaceRoot:   cfg.Workspace.Path,
+		NewGitRunner:    cpGitRunnerFactory,
+		Fetch:           carrypatch.DefaultFetchFunc(),
+		ResolveAuth:     resolveUpstreamAuth,
+		GetVariable:     store.GetVariableValue,
+		PatchStore:      cpPatchStore,
+		PushIntegration: carrypatch.DefaultPushIntegrationFunc(resolveOriginAuth),
 	}
 
 	if err := carrypatch.RegisterRebuildJob(mergeQueue, rebuildHandler); err != nil {
@@ -219,9 +222,9 @@ func main() {
 	}
 	sseMgr := audit.NewSSEManager(sseMaxConns)
 	go sseMgr.Run(ctx.Done())
-	auditEmitter := audit.NewEmitterWithBroadcast(auditStore, sseMgr)
+	auditEmitter := audit.NewEmitter(auditStore, sseMgr)
 
-	server := apikit.NewServer(cfg, health.NewDBChecker(database))
+	server := apikit.NewServer(cfg, func() error { return database.Ping(context.Background()) })
 
 	// Register the personal org hook before MountWorkspaceHandlers so that
 	// the hook is captured when MountHandlers wires up user creation paths
@@ -260,10 +263,6 @@ func main() {
 	// Record every request refused because of a token binding as
 	// hub.token.bound_refused, at most once per token per minute.
 	boundtoken.Install(auditEmitter)
-	// MountWorkspaceHandlers has created the binding table; the sweep revokes
-	// and removes bindings whose workspace or token is gone, at once and then
-	// every hour, and never holds up the start.
-	go boundtoken.StartBindingSweep(ctx, database.SqlDB)
 
 	// Wire audit dependencies into workspace package for force-close on
 	// archive/delete (19-REQ-8, 19-REQ-9).
@@ -288,10 +287,6 @@ func main() {
 	// Register unified audit query, transcript, and SSE streaming routes (spec 18).
 	audit.RegisterAuditQueryRoutes(auditAPI, auditStore, sseMgr, database.SqlDB)
 
-	// Start the retention worker goroutine. Runs an immediate retention
-	// pass then repeats hourly (19-REQ-12.1). Exits cleanly on ctx cancel.
-	go audit.StartRetentionWorker(ctx, auditStore, database.SqlDB, metrics)
-
 	// Reconcile any workspaces stuck in 'syncing' state from a previous
 	// unclean shutdown. Must run after schema init and before the HTTP server
 	// starts accepting requests (13-REQ-5.1). Aborts startup on failure
@@ -313,13 +308,11 @@ func main() {
 		log.Fatal(err)
 	}
 
-	// Create the table of the forge deliveries at every start, then keep it small: the retention
-	// loop prunes it at once and every hour, until the hub stops (spec 32). It is started here, once
-	// the table exists, and not left to be called by nothing.
+	// Create the table of the forge deliveries at every start (spec 32); the
+	// maintenance loop below keeps it small.
 	if err := forge.InitSchema(database.SqlDB); err != nil {
 		log.Fatal(err)
 	}
-	go forge.StartDeliveryRetention(ctx, database.SqlDB)
 
 	// Create the sandbox lease table at every start, whether or not sandboxes
 	// are enabled, so that turning them off and on again keeps the history
@@ -332,6 +325,25 @@ func main() {
 	if err := sandboxes.MigrateLeaseExpiry(database.SqlDB); err != nil {
 		log.Fatal(err)
 	}
+
+	// Housekeeping: at once and then every hour, until the hub stops. Every
+	// table the tasks touch exists by now. The audit retention applies the
+	// AF_AUDIT_* and AF_SESSION_* limits to the audit database, the delivery
+	// pruner keeps the forge delivery log to seven days, and the binding sweep
+	// revokes and removes token bindings whose workspace or token is gone.
+	retention := audit.LoadRetentionConfigFromEnv()
+	go runMaintenance(ctx, maintenanceInterval, []maintenanceTask{
+		{name: "audit retention", run: func(ctx context.Context) error {
+			return audit.RunRetention(ctx, auditDB, database.SqlDB, retention, metrics)
+		}},
+		{name: "forge delivery log", run: func(ctx context.Context) error {
+			_, err := forge.PruneDeliveries(ctx, database.SqlDB)
+			return err
+		}},
+		{name: "token binding sweep", run: func(ctx context.Context) error {
+			return wsaccess.SweepBindings(ctx, database.SqlDB)
+		}},
+	})
 
 	// Mount merge REST API routes (POST/GET/DELETE /merges, POST /rebase).
 	// Uses NewMergeAPIConfig to wire BatchRebase to the real GitRunner-backed
@@ -373,17 +385,13 @@ func main() {
 	// event. The same configuration serves the ingress below, which receives the forge's
 	// deliveries.
 	forgeConfig := forge.Config{
-		DB: database.SqlDB,
-		ResolveOriginAuth: func(slug string) (transport.AuthMethod, error) {
-			return workspace.ResolveCloneAuth(store, slug)
-		},
-		ResolveUpstreamAuth: func(slug string) (transport.AuthMethod, error) {
-			return workspace.ResolveUpstreamAuthMethod(store, slug)
-		},
-		GetVariable: store.GetVariableValue,
-		Audit:       auditEmitter,
-		Secrets:     store,
-		ExternalURL: server.ExternalURL(),
+		DB:                  database.SqlDB,
+		ResolveOriginAuth:   resolveOriginAuth,
+		ResolveUpstreamAuth: resolveUpstreamAuth,
+		GetVariable:         store.GetVariableValue,
+		Audit:               auditEmitter,
+		Secrets:             store,
+		ExternalURL:         server.ExternalURL(),
 	}
 	forge.RegisterRoutes(server.APIGroup(), forgeConfig)
 
@@ -394,60 +402,31 @@ func main() {
 	// Mount carry-patch REST API routes.
 	cpAPI := server.APIGroup()
 
-	carrypatch.RegisterRebuildRoutes(cpAPI, carrypatch.RebuildAPIConfig{
-		DB:          database.SqlDB,
-		Queue:       mergeQueue,
-		GetVariable: store.GetVariableValue,
-		Audit:       auditEmitter,
-	})
-
-	carrypatch.RegisterRerereRoutes(cpAPI, carrypatch.RerereAPIConfig{
-		DB:            database.SqlDB,
-		WorkspaceRoot: cfg.Workspace.Path,
-		NewGitRunner:  cpGitRunnerFactory,
-	})
-
-	// Rebuild rollback resets the integration branch to the SHA recorded
-	// before a completed rebuild. Backs `afc rebuild rollback`.
-	carrypatch.RegisterRebuildRollbackRoutes(cpAPI, carrypatch.RebuildRollbackAPIConfig{
+	// Rebuild submission and history, rollback, rebuild preview, rerere and the
+	// patch-status dashboard.
+	carrypatch.RegisterRoutes(cpAPI, carrypatch.APIConfig{
 		DB:            database.SqlDB,
 		Queue:         mergeQueue,
 		WorkspaceRoot: cfg.Workspace.Path,
 		NewGitRunner:  cpGitRunnerFactory,
+		PatchStore:    cpPatchStore,
+		GetVariable:   store.GetVariableValue,
 		Audit:         auditEmitter,
-	})
-
-	carrypatch.RegisterRebuildPreviewRoutes(cpAPI, carrypatch.RebuildPreviewAPIConfig{
-		DB:            database.SqlDB,
-		WorkspaceRoot: cfg.Workspace.Path,
-		NewGitRunner:  cpGitRunnerFactory,
-		PatchStore:    cpPatchStore,
-	})
-
-	carrypatch.RegisterPatchStatusRoutes(cpAPI, carrypatch.PatchStatusAPIConfig{
-		DB:            database.SqlDB,
-		Queue:         mergeQueue,
-		WorkspaceRoot: cfg.Workspace.Path,
-		PatchStore:    cpPatchStore,
 	})
 
 	// Register the recovery hook so that GET /patches/:id can read
 	// replaced_sha, DELETE /patches/:id can clean up backup refs, and
 	// POST /patches/:id/reset-to-origin can move a patch branch to the
 	// fork's current tip (23-REQ-9.3).
-	workspace.RegisterRecoveryHook(&recoveryHookAdapter{
-		svc: &carrypatch.RecoveryService{
-			NewGitRunner:  cpGitRunnerFactory,
-			WorkspaceRoot: cfg.Workspace.Path,
-			GetVariable:   store.GetVariableValue,
-			ResolveAuth: func(slug string) (transport.AuthMethod, error) {
-				return workspace.ResolveCloneAuth(store, slug)
-			},
-			Fetch:      carrypatch.DefaultSingleBranchFetch(),
-			LockFunc:   wslock.TryLock,
-			PatchStore: cpPatchStore,
-			Queue:      mergeQueue,
-		},
+	workspace.RegisterRecoveryHook(&carrypatch.RecoveryService{
+		NewGitRunner:  cpGitRunnerFactory,
+		WorkspaceRoot: cfg.Workspace.Path,
+		GetVariable:   store.GetVariableValue,
+		ResolveAuth:   resolveOriginAuth,
+		Fetch:         carrypatch.DefaultSingleBranchFetch(),
+		LockFunc:      wslock.TryLock,
+		PatchStore:    cpPatchStore,
+		Queue:         mergeQueue,
 	})
 
 	// Register the branch-check hook so that POST /patches validates and
@@ -459,9 +438,7 @@ func main() {
 		cpGitRunnerFactory,
 		cfg.Workspace.Path,
 		store.GetVariableValue,
-		func(slug string) (transport.AuthMethod, error) {
-			return workspace.ResolveCloneAuth(store, slug)
-		},
+		resolveOriginAuth,
 		carrypatch.DefaultSingleBranchFetch(),
 	))
 
@@ -469,33 +446,26 @@ func main() {
 	// workspaces delegates to the carry-patch sync extension (16-REQ-5).
 	workspace.RegisterCarryPatchSyncHook(carrypatch.NewCarryPatchSyncHook(
 		carrypatch.SyncAPIConfig{
-			DB:            database.SqlDB,
-			Queue:         mergeQueue,
-			WorkspaceRoot: cfg.Workspace.Path,
-			NewGitRunner:  cpGitRunnerFactory,
-			Fetch:         carrypatch.DefaultFetchFunc(),
-			ResolveAuth: func(slug string) (transport.AuthMethod, error) {
-				return workspace.ResolveUpstreamAuthMethod(store, slug)
-			},
-			GetVariable: store.GetVariableValue,
-			PatchStore:  cpPatchStore,
-			FetchOrigin: carrypatch.DefaultFetchOriginFunc(),
-			ResolveOriginAuth: func(slug string) (transport.AuthMethod, error) {
-				return workspace.ResolveCloneAuth(store, slug)
-			},
-			Audit: auditEmitter,
+			DB:                database.SqlDB,
+			Queue:             mergeQueue,
+			WorkspaceRoot:     cfg.Workspace.Path,
+			NewGitRunner:      cpGitRunnerFactory,
+			Fetch:             carrypatch.DefaultFetchFunc(),
+			ResolveAuth:       resolveUpstreamAuth,
+			GetVariable:       store.GetVariableValue,
+			PatchStore:        cpPatchStore,
+			FetchOrigin:       carrypatch.DefaultFetchOriginFunc(),
+			ResolveOriginAuth: resolveOriginAuth,
+			Audit:             auditEmitter,
 		},
 	))
 
 	// Register the carry-patch pre-receive hook for push control (22-REQ-9.1).
 	// In origin mode it rejects or forwards hub pushes to registered patch
 	// branches; in hub mode it lets them through (mirroring is post-push).
-	cloneAuthResolver := func(slug string) (transport.AuthMethod, error) {
-		return workspace.ResolveCloneAuth(store, slug)
-	}
 	gitserver.RegisterPreReceiveHook(carrypatch.NewPreReceiveHook(carrypatch.PreReceiveHookDeps{
 		GetVariable:   store.GetVariableValue,
-		ResolveAuth:   cloneAuthResolver,
+		ResolveAuth:   resolveOriginAuth,
 		WorkspaceRoot: cfg.Workspace.Path,
 	}))
 
@@ -508,7 +478,7 @@ func main() {
 		mergeQueue,
 		store.GetVariableValue,
 		carrypatch.PostPushMirrorDeps{
-			ResolveAuth:   cloneAuthResolver,
+			ResolveAuth:   resolveOriginAuth,
 			WorkspaceRoot: cfg.Workspace.Path,
 			Audit:         auditEmitter,
 		},
@@ -580,74 +550,4 @@ func runServer(start func() error, shutdown func()) error {
 	err := start()
 	shutdown()
 	return err
-}
-
-// ===========================================================================
-// recoveryHookAdapter: bridges carrypatch.RecoveryService → workspace.RecoveryHook
-// ===========================================================================
-
-// recoveryHookAdapter adapts a carrypatch.RecoveryService to the
-// workspace.RecoveryHook interface. It converts between the carrypatch-local
-// types and the workspace-local types, keeping the two packages independent.
-type recoveryHookAdapter struct {
-	svc *carrypatch.RecoveryService
-}
-
-func (a *recoveryHookAdapter) ReadReplacedSHA(ctx context.Context, slug, branch string) (string, bool, error) {
-	return a.svc.ReadReplacedSHA(ctx, slug, branch)
-}
-
-func (a *recoveryHookAdapter) RemoveBackup(ctx context.Context, slug, branch string) error {
-	return a.svc.RemoveBackup(ctx, slug, branch)
-}
-
-func (a *recoveryHookAdapter) RunReset(ctx context.Context, slug string, patch workspace.ResetPatchInfo, auth *apikit.AuthInfo) (workspace.ResetResult, error) {
-	// Convert workspace.ResetPatchInfo → carrypatch.ResetPatchInfo.
-	cpPatch := carrypatch.ResetPatchInfo{
-		ID:                patch.ID,
-		BranchName:        patch.BranchName,
-		Status:            patch.Status,
-		IntegrationBranch: patch.IntegrationBranch,
-	}
-
-	cpResult, err := a.svc.RunReset(ctx, slug, cpPatch, auth)
-	if err != nil {
-		// Convert carrypatch.RecoveryError → workspace.ResetError.
-		var cpErr *carrypatch.RecoveryError
-		if errors.As(err, &cpErr) {
-			kindMap := map[carrypatch.RecoveryErrorKind]workspace.ResetErrorKind{
-				carrypatch.RecoveryErrBusy:             workspace.ResetErrBusy,
-				carrypatch.RecoveryErrMissingOnOrigin:  workspace.ResetErrMissingOnOrigin,
-				carrypatch.RecoveryErrFetchFailed:      workspace.ResetErrFetchFailed,
-				carrypatch.RecoveryErrCredentialFailed: workspace.ResetErrCredentialFailed,
-				carrypatch.RecoveryErrRefChanged:       workspace.ResetErrRefChanged,
-				carrypatch.RecoveryErrOther:            workspace.ResetErrOther,
-			}
-			wsKind, ok := kindMap[cpErr.Kind]
-			if !ok {
-				wsKind = workspace.ResetErrOther
-			}
-			return workspace.ResetResult{}, &workspace.ResetError{
-				Kind:    wsKind,
-				Message: cpErr.Message,
-				Cause:   cpErr.Cause,
-			}
-		}
-		// Unclassified error.
-		return workspace.ResetResult{}, &workspace.ResetError{
-			Kind:    workspace.ResetErrOther,
-			Message: err.Error(),
-			Cause:   err,
-		}
-	}
-
-	// Convert carrypatch.ResetResult → workspace.ResetResult.
-	return workspace.ResetResult{
-		Action:           workspace.ResetAction(cpResult.Action),
-		LocalSHA:         cpResult.LocalSHA,
-		OriginSHA:        cpResult.OriginSHA,
-		ReplacedSHA:      cpResult.ReplacedSHA,
-		RebuildTriggered: cpResult.RebuildTriggered,
-		RebuildJobID:     cpResult.RebuildJobID,
-	}, nil
 }

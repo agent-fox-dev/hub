@@ -50,7 +50,7 @@ func (e *rebuildConflictError) Error() string {
 //  1. Parse payload and resolve upstream auth.
 //  2. Take the workspace lock and set the rebuild-active guard. Phase one,
 //     under the lock: fetch from the upstream remote, resolve the upstream
-//     base commit, migrate a legacy _rebuild_temp, remove stale rebuild
+//     base commit, remove stale rebuild
 //     worktrees and configure rerere; then release the lock.
 //  3. Create a detached per-run worktree at the upstream base
 //     (<workspace_root>/<slug>/rebuild/<job id>). The trunk checkout is never
@@ -156,9 +156,6 @@ func (h *RebuildHandler) HandleRebuildJob(ctx context.Context, rawPayload json.R
 	if err != nil {
 		return nil, true, &TransientError{Err: err}
 	}
-
-	// 7. One-time migration of a legacy _rebuild_temp branch (01-REQ-2.6, 2.7).
-	h.migrateLegacyRebuildBranch(ctx, trunk, slug, repoPath)
 
 	// 8. Remove worktrees left behind by a crashed run and prune their
 	// registrations, before this run creates its own (01-REQ-8.2).
@@ -523,77 +520,6 @@ const rebuildCleanupTimeout = 2 * time.Minute
 // would not start under it.
 func cleanupContext(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.WithoutCancel(ctx), rebuildCleanupTimeout)
-}
-
-// legacyRebuildBranch is the temporary branch pre-upgrade rebuilds checked
-// out in the trunk. It is never created any more.
-const legacyRebuildBranch = "_rebuild_temp"
-
-// localRefExists reports whether the exact ref exists in the trunk. It uses
-// for-each-ref and compares the printed name, so a prefix match or an empty
-// answer never counts as existing.
-func localRefExists(ctx context.Context, trunk GitRunner, ref string) bool {
-	out, err := trunk.Run(ctx, "for-each-ref", "--format=%(refname)", ref)
-	return err == nil && strings.TrimSpace(out) == ref
-}
-
-// migrateLegacyRebuildBranch is Exception B (01-REQ-2.6, 2.7): the one-time
-// removal of a _rebuild_temp branch left by a pre-upgrade run. If the
-// trunk's HEAD is on it, any in-progress cherry-pick, merge or rebase is
-// aborted (best effort) and HEAD is moved to the workspace branch, else the
-// local branch origin/HEAD points to, else detached; only then is the branch
-// deleted. It runs in phase one under the lock and never fails the run.
-func (h *RebuildHandler) migrateLegacyRebuildBranch(ctx context.Context, trunk GitRunner, slug, trunkPath string) {
-	legacyRef := "refs/heads/" + legacyRebuildBranch
-	if !localRefExists(ctx, trunk, legacyRef) {
-		return
-	}
-
-	if head, err := trunk.Run(ctx, "symbolic-ref", "-q", "HEAD"); err == nil && strings.TrimSpace(head) == legacyRef {
-		for _, op := range []string{"cherry-pick", "merge", "rebase"} {
-			_, _ = trunk.Run(ctx, op, "--abort")
-		}
-		if target := h.legacyMigrationTarget(ctx, trunk, slug); target != "" {
-			if _, err := trunk.Run(ctx, "checkout", "--force", target); err != nil {
-				h.logWarn("cannot move trunk off legacy rebuild branch",
-					"slug", slug, "path", trunkPath, "branch", legacyRebuildBranch, "target", target, "error", err)
-				return
-			}
-			h.logInfo("moved trunk off legacy rebuild branch", "slug", slug, "path", trunkPath, "branch", legacyRebuildBranch, "target", target)
-		} else {
-			h.logWarn("no workspace branch or origin/HEAD found locally; detaching trunk HEAD from legacy rebuild branch",
-				"slug", slug, "path", trunkPath, "branch", legacyRebuildBranch)
-			if _, err := trunk.Run(ctx, "checkout", "--detach", "--force"); err != nil {
-				h.logWarn("cannot detach trunk from legacy rebuild branch",
-					"slug", slug, "path", trunkPath, "branch", legacyRebuildBranch, "error", err)
-				return
-			}
-		}
-	}
-
-	if _, err := trunk.Run(ctx, "branch", "-D", legacyRebuildBranch); err != nil {
-		h.logWarn("cannot delete legacy rebuild branch", "slug", slug, "path", trunkPath, "branch", legacyRebuildBranch, "error", err)
-		return
-	}
-	h.logInfo("removed legacy rebuild branch", "slug", slug, "path", trunkPath, "branch", legacyRebuildBranch)
-}
-
-// legacyMigrationTarget picks the branch the trunk moves to when it is found
-// on the legacy rebuild branch: the workspace's configured branch if it
-// exists locally, else the short name of refs/remotes/origin/HEAD if that
-// exists locally. It returns "" when neither does.
-func (h *RebuildHandler) legacyMigrationTarget(ctx context.Context, trunk GitRunner, slug string) string {
-	if wb := workspaceBranch(h.DB, slug); wb != "" && wb != legacyRebuildBranch &&
-		localRefExists(ctx, trunk, "refs/heads/"+wb) {
-		return wb
-	}
-	if out, err := trunk.Run(ctx, "symbolic-ref", "--short", "-q", "refs/remotes/origin/HEAD"); err == nil {
-		short := strings.TrimPrefix(strings.TrimSpace(out), "origin/")
-		if short != "" && short != legacyRebuildBranch && localRefExists(ctx, trunk, "refs/heads/"+short) {
-			return short
-		}
-	}
-	return ""
 }
 
 // syncTrunkCheckout is Exception A (01-REQ-2.5). It runs under the phase-two

@@ -49,7 +49,7 @@ func startSmokeHub(t *testing.T) (*httptest.Server, *apikit.DB, string) {
 		t.Fatal(err)
 	}
 	store := audit.NewStore(duck)
-	emitter := audit.NewEmitter(store)
+	emitter := audit.NewEmitter(store, nil)
 
 	// The wiring of cmd/af-hub: workspace handlers first, then audit.
 	server := apikit.NewServer(cfg, func() error { return nil })

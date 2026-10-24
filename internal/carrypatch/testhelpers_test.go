@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"github.com/go-git/go-git/v5/plumbing/transport"
 	"io"
 	"log/slog"
 	"net/http"
@@ -17,6 +16,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/go-git/go-git/v5/plumbing/transport"
 
 	"github.com/labstack/echo/v4"
 	"github.com/txsvc/apikit"
@@ -569,7 +570,7 @@ func newRebuildTestEnv(t *testing.T) *rebuildTestEnv {
 	api := e.Group("/api/v1")
 	api.Use(rebuildTestAuthMiddleware())
 
-	cfg := RebuildAPIConfig{
+	cfg := APIConfig{
 		DB:    db,
 		Queue: q,
 		GetVariable: func(scope, slug, key string) (string, error) {
@@ -580,7 +581,7 @@ func newRebuildTestEnv(t *testing.T) *rebuildTestEnv {
 			return "", nil
 		},
 	}
-	RegisterRebuildRoutes(api, cfg)
+	RegisterRoutes(api, cfg)
 
 	return &rebuildTestEnv{
 		echo:  e,
@@ -620,7 +621,7 @@ func newRebuildTestEnvWithStrategy(t *testing.T, strategy string) *rebuildTestEn
 	api := e.Group("/api/v1")
 	api.Use(rebuildTestAuthMiddleware())
 
-	cfg := RebuildAPIConfig{
+	cfg := APIConfig{
 		DB:    db,
 		Queue: q,
 		GetVariable: func(scope, slug, key string) (string, error) {
@@ -630,7 +631,7 @@ func newRebuildTestEnvWithStrategy(t *testing.T, strategy string) *rebuildTestEn
 			return "", nil
 		},
 	}
-	RegisterRebuildRoutes(api, cfg)
+	RegisterRoutes(api, cfg)
 
 	return &rebuildTestEnv{
 		echo:  e,
@@ -841,21 +842,16 @@ func newFullTestEnv(t *testing.T) *fullTestEnv {
 	api := e.Group("/api/v1")
 	api.Use(rebuildTestAuthMiddleware())
 
-	rebuildCfg := RebuildAPIConfig{
-		DB:          db,
-		Queue:       q,
-		GetVariable: getVar,
-	}
-	RegisterRebuildRoutes(api, rebuildCfg)
-
-	rerereCfg := RerereAPIConfig{
+	RegisterRoutes(api, APIConfig{
 		DB:            db,
+		Queue:         q,
 		WorkspaceRoot: workspaceRoot,
 		NewGitRunner: func(_ string) (GitRunner, error) {
 			return mock, nil
 		},
-	}
-	RegisterRerereRoutes(api, rerereCfg)
+		PatchStore:  patches,
+		GetVariable: getVar,
+	})
 
 	syncCfg := SyncAPIConfig{
 		DB:            db,
@@ -869,35 +865,7 @@ func newFullTestEnv(t *testing.T) *fullTestEnv {
 		GetVariable: getVar,
 		PatchStore:  patches,
 	}
-	RegisterSyncRoutes(api, syncCfg)
-
-	rebuildPreviewCfg := RebuildPreviewAPIConfig{
-		DB:            db,
-		WorkspaceRoot: workspaceRoot,
-		NewGitRunner: func(_ string) (GitRunner, error) {
-			return mock, nil
-		},
-		PatchStore: patches,
-	}
-	RegisterRebuildPreviewRoutes(api, rebuildPreviewCfg)
-
-	patchStatusCfg := PatchStatusAPIConfig{
-		DB:            db,
-		Queue:         q,
-		WorkspaceRoot: workspaceRoot,
-		PatchStore:    patches,
-	}
-	RegisterPatchStatusRoutes(api, patchStatusCfg)
-
-	rollbackCfg := RebuildRollbackAPIConfig{
-		DB:            db,
-		Queue:         q,
-		WorkspaceRoot: workspaceRoot,
-		NewGitRunner: func(_ string) (GitRunner, error) {
-			return mock, nil
-		},
-	}
-	RegisterRebuildRollbackRoutes(api, rollbackCfg)
+	registerSyncRoutes(api, syncCfg)
 
 	return &fullTestEnv{
 		echo:          e,
@@ -944,12 +912,16 @@ func newFullTestEnvWithGetVariable(t *testing.T, getVar GetVariableFunc) *fullTe
 	api := e.Group("/api/v1")
 	api.Use(rebuildTestAuthMiddleware())
 
-	rebuildCfg := RebuildAPIConfig{
-		DB:          db,
-		Queue:       q,
+	RegisterRoutes(api, APIConfig{
+		DB:            db,
+		Queue:         q,
+		WorkspaceRoot: workspaceRoot,
+		NewGitRunner: func(_ string) (GitRunner, error) {
+			return mock, nil
+		},
+		PatchStore:  patches,
 		GetVariable: getVar,
-	}
-	RegisterRebuildRoutes(api, rebuildCfg)
+	})
 
 	syncCfg := SyncAPIConfig{
 		DB:            db,
@@ -963,25 +935,7 @@ func newFullTestEnvWithGetVariable(t *testing.T, getVar GetVariableFunc) *fullTe
 		GetVariable: getVar,
 		PatchStore:  patches,
 	}
-	RegisterSyncRoutes(api, syncCfg)
-
-	rebuildPreviewCfg := RebuildPreviewAPIConfig{
-		DB:            db,
-		WorkspaceRoot: workspaceRoot,
-		NewGitRunner: func(_ string) (GitRunner, error) {
-			return mock, nil
-		},
-		PatchStore: patches,
-	}
-	RegisterRebuildPreviewRoutes(api, rebuildPreviewCfg)
-
-	patchStatusCfg := PatchStatusAPIConfig{
-		DB:            db,
-		Queue:         q,
-		WorkspaceRoot: workspaceRoot,
-		PatchStore:    patches,
-	}
-	RegisterPatchStatusRoutes(api, patchStatusCfg)
+	registerSyncRoutes(api, syncCfg)
 
 	return &fullTestEnv{
 		echo:          e,
@@ -1184,4 +1138,34 @@ func addOrgMember(t *testing.T, db *sql.DB, slug, org, user string) {
 			t.Fatalf("addOrgMember: %v", err)
 		}
 	}
+}
+
+// syncEndpointForTest adapts runCarryPatchSync to an echo.HandlerFunc
+// for RegisterSyncRoutes, which mounts the carry-patch sync logic as a
+// standalone route.
+//
+// The server binary does not use this route: it registers the workspace sync
+// endpoint and reaches the carry-patch logic through NewCarryPatchSyncHook, so
+// that the response carries the standard sync fields as well (16-REQ-5.1).
+// Mounted on its own, only the carry-patch fields are available, because the
+// workspace record is rendered by the workspace package.
+func syncEndpointForTest(cfg SyncAPIConfig) echo.HandlerFunc {
+	return func(c echo.Context) error {
+		resp, err := runCarryPatchSync(cfg, c)
+		if err != nil {
+			return err
+		}
+		if resp == nil {
+			// 16-REQ-5.E4: standard workspace. Without the workspace package
+			// there is no standard sync response to fall through to, so
+			// acknowledge the sync without carry-patch fields.
+			return c.JSON(http.StatusOK, map[string]string{"status": "synced"})
+		}
+		return c.JSON(http.StatusOK, resp)
+	}
+}
+
+// registerSyncRoutes mounts the carry-patch sync route for tests.
+func registerSyncRoutes(api *echo.Group, cfg SyncAPIConfig) {
+	api.POST("/workspaces/:slug/sync", syncEndpointForTest(cfg))
 }

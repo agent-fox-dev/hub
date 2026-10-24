@@ -6,6 +6,7 @@ import (
 	"github.com/txsvc/apikit"
 
 	"github.com/agent-fox-dev/hub/internal/audit"
+	"github.com/agent-fox-dev/hub/internal/scrub"
 )
 
 // providerError is the failure of the provider to destroy a box: the message is
@@ -74,7 +75,7 @@ func (s *LeaseService) destroyBox(ctx context.Context, lease *Lease) error {
 		for _, v := range lease.Env {
 			values = append(values, v)
 		}
-		return &providerError{msg: scrub(err.Error(), append(values, s.profiles.scrubValues()...))}
+		return &providerError{msg: scrub.Text(err.Error(), append(values, s.profiles.scrubValues()...)...)}
 	}
 	return nil
 }

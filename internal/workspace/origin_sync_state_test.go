@@ -93,10 +93,10 @@ func TestOriginSyncState_MigrationIdempotent_TS2041(t *testing.T) {
 		}
 	}
 
-	// Run initSchema three times — all must succeed.
+	// Run InitSchema three times — all must succeed.
 	for i := 1; i <= 3; i++ {
-		if err := initSchema(db); err != nil {
-			t.Fatalf("initSchema() run %d returned error: %v", i, err)
+		if err := InitSchema(db); err != nil {
+			t.Fatalf("InitSchema() run %d returned error: %v", i, err)
 		}
 	}
 

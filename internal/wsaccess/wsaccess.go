@@ -1,17 +1,15 @@
-// Package wsaccess provides workspace authorization helpers and a per-request
-// scope that can be imported by packages that must not depend on
-// internal/workspace (such as internal/carrypatch). It breaks the import cycle
-// that would otherwise arise when both packages need AuthorizeWorkspace, and
-// it is the one leaf package both sides share, so a request handler in
-// internal/workspace can hand request-scoped state (see WithRequestScope and
-// RequestScoped) to a hook implemented in internal/carrypatch through the
-// context alone.
+// Package wsaccess is the leaf package that holds hub's workspace access rule
+// (AuthorizeWorkspace), the token workspace bindings, the credential helpers
+// IsAdmin, IsPAT and HasScope, and a per-request scope (WithRequestScope and
+// RequestScoped) through which a request handler hands request-scoped state
+// to a hook. Every package that addresses a workspace by slug imports it.
 package wsaccess
 
 import (
 	"database/sql"
 	"errors"
 	"net/http"
+	"slices"
 
 	"github.com/txsvc/apikit"
 )
@@ -132,7 +130,7 @@ func AuthorizeWorkspaceAt(db *sql.DB, auth *apikit.AuthInfo, slug string, need N
 // AccessMember when org_members has the row (orgID, user id), read on every
 // call; everyone else is AccessNone.
 func accessOf(db *sql.DB, auth *apikit.AuthInfo, ownerID, orgID string) (Access, error) {
-	if isAdmin(auth) {
+	if IsAdmin(auth) {
 		return AccessAdmin, nil
 	}
 	if auth.UserID == "" {
@@ -156,7 +154,23 @@ func accessOf(db *sql.DB, auth *apikit.AuthInfo, ownerID, orgID string) (Access,
 	return AccessNone, nil
 }
 
-// isAdmin reports whether the credential is an admin token.
-func isAdmin(auth *apikit.AuthInfo) bool {
+// IsAdmin reports whether the credential is an admin token.
+func IsAdmin(auth *apikit.AuthInfo) bool {
 	return auth.CredentialType == "admin_token"
+}
+
+// IsPAT reports whether the credential is a personal access token, the one
+// credential type whose scopes are checked.
+func IsPAT(auth *apikit.AuthInfo) bool {
+	return auth.CredentialType == "pat"
+}
+
+// HasScope reports whether the credential carries any of the scopes.
+func HasScope(auth *apikit.AuthInfo, scopes ...string) bool {
+	for _, s := range scopes {
+		if slices.Contains(auth.Permissions, s) {
+			return true
+		}
+	}
+	return false
 }

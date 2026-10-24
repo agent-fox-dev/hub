@@ -147,7 +147,7 @@ func TestWrites_AuditConstantsAndQuery_TS_31_55(t *testing.T) {
 	t.Cleanup(func() { close(done) })
 	go mgr.Run(done)
 
-	e := newWriteEnv(t, withEmitter(audit.NewEmitterWithBroadcast(store, mgr)))
+	e := newWriteEnv(t, withEmitter(audit.NewEmitter(store, mgr)))
 	e.stub.setHandler(routes(map[string]http.HandlerFunc{
 		"POST /repos/acme/widgets/issues": respond(http.StatusCreated, issueBody(7, "t", "b", "af:triage")),
 	}))

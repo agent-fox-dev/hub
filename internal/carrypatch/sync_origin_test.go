@@ -140,7 +140,7 @@ func newSyncTestEnv(t *testing.T) *syncTestEnv {
 		}
 	}
 
-	RegisterSyncRoutes(api, syncCfg)
+	registerSyncRoutes(api, syncCfg)
 	env.echo = e
 
 	return env
@@ -225,7 +225,7 @@ func newSyncTestEnvWithNilFetchOrigin(t *testing.T) *syncTestEnv {
 		// ResolveOriginAuth is nil
 	}
 
-	RegisterSyncRoutes(api, syncCfg)
+	registerSyncRoutes(api, syncCfg)
 	env.echo = e
 
 	return env

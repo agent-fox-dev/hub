@@ -775,7 +775,7 @@ type testGateway struct{ *Gateway }
 func (e *backendEnv) startGateway() *testGateway {
 	e.t.Helper()
 	reaps := e.prov.reapCount()
-	gw, err := StartGateway(e.profile, GatewayDeps{DB: e.db, Secrets: e.secrets, Audit: e.sink, Now: e.clock.Now, Metrics: e.metrics})
+	gw, err := startGateway(e.profile, GatewayDeps{DB: e.db, Secrets: e.secrets, Audit: e.sink, Now: e.clock.Now, Metrics: e.metrics}, gatewaySeams{})
 	if err != nil {
 		e.t.Fatalf("StartGateway: %v", err)
 	}

@@ -299,12 +299,12 @@ func TestInitSchema_CreatesBindingTable_TS_34_34(t *testing.T) {
 	}
 	db.SetMaxOpenConns(1)
 	defer db.Close()
-	if err := initSchema(db); err != nil {
+	if err := InitSchema(db); err != nil {
 		t.Fatal(err)
 	}
 	bindToken(t, db, "t1", "s")
-	if err := initSchema(db); err != nil {
-		t.Fatalf("second initSchema = %v", err)
+	if err := InitSchema(db); err != nil {
+		t.Fatalf("second InitSchema = %v", err)
 	}
 	rows, err := db.Query(`SELECT name FROM pragma_table_info('token_workspace_bindings') ORDER BY cid`)
 	if err != nil {

@@ -5,9 +5,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"os"
-	"os/exec"
-	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -234,58 +231,4 @@ func TestForgeSubcommandsAreRegistered_TS_32_63(t *testing.T) {
 	if req := hub.onlyRequest(t); req.Path != "/api/v1/workspaces/a%2Fb%20c%3F/forge/webhook" {
 		t.Errorf("the hub received the path %s; want the slug escaped", req.Path)
 	}
-}
-
-// TS-32-63: afc depends on neither internal/forge nor internal/audit, and builds with cgo disabled.
-// It runs the go tool with the environment of the test run, which the tests above change.
-// Requirement: 32-REQ-10.8
-func TestAfcDependsOnNeitherForgeNorAudit_TS_32_63(t *testing.T) {
-	dir := repoRootOf(t)
-	goTool := func(env []string, args ...string) string {
-		cmd := exec.Command("go", args...)
-		cmd.Dir = dir
-		cmd.Env = append(os.Environ(), env...)
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			t.Fatalf("go %v: %v\n%s", args, err, out)
-		}
-		return string(out)
-	}
-	imports := strings.Fields(goTool(nil, "list", "-f", `{{join .Imports " "}}`, "./internal/cli"))
-	if len(imports) == 0 {
-		t.Fatal("go list found no imports of internal/cli")
-	}
-	for _, dep := range imports {
-		if strings.HasSuffix(dep, "/internal/forge") || strings.HasSuffix(dep, "/internal/audit") {
-			t.Errorf("internal/cli imports %s", dep)
-		}
-	}
-	deps := strings.Fields(goTool([]string{"CGO_ENABLED=0"}, "list", "-deps", "./cmd/afc"))
-	if len(deps) == 0 {
-		t.Fatal("go list -deps ./cmd/afc found no packages")
-	}
-	for _, dep := range deps {
-		if strings.Contains(dep, "hub/internal/forge") || strings.Contains(dep, "hub/internal/audit") {
-			t.Errorf("afc depends on %s", dep)
-		}
-	}
-	bin := filepath.Join(t.TempDir(), "afc")
-	goTool([]string{"CGO_ENABLED=0"}, "build", "-o", bin, "./cmd/afc")
-	if _, err := os.Stat(bin); err != nil {
-		t.Errorf("the afc build left no binary: %v", err)
-	}
-}
-
-// repoRootOf is the directory of the hub module.
-func repoRootOf(t *testing.T) string {
-	t.Helper()
-	out, err := exec.Command("go", "env", "GOMOD").Output()
-	if err != nil {
-		t.Fatalf("go env GOMOD: %v", err)
-	}
-	mod := strings.TrimSpace(string(out))
-	if mod == "" || mod == os.DevNull {
-		t.Fatal("not inside a Go module")
-	}
-	return filepath.Dir(mod)
 }

@@ -15,6 +15,7 @@ import (
 
 	"github.com/agent-fox-dev/agentkit-go/sandbox"
 	"github.com/agent-fox-dev/agentkit-go/sandbox/gateway"
+	"github.com/agent-fox-dev/hub/internal/scrub"
 )
 
 // probeTimeout bounds the one call that shows the provider is reachable.
@@ -101,7 +102,7 @@ func startRemote(v *Validated, factory GatewayFactory) (*Service, error) {
 	caps := client.Capabilities()
 	// The gateway client writes the remote's host and limits into the notes, and
 	// hub's gateway serves the capabilities to every lease holder.
-	caps.Notes = scrub(caps.Notes, remoteScrubValues(v))
+	caps.Notes = scrub.Text(caps.Notes, remoteScrubValues(v)...)
 	svc, err := assemble(v, client, caps, sandbox.CheckSpec)
 	if err != nil {
 		closeRemote(client)
@@ -117,7 +118,7 @@ func startRemote(v *Validated, factory GatewayFactory) (*Service, error) {
 // built from the scrubbed string and wraps nothing, so the token cannot be got
 // back from the chain.
 func remoteStartFailure(ctx context.Context, v *Validated, err error) error {
-	text := scrub(err.Error(), []string{v.GatewayToken.reveal()})
+	text := scrub.Text(err.Error(), v.GatewayToken.reveal())
 	if ctx.Err() != nil {
 		text = fmt.Sprintf("no answer within %s: %s", probeTimeout, text)
 	}
@@ -370,7 +371,7 @@ func (s *Service) Close() error {
 		if closer, ok := s.remote.(io.Closer); ok {
 			if err := closer.Close(); err != nil {
 				// The client's text names the remote like any other of its errors.
-				s.closeErr = errors.New(scrub(err.Error(), s.scrubValues()))
+				s.closeErr = errors.New(scrub.Text(err.Error(), s.scrubValues()...))
 			}
 		}
 	})

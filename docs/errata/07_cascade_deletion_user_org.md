@@ -32,10 +32,9 @@ waste storage.
 
 ## Mitigation
 
-The `secrets.Store` provides `DeleteUserCascade` and `DeleteOrgCascade`
-methods that correctly wrap parent and child deletions in a single transaction.
-These methods are tested (TS-07-39, TS-07-40) but cannot be wired into
-production until apikit provides deletion hooks.
+None in the hub today. The `secrets.Store` once carried `DeleteUserCascade`
+and `DeleteOrgCascade` methods for this, but nothing could call them until
+apikit provides deletion hooks, so they were removed rather than kept unused.
 
 Possible future solutions:
 1. Add `OnBeforeOrgDelete` / `OnBeforeUserDelete` hooks to apikit (preferred)

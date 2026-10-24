@@ -2,7 +2,6 @@ package carrypatch
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"math/rand"
 	"os"
@@ -13,17 +12,15 @@ import (
 
 	"github.com/go-git/go-git/v5/plumbing/transport"
 
+	"github.com/agent-fox-dev/hub/internal/workspace"
 	"github.com/agent-fox-dev/hub/internal/wsaccess"
 )
 
 // isBranchResolveKind checks if an error is a branch resolve error with the
 // given kind.
 func isBranchResolveKind(err error, kind string) bool {
-	var bre *branchResolveError
-	if errors.As(err, &bre) {
-		return bre.kind == kind
-	}
-	return false
+	got, ok := workspace.BranchResolveKindOf(err)
+	return ok && got == kind
 }
 
 // ===========================================================================

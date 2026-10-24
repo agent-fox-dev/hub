@@ -74,7 +74,7 @@ func startPushSmokeHub(t *testing.T) *pushSmokeHub {
 		t.Fatal(err)
 	}
 	store := audit.NewStore(h.duck)
-	workspace.SetAuditDependencies(store, audit.NewEmitter(store), nil)
+	workspace.SetAuditDependencies(store, audit.NewEmitter(store, nil), nil)
 	t.Cleanup(func() { workspace.SetAuditDependencies(nil, nil, nil) })
 
 	now := apikit.NowUTC()

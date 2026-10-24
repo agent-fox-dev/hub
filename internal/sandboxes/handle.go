@@ -12,6 +12,7 @@ import (
 	"github.com/agent-fox-dev/agentkit-go/sandbox"
 	"github.com/agent-fox-dev/agentkit-go/sandbox/gatewayd"
 	"github.com/agent-fox-dev/hub/internal/audit"
+	"github.com/agent-fox-dev/hub/internal/scrub"
 )
 
 // leaseEndReasonClient is the end_reason of a lease whose holder closed the box
@@ -56,7 +57,7 @@ func (h *handle) Spec() sandbox.Spec {
 	if spec.Env != nil {
 		redacted := make(map[string]string, len(spec.Env))
 		for key := range spec.Env {
-			redacted[key] = redactedMarker
+			redacted[key] = scrub.Redacted
 		}
 		spec.Env = redacted
 	}
@@ -87,7 +88,7 @@ func (b *Backend) closeBox(ctx context.Context, h *handle) error {
 // refused hub's token (see Service.remoteFailure).
 func (b *Backend) closeProviderBox(ctx context.Context, h *handle) error {
 	if err := b.destroyProviderBox(ctx, h); err != nil && !isNotFound(err) {
-		return b.service.remoteFailure("destroy", err, scrub(err.Error(), h.values))
+		return b.service.remoteFailure("destroy", err, scrub.Text(err.Error(), h.values...))
 	}
 	b.mu.Lock()
 	if b.boxes[h.lease.ID] == h {

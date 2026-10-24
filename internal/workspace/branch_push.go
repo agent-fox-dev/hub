@@ -30,6 +30,7 @@ import (
 
 	"github.com/agent-fox-dev/hub/internal/audit"
 	"github.com/agent-fox-dev/hub/internal/gitcmd"
+	"github.com/agent-fox-dev/hub/internal/scrub"
 	"github.com/agent-fox-dev/hub/internal/secrets"
 	"github.com/agent-fox-dev/hub/internal/wsaccess"
 	"github.com/agent-fox-dev/hub/internal/wslock"
@@ -56,7 +57,7 @@ func handleBranchPush(db *sql.DB) echo.HandlerFunc {
 		if auth == nil {
 			return respondError(c, http.StatusUnauthorized, "authentication required")
 		}
-		if isPAT(auth) && !hasWriteAccess(auth) {
+		if wsaccess.IsPAT(auth) && !hasWriteAccess(auth) {
 			return respondError(c, http.StatusForbidden,
 				"PAT requires workspaces:write scope to push branches")
 		}
@@ -71,7 +72,7 @@ func handleBranchPush(db *sql.DB) echo.HandlerFunc {
 		// 38-REQ-1.4, 38-REQ-1.5
 		force, err := parseBranchPushBody(c.Request().Body)
 		if err != nil {
-			return respondError(c, http.StatusBadRequest, scrubText("invalid request body: "+err.Error(), ""))
+			return respondError(c, http.StatusBadRequest, scrub.Text("invalid request body: "+err.Error(), ""))
 		}
 
 		// 38-REQ-1.2, 38-REQ-3.1: the name is the segment as sent, decoded
@@ -82,7 +83,7 @@ func handleBranchPush(db *sql.DB) echo.HandlerFunc {
 		}
 		if err != nil {
 			return respondErrorWithType(c, http.StatusNotFound,
-				scrubText(fmt.Sprintf("branch_not_found: %q is not a valid branch name: %v", name, err), ""), "branch_not_found")
+				scrub.Text(fmt.Sprintf("branch_not_found: %q is not a valid branch name: %v", name, err), ""), "branch_not_found")
 		}
 
 		// 38-REQ-3.2, 38-REQ-3.3
@@ -152,7 +153,7 @@ func pushBranchLocked(c echo.Context, db *sql.DB, ws *Workspace, name string, fo
 	ref, err := repo.Reference(plumbing.NewBranchReferenceName(name), true)
 	if errors.Is(err, plumbing.ErrReferenceNotFound) {
 		return respondErrorWithType(c, http.StatusNotFound,
-			scrubText(fmt.Sprintf("branch_not_found: branch %q does not exist in the workspace", name), ""), "branch_not_found")
+			scrub.Text(fmt.Sprintf("branch_not_found: branch %q does not exist in the workspace", name), ""), "branch_not_found")
 	}
 	if err != nil {
 		return branchPushInternalError(c, slug, "resolving the branch", err, "")
@@ -184,7 +185,7 @@ func pushBranchLocked(c echo.Context, db *sql.DB, ws *Workspace, name string, fo
 		return branchPushInternalError(c, slug, "opening the trunk or finding its origin", err, secret)
 	}
 
-	attempt := branchPushEvent{slug: slug, name: name, sha: sha, force: force, remoteURL: stripUserinfoURL(ws.GitURL), secret: secret}
+	attempt := branchPushEvent{slug: slug, name: name, sha: sha, force: force, remoteURL: scrub.Userinfo(ws.GitURL), secret: secret}
 	result := "pushed"
 	switch {
 	case errors.Is(err, git.NoErrAlreadyUpToDate):
@@ -196,7 +197,7 @@ func pushBranchLocked(c echo.Context, db *sql.DB, ws *Workspace, name string, fo
 		}
 		// 38-REQ-7.3: one warning per failed push attempt.
 		slog.Warn("branch push: push to origin failed", "workspace", slug, "branch", name,
-			"error_type", failure.errorType, "error", scrubText(err.Error(), secret))
+			"error_type", failure.errorType, "error", scrub.Text(err.Error(), secret))
 		attempt.emit(c, "", failure.errorType)
 		return failure.write(c, secret)
 	case force:
@@ -222,12 +223,12 @@ type branchPushEvent struct {
 // away. Every value is scrubbed; no message of the forge is recorded.
 func (e branchPushEvent) emit(c echo.Context, result, errorType string) {
 	metadata := map[string]any{
-		"branch":     scrubText(e.name, e.secret),
+		"branch":     scrub.Text(e.name, e.secret),
 		"sha":        e.sha,
 		"force":      e.force,
 		"ok":         errorType == "",
 		"remote":     "origin",
-		"remote_url": scrubText(e.remoteURL, e.secret),
+		"remote_url": scrub.Text(e.remoteURL, e.secret),
 	}
 	if errorType == "" {
 		metadata["result"] = result
@@ -237,7 +238,7 @@ func (e branchPushEvent) emit(c echo.Context, result, errorType string) {
 	emitHubAuditContext(context.WithoutCancel(c.Request().Context()), c, audit.HubEvent{
 		EventType:    audit.EventBranchPush,
 		ResourceType: "branch",
-		ResourceID:   scrubText(e.name, e.secret),
+		ResourceID:   scrub.Text(e.name, e.secret),
 		Action:       "push",
 		Workspace:    e.slug,
 		Metadata:     metadata,
@@ -255,7 +256,7 @@ func restoreMovedWorktree(repo *git.Repository, slug string, before plumbing.Has
 	}
 	if err := resetTrunkWorktreeFn(repo, head.Hash()); err != nil {
 		slog.Warn("branch push: restoring the trunk's worktree failed", "workspace", slug,
-			"error", scrubText(err.Error(), secret))
+			"error", scrub.Text(err.Error(), secret))
 	}
 }
 
@@ -451,7 +452,7 @@ type pushRefusal struct {
 // write answers the refusal, its message scrubbed of secret and of URL user
 // information.
 func (r *pushRefusal) write(c echo.Context, secret string) error {
-	return respondErrorWithType(c, r.status, scrubText(r.message, secret), r.errorType)
+	return respondErrorWithType(c, r.status, scrub.Text(r.message, secret), r.errorType)
 }
 
 // ownedBranchRefusal is the refusal of a branch the route does not push that can
@@ -493,7 +494,7 @@ func protectedBranchRefusal(name string) *pushRefusal {
 // branchPushInternalError logs a failure of hub's own, scrubbed of secret, and
 // answers 500.
 func branchPushInternalError(c echo.Context, slug, what string, err error, secret string) error {
-	slog.Error("branch push: "+what+" failed", "workspace", slug, "error", scrubText(err.Error(), secret))
+	slog.Error("branch push: "+what+" failed", "workspace", slug, "error", scrub.Text(err.Error(), secret))
 	return respondError(c, http.StatusInternalServerError, "internal server error")
 }
 

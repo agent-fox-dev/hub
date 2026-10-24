@@ -23,14 +23,14 @@ import (
 // 16-REQ-4.1: Reads the rr-cache directory in the workspace's .git directory,
 // enumerates subdirectories, derives the path from preimage/postimage files,
 // and derives recorded_at from file modification time.
-func handleListRerere(cfg RerereAPIConfig) echo.HandlerFunc {
+func handleListRerere(cfg APIConfig) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		// Auth check.
 		auth := apikit.GetAuthInfo(c)
 		if auth == nil {
 			return apikit.WriteAPIError(c, http.StatusUnauthorized, "authentication required")
 		}
-		if isPAT(auth) && !hasScope(auth, "workspaces:read") {
+		if wsaccess.IsPAT(auth) && !wsaccess.HasScope(auth, "workspaces:read") {
 			return apikit.WriteAPIError(c, http.StatusForbidden, "missing required scope: workspaces:read")
 		}
 
@@ -57,14 +57,14 @@ func handleListRerere(cfg RerereAPIConfig) echo.HandlerFunc {
 // 16-REQ-4.2: Executes 'git rerere forget <pathspec>' via GitRunner.
 // 16-REQ-4.E2: Uses Echo wildcard route parameter to capture the full path
 // including slashes without requiring URL encoding.
-func handleForgetRerere(cfg RerereAPIConfig) echo.HandlerFunc {
+func handleForgetRerere(cfg APIConfig) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		// Auth check.
 		auth := apikit.GetAuthInfo(c)
 		if auth == nil {
 			return apikit.WriteAPIError(c, http.StatusUnauthorized, "authentication required")
 		}
-		if isPAT(auth) && !hasScope(auth, "workspaces:write") {
+		if wsaccess.IsPAT(auth) && !wsaccess.HasScope(auth, "workspaces:write") {
 			return apikit.WriteAPIError(c, http.StatusForbidden, "missing required scope: workspaces:write")
 		}
 

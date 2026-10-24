@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -166,14 +165,12 @@ func (env *smokeRecoveryEnv) buildRecoveryEcho(t *testing.T) {
 		Queue:      env.queue,
 	}
 
-	// Create the adapter (same as main.go).
-	adapter := &smokeRecoveryHookAdapter{svc: svc}
-
-	// Save and restore the global recovery hook.
+	// Register the service as the workspace's recovery hook (as main.go does)
+	// and restore the global afterwards.
 	t.Cleanup(func() {
 		workspace.RegisterRecoveryHook(nil)
 	})
-	workspace.RegisterRecoveryHook(adapter)
+	workspace.RegisterRecoveryHook(svc)
 
 	// Set up the audit emitter in workspace package.
 	t.Cleanup(func() {
@@ -190,66 +187,6 @@ func (env *smokeRecoveryEnv) buildRecoveryEcho(t *testing.T) {
 	}
 
 	env.echo = e
-}
-
-// smokeRecoveryHookAdapter bridges carrypatch.RecoveryService → workspace.RecoveryHook.
-type smokeRecoveryHookAdapter struct {
-	svc *RecoveryService
-}
-
-func (a *smokeRecoveryHookAdapter) ReadReplacedSHA(ctx context.Context, slug, branch string) (string, bool, error) {
-	return a.svc.ReadReplacedSHA(ctx, slug, branch)
-}
-
-func (a *smokeRecoveryHookAdapter) RemoveBackup(ctx context.Context, slug, branch string) error {
-	return a.svc.RemoveBackup(ctx, slug, branch)
-}
-
-func (a *smokeRecoveryHookAdapter) RunReset(ctx context.Context, slug string, patch workspace.ResetPatchInfo, auth *apikit.AuthInfo) (workspace.ResetResult, error) {
-	cpPatch := ResetPatchInfo{
-		ID:                patch.ID,
-		BranchName:        patch.BranchName,
-		Status:            patch.Status,
-		IntegrationBranch: patch.IntegrationBranch,
-	}
-
-	cpResult, err := a.svc.RunReset(ctx, slug, cpPatch, auth)
-	if err != nil {
-		var cpErr *RecoveryError
-		if errors.As(err, &cpErr) {
-			kindMap := map[RecoveryErrorKind]workspace.ResetErrorKind{
-				RecoveryErrBusy:             workspace.ResetErrBusy,
-				RecoveryErrMissingOnOrigin:  workspace.ResetErrMissingOnOrigin,
-				RecoveryErrFetchFailed:      workspace.ResetErrFetchFailed,
-				RecoveryErrCredentialFailed: workspace.ResetErrCredentialFailed,
-				RecoveryErrRefChanged:       workspace.ResetErrRefChanged,
-				RecoveryErrOther:            workspace.ResetErrOther,
-			}
-			wsKind, ok := kindMap[cpErr.Kind]
-			if !ok {
-				wsKind = workspace.ResetErrOther
-			}
-			return workspace.ResetResult{}, &workspace.ResetError{
-				Kind:    wsKind,
-				Message: cpErr.Message,
-				Cause:   cpErr.Cause,
-			}
-		}
-		return workspace.ResetResult{}, &workspace.ResetError{
-			Kind:    workspace.ResetErrOther,
-			Message: err.Error(),
-			Cause:   err,
-		}
-	}
-
-	return workspace.ResetResult{
-		Action:           workspace.ResetAction(cpResult.Action),
-		LocalSHA:         cpResult.LocalSHA,
-		OriginSHA:        cpResult.OriginSHA,
-		ReplacedSHA:      cpResult.ReplacedSHA,
-		RebuildTriggered: cpResult.RebuildTriggered,
-		RebuildJobID:     cpResult.RebuildJobID,
-	}, nil
 }
 
 // smokeRecoveryAuthMiddleware injects auth from X-Test-Auth header.

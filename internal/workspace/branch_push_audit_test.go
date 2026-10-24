@@ -279,7 +279,7 @@ func TestBranchPushEventPerAttempt_TS_38_42(t *testing.T) {
 	t.Cleanup(cancel)
 	mgr := audit.NewSSEManager(10)
 	go mgr.Run(ctx.Done())
-	capture := &capturingEmitter{newMockAuditEmitter(), audit.NewEmitterWithBroadcast(store, mgr)}
+	capture := &capturingEmitter{newMockAuditEmitter(), audit.NewEmitter(store, mgr)}
 	defaultAuditEmitter = capture
 
 	e := echo.New()

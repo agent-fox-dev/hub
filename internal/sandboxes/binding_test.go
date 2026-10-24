@@ -71,7 +71,7 @@ func TestBoundTokenAllowlist_ExactlyTheTenRoutes_TS_33_21(t *testing.T) {
 	}
 	store := audit.NewStore(nil)
 	audit.RegisterSessionRoutes(api, store, db, nil)
-	audit.RegisterRoutes(api, store, audit.NewEmitter(store), db)
+	audit.RegisterRoutes(api, store, audit.NewEmitter(store, nil), db)
 	audit.RegisterAuditQueryRoutes(api, store, audit.NewSSEManager(1), db)
 	if err := secrets.RegisterRoutesWithAudit(api, secrets.SecretsRouteConfig{DB: db}); err != nil {
 		t.Fatal(err)
@@ -80,12 +80,7 @@ func TestBoundTokenAllowlist_ExactlyTheTenRoutes_TS_33_21(t *testing.T) {
 	RegisterRoutes(api, nil)
 	RegisterLeaseRoutes(api, nil)
 	forge.RegisterRoutes(api, forge.Config{DB: db})
-	carrypatch.RegisterRebuildRoutes(api, carrypatch.RebuildAPIConfig{DB: db})
-	carrypatch.RegisterRerereRoutes(api, carrypatch.RerereAPIConfig{DB: db})
-	carrypatch.RegisterRebuildRollbackRoutes(api, carrypatch.RebuildRollbackAPIConfig{DB: db})
-	carrypatch.RegisterRebuildPreviewRoutes(api, carrypatch.RebuildPreviewAPIConfig{DB: db})
-	carrypatch.RegisterPatchStatusRoutes(api, carrypatch.PatchStatusAPIConfig{DB: db})
-	carrypatch.RegisterSyncRoutes(api, carrypatch.SyncAPIConfig{DB: db})
+	carrypatch.RegisterRoutes(api, carrypatch.APIConfig{DB: db})
 
 	var allowed []string
 	for _, r := range e.Routes() {

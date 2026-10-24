@@ -100,7 +100,7 @@ func TestDefaultEmitter_EmitWritesToHubAuditEvents(t *testing.T) {
 	db := openTestAuditDBWithSchema(t)
 
 	store := NewStore(db)
-	emitter := NewEmitter(store)
+	emitter := NewEmitter(store, nil)
 
 	event := HubEvent{
 		EventType:    "workspace.created",
@@ -160,7 +160,7 @@ func TestDefaultEmitter_EmitSwallowsError(t *testing.T) {
 	t.Cleanup(func() { slog.SetDefault(origLogger) })
 
 	store := &failingStore{}
-	emitter := NewEmitter(store)
+	emitter := NewEmitter(store, nil)
 
 	event := HubEvent{
 		EventType:    "test.event",
@@ -191,7 +191,7 @@ func TestDefaultEmitter_ActorTypeValues(t *testing.T) {
 	db := openTestAuditDBWithSchema(t)
 
 	store := NewStore(db)
-	emitter := NewEmitter(store)
+	emitter := NewEmitter(store, nil)
 
 	actorTypes := []string{"admin_token", "api_key", "pat", "system"}
 	for _, at := range actorTypes {

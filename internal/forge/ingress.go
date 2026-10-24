@@ -18,6 +18,7 @@ import (
 	"github.com/labstack/echo/v4"
 	"github.com/txsvc/apikit"
 
+	"github.com/agent-fox-dev/hub/internal/scrub"
 	"github.com/agent-fox-dev/hub/internal/secrets"
 )
 
@@ -263,7 +264,7 @@ func (h *handlers) recordDelivery(d delivery, red reduction) (bool, error) {
 	res, err := h.cfg.DB.Exec(`INSERT INTO forge_deliveries
 		(workspace_slug, delivery_id, forge, event, action, target, outcome, relayed, received_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (workspace_slug, delivery_id) DO NOTHING`,
-		d.slug, d.id, d.forge, truncateUTF8(strings.ToValidUTF8(d.event, "\uFFFD"), maxEventNameBytes),
+		d.slug, d.id, d.forge, scrub.TruncateUTF8(strings.ToValidUTF8(d.event, "\uFFFD"), maxEventNameBytes),
 		red.action, tgt, red.outcome, string(relayedJSON), apikit.NowUTC())
 	if err != nil {
 		return false, err

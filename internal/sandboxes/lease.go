@@ -293,13 +293,6 @@ func optional(s *string) any {
 	return *s
 }
 
-// RevokeToken revokes the token of the lease with the given id by ending the
-// lease, which clears the hash in the same update.
-func (s *LeaseStore) RevokeToken(id string) error {
-	_, err := s.EndLease(&Lease{ID: id}, leaseDestroyed, "revoked")
-	return err
-}
-
 // countLive returns the number of leases that count against capacity: those
 // leased or active whose expires_at is later than now, in every workspace, less
 // the leased ones whose lease_expires_at, when they have one, is at or before

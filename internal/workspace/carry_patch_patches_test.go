@@ -32,8 +32,8 @@ func TestCarryPatch_PatchesTableSchema_AllColumns(t *testing.T) {
 	db.SetMaxOpenConns(1)
 
 	// Run the schema initializer.
-	if err := initSchema(db); err != nil {
-		t.Fatalf("initSchema() returned error: %v", err)
+	if err := InitSchema(db); err != nil {
+		t.Fatalf("InitSchema() returned error: %v", err)
 	}
 
 	// Verify the patches table exists by querying PRAGMA table_info.
@@ -236,8 +236,8 @@ func TestCarryPatch_PatchesTableSchema_StatusDefault(t *testing.T) {
 	}
 	defer db.Close()
 
-	if err := initSchema(db); err != nil {
-		t.Fatalf("initSchema() returned error: %v", err)
+	if err := InitSchema(db); err != nil {
+		t.Fatalf("InitSchema() returned error: %v", err)
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
@@ -270,8 +270,8 @@ func TestCarryPatch_PatchesTableSchema_DuplicateBranchNameRejected(t *testing.T)
 	}
 	defer db.Close()
 
-	if err := initSchema(db); err != nil {
-		t.Fatalf("initSchema() returned error: %v", err)
+	if err := InitSchema(db); err != nil {
+		t.Fatalf("InitSchema() returned error: %v", err)
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
@@ -311,8 +311,8 @@ func TestCarryPatch_PatchesTableSchema_DuplicatePositionRejected(t *testing.T) {
 	}
 	defer db.Close()
 
-	if err := initSchema(db); err != nil {
-		t.Fatalf("initSchema() returned error: %v", err)
+	if err := InitSchema(db); err != nil {
+		t.Fatalf("InitSchema() returned error: %v", err)
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
@@ -351,8 +351,8 @@ func TestCarryPatch_PatchesTableSchema_SameBranchDifferentWorkspaces(t *testing.
 	}
 	defer db.Close()
 
-	if err := initSchema(db); err != nil {
-		t.Fatalf("initSchema() returned error: %v", err)
+	if err := InitSchema(db); err != nil {
+		t.Fatalf("InitSchema() returned error: %v", err)
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
@@ -1131,8 +1131,8 @@ func TestPatchStore_ConflictFilesRoundTrip(t *testing.T) {
 	defer db.Close()
 	db.SetMaxOpenConns(1)
 
-	if err := initSchema(db); err != nil {
-		t.Fatalf("initSchema() returned error: %v", err)
+	if err := InitSchema(db); err != nil {
+		t.Fatalf("InitSchema() returned error: %v", err)
 	}
 
 	// Insert a workspace.
@@ -1200,8 +1200,8 @@ func TestPatchStore_ConflictFilesNullHandling(t *testing.T) {
 	defer db.Close()
 	db.SetMaxOpenConns(1)
 
-	if err := initSchema(db); err != nil {
-		t.Fatalf("initSchema() returned error: %v", err)
+	if err := InitSchema(db); err != nil {
+		t.Fatalf("InitSchema() returned error: %v", err)
 	}
 
 	// Insert a workspace and patch without conflict_files.

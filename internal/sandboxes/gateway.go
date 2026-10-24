@@ -85,13 +85,6 @@ func (s gatewaySeams) withDefaults() gatewaySeams {
 	return s
 }
 
-// StartGateway binds the gateway's listener and serves a gatewayd server on it
-// for the life of the process. It is NewGateway followed by serving at once; hub
-// itself uses NewGateway and Run, which do the start-up work of the expiry first.
-func StartGateway(svc *Service, deps GatewayDeps) (*Gateway, error) {
-	return startGateway(svc, deps, gatewaySeams{})
-}
-
 func startGateway(svc *Service, deps GatewayDeps, seams gatewaySeams) (*Gateway, error) {
 	g, err := newGateway(svc, deps, seams)
 	if err != nil || g == nil {

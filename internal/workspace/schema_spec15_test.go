@@ -64,8 +64,8 @@ func TestCarryPatch_SchemaMigration_AddsColumns(t *testing.T) {
 	}
 
 	// Run the migration function.
-	if err := initSchema(db); err != nil {
-		t.Fatalf("initSchema() returned error: %v", err)
+	if err := InitSchema(db); err != nil {
+		t.Fatalf("InitSchema() returned error: %v", err)
 	}
 
 	// Verify the columns were added by querying PRAGMA table_info.
@@ -112,13 +112,13 @@ func TestCarryPatch_SchemaMigration_IdempotentReRun(t *testing.T) {
 	defer db.Close()
 
 	// First run creates everything.
-	if err := initSchema(db); err != nil {
-		t.Fatalf("first initSchema() returned error: %v", err)
+	if err := InitSchema(db); err != nil {
+		t.Fatalf("first InitSchema() returned error: %v", err)
 	}
 
 	// Second run should detect existing columns and skip without error.
-	if err := initSchema(db); err != nil {
-		t.Errorf("second initSchema() returned error: %v; want nil (idempotent)", err)
+	if err := InitSchema(db); err != nil {
+		t.Errorf("second InitSchema() returned error: %v; want nil (idempotent)", err)
 	}
 
 	// Verify the carry-patch columns still exist.
@@ -145,8 +145,8 @@ func TestCarryPatch_SchemaFresh_IncludesColumns(t *testing.T) {
 	defer db.Close()
 
 	// Initialize schema on a fresh (empty) database.
-	if err := initSchema(db); err != nil {
-		t.Fatalf("initSchema() returned error: %v", err)
+	if err := InitSchema(db); err != nil {
+		t.Fatalf("InitSchema() returned error: %v", err)
 	}
 
 	// Query table structure using PRAGMA table_info.
@@ -247,8 +247,8 @@ func TestCarryPatch_SchemaDefaults_WorkspaceMode(t *testing.T) {
 	}
 	defer db.Close()
 
-	if err := initSchema(db); err != nil {
-		t.Fatalf("initSchema() returned error: %v", err)
+	if err := InitSchema(db); err != nil {
+		t.Fatalf("InitSchema() returned error: %v", err)
 	}
 
 	// Case A: INSERT omitting workspace_mode → should default to 'standard'.

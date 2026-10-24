@@ -121,14 +121,6 @@ func (q *JobQueue) Enqueue(job CloneJob) {
 	}
 }
 
-// WorkerCount returns the number of configured worker goroutines.
-func (q *JobQueue) WorkerCount() int {
-	if q == nil {
-		return 0
-	}
-	return q.workers
-}
-
 // Wait blocks until all worker goroutines have exited after context cancellation.
 func (q *JobQueue) Wait() {
 	if q == nil || q.done == nil {

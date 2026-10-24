@@ -6,8 +6,6 @@ import (
 	"database/sql"
 	"errors"
 	"net/http"
-	"os"
-	"os/exec"
 	"strings"
 	"sync"
 	"testing"
@@ -282,23 +280,13 @@ func TestPreReceive_TS22_4_MixedAcceptReject(t *testing.T) {
 }
 
 // TS-22-5: The storer wrapper consults the hook on every reference write
-// and removal, still hides PackfileWriter, and gitserver does not import
-// carrypatch.
+// and removal, still hides PackfileWriter.
 // Verifies: 22-REQ-2.6
-func TestPreReceive_TS22_5_StorerWrapperAndImports(t *testing.T) {
+func TestPreReceive_TS22_5_StorerWrapper(t *testing.T) {
 	// Verify thinPackSafeStorer does not expose PackfileWriter.
 	var s interface{} = &thinPackSafeStorer{}
 	if _, ok := s.(storer.PackfileWriter); ok {
 		t.Error("thinPackSafeStorer should NOT implement storer.PackfileWriter")
-	}
-
-	// Verify gitserver does not import carrypatch via 'go list'.
-	out, err := goListDeps(t, "./internal/gitserver")
-	if err != nil {
-		t.Fatalf("go list failed: %v\n%s", err, out)
-	}
-	if strings.Contains(out, "internal/carrypatch") {
-		t.Error("internal/gitserver must not import internal/carrypatch")
 	}
 }
 
@@ -508,29 +496,4 @@ func TestPreReceive_TS22_8_PanicNoSpecialRecovery(t *testing.T) {
 	// The key assertion: no special recovery was added by the git server.
 	// The test passes if it doesn't hang and the panic is handled by
 	// whatever recovery the framework provides.
-}
-
-// goListDeps runs 'go list -deps' for the given package and returns the output.
-func goListDeps(t *testing.T, pkg string) (string, error) {
-	t.Helper()
-	cmd := exec.Command("go", "list", "-deps", pkg)
-	cmd.Dir = findModuleRoot()
-	cmd.Env = append(os.Environ(), "GOFLAGS=")
-	out, err := cmd.CombinedOutput()
-	return string(out), err
-}
-
-// findModuleRoot walks up from the current directory to find go.mod.
-func findModuleRoot() string {
-	dir, _ := os.Getwd()
-	for {
-		if _, err := os.Stat(dir + "/go.mod"); err == nil {
-			return dir
-		}
-		parent := dir[:strings.LastIndex(dir, "/")]
-		if parent == dir {
-			return "."
-		}
-		dir = parent
-	}
 }

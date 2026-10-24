@@ -8,7 +8,7 @@ import (
 )
 
 // Package-level audit dependencies for force-close. Set by
-// RegisterRoutesWithConfig or SetAuditDependencies; nil when not
+// SetAuditDependencies; nil when not
 // configured (force-close is silently skipped).
 var (
 	defaultAuditStore   audit.Store

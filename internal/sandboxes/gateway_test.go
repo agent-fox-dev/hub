@@ -141,7 +141,7 @@ func TestStartGateway_UnloadableKeyPair_TS_27_8(t *testing.T) {
 			env, deps := gatewayTestEnv(t, func(c *Config) {
 				c.Listen, c.TLSCert, c.TLSKey = addr, pair[0], pair[1]
 			})
-			gw, err := StartGateway(env.profile, deps)
+			gw, err := startGateway(env.profile, deps, gatewaySeams{})
 			stopAfter(t, gw)
 			if err == nil {
 				t.Fatal("StartGateway accepted a key pair that cannot be loaded")
@@ -234,7 +234,7 @@ func TestStartGateway_BindFailure_TS_27_10(t *testing.T) {
 	_, bindErr := net.Listen("tcp", addr)
 
 	env, deps := gatewayTestEnv(t, func(c *Config) { c.Listen = addr })
-	gw, err := StartGateway(env.profile, deps)
+	gw, err := startGateway(env.profile, deps, gatewaySeams{})
 	stopAfter(t, gw)
 	if err == nil {
 		t.Fatal("StartGateway bound an address that is taken")
@@ -356,8 +356,8 @@ func TestStartGateway_FeatureOff_TS_27_13(t *testing.T) {
 	if gw.URL() != "" {
 		t.Errorf("the URL of no gateway = %q; want empty", gw.URL())
 	}
-	if gw2, err := StartGateway(nil, GatewayDeps{}); err != nil || gw2 != nil {
-		t.Errorf("StartGateway(nil) = (%v, %v); want (nil, nil)", gw2, err)
+	if gw2, err := startGateway(nil, GatewayDeps{}, gatewaySeams{}); err != nil || gw2 != nil {
+		t.Errorf("startGateway(nil, gatewaySeams{}) = (%v, %v); want (nil, nil)", gw2, err)
 	}
 }
 
@@ -367,7 +367,7 @@ func TestStartGateway_FeatureOff_TS_27_13(t *testing.T) {
 func TestStartGateway_GatewayURL_TS_27_14(t *testing.T) {
 	t.Run("plaintext", func(t *testing.T) {
 		env, deps := gatewayTestEnv(t, nil)
-		gw, err := StartGateway(env.profile, deps)
+		gw, err := startGateway(env.profile, deps, gatewaySeams{})
 		if err != nil {
 			t.Fatalf("StartGateway: %v", err)
 		}
@@ -390,7 +390,7 @@ func TestStartGateway_GatewayURL_TS_27_14(t *testing.T) {
 		certFile, keyFile, pool := testKeyPair(t)
 		env, deps := gatewayTestEnv(t, func(c *Config) { c.TLSCert, c.TLSKey = certFile, keyFile })
 		_, token := env.issueToken(`{"profile":"tools"}`)
-		gw, err := StartGateway(env.profile, deps)
+		gw, err := startGateway(env.profile, deps, gatewaySeams{})
 		if err != nil {
 			t.Fatalf("StartGateway: %v", err)
 		}
@@ -411,7 +411,7 @@ func TestStartGateway_GatewayURL_TS_27_14(t *testing.T) {
 
 	t.Run("external_url", func(t *testing.T) {
 		env, deps := gatewayTestEnv(t, func(c *Config) { c.ExternalURL = "https://gw.example.com" })
-		gw, err := StartGateway(env.profile, deps)
+		gw, err := startGateway(env.profile, deps, gatewaySeams{})
 		if err != nil {
 			t.Fatalf("StartGateway: %v", err)
 		}

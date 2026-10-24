@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/agent-fox-dev/hub/internal/audit"
+	"github.com/agent-fox-dev/hub/internal/scrub"
 )
 
 // The end reasons of the endings time, shutdown and restart cause.
@@ -152,7 +153,7 @@ func callFailure(call string, limit time.Duration, err error, values []string) s
 	if errors.Is(err, context.DeadlineExceeded) {
 		return fmt.Sprintf("%s timed out after %s", call, limit)
 	}
-	return scrub(err.Error(), values)
+	return scrub.Text(err.Error(), values...)
 }
 
 // emitExpired records that time ended the lease, into state. The box is named
