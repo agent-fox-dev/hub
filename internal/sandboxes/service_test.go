@@ -32,8 +32,16 @@ func TestStart_ProbesOnceAndKeepsProviderAndProfiles(t *testing.T) {
 	if svc.Provider() != sandbox.Provider(fake) || factory.calls != 1 || fake.reapCalls != 1 || fake.createCalls != 0 {
 		t.Errorf("provider kept %v, factory calls %d, probes %d, creates %d; want true, 1, 1, 0", svc.Provider() == sandbox.Provider(fake), factory.calls, fake.reapCalls, fake.createCalls)
 	}
-	if want := (podman.Options{Binary: "docker", Runtime: "runsc", UserNS: "keep-id"}); !reflect.DeepEqual(factory.options, want) {
-		t.Errorf("options = %+v; want %+v", factory.options, want)
+	got := factory.options
+	gotEnv := got.EngineEnv
+	got.EngineEnv = nil
+	if want := (podman.Options{Binary: "docker", Runtime: "runsc", UserNS: "keep-id"}); !reflect.DeepEqual(got, want) {
+		t.Errorf("options = %+v; want %+v", got, want)
+	}
+	for _, kv := range gotEnv {
+		if strings.HasPrefix(kv, "XDG_CONFIG_HOME=") || strings.HasPrefix(kv, "XDG_DATA_HOME=") {
+			t.Errorf("EngineEnv = %v; want XDG_CONFIG_HOME and XDG_DATA_HOME scrubbed", gotEnv)
+		}
 	}
 	if left := fake.reapDeadlines[0]; left <= 0 || left > 10*time.Second {
 		t.Errorf("the probe had %v left; want a deadline within 10s", left)
