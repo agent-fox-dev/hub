@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
+	"strings"
 
 	"github.com/agent-fox-dev/agentkit-go/sandbox"
 	"github.com/agent-fox-dev/agentkit-go/sandbox/gateway"
@@ -27,14 +29,33 @@ func PodmanFactory(o podman.Options) (sandbox.Provider, error) {
 // invalid value is the provider's to refuse.
 func BuildProvider(v *Validated, factory ProviderFactory) (sandbox.Provider, error) {
 	p, err := factory(podman.Options{
-		Binary:  v.EngineBinary,
-		Runtime: v.Runtime,
-		UserNS:  v.UserNS,
+		Binary:    v.EngineBinary,
+		Runtime:   v.Runtime,
+		UserNS:    v.UserNS,
+		EngineEnv: engineEnv(),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("sandbox: cannot build sandbox.provider %q from sandbox.engine_binary %q: %w", v.Provider, v.EngineBinary, err)
 	}
 	return p, nil
+}
+
+// engineEnv is os.Environ() with XDG_CONFIG_HOME and XDG_DATA_HOME removed.
+// Hub itself (through apikit.LoadConfig) honors those two to isolate its own
+// config and data directories, for example in `make hub-run`; the engine
+// binary (podman) keeps its own machine registry and connection bookkeeping
+// under those same paths, so passing them through redirects podman away from
+// the user's real podman machine and breaks the start-up probe.
+func engineEnv() []string {
+	env := os.Environ()
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "XDG_CONFIG_HOME=") || strings.HasPrefix(kv, "XDG_DATA_HOME=") {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
 }
 
 // RemoteClient is the client of a remote agentkit-gateway: a sandbox.Provider
