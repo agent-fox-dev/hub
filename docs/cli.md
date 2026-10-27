@@ -1333,7 +1333,10 @@ A hub offers sandboxes only when its `config.toml` has a `[sandbox]` section
 to one sandbox. `afc` issues and ends leases but does not start the sandbox: the
 holder connects an AgentKit client to the lease's `gateway_url` with the lease
 token (see [The sandbox gateway](api.md#the-sandbox-gateway)), and every lease
-`afc` prints shows that address.
+`afc` prints shows that address. The
+[`sandbox-lease` example](../examples/sandbox-lease/README.md) is a small Go
+program that takes the output of `afc sandbox create`, creates the sandbox and
+runs commands in it.
 
 On a hub without a `[sandbox]` section every sandbox command fails with 404 and
 the message `sandboxes are not enabled on this hub` (exit 1).

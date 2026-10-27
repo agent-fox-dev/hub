@@ -411,8 +411,13 @@ lease holder connects with the AgentKit client and asks for its sandbox:
 
 ```go
 p, err := gateway.Dial(ctx, lease.GatewayURL, gateway.Options{Token: token})
-sb, err := p.Create(ctx, sandbox.Spec{})
+sb, err := p.Create(ctx, sandbox.Spec{Image: lease.Image, TTL: time.Until(lease.ExpiresAt)})
 ```
+
+The spec repeats the lease only so that the client's own checks pass; the hub
+takes nothing from it but the working directory and the labels (see [The sandbox gateway](api.md#the-sandbox-gateway) in the API
+reference, and the [`sandbox-lease` example](../examples/sandbox-lease/README.md)
+for a complete program).
 
 - **One sandbox per lease.** The first create under a token makes the lease
   `active`; a second one is refused. A token stops working on the very next call
