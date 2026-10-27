@@ -3292,9 +3292,21 @@ service, not part of the REST API, and is reached with AgentKit's client at the
 lease's `gateway_url`:
 
 ```go
-p, err := gateway.Dial(ctx, gatewayURL, gateway.Options{Token: token})
-sb, err := p.Create(ctx, sandbox.Spec{})
+p, err := gateway.Dial(ctx, lease.GatewayURL, gateway.Options{Token: token})
+sb, err := p.Create(ctx, sandbox.Spec{Image: lease.Image, TTL: time.Until(lease.ExpiresAt)})
 ```
+
+The hub builds the sandbox from the lease (see **Creating the sandbox** below),
+but the client checks the spec against the gateway's capabilities before it
+sends it: an empty `Image` becomes the client's own default image, which a
+development build of AgentKit does not have; a zero `TTL` becomes one hour,
+which may be more than `max_ttl` or the time the lease has left; and the zero
+network mode is `none`, which the gateway refuses when `network_modes` does not
+list it. So the spec repeats the lease's `image`, its time left and, for a
+profile whose `network` is not `none`, its network mode. The
+[`sandbox-lease` example](../examples/sandbox-lease/README.md) is a complete
+program that does this, from the lease `afc sandbox create` prints to the
+closed sandbox.
 
 **Authentication.** The gateway accepts a lease token and nothing else, on every
 call, `Dial` included. A token is accepted only for a lease that is `leased` or

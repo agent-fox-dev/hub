@@ -87,6 +87,7 @@ fork.
 | [Architecture Decision Records](docs/adr/) | Learn why the hub is built the way it is |
 | [Product Requirements](docs/prd/) | See features that are proposed or being specified |
 | [Go package docs](docs/generated/) | Browse the exported Go API of the public packages |
+| [Sandbox lease example](examples/sandbox-lease/README.md) | Turn a lease from `afc sandbox create` into a running sandbox, with a small Go program |
 | [Agents container](containers/agents/README.md) | Run the bundled coding agents in a container |
 | [carrypatch module](carrypatch/README.md) | Understand the Go module that implements carry-patch, and how a host embeds it |
 
