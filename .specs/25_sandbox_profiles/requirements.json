@@ -1,507 +1,850 @@
 {
-  "$schema": "https://agent-fox.dev/schemas/requirements.v2.json",
+  "$schema": "https://agent-fox.dev/schemas/requirements.v3.json",
   "spec_id": "25",
   "spec_name": "sandbox_profiles",
-  "schema_version": 2,
-  "introduction": "Spec 25 gives hub one deployment-wide, validated sandbox definition. It covers the provider chosen in hub's config.toml and a set of named profiles, each with an image, resources, network, lifetime, secret names and fixed environment. Hub checks this definition against the Podman provider's capabilities at start. Callers can read the profiles through GET /api/v1/sandbox-profiles and `afc sandbox profiles`, and no secret or environment value ever leaves hub. This scope creates no sandbox.",
-  "glossary": {
-    "PAT": "Personal access token, the apikit credential type \"pat\". It is the only credential type whose permissions are scope-checked.",
-    "capabilities": "The sandbox.Capabilities value that a provider reports, including its supported network modes. sandbox.CheckSpec checks each profile against it.",
-    "feature off": "The state in which the config file is missing or has no [sandbox] table. Hub starts normally and the sandbox routes answer 404 sandboxes_disabled.",
-    "internal/sandboxes": "The new hub package that owns the sandbox configuration, its validation, the provider probe, the permission scopes and the profile listing route.",
-    "profile": "A named sandbox shape in [[sandbox.profiles]]. It has an image, resources (cpus, memory_mb, pids, disk_mb), network, ttl, secret names, optional secret names, fixed env and require_landlock.",
-    "provider": "The AgentKit sandbox.Provider implementation that hub builds from [sandbox]. Only the Podman provider (engine podman or docker) is accepted in this scope.",
-    "sandbox section": "The [sandbox] table and its [[sandbox.profiles]] tables in the same config.toml that apikit loads ($XDG_CONFIG_HOME/config.toml when XDG_CONFIG_HOME is set, otherwise ./config.toml).",
-    "sandboxes_disabled": "The machine-readable error_type in apikit's error envelope that the sandbox routes return when the feature is off."
-  },
+  "schema_version": 3,
   "requirements": [
     {
-      "id": "25-REQ-1",
+      "id": "REQ-1",
       "title": "Reading the sandbox configuration section",
       "rationale": "The sandbox definition must come from the same file the operator already maintains, and a mistyped key at a security boundary must not be dropped silently.",
       "criteria": [
         {
-          "id": "25-REQ-1.1",
+          "id": "REQ-1.1",
           "pattern": "event_driven",
           "condition": "hub starts",
           "system": "sandbox config loader",
           "action": "read the [sandbox] table and every [[sandbox.profiles]] table from $XDG_CONFIG_HOME/config.toml when XDG_CONFIG_HOME is set and non-empty, and from ./config.toml otherwise",
-          "contract": "the loader returns the decoded sandbox configuration with every profile in file order"
+          "contract": "the loader returns the decoded sandbox configuration with every profile in file order",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a temp dir A with config.toml holding [sandbox] provider=\"podman\" and profiles \"zeta\" then \"alpha\"",
+              "a temp dir B with a different config.toml in the working directory"
+            ],
+            "pseudocode": "t.Setenv('XDG_CONFIG_HOME',A); cfg=LoadConfig(ConfigPath()); assert names(cfg)==['zeta','alpha']; unset; chdir(B); assert ConfigPath()=='./config.toml'"
+          }
         },
         {
-          "id": "25-REQ-1.2",
+          "id": "REQ-1.2",
           "pattern": "unwanted",
           "condition": "the config file does not exist or contains no [sandbox] table",
           "system": "sandbox config loader",
           "action": "treat the feature as off, finish start-up normally and log exactly one info line saying sandboxes are disabled",
-          "contract": "the loader returns a nil configuration and a nil error; af-hub serves every existing route unchanged"
+          "contract": "the loader returns a nil configuration and a nil error; af-hub serves every existing route unchanged",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "one case with no config file and one case with a config.toml holding only [server]",
+              "a captured slog handler"
+            ],
+            "pseudocode": "cfg,err=LoadConfig(p); assert cfg==nil && err==nil; assert count(infoRecords)==1 && contains(msg,'disabled')"
+          }
         },
         {
-          "id": "25-REQ-1.3",
+          "id": "REQ-1.3",
           "pattern": "ubiquitous",
           "system": "sandbox config loader",
-          "action": "for any string value in the sandbox section, including list entries and env values, replace each ${NAME} with the value of environment variable NAME (an empty string when NAME is unset), leave every bare $ unchanged, and leave all values outside the sandbox section unexpanded"
+          "action": "for any string value in the sandbox section, including list entries and env values, replace each ${NAME} with the value of environment variable NAME (an empty string when NAME is unset), leave every bare $ unchanged, and leave all values outside the sandbox section unexpanded",
+          "contract": "every ${NAME} is replaced by the variable's value, or by an empty string when unset; every $ not followed by {NAME} is preserved; the same expansion applies in scalar, list and env-map values",
+          "check": {
+            "kind": "property",
+            "setup": [
+              "environment variables with random names and values set via t.Setenv, and some left unset",
+              "a config.toml where [server] and [workspace] values contain ${HOME_X} and where a sandbox env value contains a quote character and ${SANDBOX_TOKEN}"
+            ],
+            "pseudocode": "for s in gen_strings(): cfg=load(toml(s)); assert cfg.image==model_expand(s) for all four positions\ncfg=LoadConfig(p); assert cfg.Profiles[0].Env['K']=='q\"abc'; assert cfg.Profiles[0].Image=='cost$5'"
+          }
         },
         {
-          "id": "25-REQ-1.4",
+          "id": "REQ-1.4",
           "pattern": "unwanted",
           "condition": "a key under [sandbox] or under any [[sandbox.profiles]] entry is not one the loader recognises",
           "system": "sandbox config loader",
           "action": "refuse start with an error that names the full key path, such as sandbox.profiles[1].memroy_mb",
-          "contract": "non-nil error containing the full key path; af-hub exits non-zero before any HTTP listener opens"
+          "contract": "non-nil error containing the full key path; af-hub exits non-zero before any HTTP listener opens",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a config with two profiles where profiles[1] has memroy_mb = 512",
+              "a second config with an unknown key sandbox.listenx"
+            ],
+            "pseudocode": "_,err=LoadConfig(p); assert err!=nil && contains(err.Error(),'sandbox.profiles[1].memroy_mb')"
+          }
         },
         {
-          "id": "25-REQ-1.5",
+          "id": "REQ-1.5",
           "pattern": "unwanted",
           "condition": "the file or the sections that apikit owns ([server], [database], [workspace], OAuth) contain keys outside the sandbox section",
           "system": "sandbox config loader",
           "action": "ignore those keys when it detects unknown keys",
-          "contract": "no unknown-key error is produced for any key path whose first element is not sandbox"
+          "contract": "no unknown-key error is produced for any key path whose first element is not sandbox",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a config.toml with a valid [sandbox] plus [server], [database], [workspace] and OAuth tables containing keys the sandbox package does not know"
+            ],
+            "pseudocode": "cfg,err=LoadConfig(p); assert err==nil && cfg!=nil"
+          }
         },
         {
-          "id": "25-REQ-1.6",
+          "id": "REQ-1.6",
           "pattern": "unwanted",
           "condition": "the config file exists but cannot be read, or cannot be decoded as TOML",
           "system": "sandbox config loader",
           "action": "refuse start and include the read or decode error",
-          "contract": "non-nil error that wraps the underlying read or toml decode error; af-hub exits non-zero"
+          "contract": "non-nil error that wraps the underlying read or toml decode error; af-hub exits non-zero",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "one path to a file with mode 0000 (or a directory named config.toml) and one file with invalid TOML syntax"
+            ],
+            "pseudocode": "_,err=LoadConfig(bad); assert err!=nil; assert errors.As(err,&toml.ParseError{})"
+          }
         },
         {
-          "id": "25-REQ-1.7",
+          "id": "REQ-1.7",
           "pattern": "ubiquitous",
           "system": "af-hub start-up",
           "action": "load and validate the sandbox section only after apikit.Bootstrap returns, and before any job queue, worker or HTTP route is set up, so that first-boot admin-token generation succeeds even when the sandbox section is invalid",
-          "contract": "with an invalid sandbox section, `af-hub --admin-email` still writes the admin token and exits 0; without that flag, af-hub exits non-zero before any queue, worker or route is created"
+          "contract": "with an invalid sandbox section, `af-hub --admin-email` still writes the admin token and exits 0; without that flag, af-hub exits non-zero before any queue, worker or route is created",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "the af-hub binary built from cmd/af-hub",
+              "a temp XDG_CONFIG_HOME whose config.toml has an invalid [sandbox] section",
+              "a temp database and workspace path, and a free port"
+            ],
+            "pseudocode": "run(bin,'--admin-email','a@b.c'); assert exit==0 && tokenFile exists; r=run(bin); assert r.exit!=0; assert !dial(port)"
+          }
         }
       ]
     },
     {
-      "id": "25-REQ-2",
+      "id": "REQ-2",
       "title": "Deployment-level sandbox keys",
       "rationale": "Deployment keys pick the provider and set the limits that every profile must stay within.",
+      "system": "sandbox config validator",
       "criteria": [
         {
-          "id": "25-REQ-2.1",
+          "id": "REQ-2.1",
           "pattern": "unwanted",
           "condition": "the [sandbox] table is present and provider is absent or empty",
-          "system": "sandbox config validator",
           "action": "refuse start with a failure naming sandbox.provider as required",
-          "contract": "validation error containing \"sandbox.provider\"; af-hub exits non-zero"
+          "contract": "validation error containing \"sandbox.provider\"; af-hub exits non-zero",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a config with [sandbox] containing one valid profile but no provider, and one with provider = \"\""
+            ],
+            "pseudocode": "err=Validate(cfg); assert contains(err,'sandbox.provider')"
+          }
         },
         {
-          "id": "25-REQ-2.2",
+          "id": "REQ-2.2",
           "pattern": "unwanted",
           "condition": "provider is \"gateway\"",
-          "system": "sandbox config validator",
           "action": "refuse start with a failure saying the gateway provider is not supported by this build",
-          "contract": "validation error containing \"sandbox.provider\" and \"not supported by this build\""
+          "contract": "validation error containing \"sandbox.provider\" and \"not supported by this build\"",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "configs with provider=\"gateway\" and provider=\"kubernetes\""
+            ],
+            "pseudocode": "assert contains(Validate(gw),'not supported by this build'); assert contains(Validate(k8s),'podman')"
+          }
         },
         {
-          "id": "25-REQ-2.3",
+          "id": "REQ-2.3",
           "pattern": "unwanted",
           "condition": "provider is a value other than \"podman\" or \"gateway\"",
-          "system": "sandbox config validator",
           "action": "refuse start with a failure that names sandbox.provider and lists the accepted values",
-          "contract": "validation error containing \"sandbox.provider\" and \"podman\""
+          "contract": "validation error containing \"sandbox.provider\" and \"podman\"",
+          "check": {
+            "same_as": "REQ-2.2"
+          }
         },
         {
-          "id": "25-REQ-2.4",
+          "id": "REQ-2.4",
           "pattern": "event_driven",
           "condition": "engine_binary, runtime or userns is absent from [sandbox]",
-          "system": "sandbox config validator",
           "action": "default engine_binary to \"podman\" and runtime and userns to \"\", and pass all three values to the Podman provider options unchanged",
-          "contract": "podman.Options{Binary, Runtime, UserNS} equal the configured values, or the defaults when they are absent"
+          "contract": "podman.Options{Binary, Runtime, UserNS} equal the configured values, or the defaults when they are absent",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a recording provider factory standing in for podman.New",
+              "one config with engine_binary=\"docker\", runtime=\"runsc\", userns=\"keep-id\" and one config omitting all three"
+            ],
+            "pseudocode": "BuildProvider(cfg, factory); assert factory.opts == {docker,runsc,keep-id}"
+          }
         },
         {
-          "id": "25-REQ-2.5",
+          "id": "REQ-2.5",
           "pattern": "unwanted",
           "condition": "max_ttl is present and is not a valid Go duration string or is not greater than zero",
-          "system": "sandbox config validator",
           "action": "refuse start with a failure naming sandbox.max_ttl, and use 4h as max_ttl when the key is absent",
-          "contract": "validation error containing \"sandbox.max_ttl\" for an invalid value; an effective max_ttl of 4h when the key is absent"
+          "contract": "validation error containing \"sandbox.max_ttl\" for an invalid value; an effective max_ttl of 4h when the key is absent",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "configs with max_ttl = \"soon\", \"0s\", \"-1h\" and one with max_ttl absent and a profile ttl of 4h"
+            ],
+            "pseudocode": "assert contains(Validate(bad),'sandbox.max_ttl'); assert Validate(absent)==nil && eff.MaxTTL==4*time.Hour"
+          }
         },
         {
-          "id": "25-REQ-2.6",
+          "id": "REQ-2.6",
           "pattern": "unwanted",
           "condition": "network_modes contains an empty string or a value that appears more than once",
-          "system": "sandbox config validator",
           "action": "refuse start with a failure naming sandbox.network_modes and the offending index, and use [\"none\"] as network_modes when the key is absent",
-          "contract": "validation error containing \"sandbox.network_modes\"; an effective network_modes of [\"none\"] when the key is absent"
+          "contract": "validation error containing \"sandbox.network_modes\"; an effective network_modes of [\"none\"] when the key is absent",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "configs with network_modes [\"none\",\"\"], [\"none\",\"bridge\",\"none\"] and one absent"
+            ],
+            "pseudocode": "assert contains(Validate(dup),'sandbox.network_modes[2]'); assert eff.NetworkModes==['none']"
+          }
         }
       ]
     },
     {
-      "id": "25-REQ-3",
+      "id": "REQ-3",
       "title": "Profile identity, image, resources, network and lifetime",
       "rationale": "Every profile has to describe a shape that hub can create later without guessing.",
+      "system": "sandbox config validator",
       "criteria": [
         {
-          "id": "25-REQ-3.1",
+          "id": "REQ-3.1",
           "pattern": "unwanted",
           "condition": "the [sandbox] table has no [[sandbox.profiles]] entry",
-          "system": "sandbox config validator",
           "action": "refuse start with a failure saying at least one profile is required",
-          "contract": "validation error containing \"sandbox.profiles\""
+          "contract": "validation error containing \"sandbox.profiles\"",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a config with provider podman and no [[sandbox.profiles]]"
+            ],
+            "pseudocode": "assert contains(Validate(cfg),'sandbox.profiles')"
+          }
         },
         {
-          "id": "25-REQ-3.2",
+          "id": "REQ-3.2",
           "pattern": "unwanted",
           "condition": "a profile's name is missing, does not match ^[a-z0-9][a-z0-9_-]{0,62}$, or equals the name of an earlier profile",
-          "system": "sandbox config validator",
           "action": "record a failure that names the profile (by name, or as sandbox.profiles[i] when name is missing) and the name field",
-          "contract": "validation error containing the profile identifier and \"name\""
+          "contract": "validation error containing the profile identifier and \"name\"",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "profiles with names: missing (index 0), \"Upper\", \"-lead\", a 64-character name, and two profiles named \"dev\""
+            ],
+            "pseudocode": "err=Validate(cfg); assert contains(err,'sandbox.profiles[0]') && contains(err,'name')"
+          }
         },
         {
-          "id": "25-REQ-3.3",
+          "id": "REQ-3.3",
           "pattern": "unwanted",
           "condition": "more than one profile sets default = true",
-          "system": "sandbox config validator",
           "action": "record a failure that names the profiles that set default and the default field, and accept a configuration where no profile sets default",
-          "contract": "validation error containing \"default\" when two or more profiles set it; no error when none do"
+          "contract": "validation error containing \"default\" when two or more profiles set it; no error when none do",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "three configs: two profiles with default=true, one with default=true, none with default"
+            ],
+            "pseudocode": "assert contains(Validate(two),'default'); assert Validate(none)==nil"
+          }
         },
         {
-          "id": "25-REQ-3.4",
+          "id": "REQ-3.4",
           "pattern": "unwanted",
           "condition": "a profile's image is missing or is an empty string",
-          "system": "sandbox config validator",
           "action": "record a failure naming the profile and the image field",
-          "contract": "validation error containing the profile identifier and \"image\""
+          "contract": "validation error containing the profile identifier and \"image\"",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "profile \"a\" without image and profile \"b\" with image = \"\""
+            ],
+            "pseudocode": "assert contains(err,'a') && contains(err,'image')"
+          }
         },
         {
-          "id": "25-REQ-3.5",
+          "id": "REQ-3.5",
           "pattern": "unwanted",
           "condition": "a profile's cpus is negative, or its memory_mb, pids or disk_mb is negative or not an integer",
-          "system": "sandbox config validator",
           "action": "record a failure naming the profile and the resource field, and accept 0 in every resource field as the provider's default",
-          "contract": "validation error containing the profile identifier and the resource field name; 0 values pass"
+          "contract": "validation error containing the profile identifier and the resource field name; 0 values pass",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "profiles with cpus=-1, memory_mb=-5, pids=1.5, disk_mb=-1 and a profile with all four set to 0"
+            ],
+            "pseudocode": "for f in [cpus,memory_mb,pids,disk_mb]: assert contains(err, profile+' '+f)"
+          }
         },
         {
-          "id": "25-REQ-3.6",
+          "id": "REQ-3.6",
           "pattern": "unwanted",
           "condition": "a profile's network, after defaulting an absent value to \"none\", is not one of network_modes",
-          "system": "sandbox config validator",
           "action": "record a failure naming the profile, the network field and the rejected mode",
-          "contract": "validation error containing the profile identifier and \"network\""
+          "contract": "validation error containing the profile identifier and \"network\"",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "network_modes [\"none\"] with a profile network=\"bridge\"",
+              "a profile with no network key"
+            ],
+            "pseudocode": "assert contains(err,'network') && contains(err,'bridge'); assert prof.Network=='none'"
+          }
         },
         {
-          "id": "25-REQ-3.7",
+          "id": "REQ-3.7",
           "pattern": "unwanted",
           "condition": "a profile's ttl is missing, is not a valid Go duration string, is not greater than zero, or is greater than max_ttl",
-          "system": "sandbox config validator",
           "action": "record a failure naming the profile and the ttl field, and accept a ttl exactly equal to max_ttl",
-          "contract": "validation error containing the profile identifier and \"ttl\"; ttl == max_ttl passes"
+          "contract": "validation error containing the profile identifier and \"ttl\"; ttl == max_ttl passes",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "max_ttl=\"1h\" and profiles with ttl missing, \"abc\", \"0s\", \"61m\", and \"1h\""
+            ],
+            "pseudocode": "assert contains(err,'ttl'); assert noErrorFor('1h')"
+          }
         },
         {
-          "id": "25-REQ-3.8",
+          "id": "REQ-3.8",
           "pattern": "event_driven",
           "condition": "a profile omits require_landlock",
-          "system": "sandbox config validator",
           "action": "set require_landlock to false for that profile",
-          "contract": "the validated profile has RequireLandlock == false"
+          "contract": "the validated profile has RequireLandlock == false",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a valid profile without require_landlock and one with require_landlock=true"
+            ],
+            "pseudocode": "assert !p1.RequireLandlock && p2.RequireLandlock"
+          }
         }
       ]
     },
     {
-      "id": "25-REQ-4",
+      "id": "REQ-4",
       "title": "Secret and environment names, and collected failures",
       "rationale": "Profile secret names must be keys the secrets store can hold, which compares them without regard to case. An operator should see every fault after a single restart.",
+      "system": "sandbox config validator",
       "criteria": [
         {
-          "id": "25-REQ-4.1",
+          "id": "REQ-4.1",
           "pattern": "unwanted",
           "condition": "an entry of a profile's secrets or optional_secrets fails secrets.ValidateKey",
-          "system": "sandbox config validator",
           "action": "record a failure naming the profile, the list field and the entry index",
-          "contract": "validation error containing the profile identifier and \"secrets\" or \"optional_secrets\""
+          "contract": "validation error containing the profile identifier and \"secrets\" or \"optional_secrets\"",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a profile with secrets [\"OK\",\"1BAD\"] and optional_secrets [\"has-dash\"]"
+            ],
+            "pseudocode": "assert contains(err,'secrets[1]') && contains(err,'optional_secrets[0]')"
+          }
         },
         {
-          "id": "25-REQ-4.2",
+          "id": "REQ-4.2",
           "pattern": "unwanted",
           "condition": "two names in a profile's secrets and optional_secrets are equal when compared ignoring case, within one list or across the two lists",
-          "system": "sandbox config validator",
           "action": "record a failure naming the profile and the repeated name",
-          "contract": "validation error containing the profile identifier and the duplicate name"
+          "contract": "validation error containing the profile identifier and the duplicate name",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "profile with secrets [\"API_KEY\",\"api_key\"]",
+              "profile with secrets [\"TOKEN\"] and optional_secrets [\"token\"]"
+            ],
+            "pseudocode": "assert contains(err,'api_key') ; assert contains(err,'token')"
+          }
         },
         {
-          "id": "25-REQ-4.3",
+          "id": "REQ-4.3",
           "pattern": "ubiquitous",
-          "system": "sandbox config validator",
-          "action": "accept reserved secret names such as GIT_PAT in secrets and optional_secrets when they pass secrets.ValidateKey"
+          "action": "accept reserved secret names such as GIT_PAT in secrets and optional_secrets when they pass secrets.ValidateKey",
+          "contract": "no error is returned",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a profile with secrets [\"GIT_PAT\"] and optional_secrets [\"GH_TOKEN\"]"
+            ],
+            "pseudocode": "assert Validate(cfg)==nil"
+          }
         },
         {
-          "id": "25-REQ-4.4",
+          "id": "REQ-4.4",
           "pattern": "unwanted",
           "condition": "a key of a profile's env fails secrets.ValidateKey",
-          "system": "sandbox config validator",
           "action": "record a failure naming the profile, the env field and the key, but not the value",
-          "contract": "validation error containing the profile identifier, \"env\" and the key"
+          "contract": "validation error containing the profile identifier, \"env\" and the key",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a profile with env {\"BAD-KEY\":\"supersecretvalue\"}"
+            ],
+            "pseudocode": "assert contains(err,'BAD-KEY') && !contains(err,'supersecretvalue')"
+          }
         },
         {
-          "id": "25-REQ-4.5",
+          "id": "REQ-4.5",
           "pattern": "unwanted",
           "condition": "a key of a profile's env equals, ignoring case, a name in the same profile's secrets or optional_secrets",
-          "system": "sandbox config validator",
           "action": "record a failure naming the profile, the env field and the key, but not the value",
-          "contract": "validation error containing the profile identifier and the colliding key"
+          "contract": "validation error containing the profile identifier and the colliding key",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a profile with secrets [\"GIT_PAT\"] and env {\"git_pat\":\"leakme\"}, and another with optional_secrets [\"X\"] and env {\"x\":\"leakme\"}"
+            ],
+            "pseudocode": "assert contains(err,'git_pat') && !contains(err,'leakme')"
+          }
         },
         {
-          "id": "25-REQ-4.6",
+          "id": "REQ-4.6",
           "pattern": "ubiquitous",
-          "system": "sandbox config validator",
           "action": "for any sandbox section with N independent static faults across the deployment keys and the profiles, return one error that contains all N failure messages, not only the first",
-          "contract": "one joined error whose text contains each of the N failure messages"
+          "contract": "one joined error whose text contains each of the N failure messages",
+          "check": {
+            "kind": "property",
+            "setup": [
+              "a catalogue of independent fault injectors (bad max_ttl, bad network_modes, bad name, duplicate name, missing image, negative resource, bad ttl, bad secret, env collision)"
+            ],
+            "pseudocode": "for subset in gen_subsets(): err=Validate(apply(subset)); for f in subset: assert contains(err,f.expected)"
+          }
         }
       ]
     },
     {
-      "id": "25-REQ-5",
+      "id": "REQ-5",
       "title": "Provider construction and capability check",
       "rationale": "Hub must know at start that the engine is reachable and that the provider can honour every profile, without creating anything.",
+      "system": "sandbox service",
       "criteria": [
         {
-          "id": "25-REQ-5.1",
+          "id": "REQ-5.1",
           "pattern": "event_driven",
           "condition": "static validation of the sandbox section passes",
-          "system": "sandbox service",
           "action": "build the Podman provider from engine_binary, runtime and userns and call its List method exactly once with a 10-second timeout",
-          "contract": "exactly one List call, whose context has a deadline no more than 10 seconds away"
+          "contract": "exactly one List call, whose context has a deadline no more than 10 seconds away",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a valid config and a test-double provider that records List contexts and advertises network mode none"
+            ],
+            "pseudocode": "New(cfg,fake); assert fake.listCalls==1; assert fake.deadline - callTime <= 10s"
+          }
         },
         {
-          "id": "25-REQ-5.2",
+          "id": "REQ-5.2",
           "pattern": "unwanted",
           "condition": "static validation of the sandbox section fails",
-          "system": "sandbox service",
           "action": "report the static failures without building the provider or calling List",
-          "contract": "validation error returned; the provider has zero List calls"
+          "contract": "validation error returned; the provider has zero List calls",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a config with a duplicate profile name and a recording provider factory and double"
+            ],
+            "pseudocode": "err=Start(cfg,factory); assert factory.calls==0 && fake.listCalls==0"
+          }
         },
         {
-          "id": "25-REQ-5.3",
+          "id": "REQ-5.3",
           "pattern": "unwanted",
           "condition": "building the provider fails, or the List probe returns an error or exceeds its 10-second timeout",
-          "system": "sandbox service",
           "action": "refuse start with an error that starts with \"sandbox:\", names sandbox.provider and sandbox.engine_binary, and includes the provider's error text",
-          "contract": "non-nil error containing \"sandbox:\", \"sandbox.provider\", \"sandbox.engine_binary\" and the provider error; af-hub exits non-zero"
+          "contract": "non-nil error containing \"sandbox:\", \"sandbox.provider\", \"sandbox.engine_binary\" and the provider error; af-hub exits non-zero",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a factory returning an error, a double whose List returns 'engine down', and a double whose List blocks until its context is done"
+            ],
+            "pseudocode": "assert hasPrefix(err,'sandbox:') && contains(err,'sandbox.engine_binary') && contains(err,'engine down')"
+          }
         },
         {
-          "id": "25-REQ-5.4",
+          "id": "REQ-5.4",
           "pattern": "unwanted",
           "condition": "a network_modes entry is not among the network modes in the provider's capabilities",
-          "system": "sandbox service",
           "action": "refuse start with a failure naming sandbox.network_modes and the unsupported mode",
-          "contract": "non-nil error containing \"sandbox.network_modes\" and the mode"
+          "contract": "non-nil error containing \"sandbox.network_modes\" and the mode",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "network_modes [\"none\",\"host\"] and a double whose capabilities list only none"
+            ],
+            "pseudocode": "assert contains(err,'sandbox.network_modes') && contains(err,'host')"
+          }
         },
         {
-          "id": "25-REQ-5.5",
+          "id": "REQ-5.5",
           "pattern": "event_driven",
           "condition": "the probe succeeds",
-          "system": "sandbox service",
           "action": "turn each profile into a sandbox.Spec carrying the image, only the profile's fixed env, the network, the resources, TTL equal to the profile's ttl and RequireLandlock, and check that spec with sandbox.CheckSpec against the provider's capabilities",
-          "contract": "one CheckSpec call per profile; the Spec env contains no secret names"
+          "contract": "one CheckSpec call per profile; the Spec env contains no secret names",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "two profiles with secrets [\"GIT_PAT\"], optional_secrets [\"X\"] and env {\"LANG\":\"C\"}, a double recording the Spec seen by CheckSpec (or the real CheckSpec against double capabilities)"
+            ],
+            "pseudocode": "specs=captured; assert len(specs)==2; assert specs[0].Env=={'LANG':'C'}"
+          }
         },
         {
-          "id": "25-REQ-5.6",
+          "id": "REQ-5.6",
           "pattern": "unwanted",
           "condition": "sandbox.CheckSpec returns an error for a profile",
-          "system": "sandbox service",
           "action": "refuse start with a failure that names the profile and includes the CheckSpec error text",
-          "contract": "non-nil error containing the profile name and the CheckSpec error text"
+          "contract": "non-nil error containing the profile name and the CheckSpec error text",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a double whose capabilities reject profile \"big\" (for example require_landlock unsupported) and accept profile \"small\""
+            ],
+            "pseudocode": "assert contains(err,'big') && contains(err,checkSpecErr.Error()) && !contains(err,'small')"
+          }
         },
         {
-          "id": "25-REQ-5.7",
+          "id": "REQ-5.7",
           "pattern": "unwanted",
           "condition": "AgentKit's CPU resource field is a whole-number type and a profile's cpus has a fractional part",
-          "system": "sandbox service",
           "action": "refuse start with a failure naming the profile and the cpus field",
-          "contract": "non-nil error containing the profile name and \"cpus\""
+          "contract": "non-nil error containing the profile name and \"cpus\"",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a profile with cpus = 1.5 and a valid double provider",
+              "AgentKit's CPU field type checked at implementation time; if it is a float the case is skipped and 1.5 passes"
+            ],
+            "pseudocode": "if cpuIsInt: assert contains(err,'cpus') && contains(err,profile)"
+          }
         },
         {
-          "id": "25-REQ-5.8",
+          "id": "REQ-5.8",
           "pattern": "ubiquitous",
-          "system": "sandbox service",
-          "action": "keep the provider and the validated profiles in memory after start, and never call the provider's Create or Destroy method"
+          "action": "keep the provider and the validated profiles in memory after start, and never call the provider's Create or Destroy method",
+          "contract": "the service exposes the provider and the validated profiles; the double records zero Create and zero Destroy calls",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a recording double provider and a valid config"
+            ],
+            "pseudocode": "svc=New(cfg,fake); assert svc.Provider()==fake && len(svc.Profiles())==2; assert fake.create==0 && fake.destroy==0"
+          }
         }
       ]
     },
     {
-      "id": "25-REQ-6",
+      "id": "REQ-6",
       "title": "Sandbox permission scopes",
       "rationale": "PATs must be able to carry sandbox scopes before an operator turns the feature on.",
       "criteria": [
         {
-          "id": "25-REQ-6.1",
+          "id": "REQ-6.1",
           "pattern": "ubiquitous",
           "system": "internal/sandboxes",
           "action": "export Permissions() returning exactly the apikit permissions sandboxes:read and sandboxes:write, which af-hub appends to the scopes it registers with apikit on every start, whether the feature is on or off",
-          "contract": "Permissions() returns [{sandboxes read} {sandboxes write}]"
+          "contract": "Permissions() returns [{sandboxes read} {sandboxes write}]",
+          "check": {
+            "kind": "unit",
+            "pseudocode": "assert Permissions()==[{Resource:'sandboxes',Action:'read'},{Resource:'sandboxes',Action:'write'}]"
+          }
         },
         {
-          "id": "25-REQ-6.2",
+          "id": "REQ-6.2",
           "pattern": "ubiquitous",
           "system": "sandbox auth helpers",
-          "action": "for any PAT, grant sandbox read access exactly when its permissions contain sandboxes:read or sandboxes:write"
+          "action": "for any PAT, grant sandbox read access exactly when its permissions contain sandboxes:read or sandboxes:write",
+          "contract": "canReadSandboxes is true iff the list contains sandboxes:read or sandboxes:write",
+          "check": {
+            "kind": "property",
+            "pseudocode": "for perms in gen(): assert canRead(pat(perms)) == ('sandboxes:read' in perms or 'sandboxes:write' in perms)"
+          }
         },
         {
-          "id": "25-REQ-6.3",
+          "id": "REQ-6.3",
           "pattern": "ubiquitous",
           "system": "sandbox auth helpers",
-          "action": "grant sandbox read access to every api_key and admin_token credential without checking any scope"
+          "action": "grant sandbox read access to every api_key and admin_token credential without checking any scope",
+          "contract": "canReadSandboxes is true",
+          "check": {
+            "kind": "property",
+            "pseudocode": "for t in [api_key,admin_token]: for perms in gen(): assert canRead({t,perms})"
+          }
         }
       ]
     },
     {
-      "id": "25-REQ-7",
+      "id": "REQ-7",
       "title": "Profile listing endpoint",
       "rationale": "Callers choose a profile by name and see its shape. The routes always exist, so a caller can tell a disabled feature apart from a mistyped path.",
+      "system": "profile listing handler",
       "criteria": [
         {
-          "id": "25-REQ-7.1",
+          "id": "REQ-7.1",
           "pattern": "unwanted",
           "condition": "GET /api/v1/sandbox-profiles arrives with no credential",
-          "system": "profile listing handler",
           "action": "reject the request before checking whether the feature is on",
-          "contract": "HTTP 401 in apikit's error envelope"
+          "contract": "HTTP 401 in apikit's error envelope",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "the route registered once with a nil service (disabled) and once with a service, no auth middleware setting AuthInfo"
+            ],
+            "pseudocode": "assert rec.Code==401 && body.error.error_type != 'sandboxes_disabled'"
+          }
         },
         {
-          "id": "25-REQ-7.2",
+          "id": "REQ-7.2",
           "pattern": "state_driven",
           "condition": "the feature is off",
-          "system": "profile listing handler",
           "action": "answer every authenticated request, including one from a PAT without sandbox scopes, with error_type sandboxes_disabled and the message \"sandboxes are not enabled on this hub\"",
-          "contract": "HTTP 404 with body {\"error\":{\"code\":404,\"message\":\"sandboxes are not enabled on this hub\",\"error_type\":\"sandboxes_disabled\"}}"
+          "contract": "HTTP 404 with body {\"error\":{\"code\":404,\"message\":\"sandboxes are not enabled on this hub\",\"error_type\":\"sandboxes_disabled\"}}",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "routes registered with a nil service",
+              "callers: admin_token, api_key, and a PAT with no sandbox scopes"
+            ],
+            "pseudocode": "assert rec.Code==404; assert jsonEq(rec.Body, expected)"
+          }
         },
         {
-          "id": "25-REQ-7.3",
+          "id": "REQ-7.3",
           "pattern": "unwanted",
           "condition": "the feature is on and the caller is a PAT with neither sandboxes:read nor sandboxes:write",
-          "system": "profile listing handler",
           "action": "reject the request through apikit.WriteAPIError",
-          "contract": "HTTP 403 in apikit's error envelope"
+          "contract": "HTTP 403 in apikit's error envelope",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "routes registered with a valid service",
+              "a PAT holding only secrets:list"
+            ],
+            "pseudocode": "assert get(pat(['secrets:list'])).Code==403; assert get(pat(['sandboxes:write'])).Code==200"
+          }
         },
         {
-          "id": "25-REQ-7.4",
+          "id": "REQ-7.4",
           "pattern": "event_driven",
           "condition": "an authorised caller requests GET /api/v1/sandbox-profiles while the feature is on",
-          "system": "profile listing handler",
           "action": "return every validated profile, sorted by name, each with name, default, image, network, ttl_seconds, resources {cpus, memory_mb, pids, disk_mb}, secrets, optional_secrets, env_keys and require_landlock",
-          "contract": "HTTP 200 with body {\"profiles\":[...]}, where ttl_seconds is a JSON integer equal to the ttl in whole seconds"
+          "contract": "HTTP 200 with body {\"profiles\":[...]}, where ttl_seconds is a JSON integer equal to the ttl in whole seconds",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a service with profiles \"zeta\" (ttl 90m, default, cpus 1, memory_mb 512, pids 100, disk_mb 0) and \"alpha\"",
+              "an admin_token caller"
+            ],
+            "pseudocode": "assert names==['alpha','zeta']; assert p.ttl_seconds==5400; assert keys(p)==expected"
+          }
         },
         {
-          "id": "25-REQ-7.5",
+          "id": "REQ-7.5",
           "pattern": "ubiquitous",
-          "system": "profile listing handler",
-          "action": "for any profile, render secrets, optional_secrets and env_keys sorted in ascending order and as JSON arrays, with an empty array rather than null when a list has no entries"
+          "action": "for any profile, render secrets, optional_secrets and env_keys sorted in ascending order and as JSON arrays, with an empty array rather than null when a list has no entries",
+          "contract": "each of secrets, optional_secrets and env_keys is a JSON array; each array is sorted in ascending order; an empty list renders as [] and not null",
+          "check": {
+            "kind": "property",
+            "pseudocode": "for p in gen(): body=get(); for f in lists: assert isArray(body[f]) && body[f]==sorted(body[f])"
+          }
         },
         {
-          "id": "25-REQ-7.6",
+          "id": "REQ-7.6",
           "pattern": "state_driven",
           "condition": "the feature is on",
-          "system": "profile listing handler",
           "action": "build the response only from the validated profiles in memory, without calling the provider or reading the database, so it still answers 200 after the engine becomes unreachable",
-          "contract": "HTTP 200 with zero provider calls during the request"
+          "contract": "HTTP 200 with zero provider calls during the request",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a service built with a double that counts every method call after start",
+              "the handler wired without any database handle",
+              "the double afterwards set to fail all calls"
+            ],
+            "pseudocode": "fake.failAll(); fake.reset(); rec=get(); assert rec.Code==200 && fake.total()==0"
+          }
         },
         {
-          "id": "25-REQ-7.7",
+          "id": "REQ-7.7",
           "pattern": "ubiquitous",
-          "system": "profile listing handler",
-          "action": "return the same profile list to every authorised caller, whatever their workspaces, user or organisation"
+          "action": "return the same profile list to every authorised caller, whatever their workspaces, user or organisation",
+          "contract": "the response body bytes are identical for all callers",
+          "check": {
+            "kind": "property",
+            "setup": [
+              "a service with a fixed set of profiles"
+            ],
+            "pseudocode": "base=get(admin).Body; for c in gen_callers(): assert get(c).Body==base"
+          }
         }
       ]
     },
     {
-      "id": "25-REQ-8",
+      "id": "REQ-8",
       "title": "No secret or environment value leaves hub",
       "rationale": "${VAR} expansion can put an operator credential into env, and callers must never see secret values or the provider.",
       "criteria": [
         {
-          "id": "25-REQ-8.1",
+          "id": "REQ-8.1",
           "pattern": "ubiquitous",
           "system": "internal/sandboxes",
           "action": "for any sandbox section, never include an env value in the profile listing body, the start-up log lines or any validation error",
-          "contract": "none of the configured env values appears as a substring of the listing body, any log record or any returned error"
+          "contract": "none of the configured env values appears as a substring of the listing body, any log record or any returned error",
+          "check": {
+            "kind": "property",
+            "setup": [
+              "a captured slog handler and a unique random sentinel as each env value"
+            ],
+            "pseudocode": "for cfg in gen(): err,logs,body=run(cfg); for v in envValues(cfg): assert v not in err+logs+body"
+          }
         },
         {
-          "id": "25-REQ-8.2",
+          "id": "REQ-8.2",
           "pattern": "event_driven",
           "condition": "hub starts with the feature on",
           "system": "af-hub start-up",
           "action": "log exactly one info line that gives the provider name and the profile names and no other value from the sandbox section",
-          "contract": "one slog info record whose attributes are only the provider name and the list of profile names"
+          "contract": "one slog info record whose attributes are only the provider name and the list of profile names",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a captured slog handler, a valid config whose image, secrets and env values are distinctive strings"
+            ],
+            "pseudocode": "assert len(recs)==1; assert attrKeys(recs[0])==['provider','profiles']"
+          }
         },
         {
-          "id": "25-REQ-8.3",
+          "id": "REQ-8.3",
           "pattern": "ubiquitous",
           "system": "internal/sandboxes",
-          "action": "build its configuration, validation and listing without a secrets.Store or database handle, so that no secret value is read in this scope, and never include the provider name, its options or max_ttl in the listing body"
+          "action": "build its configuration, validation and listing without a secrets.Store or database handle, so that no secret value is read in this scope, and never include the provider name, its options or max_ttl in the listing body",
+          "contract": "the body contains none of podman-x, runsc, 'podman', max_ttl or 3h; the exported constructors and loaders compile without a *secrets.Store or *sql.DB parameter",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a config with provider podman, engine_binary \"/opt/podman-x\", runtime \"runsc\", max_ttl \"3h\""
+            ],
+            "pseudocode": "assert !contains(body,'runsc') && !contains(body,'max_ttl'); New(cfg, provider) compiles with no db"
+          }
         }
       ]
     },
     {
-      "id": "25-REQ-9",
+      "id": "REQ-9",
       "title": "afc sandbox profiles command",
       "rationale": "Operators and agents read the deployment's profiles from the CLI they already use.",
+      "system": "afc",
       "criteria": [
         {
-          "id": "25-REQ-9.1",
+          "id": "REQ-9.1",
           "pattern": "event_driven",
           "condition": "a user runs `afc sandbox profiles`",
-          "system": "afc",
           "action": "send GET /api/v1/sandbox-profiles with the configured credential and print the response through apikit.CLIPrintResult",
-          "contract": "one JSON document on stdout equal to the response body; exit code 0"
+          "contract": "one JSON document on stdout equal to the response body; exit code 0",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "an httptest hub answering GET /api/v1/sandbox-profiles with a fixed profiles JSON body and recording the Authorization header"
+            ],
+            "pseudocode": "out,err=runRootCmd(t,'--endpoint-url',url,'--api-key',k,'sandbox','profiles'); assert jsonEq(out,body) && err==nil"
+          }
         },
         {
-          "id": "25-REQ-9.2",
+          "id": "REQ-9.2",
           "pattern": "unwanted",
           "condition": "`afc sandbox profiles` is given one or more positional arguments",
-          "system": "afc",
           "action": "reject the invocation without sending any request",
-          "contract": "non-zero exit with a usage error on stderr; zero HTTP requests"
+          "contract": "non-zero exit with a usage error on stderr; zero HTTP requests",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "an httptest hub counting requests"
+            ],
+            "pseudocode": "_,err=run('sandbox','profiles','extra'); assert err!=nil && ExitCode(err)!=0 && hits==0"
+          }
         },
         {
-          "id": "25-REQ-9.3",
+          "id": "REQ-9.3",
           "pattern": "unwanted",
           "condition": "the hub answers with an error status, including 404 sandboxes_disabled, 401 or 403",
-          "system": "afc",
           "action": "report the error through apikit.CLIHandleError",
-          "contract": "error message on stderr, nothing on stdout, and the non-zero exit code that apikit maps to the status"
+          "contract": "error message on stderr, nothing on stdout, and the non-zero exit code that apikit maps to the status",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "an httptest hub answering 404 with error_type sandboxes_disabled, then 401, then 403 in apikit's envelope"
+            ],
+            "pseudocode": "for s in [404,401,403]: out,err=run(...); assert out=='' && ExitCode(err)==apikitCode(s)"
+          }
         },
         {
-          "id": "25-REQ-9.4",
+          "id": "REQ-9.4",
           "pattern": "ubiquitous",
-          "system": "afc",
-          "action": "register an `afc sandbox` command group in BuildRootCommand whose only subcommand is profiles"
+          "action": "register an `afc sandbox` command group in BuildRootCommand whose only subcommand is profiles",
+          "contract": "a command named sandbox exists; its subcommands are exactly [profiles]",
+          "check": {
+            "kind": "unit",
+            "pseudocode": "c=find(root,'sandbox'); assert names(c.Commands())==['profiles']"
+          }
         }
       ]
     },
     {
-      "id": "25-REQ-10",
+      "id": "REQ-10",
       "title": "AgentKit dependency and import boundary",
       "rationale": "hub's build has to reach the agentkit-go sibling the way it reaches apikit, while afc stays a static binary.",
       "criteria": [
         {
-          "id": "25-REQ-10.1",
+          "id": "REQ-10.1",
           "pattern": "ubiquitous",
           "system": "hub module",
-          "action": "require the agentkit-go sandbox module in go.mod, with a replace directive pointing at ../agentkit-go next to the existing apikit replace"
+          "action": "require the agentkit-go sandbox module in go.mod, with a replace directive pointing at ../agentkit-go next to the existing apikit replace",
+          "contract": "go.mod has a require for the agentkit-go sandbox module and a replace to ../agentkit-go next to the apikit replace; the Containerfile copies from the agentkit build context; the build-hub-container target passes --build-context agentkit=../agentkit-go; inc-build-hub.yaml and build-hub-cli.yaml clone agentkit-go and inc-build-hub.yaml passes it as a build context",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "go.mod, containers/hub/Containerfile, Makefile and the two workflow files read as text"
+            ],
+            "pseudocode": "assert contains(gomod,'=> ../agentkit-go'); assert contains(makefile,'--build-context agentkit=../agentkit-go')"
+          }
         },
         {
-          "id": "25-REQ-10.2",
+          "id": "REQ-10.2",
           "pattern": "ubiquitous",
           "system": "afc build",
           "action": "keep internal/sandboxes and every agentkit-go package out of the transitive imports of cmd/afc and internal/cli, so that afc builds with CGO_ENABLED=0",
-          "contract": "`go list -deps ./cmd/afc` lists no internal/sandboxes or agentkit-go package"
+          "contract": "`go list -deps ./cmd/afc` lists no internal/sandboxes or agentkit-go package",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "the repository module graph"
+            ],
+            "pseudocode": "deps=goList('-deps','./cmd/afc','./internal/cli'); assert none(d contains 'internal/sandboxes' or 'agentkit-go')"
+          }
         },
         {
-          "id": "25-REQ-10.3",
+          "id": "REQ-10.3",
           "pattern": "ubiquitous",
           "system": "hub build",
-          "action": "make the agentkit-go sibling available to container and CI builds: containers/hub/Containerfile copies it from an agentkit build context, the build-hub-container target in the Makefile passes --build-context agentkit=../agentkit-go, inc-build-hub.yaml and build-hub-cli.yaml clone it next to the repository, and inc-build-hub.yaml passes it as a build context"
+          "action": "make the agentkit-go sibling available to container and CI builds: containers/hub/Containerfile copies it from an agentkit build context, the build-hub-container target in the Makefile passes --build-context agentkit=../agentkit-go, inc-build-hub.yaml and build-hub-cli.yaml clone it next to the repository, and inc-build-hub.yaml passes it as a build context",
+          "check": {
+            "same_as": "REQ-10.1"
+          }
         }
       ]
     }
   ],
   "execution_paths": [
     {
-      "id": "25-PATH-1",
+      "id": "PATH-1",
       "title": "Hub starts with a valid sandbox section and a caller lists profiles over REST",
       "steps": [
         {
@@ -528,10 +871,31 @@
           "actor": "profile listing handler",
           "action": "returns 200 with {\"profiles\":[...]} sorted by name, carrying secret names and env key names but no values"
         }
-      ]
+      ],
+      "smoke": {
+        "real_components": [
+          "sandbox config loader and validator",
+          "sandbox service",
+          "profile listing handler",
+          "echo router with apikit AuthInfo",
+          "BurntSushi toml decoder"
+        ],
+        "setup": [
+          "a temp XDG_CONFIG_HOME config.toml with provider podman and two profiles using ${NAME} env values and secret names",
+          "a test-double sandbox.Provider with network mode none that records calls",
+          "an echo server with a test auth middleware"
+        ],
+        "end_state": [
+          "start succeeds with exactly one List call and one CheckSpec per profile",
+          "the start-up info log has provider and profile names only",
+          "the response is 200 sorted by name with secret names and env key names",
+          "no env value appears in the body"
+        ],
+        "pseudocode": "cfg=LoadConfig(ConfigPath()); svc=New(cfg,fake); RegisterRoutes(api,svc); rec=get(pat(['sandboxes:read'])); assert 200 and sorted and no env values"
+      }
     },
     {
-      "id": "25-PATH-2",
+      "id": "PATH-2",
       "title": "An operator lists profiles with afc",
       "steps": [
         {
@@ -550,10 +914,28 @@
           "actor": "afc",
           "action": "prints the response as one JSON document on stdout and exits 0"
         }
-      ]
+      ],
+      "smoke": {
+        "real_components": [
+          "cli.BuildRootCommand and sandbox profiles command",
+          "apikit CLI client",
+          "profile listing handler",
+          "sandbox service"
+        ],
+        "setup": [
+          "an httptest server hosting the real sandboxes route over a service built with a double provider",
+          "the real cli.BuildRootCommand, run from an internal/sandboxes test package"
+        ],
+        "end_state": [
+          "the handler answers 200 from memory",
+          "stdout is one JSON document equal to the handler's body",
+          "the exit code is 0"
+        ],
+        "pseudocode": "srv=httptest(realHandler); out=run(cli.BuildRootCommand(),'sandbox','profiles'); assert jsonEq(out,handlerBody)"
+      }
     },
     {
-      "id": "25-PATH-3",
+      "id": "PATH-3",
       "title": "An invalid sandbox section refuses start",
       "steps": [
         {
@@ -568,10 +950,27 @@
           "actor": "af-hub start-up",
           "action": "exits non-zero with the joined error before any queue, worker or HTTP route is set up"
         }
-      ]
+      ],
+      "smoke": {
+        "real_components": [
+          "af-hub binary start-up",
+          "sandbox config loader and validator",
+          "BurntSushi toml decoder"
+        ],
+        "setup": [
+          "a config.toml with an unknown profile key, a duplicate profile name and a ttl over max_ttl",
+          "the af-hub binary with a fake engine_binary that records invocations to a file"
+        ],
+        "end_state": [
+          "the process exits non-zero before any HTTP listener opens",
+          "stderr contains the unknown key path, the duplicate name with name, and the ttl field with the profile name",
+          "the engine binary was never invoked"
+        ],
+        "pseudocode": "r=run(afhub); assert r.exit!=0 && contains(r.stderr,'ttl') && !exists(engineLog) && !dial(port)"
+      }
     },
     {
-      "id": "25-PATH-4",
+      "id": "PATH-4",
       "title": "Hub without a sandbox section answers sandboxes_disabled",
       "steps": [
         {
@@ -590,7 +989,25 @@
           "actor": "profile listing handler",
           "action": "returns 404 with error_type sandboxes_disabled and the message \"sandboxes are not enabled on this hub\""
         }
-      ]
+      ],
+      "smoke": {
+        "real_components": [
+          "sandbox config loader",
+          "profile listing handler",
+          "echo router with apikit AuthInfo",
+          "apikit permission registration"
+        ],
+        "setup": [
+          "a config.toml with no [sandbox] table",
+          "the real start-up wiring with sandboxes.Permissions() appended and routes registered in disabled mode"
+        ],
+        "end_state": [
+          "one info line says sandboxes are disabled",
+          "the sandboxes:read and sandboxes:write scopes are registered",
+          "the response is 404 with error_type sandboxes_disabled and message 'sandboxes are not enabled on this hub'"
+        ],
+        "pseudocode": "cfg=LoadConfig(p); assert cfg==nil; RegisterRoutes(api,nil); rec=get(admin); assert 404 and error_type=='sandboxes_disabled'"
+      }
     }
   ],
   "external_apis": [

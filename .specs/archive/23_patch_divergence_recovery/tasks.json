@@ -1,8 +1,8 @@
 {
-  "$schema": "https://agent-fox.dev/schemas/tasks.v2.json",
+  "$schema": "https://agent-fox.dev/schemas/tasks.v3.json",
   "spec_id": "23",
   "spec_name": "patch_divergence_recovery",
-  "schema_version": 2,
+  "schema_version": 3,
   "test_commands": {
     "all_tests": "make test",
     "linter": "make lint",
@@ -29,22 +29,10 @@
   "tasks": [
     {
       "id": 1,
-      "kind": "implement",
       "title": "Define the workspace recovery hook and add GET /workspaces/:slug/patches/:id with replaced_sha",
       "criteria": [
-        "23-REQ-1",
-        "23-REQ-9.1"
-      ],
-      "tests": [
-        "TS-23-1",
-        "TS-23-2",
-        "TS-23-3",
-        "TS-23-4",
-        "TS-23-5",
-        "TS-23-6",
-        "TS-23-7",
-        "TS-23-8",
-        "TS-23-59"
+        "REQ-1",
+        "REQ-9.1"
       ],
       "steps": [
         "Write TS-23-1..TS-23-8 and TS-23-59 as Go tests in internal/workspace and confirm they fail",
@@ -61,34 +49,20 @@
         "internal/workspace/routes.go",
         "internal/workspace/recovery_hook_test.go",
         "internal/workspace/patch_get_test.go"
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 2,
-      "kind": "implement",
       "title": "Add the reset-to-origin handler, error mapping and hub.patch.reset audit",
       "criteria": [
-        "23-REQ-2",
-        "23-REQ-9.2",
-        "23-REQ-9.4",
-        "23-REQ-10.1",
-        "23-REQ-10.2",
-        "23-REQ-10.3",
-        "23-REQ-10.5",
-        "23-REQ-10.6"
-      ],
-      "tests": [
-        "TS-23-9",
-        "TS-23-10",
-        "TS-23-11",
-        "TS-23-12",
-        "TS-23-13",
-        "TS-23-14",
-        "TS-23-16",
-        "TS-23-60",
-        "TS-23-62",
-        "TS-23-69"
+        "REQ-2",
+        "REQ-9.2",
+        "REQ-9.4",
+        "REQ-10.1",
+        "REQ-10.2",
+        "REQ-10.3",
+        "REQ-10.5",
+        "REQ-10.6"
       ],
       "steps": [
         "Write the listed tests against a stub RecoveryHook in internal/workspace and confirm they fail",
@@ -108,28 +82,14 @@
       ],
       "depends_on": [
         1
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 3,
-      "kind": "implement",
       "title": "Implement the carrypatch recovery hook: reset fetch, compare and compare-and-swap move",
       "criteria": [
-        "23-REQ-3",
-        "23-REQ-9.3"
-      ],
-      "tests": [
-        "TS-23-15",
-        "TS-23-17",
-        "TS-23-18",
-        "TS-23-19",
-        "TS-23-20",
-        "TS-23-21",
-        "TS-23-22",
-        "TS-23-23",
-        "TS-23-24",
-        "TS-23-61"
+        "REQ-3",
+        "REQ-9.3"
       ],
       "steps": [
         "Write the listed tests with a real bare fork, real trunk and an injectable fetch stub; confirm they fail",
@@ -149,25 +109,13 @@
       ],
       "depends_on": [
         1
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 4,
-      "kind": "implement",
       "title": "Reset: persist origin sync state and trigger the rebuild",
       "criteria": [
-        "23-REQ-4"
-      ],
-      "tests": [
-        "TS-23-25",
-        "TS-23-26",
-        "TS-23-27",
-        "TS-23-28",
-        "TS-23-29",
-        "TS-23-30",
-        "TS-23-31",
-        "TS-23-32"
+        "REQ-4"
       ],
       "steps": [
         "Write the listed tests with a real PatchStore/test database, real job queue and the real recovery service; confirm they fail",
@@ -183,21 +131,13 @@
       ],
       "depends_on": [
         3
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 5,
-      "kind": "implement",
       "title": "Add afc patch reset-to-origin CLI command",
       "criteria": [
-        "23-REQ-5"
-      ],
-      "tests": [
-        "TS-23-33",
-        "TS-23-34",
-        "TS-23-35",
-        "TS-23-36"
+        "REQ-5"
       ],
       "steps": [
         "Write the CLI tests with a stub HTTP server in internal/cli/patch_cmd_test.go style and confirm they fail",
@@ -208,24 +148,13 @@
       "touches": [
         "internal/cli/patch_cmd.go",
         "internal/cli/patch_cmd_test.go"
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 6,
-      "kind": "implement",
       "title": "Protect refs/hub/replaced/ in the git server receive-pack path",
       "criteria": [
-        "23-REQ-6"
-      ],
-      "tests": [
-        "TS-23-37",
-        "TS-23-38",
-        "TS-23-39",
-        "TS-23-40",
-        "TS-23-41",
-        "TS-23-42",
-        "TS-23-43"
+        "REQ-6"
       ],
       "steps": [
         "Write gitserver tests using real git push/fetch/ls-remote against the test git server; confirm they fail",
@@ -239,24 +168,13 @@
         "internal/gitserver/handlers.go",
         "internal/gitserver/protected_refs.go",
         "internal/gitserver/protected_refs_test.go"
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 7,
-      "kind": "implement",
       "title": "Remove the backup ref on afc patch remove",
       "criteria": [
-        "23-REQ-7"
-      ],
-      "tests": [
-        "TS-23-44",
-        "TS-23-45",
-        "TS-23-46",
-        "TS-23-47",
-        "TS-23-48",
-        "TS-23-49",
-        "TS-23-50"
+        "REQ-7"
       ],
       "steps": [
         "Write the listed tests: handler tests with a stub hook and integration tests with the real carrypatch hook and trunk; confirm they fail",
@@ -273,25 +191,13 @@
       "depends_on": [
         1,
         3
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 8,
-      "kind": "implement",
       "title": "Ref-aware purge of expired soft-deleted patches",
       "criteria": [
-        "23-REQ-8"
-      ],
-      "tests": [
-        "TS-23-51",
-        "TS-23-52",
-        "TS-23-53",
-        "TS-23-54",
-        "TS-23-55",
-        "TS-23-56",
-        "TS-23-57",
-        "TS-23-58"
+        "REQ-8"
       ],
       "steps": [
         "Write the listed tests (real database, real trunks, failing runner factory double, source scan of cmd/af-hub) and confirm they fail",
@@ -310,24 +216,14 @@
       ],
       "depends_on": [
         3
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 9,
-      "kind": "implement",
       "title": "Verify audit events and info logging for reset, replace and removal",
       "criteria": [
-        "23-REQ-10.4",
-        "23-REQ-10.7"
-      ],
-      "tests": [
-        "TS-23-64",
-        "TS-23-65",
-        "TS-23-66",
-        "TS-23-67",
-        "TS-23-68",
-        "TS-23-70"
+        "REQ-10.4",
+        "REQ-10.7"
       ],
       "steps": [
         "Write integration tests wiring the real handlers, real recovery hook and a recording audit emitter for every reset action and failure scenario; confirm which fail",
@@ -345,18 +241,13 @@
         3,
         4,
         7
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 10,
-      "kind": "implement",
       "title": "Update documentation for recovery endpoints, CLI, permissions and push rule",
       "criteria": [
-        "23-REQ-9.5"
-      ],
-      "tests": [
-        "TS-23-63"
+        "REQ-9.5"
       ],
       "steps": [
         "Write TS-23-63 as a Go docs test (as in internal/carrypatch/docs_test.go) asserting the required strings and that docs/configuration.md is untouched; confirm it fails",
@@ -381,50 +272,7 @@
         6,
         7,
         8
-      ],
-      "state": "done"
-    },
-    {
-      "id": 11,
-      "kind": "integration",
-      "title": "Verify all divergence-recovery execution paths end to end",
-      "tests": [
-        "TS-23-71",
-        "TS-23-72",
-        "TS-23-73",
-        "TS-23-74",
-        "TS-23-75",
-        "TS-23-76"
-      ],
-      "steps": [
-        "Write smoke tests TS-23-71..TS-23-76 against real handlers, real carrypatch hook, real database, real git and real afc CLI where specified; confirm they pass",
-        "Trace 23-PATH-1 through CLI -> POST handler -> RecoveryHook.RunReset -> carrypatch (lock, fetch, backup, CAS move, state, rebuild) -> audit -> response; confirm each step calls the next and no stub remains",
-        "Trace 23-PATH-2, 23-PATH-3, 23-PATH-4, 23-PATH-5, 23-PATH-6 likewise; confirm cmd/af-hub/main.go registers the recovery hook and the git server protected-ref rule is on the live receive-pack path",
-        "For each criterion with a contract (reset status/type/message mapping, rebuild_triggered/rebuild_job_id, replaced_sha, ng message), confirm the producer's result is consumed by a production caller, not only tests",
-        "Grep every task's touches for panic(\"not implemented\"), TODO and bare return nil on non-trivial paths and remove them",
-        "Confirm no purge call or scheduler was added to cmd/af-hub/main.go and run make check"
-      ],
-      "touches": [
-        "internal/carrypatch/smoke_recovery_test.go",
-        "internal/gitserver/smoke_protected_refs_test.go",
-        "cmd/af-hub/main.go"
-      ],
-      "depends_on": [
-        1,
-        2,
-        3,
-        4,
-        5,
-        6,
-        7,
-        8,
-        9,
-        10
-      ],
-      "done_when": [
-        "`make test` and `make lint` pass"
-      ],
-      "state": "done"
+      ]
     }
   ]
 }

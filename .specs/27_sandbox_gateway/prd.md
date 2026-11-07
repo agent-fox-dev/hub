@@ -4,9 +4,8 @@ spec_name: "sandbox_gateway"
 title: "Hub's embedded sandbox gateway"
 status: "active"
 created_at: "2026-10-19T16:40:37.774522Z"
-updated_at: "2026-10-19T16:40:37.774522Z"
 intent_hash: "3cd4ace871f4643b203967f3e6c776bbc4a494eaeeb506dc4551458e985029fc"
-schema_version: 2
+schema_version: 3
 source: "docs/prd/01-create-and-lease-sandboxes.md"
 ---
 ## Intent
@@ -212,3 +211,15 @@ Hub-internal and standard-library symbols, read in the repository:
 - `audit.Emitter{ Emit(ctx context.Context, event audit.HubEvent) error }` and `audit.HubEvent{EventType, ActorID, ActorType, ResourceType, ResourceID, Action, Workspace string; Metadata map[string]any}` (`internal/audit/emitter.go`, `types.go`). Verified.
 - `apikit.WriteAPIErrorWithType(c echo.Context, code int, msg, errorType string) error`, verified from call sites such as `internal/carrypatch/sync_handlers.go:213`, which already uses it with 502.
 - Standard library: `crypto/tls.LoadX509KeyPair`, `net.Listen`, `net.SplitHostPort`, `net.ParseIP(...).IsLoopback()`, `net/url.Parse`, `crypto/sha256`.
+
+## Glossary
+
+- **Create claim**: An in-process set of lease ids with a Create in flight; a second concurrent Create for the same lease is refused while the id is in the set.
+- **end_reason**: Spec 26's nullable lease column and field that records why a lease ended; it carries the PRD's destroy_reason values client and api in this spec, so no separate destroy_reason column is added.
+- **gateway**: The gatewayd.Server hub runs in-process on the [sandbox].listen address; clients reach it with AgentKit's gateway.Dial(gateway_url, token).
+- **gateway_url**: The URL a lease holder dials: [sandbox].external_url when set, otherwise http:// or https:// plus the listener's bound address.
+- **lease authenticator**: The function hub passes as gatewayd.Config.Authenticate; it maps a presented lease token to the lease id (the principal) or refuses it.
+- **principal**: The lease id the authenticator returned for the current RPC, read in the backend through an injected function defaulting to gatewayd.PrincipalFromContext.
+- **provider not-found**: The error a sandbox.Provider returns from Destroy when the box does not exist, detected with errors.Is against AgentKit's not-found sentinel.
+- **scrub**: Replace every non-empty resolved secret value and fixed env value with [redacted], remove URL userinfo with carrypatch's userinfoPattern, then truncate to 1024 bytes on a UTF-8 boundary.
+- **wrapping backend**: Hub's sandbox.Provider implementation handed to gatewayd as Backend; it enforces lease rules and delegates to the provider from spec 25's Service.Provider().

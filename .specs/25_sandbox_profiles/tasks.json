@@ -1,8 +1,8 @@
 {
-  "$schema": "https://agent-fox.dev/schemas/tasks.v2.json",
+  "$schema": "https://agent-fox.dev/schemas/tasks.v3.json",
   "spec_id": "25",
   "spec_name": "sandbox_profiles",
-  "schema_version": 2,
+  "schema_version": 3,
   "test_commands": {
     "all_tests": "make test",
     "linter": "make lint",
@@ -21,14 +21,9 @@
   "tasks": [
     {
       "id": 1,
-      "kind": "implement",
       "title": "Add the agentkit-go sibling dependency to the module, container and CI builds",
       "criteria": [
-        "25-REQ-10"
-      ],
-      "tests": [
-        "TS-25-53",
-        "TS-25-54"
+        "REQ-10"
       ],
       "steps": [
         "Write TS-25-53 (reads go.mod, containers/hub/Containerfile, Makefile and the two workflow files as text from the repo root) and TS-25-54 (runs `go list -deps` for ./cmd/afc and ./internal/cli and asserts no internal/sandboxes or agentkit-go package) in internal/sandboxes/build_test.go; confirm they fail",
@@ -52,28 +47,17 @@
       ],
       "done_when": [
         "go.mod contains a replace to ../agentkit-go"
-      ],
-      "state": "done",
-      "optional": false
+      ]
     },
     {
       "id": 2,
-      "kind": "implement",
       "title": "Load the [sandbox] section from config.toml with env expansion and unknown-key detection",
       "criteria": [
-        "25-REQ-1.1",
-        "25-REQ-1.3",
-        "25-REQ-1.4",
-        "25-REQ-1.5",
-        "25-REQ-1.6"
-      ],
-      "tests": [
-        "TS-25-1",
-        "TS-25-3",
-        "TS-25-4",
-        "TS-25-5",
-        "TS-25-6",
-        "TS-25-7"
+        "REQ-1.1",
+        "REQ-1.3",
+        "REQ-1.4",
+        "REQ-1.5",
+        "REQ-1.6"
       ],
       "steps": [
         "Write TS-25-1, 3, 4, 5, 6 and 7 in internal/sandboxes/config_test.go (package sandboxes) and confirm they fail",
@@ -94,34 +78,21 @@
       ],
       "done_when": [
         "`go test ./internal/sandboxes/ -run 'TestLoad|TestConfigPath' -count=1` passes"
-      ],
-      "state": "done",
-      "optional": false
+      ]
     },
     {
       "id": 3,
-      "kind": "implement",
       "title": "Validate deployment keys and profile identity, image and default",
       "criteria": [
-        "25-REQ-2.1",
-        "25-REQ-2.2",
-        "25-REQ-2.3",
-        "25-REQ-2.5",
-        "25-REQ-2.6",
-        "25-REQ-3.1",
-        "25-REQ-3.2",
-        "25-REQ-3.3",
-        "25-REQ-3.4"
-      ],
-      "tests": [
-        "TS-25-9",
-        "TS-25-10",
-        "TS-25-12",
-        "TS-25-13",
-        "TS-25-14",
-        "TS-25-15",
-        "TS-25-16",
-        "TS-25-17"
+        "REQ-2.1",
+        "REQ-2.2",
+        "REQ-2.3",
+        "REQ-2.5",
+        "REQ-2.6",
+        "REQ-3.1",
+        "REQ-3.2",
+        "REQ-3.3",
+        "REQ-3.4"
       ],
       "steps": [
         "Write TS-25-9, 10, 12, 13, 14, 15, 16 and 17 in internal/sandboxes/validate_test.go and confirm they fail",
@@ -144,32 +115,17 @@
       ],
       "done_when": [
         "`go test ./internal/sandboxes/ -run TestValidate -count=1` passes"
-      ],
-      "state": "done",
-      "optional": false
+      ]
     },
     {
       "id": 4,
-      "kind": "implement",
       "title": "Validate resources, network, ttl, secret and env names and report all failures together",
       "criteria": [
-        "25-REQ-3.5",
-        "25-REQ-3.6",
-        "25-REQ-3.7",
-        "25-REQ-3.8",
-        "25-REQ-4"
-      ],
-      "tests": [
-        "TS-25-18",
-        "TS-25-19",
-        "TS-25-20",
-        "TS-25-21",
-        "TS-25-22",
-        "TS-25-23",
-        "TS-25-24",
-        "TS-25-25",
-        "TS-25-26",
-        "TS-25-27"
+        "REQ-3.5",
+        "REQ-3.6",
+        "REQ-3.7",
+        "REQ-3.8",
+        "REQ-4"
       ],
       "steps": [
         "Write TS-25-18 through TS-25-27 in internal/sandboxes/validate_profile_test.go (TS-25-27 as a property test using testing/quick or a table of fault injectors over subsets) and confirm they fail",
@@ -191,28 +147,14 @@
       ],
       "done_when": [
         "`go test ./internal/sandboxes/ -run TestValidate -count=1` passes"
-      ],
-      "state": "done",
-      "optional": false
+      ]
     },
     {
       "id": 5,
-      "kind": "implement",
       "title": "Build and probe the provider, check capabilities and keep the validated service in memory",
       "criteria": [
-        "25-REQ-2.4",
-        "25-REQ-5"
-      ],
-      "tests": [
-        "TS-25-11",
-        "TS-25-28",
-        "TS-25-29",
-        "TS-25-30",
-        "TS-25-31",
-        "TS-25-32",
-        "TS-25-33",
-        "TS-25-34",
-        "TS-25-35"
+        "REQ-2.4",
+        "REQ-5"
       ],
       "steps": [
         "Read the real agentkit-go source in ../agentkit-go (sandbox.Spec, Resources and the CPU field type, Provider, Capabilities, CheckSpec, podman.New/Options, local) and adapt names to it; note whether the CPU field is a whole number",
@@ -237,21 +179,13 @@
       ],
       "done_when": [
         "`go test ./internal/sandboxes/ -run 'TestService|TestStart|TestBuildProvider' -count=1` passes"
-      ],
-      "state": "done",
-      "optional": false
+      ]
     },
     {
       "id": 6,
-      "kind": "implement",
       "title": "Register sandboxes:read and sandboxes:write and add the sandbox auth helpers",
       "criteria": [
-        "25-REQ-6"
-      ],
-      "tests": [
-        "TS-25-36",
-        "TS-25-37",
-        "TS-25-38"
+        "REQ-6"
       ],
       "steps": [
         "Write TS-25-36, 37 and 38 in internal/sandboxes/permissions_test.go (37 and 38 as property tests) and confirm they fail",
@@ -270,29 +204,15 @@
       ],
       "done_when": [
         "`go test ./internal/sandboxes/ -run 'TestPermissions|TestCanRead' -count=1` passes"
-      ],
-      "state": "done",
-      "optional": false
+      ]
     },
     {
       "id": 7,
-      "kind": "implement",
       "title": "Serve GET /api/v1/sandbox-profiles from memory and keep values out of it",
       "criteria": [
-        "25-REQ-7",
-        "25-REQ-8.1",
-        "25-REQ-8.3"
-      ],
-      "tests": [
-        "TS-25-39",
-        "TS-25-40",
-        "TS-25-41",
-        "TS-25-42",
-        "TS-25-43",
-        "TS-25-44",
-        "TS-25-45",
-        "TS-25-46",
-        "TS-25-48"
+        "REQ-7",
+        "REQ-8.1",
+        "REQ-8.3"
       ],
       "steps": [
         "Write TS-25-39 through TS-25-46 and TS-25-48 in internal/sandboxes/handlers_test.go using the harness from internal/merge/api_test.go (echo.New, /api/v1 group, test middleware reading X-Test-Auth into apikit.SetAuthInfo, httptest) plus the double provider from task 5; confirm they fail",
@@ -315,22 +235,13 @@
       ],
       "done_when": [
         "`go test ./internal/sandboxes/ -count=1` passes"
-      ],
-      "state": "done",
-      "optional": false
+      ]
     },
     {
       "id": 8,
-      "kind": "implement",
       "title": "Add the afc sandbox profiles command",
       "criteria": [
-        "25-REQ-9"
-      ],
-      "tests": [
-        "TS-25-49",
-        "TS-25-50",
-        "TS-25-51",
-        "TS-25-52"
+        "REQ-9"
       ],
       "steps": [
         "Write TS-25-49 through TS-25-52 in internal/cli/sandbox_cmd_test.go using setupTestEnv, runRootCmd and an httptest hub, and confirm they fail",
@@ -352,23 +263,15 @@
       "done_when": [
         "`go test ./internal/cli/ -run Sandbox -count=1` passes",
         "`go list -deps ./cmd/afc` lists no agentkit-go package"
-      ],
-      "state": "done",
-      "optional": false
+      ]
     },
     {
       "id": 9,
-      "kind": "implement",
       "title": "Wire sandbox start-up into af-hub after Bootstrap with start-up logging",
       "criteria": [
-        "25-REQ-1.2",
-        "25-REQ-1.7",
-        "25-REQ-8.2"
-      ],
-      "tests": [
-        "TS-25-2",
-        "TS-25-8",
-        "TS-25-47"
+        "REQ-1.2",
+        "REQ-1.7",
+        "REQ-8.2"
       ],
       "steps": [
         "Write TS-25-2 and TS-25-47 in internal/sandboxes/startup_test.go with a captured slog handler, and TS-25-8 as a test that builds cmd/af-hub and runs it with a temp XDG_CONFIG_HOME holding an invalid [sandbox] section (once with --admin-email, once without); confirm they fail",
@@ -393,48 +296,7 @@
       ],
       "done_when": [
         "With an invalid sandbox section `af-hub --admin-email` still exits 0 and writes the token"
-      ],
-      "state": "done",
-      "optional": false
-    },
-    {
-      "id": 10,
-      "kind": "integration",
-      "title": "Verify the sandbox profile paths end to end",
-      "tests": [
-        "TS-25-55",
-        "TS-25-56",
-        "TS-25-57",
-        "TS-25-58"
-      ],
-      "steps": [
-        "Write TS-25-55, 56, 57 and 58 (TS-25-56 from an internal/sandboxes test package that runs the real cli.BuildRootCommand against an httptest server hosting the real route; TS-25-57 against the built af-hub binary with a fake engine_binary that records invocations) and confirm they pass",
-        "Trace 25-PATH-1 through the real code: main.go -> sandboxes.Init -> LoadConfig -> Validate -> Start/New -> RegisterRoutes -> handler; confirm each step calls the next and no stub remains",
-        "Trace 25-PATH-2 (afc -> handler), 25-PATH-3 (invalid section exits before queues, workers and routes) and 25-PATH-4 (nil service answers sandboxes_disabled); confirm sandboxes.Permissions() is appended to extraPerms in main.go",
-        "For every criterion with a contract, confirm the producer's result is consumed in production code: Service.Profiles() by the handler, Init's service by RegisterRoutes, Validate's result by Start",
-        "Search every file named in the tasks' touches for `panic(\"not implemented\")`, `TODO`, and bare `return nil` on non-trivial paths, and remove any",
-        "Confirm `go list -deps ./cmd/afc` lists no internal/sandboxes or agentkit-go package, and run `make test` and `make lint`"
-      ],
-      "touches": [
-        "internal/sandboxes/smoke_test.go",
-        "internal/sandboxes/smoke_binary_test.go"
-      ],
-      "depends_on": [
-        1,
-        2,
-        3,
-        4,
-        5,
-        6,
-        7,
-        8,
-        9
-      ],
-      "done_when": [
-        "`make test` and `make lint` pass"
-      ],
-      "state": "done",
-      "optional": false
+      ]
     }
   ]
 }

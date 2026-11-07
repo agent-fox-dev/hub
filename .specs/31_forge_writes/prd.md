@@ -4,9 +4,8 @@ spec_name: "forge_writes"
 title: "Forge writes: issues, comments, labels and pull requests through hub"
 status: "active"
 created_at: "2026-10-20T14:09:33.958545Z"
-updated_at: "2026-10-20T14:09:33.958545Z"
 intent_hash: "f387dd2c3496b185d6e96d7e01409d82c27f6da30541fbfb3b2eaa4fa18da6d9"
-schema_version: 2
+schema_version: 3
 source: "docs/prd/02-serve-the-forge-for-a-workspace.md"
 ---
 ## Intent
@@ -363,3 +362,12 @@ The implementation pins the real signatures in a compile-time test, as `internal
 - `apikit.CLIPrintResult(cmd, v)`
 - `apikit.CLIHandleError(cmd, err)`
 - `apikit.NewCLIError(code int, msg string)` (`internal/cli/sandbox_cmd.go`, `merge_cmd.go`)
+
+## Glossary
+
+- **body limit**: The maximum length, in Unicode code points, of a body-like text field for the forge of the resolved target: 65,536 for GitHub and 1,000,000 for GitLab.
+- **forge stub**: An httptest server standing in for the GitHub or GitLab API in tests, recording each request it receives.
+- **forge write event**: The single hub.forge.* audit event (for example hub.forge.issue.create) recorded through audit.Emitter for a write request that sent at least one request to the forge.
+- **hub-side rejection**: A refusal hub makes without contacting the forge: 401, 403, 404, 400 (inactive workspace or invalid request), client-resolution failures such as 422 forge_unknown, and 413 body_too_large. It records no audit event.
+- **removal read-back**: The single ReadIssue call hub makes after the forge answers not-found to a label removal, to tell a missing issue (404 forge_not_found) from a label the issue never carried (204).
+- **write route**: One of the nine POST/PATCH/DELETE routes under /api/v1/workspaces/:slug added by this spec: /issues, /issues/:n, /issues/:n/close, /issues/:n/comments, /issues/:n/labels, /issues/:n/labels/:name, /labels, /pulls and /pulls/:n/comments.

@@ -4,9 +4,8 @@ spec_name: "org_member_git_read"
 title: "Let org members read org workspaces: clone and fetch through the git server"
 status: "active"
 created_at: "2026-10-21T13:28:29.600925Z"
-updated_at: "2026-10-21T13:28:29.600925Z"
 intent_hash: "d54bec30d9c1f87f3a8d64fd4fa87f759a0b3e564864ef6b39f4f7a763cabe88"
-schema_version: 2
+schema_version: 3
 source: "docs/prd/04-let-org-members-read-org-workspaces.md"
 ---
 ## Intent
@@ -210,3 +209,12 @@ apikit is a `replace` to `../apikit`, outside the repository, so its source coul
 | `apikit.SetAuthInfo` | `func(c echo.Context, info *apikit.AuthInfo)` | `internal/gitserver/auth.go` |
 
 The echo v4.16.0 calls `c.Path()` (the route template inside group middleware, as TS-34-58 relies on), `c.QueryParam(name) string` and `c.Request().Method` are already used in `internal/gitserver`.
+
+## Glossary
+
+- **admin token**: An af_admin_ credential (CredentialType "admin_token"); distinct from an API key whose user has the admin role.
+- **git site**: wsaccess.RefusalSite{Method: c.Request().Method, Route: c.Path(), Status: 404, Surface: wsaccess.SurfaceGit}, the refusal site the git server reports bound-token refusals with.
+- **member**: A user with a row in org_members for the workspace's org_id who is neither the workspace owner nor an admin token (wsaccess.AccessMember, spec 35).
+- **need**: wsaccess.Need value passed to AuthorizeWorkspaceAt: NeedRead for upload-pack requests, NeedWrite for receive-pack requests. The git server never uses NeedPrivate.
+- **pkt-line error**: A git smart-HTTP error body: Content-Type text/plain and the pkt-line encoding of "ERR <message>\n", written by writePktLineError.
+- **stranger**: A caller that is not the workspace owner, not a member of the workspace's org and not an admin token (wsaccess.AccessNone).

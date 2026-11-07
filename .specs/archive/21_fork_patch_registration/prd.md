@@ -4,9 +4,8 @@ spec_name: "fork_patch_registration"
 title: "Register Patch Branches That Exist Only on the Fork"
 status: "active"
 created_at: "2026-10-01T14:28:07.234565Z"
-updated_at: "2026-10-01T14:28:07.234565Z"
 intent_hash: "568526339e89653bd9228b1295e17406998b5c4c3af7cb081d73d1c488d5dcbd"
-schema_version: 2
+schema_version: 3
 source: "https://github.com/agent-fox-dev/hub/issues/35"
 ---
 ## Intent
@@ -196,3 +195,13 @@ Documentation, per the project steering, in the same change:
 | The error go-git returns when a fetch refspec matches no remote ref | assumed to be `git.NoMatchingRefSpecError` (matched with `errors.As`) | **unverified.** It is not used anywhere in the repo. The integration test against a real bare fork that lacks the branch must confirm which error comes back and that it is distinguishable from a transport or auth failure. If it is not distinguishable by type, the implementation must instead decide "branch not found" by listing the remote's refs, and must not match on error text alone. |
 
 Repository symbols this spec calls, all read in this repo: `carrypatch.NewGitRunnerFactory`, `carrypatch.GitRunner.Run`, `workspace.ResolveCloneAuth(store *secrets.Store, slug string) (transport.AuthMethod, error)`, `(*secrets.Store).GetVariableValue(ownerType, ownerID, key string) (string, error)`, `wslock.TryLock(slug) (unlock func(), ok bool)`, `apikit.WriteAPIError` and `apikit.WriteAPIErrorWithType`, `workspace.validateBranch`, and the `20_fork_patch_sync` helpers (the `PATCH_BRANCH_SOURCE` parser and the origin credential resolver, names fixed by that spec's implementation, not yet in the code).
+
+## Glossary
+
+- **PATCH_BRANCH_SOURCE**: Workspace variable defined by 20_fork_patch_sync. The exact, case-sensitive value origin means the fork is the authority for patch branches. Any other value, an unset variable or a lookup error means hub.
+- **compare-and-swap create**: git update-ref refs/heads/<name> <sha> <all-zero-sha>, which fails if the ref already exists.
+- **resolution method**: How a branch was found: local, origin_tracking or origin_fetch. The audit trail also uses skipped when skip_branch_check was true.
+- **resolver hook**: The hook defined in internal/workspace/branch_check_hook.go that replaces the old boolean BranchCheckFunc. It takes a context, slug and branch name and returns a resolution method and a classified error.
+- **tracking ref**: refs/remotes/origin/<name> in the trunk, the clone's copy of a fork branch.
+- **trunk**: The clone of the fork at <workspace_root>/<slug>/trunk. Patch rebuilds read only refs/heads/<branch> in it.
+- **workspace lock**: The per-slug lock taken with wslock.TryLock(slug) to serialise operations on the trunk.

@@ -4,9 +4,8 @@ spec_name: "forge_webhook_ingress"
 title: "Forge webhook ingress: verify, deduplicate and relay a workspace's forge deliveries"
 status: "active"
 created_at: "2026-10-20T14:19:45.423882Z"
-updated_at: "2026-10-20T14:19:45.423882Z"
 intent_hash: "50b0457a887918d9d42c04920e0117baabe3962d52185197e25f0df99987e45d"
-schema_version: 2
+schema_version: 3
 source: "docs/prd/02-serve-the-forge-for-a-workspace.md"
 ---
 ## Intent
@@ -291,3 +290,14 @@ The commands go under the `afc forge` parent that `30_forge_client_reads` create
 | GitHub webhook protocol | headers `X-Hub-Signature-256: sha256=<hex HMAC-SHA256>`, `X-GitHub-Delivery`, `X-GitHub-Event`; payload fields `action`, `sender.login`, `repository.full_name`, `issue.{number,title,html_url,labels[].name,pull_request}`, `label.name`, `comment.html_url`, `pull_request.{number,html_url,head.ref,base.ref,merged}`, `ref`, `before`, `after` | external protocol, **unverified** from the repository |
 | GitLab webhook protocol | headers `X-Gitlab-Token`, `X-Gitlab-Event`, `X-Gitlab-Event-UUID`, `Idempotency-Key`; payload fields `object_attributes.{action,iid,title,url,noteable_type,source_branch,target_branch,oldrev,state}`, `user.username`, `user_username`, `project.path_with_namespace`, `labels[].title`, `changes.{title,description,labels.previous,labels.current}`, `issue.iid`, `merge_request.iid`, `ref`, `before`, `after` | external protocol, **unverified** from the repository |
 | `issuex` repository parsing | used only through the `internal/forge` helper from `30_forge_client_reads` | **unverified** (see that spec) |
+
+## Glossary
+
+- **delivery**: One webhook HTTP request sent by a forge (GitHub or GitLab) to hub's ingress endpoint, identified by its delivery id.
+- **delivery log**: The SQLite table forge_deliveries owned by internal/forge, keyed by (workspace_slug, delivery_id), holding the reduced facts of each verified delivery.
+- **ingress URL**: server.external_url with any trailing '/' removed, followed by /hooks/forge/<slug>; null when external_url is unset.
+- **outcome**: The result recorded for a verified delivery: relayed, ignored, repository_mismatch, malformed; duplicate is answered but never recorded as a new row.
+- **reduction**: Mapping a verified delivery payload to zero or more hub event types and their metadata, plus an outcome.
+- **relay**: Handing a hub.forge.* HubEvent to forge.Config.Audit after the 202 answer has been flushed.
+- **target**: Which workspace repository a delivery concerns: origin (parsed from git_url) or upstream (upstream_url of a carry_patch workspace).
+- **webhook secret**: The workspace-scope secret FORGE_WEBHOOK_SECRET in internal/secrets; used as the HMAC key for GitHub and as the expected X-Gitlab-Token value for GitLab.

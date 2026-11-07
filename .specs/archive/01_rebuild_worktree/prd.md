@@ -4,9 +4,8 @@ spec_name: "rebuild_worktree"
 title: "Run Carry-Patch Rebuilds in a Detached Worktree"
 status: "active"
 created_at: "2026-10-01T07:34:32.481635Z"
-updated_at: "2026-10-01T07:34:32.481635Z"
 intent_hash: "13620b0887116dd73d752e2a5243199880048a495e509b68a7d1a67684bb797b"
-schema_version: 2
+schema_version: 3
 source: "https://github.com/agent-fox-dev/hub/issues/34"
 ---
 ## Intent
@@ -231,3 +230,16 @@ go-git source is not readable from the module cache in this environment, so the 
 | Linked-worktree creation, `cherry-pick`, `--no-ff` merge, `rerere`, `gc`/`prune` | **NOT FOUND** as go-git features (per the issue's reading of `COMPATIBILITY.md`; `PlainOpenOptions.EnableDotGitCommonDir` only opens an existing linked worktree) | The reason the CLI is used. Not re-verified here. |
 
 Git CLI behaviours this design relies on, to be confirmed by the integration tests rather than assumed: `git worktree add --detach <abs path> <sha>` resolves a relative path against the working directory; `git worktree remove --force` removes a worktree with a conflicted index; `rr-cache` and `rerere.*` config are shared across linked worktrees while `MERGE_RR` is per worktree; `git branch -f` refuses a branch checked out in any worktree while `git update-ref` does not.
+
+## Glossary
+
+- **Exception A**: The case where the trunk's HEAD is the integration branch at the final ref update, so the trunk needs a hard reset to match the new tip.
+- **Exception B**: The one-time removal of a legacy _rebuild_temp branch left by a pre-upgrade run, including moving the trunk's HEAD off it.
+- **follow-up rebuild**: A rebuild job enqueued by a finished run, with submitted_by system:stale-snapshot, because a patch tip or the upstream base moved during the run.
+- **phase one / phase two**: The two lock-holding sections of a rebuild. Phase one covers the upstream fetch, base resolution, legacy migration, stale cleanup and rerere config. Phase two covers the integration-ref update, patch bookkeeping and optional push to origin.
+- **rebuild worktree**: A detached linked git worktree created for one rebuild run at <workspace_root>/<slug>/rebuild/<job id>. It shares the trunk's objects, refs, configuration and rr-cache but has its own HEAD, index and files.
+- **rebuild-active guard**: A per-workspace in-memory flag in internal/wslock, set by BeginRebuild and read by RebuildActive, independent of the wslock mutex. Archive and reclone refuse to run while it is set.
+- **rerere**: git's reuse-recorded-resolution feature; its cache rr-cache lives in the common git directory and MERGE_RR is per worktree.
+- **snapshot SHA**: The commit SHA that a patch branch resolved to at refs/heads/<branch> when patch application began; it is the only reference to the branch used for the rest of the run.
+- **trunk**: The non-bare clone of a workspace at <workspace_root>/<slug>/trunk, shared by the git smart HTTP server, sync, merge jobs, rollback, rerere forget and rebuilds.
+- **wslock**: The in-process per-workspace lock in internal/wslock, taken blockingly with Lock by jobs and non-blockingly with TryLock by HTTP handlers.

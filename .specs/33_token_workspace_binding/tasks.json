@@ -1,8 +1,8 @@
 {
-  "$schema": "https://agent-fox.dev/schemas/tasks.v2.json",
+  "$schema": "https://agent-fox.dev/schemas/tasks.v3.json",
   "spec_id": "33",
   "spec_name": "token_workspace_binding",
-  "schema_version": 2,
+  "schema_version": 3,
   "test_commands": {
     "all_tests": "make test",
     "linter": "make lint",
@@ -29,23 +29,15 @@
   "tasks": [
     {
       "id": 1,
-      "kind": "implement",
       "title": "Add the binding table, lookup, resolver and the AuthorizeWorkspace binding rule in internal/wsaccess",
       "criteria": [
-        "33-REQ-1.1",
-        "33-REQ-1.2",
-        "33-REQ-1.7",
-        "33-REQ-2.1",
-        "33-REQ-2.4",
-        "33-REQ-3.5",
-        "33-REQ-3.7"
-      ],
-      "tests": [
-        "TS-33-1",
-        "TS-33-2",
-        "TS-33-7",
-        "TS-33-8",
-        "TS-33-17"
+        "REQ-1.1",
+        "REQ-1.2",
+        "REQ-1.7",
+        "REQ-2.1",
+        "REQ-2.4",
+        "REQ-3.5",
+        "REQ-3.7"
       ],
       "steps": [
         "Write TS-33-1, 2, 7, 8 and 17 in internal/wsaccess (and an AuthorizeWorkspace test using an in-memory SQLite DB with SetMaxOpenConns(1)); confirm they fail",
@@ -65,38 +57,23 @@
       ],
       "done_when": [
         "wsaccess still imports only database/sql, net/http, echo and apikit"
-      ],
-      "state": "done",
-      "optional": false
+      ]
     },
     {
       "id": 2,
-      "kind": "implement",
       "title": "Add the post-authentication binding guard and the bound-token allowlist registry",
       "criteria": [
-        "33-REQ-2.2",
-        "33-REQ-2.3",
-        "33-REQ-2.5",
-        "33-REQ-3.1",
-        "33-REQ-3.3",
-        "33-REQ-4.1",
-        "33-REQ-4.2",
-        "33-REQ-4.3",
-        "33-REQ-4.5",
-        "33-REQ-4.6",
-        "33-REQ-4.7"
-      ],
-      "tests": [
-        "TS-33-9",
-        "TS-33-10",
-        "TS-33-12",
-        "TS-33-13",
-        "TS-33-15",
-        "TS-33-20",
-        "TS-33-22",
-        "TS-33-24",
-        "TS-33-25",
-        "TS-33-26"
+        "REQ-2.2",
+        "REQ-2.3",
+        "REQ-2.5",
+        "REQ-3.1",
+        "REQ-3.3",
+        "REQ-4.1",
+        "REQ-4.2",
+        "REQ-4.3",
+        "REQ-4.5",
+        "REQ-4.6",
+        "REQ-4.7"
       ],
       "steps": [
         "Write the ten tests in internal/wsaccess using an echo group with a test auth middleware that reads JSON AuthInfo from X-Test-Auth; confirm they fail",
@@ -120,26 +97,17 @@
       ],
       "done_when": [
         "a guard installed before any route is registered covers routes and subgroups added later"
-      ],
-      "state": "done",
-      "optional": false
+      ]
     },
     {
       "id": 3,
-      "kind": "implement",
       "title": "Add the pre-authentication, deny-only apikit route guard in internal/wsaccess",
       "criteria": [
-        "33-REQ-5.2",
-        "33-REQ-5.4",
-        "33-REQ-5.5",
-        "33-REQ-5.6",
-        "33-REQ-5.7"
-      ],
-      "tests": [
-        "TS-33-30",
-        "TS-33-31",
-        "TS-33-32",
-        "TS-33-33"
+        "REQ-5.2",
+        "REQ-5.4",
+        "REQ-5.5",
+        "REQ-5.6",
+        "REQ-5.7"
       ],
       "steps": [
         "Write TS-33-30 to 33 in internal/wsaccess; confirm they fail",
@@ -160,37 +128,22 @@
       ],
       "done_when": [
         "the guard source imports no hashing or token-verification package"
-      ],
-      "state": "done",
-      "optional": false
+      ]
     },
     {
       "id": 4,
-      "kind": "implement",
       "title": "Wire the binding table and both guards into MountWorkspaceHandlers and apply the rule in the workspace package",
       "criteria": [
-        "33-REQ-1.3",
-        "33-REQ-1.5",
-        "33-REQ-1.6",
-        "33-REQ-3.2",
-        "33-REQ-3.4",
-        "33-REQ-3.6",
-        "33-REQ-3.7",
-        "33-REQ-5.1",
-        "33-REQ-5.3",
-        "33-REQ-6.1"
-      ],
-      "tests": [
-        "TS-33-3",
-        "TS-33-6",
-        "TS-33-14",
-        "TS-33-16",
-        "TS-33-18",
-        "TS-33-19",
-        "TS-33-27",
-        "TS-33-28",
-        "TS-33-29",
-        "TS-33-34"
+        "REQ-1.3",
+        "REQ-1.5",
+        "REQ-1.6",
+        "REQ-3.2",
+        "REQ-3.4",
+        "REQ-3.6",
+        "REQ-3.7",
+        "REQ-5.1",
+        "REQ-5.3",
+        "REQ-6.1"
       ],
       "steps": [
         "Write the ten tests (real-apikit-server tests follow internal/sandboxes/smoke_test.go newRealHub: LoadConfig with XDG env and temp config, OpenDatabase, NewServer, MountWorkspaceHandlers, GenerateAPIKey, PAT minted via POST /api/v1/user/tokens; binding rows inserted directly); confirm they fail",
@@ -215,26 +168,15 @@
       ],
       "done_when": [
         "hook_ordering_test.go still passes unchanged"
-      ],
-      "state": "done",
-      "optional": false
+      ]
     },
     {
       "id": 5,
-      "kind": "implement",
       "title": "Apply the binding in the git server and ensure the table in MountGitHandlers",
       "criteria": [
-        "33-REQ-1.4",
-        "33-REQ-1.5",
-        "33-REQ-7"
-      ],
-      "tests": [
-        "TS-33-4",
-        "TS-33-5",
-        "TS-33-42",
-        "TS-33-43",
-        "TS-33-44",
-        "TS-33-45"
+        "REQ-1.4",
+        "REQ-1.5",
+        "REQ-7"
       ],
       "steps": [
         "Write the six tests in internal/gitserver (openTestDB single-connection SQLite; seed pats and workspaces; TS-33-5 uses an index named token_workspace_bindings to make the DDL fail and also calls workspace.MountWorkspaceHandlers on a real apikit server or an equivalent failing DB); confirm they fail",
@@ -257,31 +199,17 @@
       ],
       "done_when": [
         "gitserver and carrypatch ownership suites pass unchanged"
-      ],
-      "state": "done",
-      "optional": false
+      ]
     },
     {
       "id": 6,
-      "kind": "implement",
       "title": "Apply the binding to audit ingestion and the session routes",
       "criteria": [
-        "33-REQ-6.2",
-        "33-REQ-6.3",
-        "33-REQ-6.4",
-        "33-REQ-6.5",
-        "33-REQ-8"
-      ],
-      "tests": [
-        "TS-33-35",
-        "TS-33-36",
-        "TS-33-37",
-        "TS-33-38",
-        "TS-33-46",
-        "TS-33-47",
-        "TS-33-48",
-        "TS-33-49",
-        "TS-33-50"
+        "REQ-6.2",
+        "REQ-6.3",
+        "REQ-6.4",
+        "REQ-6.5",
+        "REQ-8"
       ],
       "steps": [
         "Write the nine tests in internal/audit using newAuditTestEnvWithSQLite and rows inserted into token_workspace_bindings; rewrite TS-17-51 in workspace_auth_test.go to seed a binding row and expect 404 workspace not found; update the workspacePatAuth fixture use accordingly; confirm the new tests fail",
@@ -306,25 +234,16 @@
       ],
       "done_when": [
         "the audit suite passes except the rewritten TS-17-51 and the KeyID fixture test"
-      ],
-      "state": "done",
-      "optional": false
+      ]
     },
     {
       "id": 7,
-      "kind": "implement",
       "title": "Filter /audit and /events to S and mark the remaining allowlisted routes",
       "criteria": [
-        "33-REQ-4.2",
-        "33-REQ-6.6",
-        "33-REQ-6.7",
-        "33-REQ-6.8"
-      ],
-      "tests": [
-        "TS-33-39",
-        "TS-33-40",
-        "TS-33-41",
-        "TS-33-21"
+        "REQ-4.2",
+        "REQ-6.6",
+        "REQ-6.7",
+        "REQ-6.8"
       ],
       "steps": [
         "Write TS-33-21, 39, 40 and 41; TS-33-21 registers workspace, audit, sandboxes, secrets, merge, forge and carrypatch routes on one group as cmd/af-hub/main.go does (read main.go with read_file) and compares the allowlist with the ten routes; confirm they fail",
@@ -349,26 +268,14 @@
       ],
       "done_when": [
         "the allowlist equals exactly the ten routes in 33-REQ-4.2"
-      ],
-      "state": "done",
-      "optional": false
+      ]
     },
     {
       "id": 8,
-      "kind": "implement",
       "title": "Prove unchanged behaviour and lifecycle for unbound credentials, refuse bound tokens on hub routes, update docs",
       "criteria": [
-        "33-REQ-4.4",
-        "33-REQ-9"
-      ],
-      "tests": [
-        "TS-33-11",
-        "TS-33-23",
-        "TS-33-51",
-        "TS-33-52",
-        "TS-33-53",
-        "TS-33-54",
-        "TS-33-55"
+        "REQ-4.4",
+        "REQ-9"
       ],
       "steps": [
         "Write the seven tests: real hubs (guarded and plain) for the property tests, single-connection SQLite for TS-33-11, the git server for TS-33-52/53/55; confirm any failures",
@@ -395,42 +302,7 @@
       ],
       "done_when": [
         "the ownership suites of workspace, gitserver, carrypatch, merge, sandboxes, forge, secrets and audit pass"
-      ],
-      "state": "done",
-      "optional": false
-    },
-    {
-      "id": 9,
-      "kind": "integration",
-      "title": "Verify the five bound-token paths end to end through the running hub",
-      "tests": [
-        "TS-33-56",
-        "TS-33-57",
-        "TS-33-58",
-        "TS-33-59",
-        "TS-33-60"
-      ],
-      "steps": [
-        "Write TS-33-56 to 60 against a real apikit server, real SQLite, DuckDB audit store and (for 60) the git binary and real bare repositories; confirm they pass",
-        "Trace 33-PATH-1 to 33-PATH-5 through production code: MountWorkspaceHandlers installs both guards, the guards call wsaccess.LookupBinding, handlers and authorizeGitAccess consume the result; confirm no stub remains",
-        "For every criterion with a contract confirm the producer result is consumed by a caller in production code, not only tests: e.g. BoundSlug in AuthorizeWorkspace, lookupWorkspaceForAuth, audit helpers and authorizeGitAccess; the recorded apikit routes in APIKitRouteGuard; AllowBoundTokens marks in the registering packages",
-        "Read cmd/af-hub/main.go and confirm MountWorkspaceHandlers runs before audit, secrets, merge, sandboxes, forge and carrypatch register on server.APIGroup(), and that MountGitHandlers is called; if APIGroup() returns a fresh group per call, apply the guard to the shared group",
-        "Grep every touched file for panic(\"not implemented\"), TODO and a bare return nil on a non-trivial path, and remove any that remain",
-        "Run make check"
-      ],
-      "touches": [
-        "internal/workspace/smoke_spec33_test.go",
-        "internal/gitserver/smoke_binding_test.go",
-        "internal/audit/smoke_binding_test.go"
-      ],
-      "depends_on": [
-        8
-      ],
-      "done_when": [
-        "`make test` and `make lint` pass"
-      ],
-      "state": "done",
-      "optional": false
+      ]
     }
   ]
 }

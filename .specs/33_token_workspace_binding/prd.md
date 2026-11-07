@@ -4,9 +4,8 @@ spec_name: "token_workspace_binding"
 title: "Bind a personal access token to a workspace: the binding and its enforcement"
 status: "active"
 created_at: "2026-10-21T09:07:49.489558Z"
-updated_at: "2026-10-21T09:07:49.489558Z"
 intent_hash: "f937fdf55704946c830eea5e7c72f1f8b10bdc13f1852ebab18f2298822d7618"
-schema_version: 2
+schema_version: 3
 source: "docs/prd/03-bind-a-personal-access-token-to-a-workspace.md"
 ---
 ## Intent
@@ -162,3 +161,15 @@ Nothing changes for unbound PATs, API keys or admin tokens: no new query and no 
   - Group middleware is captured when a route or subgroup is added.
   - Root `Use` middleware runs after routing, so `c.Path()` is already set, and before group middleware, so authentication has not happened yet.
   - Re-adding a method and path replaces the earlier handler. The repository already relies on this: `POST /workspaces/:slug/sync` is registered by both `workspace` and `carrypatch`.
+
+## Glossary
+
+- **S**: The workspace slug named by a bound token's binding row.
+- **apikit route guard**: The pre-authentication, deny-only middleware on the root Echo instance that refuses bound tokens on the routes apikit's MountHandlers registers.
+- **binding**: A row in the SQLite table token_workspace_bindings that ties a PAT's token id to one workspace slug.
+- **binding guard**: The post-authentication middleware on the API group that confines bound tokens: 404 for other slugs, 403 token_bound for non-allowlisted routes.
+- **bound token**: A PAT (CredentialType "pat") whose token id has a binding row. Every other credential is unbound.
+- **bound-token allowlist**: The registry in internal/wsaccess of *echo.Route values (method plus path template) that a bound token may call although they are not workspace-scoped; their results are filtered to S.
+- **pkt-line error**: The git smart-HTTP error framing written by the git server's writePktLineError.
+- **token_bound**: The error_type value in the apikit error envelope returned when a bound token calls a route that cannot be workspace-scoped.
+- **workspace-scoped route**: An API route whose path template (echo c.Path()) contains the segment workspaces followed by the segment :slug.

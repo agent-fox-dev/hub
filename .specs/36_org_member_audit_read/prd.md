@@ -4,9 +4,8 @@ spec_name: "org_member_audit_read"
 title: "Let org members read a workspace's sessions, cost and audit"
 status: "active"
 created_at: "2026-10-21T13:20:46.080272Z"
-updated_at: "2026-10-21T13:20:46.080272Z"
 intent_hash: "d5dcc58b294895ce06eafe6aebe600632df653aedd61d2f636faddf037b9612b"
-schema_version: 2
+schema_version: 3
 source: "docs/prd/04-let-org-members-read-org-workspaces.md"
 ---
 ## Intent
@@ -178,3 +177,16 @@ Delivered by spec 35, **NOT FOUND** in the tree yet. The assumed shapes are:
 
 - `AuthorizeWorkspace(db *sql.DB, auth *apikit.AuthInfo, slug string, need <read|write need>) (*WorkspaceAccess, int, string)`. `WorkspaceAccess` gains `OrgID` and `Access`, and keeps `Status`. A reader asking for write gets `403` with `error_type: forbidden`.
 - `ReadableSlugs(db *sql.DB, auth *apikit.AuthInfo) (map[string]bool, error)`. It returns nil for an admin token. Otherwise it returns owned plus member-org workspaces of any status, at most the bound slug for a bound PAT. The binding is resolved before rows are opened, and it never reports a refusal.
+
+## Glossary
+
+- **SQLite handle**: The *sql.DB passed to the audit route registration functions (database.SqlDB in cmd/af-hub/main.go); nil in unit tests that register routes without SQLite.
+- **bound PAT**: A personal access token bound to exactly one workspace slug (spec 33); wsaccess.BoundSlug returns that slug.
+- **ingestion routes**: The eight audit POST routes of a workspace in internal/audit/handlers_audit.go that call checkWorkspaceAccess.
+- **member**: A caller whose UserID has a row in org_members for the org_id of the workspace and who is not its owner; wsaccess.AccessMember.
+- **per-run read routes**: GET /api/v1/workspaces/:slug/runs/:run_id/events, /sessions/outcomes, /tools/calls, /tools/errors, /traces, /postmortem and /transcript.
+- **readable set**: The result of wsaccess.ReadableSlugs(db, auth): every workspace slug of any status the caller may read, or all=true for an admin token; at most the bound slug for a bound PAT.
+- **reader**: A caller that wsaccess.AuthorizeWorkspace(..., NeedRead) admits for a workspace: an admin token, the owner or a member.
+- **refusal report**: One call to the wsaccess bound-refusal observer made by wsaccess.DeniesWorkspace, carrying TokenID, UserID, BoundSlug, RequestedSlug, Method, Route template, Status and Surface (spec 34).
+- **session read routes**: GET /api/v1/sessions/:id, GET /api/v1/sessions/:id/usage, GET /api/v1/workspaces/:slug/cost and GET /api/v1/sessions?workspace_slug=W.
+- **stranger**: A caller that is not the workspace's owner, not a member of its org and not an admin token.

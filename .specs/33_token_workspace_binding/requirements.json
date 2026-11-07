@@ -1,522 +1,937 @@
 {
-  "$schema": "https://agent-fox.dev/schemas/requirements.v2.json",
+  "$schema": "https://agent-fox.dev/schemas/requirements.v3.json",
   "spec_id": "33",
   "spec_name": "token_workspace_binding",
-  "schema_version": 2,
-  "introduction": "Hub keeps its own record binding a personal access token (PAT) to exactly one workspace, keyed by apikit's token id, and enforces it in the REST API (a post-authentication guard on the API group, a pre-authentication deny-only guard on apikit's own routes, and the shared rule in internal/wsaccess) and in the git server, so a bound token reaches only its own workspace under its scopes while every unbound credential behaves exactly as before.",
-  "glossary": {
-    "S": "The workspace slug named by a bound token's binding row.",
-    "apikit route guard": "The pre-authentication, deny-only middleware on the root Echo instance that refuses bound tokens on the routes apikit's MountHandlers registers.",
-    "binding": "A row in the SQLite table token_workspace_bindings that ties a PAT's token id to one workspace slug.",
-    "binding guard": "The post-authentication middleware on the API group that confines bound tokens: 404 for other slugs, 403 token_bound for non-allowlisted routes.",
-    "bound token": "A PAT (CredentialType \"pat\") whose token id has a binding row. Every other credential is unbound.",
-    "bound-token allowlist": "The registry in internal/wsaccess of *echo.Route values (method plus path template) that a bound token may call although they are not workspace-scoped; their results are filtered to S.",
-    "pkt-line error": "The git smart-HTTP error framing written by the git server's writePktLineError.",
-    "token_bound": "The error_type value in the apikit error envelope returned when a bound token calls a route that cannot be workspace-scoped.",
-    "workspace-scoped route": "An API route whose path template (echo c.Path()) contains the segment workspaces followed by the segment :slug."
-  },
+  "schema_version": 3,
   "requirements": [
     {
-      "id": "33-REQ-1",
+      "id": "REQ-1",
       "title": "The binding record",
       "rationale": "Hub must own the binding because apikit's pats table cannot be changed.",
       "criteria": [
         {
-          "id": "33-REQ-1.1",
+          "id": "REQ-1.1",
           "pattern": "ubiquitous",
           "system": "binding store",
-          "action": "keep bindings in the SQLite table token_workspace_bindings with columns token_id TEXT PRIMARY KEY, slug TEXT NOT NULL and created_at TEXT NOT NULL (an apikit.NowUTC timestamp), an index idx_token_workspace_bindings_slug on slug, and no foreign key to workspaces"
+          "action": "keep bindings in the SQLite table token_workspace_bindings with columns token_id TEXT PRIMARY KEY, slug TEXT NOT NULL and created_at TEXT NOT NULL (an apikit.NowUTC timestamp), an index idx_token_workspace_bindings_slug on slug, and no foreign key to workspaces",
+          "contract": "the table token_workspace_bindings exists with columns token_id TEXT (primary key), slug TEXT NOT NULL and created_at TEXT NOT NULL; the index idx_token_workspace_bindings_slug exists on slug; PRAGMA foreign_key_list(token_workspace_bindings) returns no rows; a row inserted with apikit.NowUTC() as created_at is read back unchanged",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "an empty in-memory SQLite database"
+            ],
+            "pseudocode": "err = InitBindingSchema(db); assert err == nil; cols = pragma_table_info('token_workspace_bindings'); assert names(cols)==['token_id','slug','created_at']; assert pk(token_id) and notnull(slug) and notnull(created_at); assert 'idx_token_workspace_bindings_slug' in index_list; assert len(pragma_foreign_key_list)==0"
+          }
         },
         {
-          "id": "33-REQ-1.2",
+          "id": "REQ-1.2",
           "pattern": "event_driven",
           "condition": "the binding schema initialisation runs on a database where token_workspace_bindings already exists",
           "system": "binding store",
           "action": "complete using CREATE TABLE IF NOT EXISTS and CREATE INDEX IF NOT EXISTS and leave every existing row unchanged",
-          "contract": "returns a nil error; the row count before and after is equal"
+          "contract": "returns a nil error; the row count before and after is equal",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "token_workspace_bindings exists and holds two rows"
+            ],
+            "pseudocode": "insert('t1','a',now); insert('t2','b',now); before = select_all(); assert InitBindingSchema(db)==nil; assert select_all()==before"
+          }
         },
         {
-          "id": "33-REQ-1.3",
+          "id": "REQ-1.3",
           "pattern": "event_driven",
           "condition": "MountWorkspaceHandlers runs",
           "system": "workspace package",
           "action": "create the binding table right after the workspaces schema and before any route is registered",
-          "contract": "the table exists before the first request is served"
+          "contract": "the table exists before the first request is served",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a real apikit server and a fresh apikit database with no token_workspace_bindings table"
+            ],
+            "pseudocode": "err = MountWorkspaceHandlers(srv, db); assert err==nil; assert table_exists(db.SqlDB,'token_workspace_bindings'); assert rowid('token_workspace_bindings') > rowid('workspaces')"
+          }
         },
         {
-          "id": "33-REQ-1.4",
+          "id": "REQ-1.4",
           "pattern": "event_driven",
           "condition": "MountGitHandlers runs on a database that lacks token_workspace_bindings",
           "system": "git server",
           "action": "create the binding table before registering the git routes",
-          "contract": "a PAT carrying a TokenID with no binding row is served by the git server without a 500"
+          "contract": "a PAT carrying a TokenID with no binding row is served by the git server without a 500",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a test database with workspaces and pats tables but no token_workspace_bindings table",
+              "a workspace owned by the PAT's user with a cloned repository",
+              "an unbound PAT carrying a TokenID with git:read"
+            ],
+            "pseudocode": "assert MountGitHandlers(e, db, root)==nil; assert table_exists(db,'token_workspace_bindings'); r = get('/git/org/ws.git/info/refs?service=git-upload-pack', basic(pat)); assert r.status==200"
+          }
         },
         {
-          "id": "33-REQ-1.5",
+          "id": "REQ-1.5",
           "pattern": "unwanted",
           "condition": "creating the binding table fails in MountWorkspaceHandlers or MountGitHandlers",
           "system": "hub",
           "action": "return the error from the mount function without registering further routes",
-          "contract": "MountWorkspaceHandlers or MountGitHandlers returns a non-nil error"
+          "contract": "MountWorkspaceHandlers or MountGitHandlers returns a non-nil error",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a database on which the binding DDL fails, for example an index named token_workspace_bindings already exists",
+              "for MountWorkspaceHandlers the workspaces schema itself succeeds"
+            ],
+            "pseudocode": "exec('CREATE INDEX token_workspace_bindings ON other(x)'); assert MountGitHandlers(e, db, root) != nil; assert len(e.Routes())==before; assert MountWorkspaceHandlers(srv, apikitDB) != nil"
+          }
         },
         {
-          "id": "33-REQ-1.6",
+          "id": "REQ-1.6",
           "pattern": "event_driven",
           "condition": "a workspace is archived or deleted",
           "system": "workspace package",
           "action": "leave every binding row that names its slug unchanged",
-          "contract": "the token_workspace_bindings row count and contents are equal before and after the archive or delete"
+          "contract": "the token_workspace_bindings row count and contents are equal before and after the archive or delete",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a workspace S owned by user u1",
+              "binding rows for two tokens naming S and one naming another slug"
+            ],
+            "pseudocode": "seed 3 rows; snap = rows(); archive('S'); assert rows()==snap; delete('S'); assert rows()==snap"
+          }
         },
         {
-          "id": "33-REQ-1.7",
+          "id": "REQ-1.7",
           "pattern": "ubiquitous",
           "system": "binding store",
-          "action": "treat a PAT whose token id has no row in token_workspace_bindings as unbound"
+          "action": "treat a PAT whose token id has no row in token_workspace_bindings as unbound",
+          "contract": "LookupBinding returns slug \"\", bound false, nil error; BoundSlug returns bound false and a nil error; LookupBinding for tokB returns the bound slug and true",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "an initialised binding table with a row only for token tokB"
+            ],
+            "pseudocode": "slug,bound,err = LookupBinding(db,'tokX'); assert !bound and err==nil"
+          }
         }
       ]
     },
     {
-      "id": "33-REQ-2",
+      "id": "REQ-2",
       "title": "Resolving a binding",
       "rationale": "Every enforcing layer must agree on which token id is checked and must fail closed on a lookup error.",
       "criteria": [
         {
-          "id": "33-REQ-2.1",
+          "id": "REQ-2.1",
           "pattern": "ubiquitous",
           "system": "wsaccess binding resolver",
-          "action": "consider a binding only for an AuthInfo with CredentialType \"pat\" and key the lookup by AuthInfo.TokenID, issuing no binding query for api_key and admin_token credentials or a nil AuthInfo"
+          "action": "consider a binding only for an AuthInfo with CredentialType \"pat\" and key the lookup by AuthInfo.TokenID, issuing no binding query for api_key and admin_token credentials or a nil AuthInfo",
+          "contract": "every call returns bound false and a nil error, which proves no query was issued; with a working database a PAT with TokenID is looked up by that TokenID",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a database handle that has been closed, so any query would return an error",
+              "a binding table that would otherwise hold rows"
+            ],
+            "pseudocode": "db.Close(); for a in [apiKey, admin, nil, patNoTokenID]: s,b,err = BoundSlug(db,a); assert !b and err==nil"
+          }
         },
         {
-          "id": "33-REQ-2.2",
-          "pattern": "complex_event",
-          "condition": "a PAT request has passed apikit authentication on an API-group route",
-          "guard": "AuthInfo.TokenID is empty",
+          "id": "REQ-2.2",
+          "pattern": "event_driven",
+          "condition": "a PAT request has passed apikit authentication on an API-group route and AuthInfo.TokenID is empty",
           "system": "binding guard",
           "action": "take the token id from the Authorization header (scheme Bearer matched case-insensitively, the text between af_pat_ and the next _) and write the enriched AuthInfo back with apikit.SetAuthInfo",
-          "contract": "apikit.GetAuthInfo in the handler returns the same AuthInfo with TokenID set to the parsed id"
+          "contract": "apikit.GetAuthInfo in the handler returns the same AuthInfo with TokenID set to the parsed id",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a binding row for token id abc123 naming S",
+              "a test auth middleware that sets a PAT AuthInfo with empty TokenID",
+              "the binding guard behind that middleware and a probe handler that records apikit.GetAuthInfo(c)"
+            ],
+            "pseudocode": "h = guard(db)(probe); req.Header.Set('Authorization','bearer af_pat_abc123_secret'); serve; assert probe.auth.TokenID=='abc123' and probe.auth.UserID==orig.UserID"
+          }
         },
         {
-          "id": "33-REQ-2.3",
+          "id": "REQ-2.3",
           "pattern": "unwanted",
           "condition": "no token id can be derived for a PAT (TokenID empty and the Authorization header missing, not of the form Bearer af_pat_<id>_<secret>, or with an empty id)",
           "system": "binding resolver",
           "action": "treat the PAT as unbound without issuing a binding query",
-          "contract": "the request proceeds exactly as for an unbound PAT"
+          "contract": "the request proceeds exactly as for an unbound PAT",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a closed database handle so any query would fail with an error",
+              "a PAT AuthInfo with empty TokenID",
+              "the binding guard and a probe handler"
+            ],
+            "pseudocode": "for h in headers: r = serve(h); assert r.status == probe_status and probe.called"
+          }
         },
         {
-          "id": "33-REQ-2.4",
+          "id": "REQ-2.4",
           "pattern": "ubiquitous",
           "system": "binding resolver",
           "action": "resolve a binding with exactly one primary-key lookup on token_id per enforcing layer, never while a rows cursor or transaction is open on the same database handle",
-          "contract": "on a single-connection (SetMaxOpenConns(1)) SQLite database every enforcing call returns within 5 seconds"
+          "contract": "on a single-connection (SetMaxOpenConns(1)) SQLite database every enforcing call returns within 5 seconds",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "an in-memory SQLite database with SetMaxOpenConns(1)",
+              "workspaces S and X owned by u1 and a binding row for token tokB naming S"
+            ],
+            "pseudocode": "db.SetMaxOpenConns(1); for call in calls: ok = within(5s, call); assert ok"
+          }
         },
         {
-          "id": "33-REQ-2.5",
+          "id": "REQ-2.5",
           "pattern": "unwanted",
           "condition": "the binding lookup returns a database error",
           "system": "binding resolver",
           "action": "fail closed and never treat the token as unbound",
-          "contract": "API routes answer HTTP 500 with message internal server error and the handler does not run; LookupBinding returns a non-nil error"
+          "contract": "API routes answer HTTP 500 with message internal server error and the handler does not run; LookupBinding returns a non-nil error",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a PAT with a TokenID and a database whose token_workspace_bindings table has been dropped"
+            ],
+            "pseudocode": "drop table; _,_,err = LookupBinding(db,'t'); assert err!=nil; r = serve(guard(probe)); assert r.status==500 and r.msg=='internal server error' and !probe.called"
+          }
         }
       ]
     },
     {
-      "id": "33-REQ-3",
+      "id": "REQ-3",
       "title": "Workspace-scoped API routes",
       "rationale": "To a bound token, every workspace other than S must not exist, regardless of scopes.",
       "criteria": [
         {
-          "id": "33-REQ-3.1",
-          "pattern": "complex_event",
-          "condition": "a bound token requests an API-group route whose path template contains the segments workspaces/:slug",
-          "guard": ":slug is not S",
+          "id": "REQ-3.1",
+          "pattern": "event_driven",
+          "condition": "a bound token requests an API-group route whose path template contains the segments workspaces/:slug and :slug is not S",
           "system": "binding guard",
           "action": "refuse the request before the handler runs, and so before any scope, existence or status check",
-          "contract": "HTTP 404 with the apikit error envelope and message workspace not found, the same body a non-owner receives"
+          "contract": "HTTP 404 with the apikit error envelope and message workspace not found, the same body a non-owner receives",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "token tokB bound to S with no scopes at all",
+              "routes GET /workspaces/:slug and GET /workspaces/:slug/runs/:run_id/events behind the guard"
+            ],
+            "pseudocode": "r = get('/workspaces/X'); assert r.status==404 and r.json.error.message=='workspace not found' and !handler.called"
+          }
         },
         {
-          "id": "33-REQ-3.2",
-          "pattern": "complex_event",
-          "condition": "a bound token requests an API-group route whose path template contains the segments workspaces/:slug",
-          "guard": ":slug equals S",
+          "id": "REQ-3.2",
+          "pattern": "event_driven",
+          "condition": "a bound token requests an API-group route whose path template contains the segments workspaces/:slug and :slug equals S",
           "system": "binding guard",
           "action": "pass the request unchanged into the handler's own checks",
-          "contract": "the status and body equal those an unbound PAT with the same user and scopes receives"
+          "contract": "the status and body equal those an unbound PAT with the same user and scopes receives",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "workspace S owned by u1",
+              "bound token tokB and unbound token tokU for u1 with identical scopes (once with workspaces:read, once without)"
+            ],
+            "pseudocode": "assert resp(tokB).status==resp(tokU).status and resp(tokB).body==resp(tokU).body"
+          }
         },
         {
-          "id": "33-REQ-3.3",
+          "id": "REQ-3.3",
           "pattern": "ubiquitous",
           "system": "binding guard",
           "action": "for any bound token, any slug other than S, any workspace-scoped route and any scope set (including none), whether the slug exists, is owned or is archived, answer 404 workspace not found",
-          "contract": "HTTP 404 with message workspace not found, body identical to a non-owner's"
+          "contract": "HTTP 404 with message workspace not found, body identical to a non-owner's",
+          "check": {
+            "kind": "property",
+            "setup": [
+              "token bound to S",
+              "workspace-scoped routes registered on the guarded group"
+            ],
+            "pseudocode": "for slug,route,scopes in gen(): r = call(boundTok(scopes), route(slug)); assert r.status==404 and r.body==nonOwnerBody and !handler.called"
+          }
         },
         {
-          "id": "33-REQ-3.4",
+          "id": "REQ-3.4",
           "pattern": "ubiquitous",
           "system": "workspace package",
-          "action": "install the binding guard with s.APIGroup().Use inside MountWorkspaceHandlers after MountHandlers and before RegisterRoutes, so that every route and subgroup registered on the API group afterwards, including /workspaces/:slug/runs/:run_id, is guarded without further change"
+          "action": "install the binding guard with s.APIGroup().Use inside MountWorkspaceHandlers after MountHandlers and before RegisterRoutes, so that every route and subgroup registered on the API group afterwards, including /workspaces/:slug/runs/:run_id, is guarded without further change",
+          "contract": "both answers are 404 workspace not found; with slug S the request reaches the audit handler",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "MountWorkspaceHandlers called on a real apikit server",
+              "audit.RegisterRoutes then registered on server.APIGroup() afterwards",
+              "a bound token for S"
+            ],
+            "pseudocode": "MountWorkspaceHandlers(srv,db); audit.RegisterRoutes(srv.APIGroup(),...); api.GET('/workspaces/:slug/new', h); assert post(X runs).status==404; assert get(new route X).status==404"
+          }
         },
         {
-          "id": "33-REQ-3.5",
-          "pattern": "complex_event",
-          "condition": "wsaccess.AuthorizeWorkspace is called with a bound PAT for an existing workspace the caller owns",
-          "guard": "the slug is not S",
+          "id": "REQ-3.5",
+          "pattern": "event_driven",
+          "condition": "wsaccess.AuthorizeWorkspace is called with a bound PAT for an existing workspace the caller owns and the slug is not S",
           "system": "wsaccess",
           "action": "apply the binding rule after the existence and ownership checks and deny access",
-          "contract": "returns (nil, 404, \"workspace not found\"); for slug S it returns the same access value as for an unbound PAT"
+          "contract": "returns (nil, 404, \"workspace not found\"); for slug S it returns the same access value as for an unbound PAT",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "owned workspaces S and X for u1",
+              "bound PAT with TokenID tokB naming S"
+            ],
+            "pseudocode": "a,code,msg = AuthorizeWorkspace(db,bound,'X'); assert a==nil and code==404 and msg=='workspace not found'; assert *AuthorizeWorkspace(db,bound,'S') == *AuthorizeWorkspace(db,unbound,'S')"
+          }
         },
         {
-          "id": "33-REQ-3.6",
-          "pattern": "complex_event",
-          "condition": "lookupWorkspaceForAuth is called with a bound PAT for an existing workspace the caller owns",
-          "guard": "the slug is not S",
+          "id": "REQ-3.6",
+          "pattern": "event_driven",
+          "condition": "lookupWorkspaceForAuth is called with a bound PAT for an existing workspace the caller owns and the slug is not S",
           "system": "workspace package",
           "action": "deny access through the shared wsaccess rule",
-          "contract": "writes HTTP 404 workspace not found and returns a non-nil error"
+          "contract": "writes HTTP 404 workspace not found and returns a non-nil error",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "owned workspaces S and X for u1",
+              "an echo context with a bound PAT AuthInfo naming S and no guard in front"
+            ],
+            "pseudocode": "ws,err = lookupWorkspaceForAuth(c,db,'X',bound); assert err!=nil and rec.Code==404"
+          }
         },
         {
-          "id": "33-REQ-3.7",
+          "id": "REQ-3.7",
           "pattern": "unwanted",
           "condition": "the binding lookup inside wsaccess.AuthorizeWorkspace or lookupWorkspaceForAuth fails with a database error",
           "system": "wsaccess",
           "action": "deny access",
-          "contract": "AuthorizeWorkspace returns (nil, 500, \"internal server error\"); lookupWorkspaceForAuth writes HTTP 500"
+          "contract": "AuthorizeWorkspace returns (nil, 500, \"internal server error\"); lookupWorkspaceForAuth writes HTTP 500",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "an existing workspace owned by u1",
+              "the token_workspace_bindings table dropped after seeding",
+              "a PAT with a TokenID"
+            ],
+            "pseudocode": "drop table; a,code,msg = AuthorizeWorkspace(db,pat,'S'); assert code==500 and msg=='internal server error'"
+          }
         }
       ]
     },
     {
-      "id": "33-REQ-4",
+      "id": "REQ-4",
       "title": "Default-deny for other hub API routes",
       "rationale": "A route nobody thought to confine must refuse a bound token rather than leak other workspaces.",
       "criteria": [
         {
-          "id": "33-REQ-4.1",
-          "pattern": "complex_event",
-          "condition": "a bound token requests an API-group route that is not workspace-scoped",
-          "guard": "the route's method and path template are not on the bound-token allowlist",
+          "id": "REQ-4.1",
+          "pattern": "event_driven",
+          "condition": "a bound token requests an API-group route that is not workspace-scoped and the route's method and path template are not on the bound-token allowlist",
           "system": "binding guard",
           "action": "refuse the request before the handler runs",
-          "contract": "HTTP 403 with error_type token_bound and message this token is bound to workspace <S>"
+          "contract": "HTTP 403 with error_type token_bound and message this token is bound to workspace <S>",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a route GET /widgets not on the allowlist, behind the guard",
+              "token bound to S with any scopes"
+            ],
+            "pseudocode": "r = get('/widgets'); assert r.status==403 and r.json.error.error_type=='token_bound' and r.json.error.message=='this token is bound to workspace S'"
+          }
         },
         {
-          "id": "33-REQ-4.2",
+          "id": "REQ-4.2",
           "pattern": "ubiquitous",
           "system": "wsaccess",
-          "action": "provide an allowlist registry fed with the *echo.Route values returned at registration and keyed by method plus path template, marked for exactly GET /workspaces, POST /sessions, GET /sessions, GET /sessions/:id, POST /sessions/:id/complete, POST /sessions/:id/usage, GET /sessions/:id/usage, GET /audit, GET /events and GET /sandbox-profiles"
+          "action": "provide an allowlist registry fed with the *echo.Route values returned at registration and keyed by method plus path template, marked for exactly GET /workspaces, POST /sessions, GET /sessions, GET /sessions/:id, POST /sessions/:id/complete, POST /sessions/:id/usage, GET /sessions/:id/usage, GET /audit, GET /events and GET /sandbox-profiles",
+          "contract": "the allowed set equals exactly GET /workspaces, POST /sessions, GET /sessions, GET /sessions/:id, POST /sessions/:id/complete, POST /sessions/:id/usage, GET /sessions/:id/usage, GET /audit, GET /events and GET /sandbox-profiles; POST /workspaces and GET /sandboxes are not in it",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "an Echo group on which workspace, audit, sandboxes, secrets, merge, forge and carrypatch RegisterRoutes have all been called as in main"
+            ],
+            "pseudocode": "allowed = [r for r in routes if wsaccess.IsAllowed(r.Method,r.Path)]; assert set(allowed)==EXPECTED10"
+          }
         },
         {
-          "id": "33-REQ-4.3",
-          "pattern": "complex_event",
-          "condition": "a bound token requests an API-group route that is not workspace-scoped",
-          "guard": "the route is on the bound-token allowlist",
+          "id": "REQ-4.3",
+          "pattern": "event_driven",
+          "condition": "a bound token requests an API-group route that is not workspace-scoped and the route is on the bound-token allowlist",
           "system": "binding guard",
           "action": "pass the request to the handler, which filters its result to S",
-          "contract": "the handler runs; its response follows 33-REQ-6"
+          "contract": "the handler runs; its response follows 33-REQ-6",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "GET /listing marked with AllowBoundTokens",
+              "token bound to S"
+            ],
+            "pseudocode": "AllowBoundTokens(api.GET('/listing',h)); r=get('/listing'); assert h.called and r.status==200"
+          }
         },
         {
-          "id": "33-REQ-4.4",
+          "id": "REQ-4.4",
           "pattern": "event_driven",
           "condition": "a bound token requests POST /workspaces, any /user/secrets or /user/vars route, any /orgs/:slug/secrets or /orgs/:slug/vars route, or GET /sandboxes",
           "system": "binding guard",
           "action": "refuse the request whatever scopes the token holds",
-          "contract": "HTTP 403 with error_type token_bound; no row is written"
+          "contract": "HTTP 403 with error_type token_bound; no row is written",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "real workspace, secrets and sandboxes routes registered behind the guard",
+              "a bound token holding workspaces:create, secrets and vars scopes",
+              "row counts of workspaces, secrets and variables"
+            ],
+            "pseudocode": "for (m,p) in cases: r=call(m,p); assert r.status==403 and r.error_type=='token_bound'; assert counts()==before"
+          }
         },
         {
-          "id": "33-REQ-4.5",
+          "id": "REQ-4.5",
           "pattern": "unwanted",
           "condition": "a bound token requests a path under the API mount point that matches no registered route",
           "system": "binding guard",
           "action": "refuse the request",
-          "contract": "HTTP 403 with error_type token_bound"
+          "contract": "HTTP 403 with error_type token_bound",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "the guard installed on the API group",
+              "token bound to S"
+            ],
+            "pseudocode": "r = get('/api/v1/no/such/path'); assert r.status==403 and r.error_type=='token_bound'"
+          }
         },
         {
-          "id": "33-REQ-4.6",
+          "id": "REQ-4.6",
           "pattern": "ubiquitous",
           "system": "binding guard",
-          "action": "for any route registered on the API group after the guard that is neither workspace-scoped nor marked on the allowlist, refuse a bound token with 403 token_bound"
+          "action": "for any route registered on the API group after the guard that is neither workspace-scoped nor marked on the allowlist, refuse a bound token with 403 token_bound",
+          "contract": "the bound token receives 403 token_bound; the route's handler is never called",
+          "check": {
+            "kind": "property",
+            "setup": [
+              "the guard installed first",
+              "token bound to S"
+            ],
+            "pseudocode": "for m,p in gen_templates(): api.Add(m,p,h); r=call(m,p); assert r.status==403 and r.error_type=='token_bound' and !h.called"
+          }
         },
         {
-          "id": "33-REQ-4.7",
+          "id": "REQ-4.7",
           "pattern": "event_driven",
           "condition": "a request without credentials, or with an api_key, admin_token or unbound PAT credential, reaches the binding guard",
           "system": "binding guard",
           "action": "pass the request to the next handler, issuing no binding query for requests without credentials, api_key or admin_token",
-          "contract": "status and body equal those produced without the guard"
+          "contract": "status and body equal those produced without the guard",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a guard in front of a probe handler",
+              "a closed binding database for the no-credential, api_key and admin_token cases (a query would produce a 500)",
+              "a working database for the unbound PAT case"
+            ],
+            "pseudocode": "for a in [none,apiKey,admin,unboundPat]: assert guarded(a)==unguarded(a)"
+          }
         }
       ]
     },
     {
-      "id": "33-REQ-5",
+      "id": "REQ-5",
       "title": "Guarding apikit's own routes",
       "rationale": "A bound PAT holding tokens:manage could otherwise mint an unbound PAT through apikit's POST /user/tokens.",
       "criteria": [
         {
-          "id": "33-REQ-5.1",
+          "id": "REQ-5.1",
           "pattern": "event_driven",
           "condition": "MountWorkspaceHandlers calls s.MountHandlers",
           "system": "workspace package",
           "action": "record as apikit routes the method and path template of every route in s.Echo().Routes() after the call that was absent before it, leaving out /healthz, /readyz and /version",
-          "contract": "the recorded set includes GET <mount>/user and POST <mount>/user/tokens"
+          "contract": "the recorded set includes GET <mount>/user and POST <mount>/user/tokens",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a real apikit server whose Echo route table is snapshotted before and after MountHandlers"
+            ],
+            "pseudocode": "set = recordedAPIKitRoutes(); assert ('GET',mount+'/user') in set and ('POST',mount+'/user/tokens') in set; assert not any(p in ['/healthz','/readyz','/version'])"
+          }
         },
         {
-          "id": "33-REQ-5.2",
-          "pattern": "complex_event",
-          "condition": "a request's method and path template match a recorded apikit route and it carries Authorization: Bearer af_pat_<token_id>_<secret>",
-          "guard": "<token_id> has a binding row",
+          "id": "REQ-5.2",
+          "pattern": "event_driven",
+          "condition": "a request's method and path template match a recorded apikit route and it carries Authorization: Bearer af_pat_<token_id>_<secret> and <token_id> has a binding row",
           "system": "apikit route guard",
           "action": "refuse the request on the root Echo instance before apikit authenticates it, without naming the workspace",
-          "contract": "HTTP 403 with error_type token_bound and message this token is bound to a workspace; the slug does not appear in the body"
+          "contract": "HTTP 403 with error_type token_bound and message this token is bound to a workspace; the slug does not appear in the body",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a real apikit server with MountWorkspaceHandlers",
+              "a PAT minted through apikit and a binding row for its id naming workspace secret-ws"
+            ],
+            "pseudocode": "for (m,p) in cases: r=call(m,p,boundPat); assert r.status==403 and r.msg=='this token is bound to a workspace' and 'secret-ws' not in r.body"
+          }
         },
         {
-          "id": "33-REQ-5.3",
+          "id": "REQ-5.3",
           "pattern": "event_driven",
           "condition": "a bound PAT holding tokens:manage sends POST /api/v1/user/tokens",
           "system": "apikit route guard",
           "action": "refuse the request",
-          "contract": "HTTP 403 token_bound; no new PAT is created in apikit's pats table"
+          "contract": "HTTP 403 token_bound; no new PAT is created in apikit's pats table",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a real apikit server with a bound PAT holding tokens:manage",
+              "the count of rows in apikit's pats table"
+            ],
+            "pseudocode": "n=count(pats); r=post('/api/v1/user/tokens',body,boundPat); assert r.status==403 and r.error_type=='token_bound'; assert count(pats)==n"
+          }
         },
         {
-          "id": "33-REQ-5.4",
+          "id": "REQ-5.4",
           "pattern": "event_driven",
           "condition": "a request matching a recorded apikit route carries no af_pat_ Bearer token or carries one whose id has no binding row",
           "system": "apikit route guard",
           "action": "pass the request to apikit unchanged, issuing no binding query when no af_pat_ id is present",
-          "contract": "status and body equal those apikit produces without the guard"
+          "contract": "status and body equal those apikit produces without the guard",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "the apikit route guard with a recorded route GET /api/v1/user",
+              "a closed database for the cases with no af_pat_ id"
+            ],
+            "pseudocode": "assert guarded(req)==unguarded(req) for each"
+          }
         },
         {
-          "id": "33-REQ-5.5",
+          "id": "REQ-5.5",
           "pattern": "ubiquitous",
           "system": "apikit route guard",
-          "action": "only refuse or pass through: never grant access, never set AuthInfo and never hash or verify a token secret"
+          "action": "only refuse or pass through: never grant access, never set AuthInfo and never hash or verify a token secret",
+          "contract": "the bound id is refused 403 regardless of secret correctness; the unbound id reaches the probe where apikit.GetAuthInfo(c) is nil; the guard source does not import a hashing or token verification package",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "the apikit route guard before a probe handler",
+              "a bound token id with a wrong secret and an unbound id with a wrong secret"
+            ],
+            "pseudocode": "assert probe.auth==nil for unbound; assert refused(bound,wrongSecret)==refused(bound,rightSecret)"
+          }
         },
         {
-          "id": "33-REQ-5.6",
+          "id": "REQ-5.6",
           "pattern": "event_driven",
           "condition": "a request does not match a recorded apikit route",
           "system": "apikit route guard",
           "action": "pass the request through without a binding query",
-          "contract": "zero binding queries for that request at the root guard"
+          "contract": "zero binding queries for that request at the root guard",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "the apikit route guard on a closed database",
+              "a recorded route set"
+            ],
+            "pseudocode": "db.Close(); r=serve('/api/v1/workspaces',bearer); assert r.status != 500"
+          }
         },
         {
-          "id": "33-REQ-5.7",
+          "id": "REQ-5.7",
           "pattern": "unwanted",
           "condition": "the apikit route guard's binding lookup fails with a database error",
           "system": "apikit route guard",
           "action": "fail closed and not forward the request to apikit",
-          "contract": "HTTP 500 with message internal server error"
+          "contract": "HTTP 500 with message internal server error",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a recorded apikit route and the binding table dropped"
+            ],
+            "pseudocode": "r=serve(); assert r.status==500 and r.msg=='internal server error' and !next.called"
+          }
         }
       ]
     },
     {
-      "id": "33-REQ-6",
+      "id": "REQ-6",
       "title": "Cross-workspace views and sessions",
       "rationale": "A service needs to discover its workspace, report sessions and read its audit stream, yet must see only S.",
       "criteria": [
         {
-          "id": "33-REQ-6.1",
+          "id": "REQ-6.1",
           "pattern": "event_driven",
           "condition": "a bound token sends GET /workspaces",
           "system": "workspace package",
           "action": "return at most workspace S, subject to the existing workspaces:read scope check and the include_archived filter",
-          "contract": "HTTP 200 whose list contains S or nothing; other refusals unchanged"
+          "contract": "HTTP 200 whose list contains S or nothing; other refusals unchanged",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "u1 owns S, X (active) and A (archived) and A is S in the archived variant",
+              "bound token with workspaces:read, a second bound token without it"
+            ],
+            "pseudocode": "r=get('/workspaces'); assert slugs(r)==['S']; assert get('/workspaces',noScopeTok).status==403"
+          }
         },
         {
-          "id": "33-REQ-6.2",
+          "id": "REQ-6.2",
           "pattern": "unwanted",
           "condition": "a bound token sends POST /sessions with a workspace_slug other than S, or replays a session id that belongs to another workspace",
           "system": "audit sessions",
           "action": "refuse through requireWorkspaceRead and create no session",
-          "contract": "HTTP 404 workspace not found"
+          "contract": "HTTP 404 workspace not found",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "workspaces S and X owned by u1",
+              "a session id already created in X by u1",
+              "token bound to S"
+            ],
+            "pseudocode": "r=post('/sessions',{workspace_slug:'X'}); assert r.status==404 and r.msg=='workspace not found'; assert count(sessions)==before"
+          }
         },
         {
-          "id": "33-REQ-6.3",
+          "id": "REQ-6.3",
           "pattern": "unwanted",
           "condition": "a bound token sends GET /sessions/:id or GET /sessions/:id/usage for a session outside S, or GET /sessions?workspace_slug=<slug other than S>",
           "system": "audit sessions",
           "action": "refuse the request",
-          "contract": "HTTP 403 workspace access denied"
+          "contract": "HTTP 403 workspace access denied",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a session in X and a session in S",
+              "token bound to S"
+            ],
+            "pseudocode": "for p in paths: r=get(p); assert r.status==403 and r.msg=='workspace access denied'"
+          }
         },
         {
-          "id": "33-REQ-6.4",
+          "id": "REQ-6.4",
           "pattern": "event_driven",
           "condition": "a bound token sends GET /sessions without workspace_slug",
           "system": "audit sessions",
           "action": "list only sessions of workspace S",
-          "contract": "HTTP 200 whose items all carry workspace_slug S"
+          "contract": "HTTP 200 whose items all carry workspace_slug S",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "sessions in S and X for u1",
+              "token bound to S"
+            ],
+            "pseudocode": "r=get('/sessions'); assert r.status==200 and all(i.workspace_slug=='S' for i in r.items) and len(r.items)>0"
+          }
         },
         {
-          "id": "33-REQ-6.5",
+          "id": "REQ-6.5",
           "pattern": "unwanted",
           "condition": "a bound token sends POST /sessions/:id/complete or POST /sessions/:id/usage for a session whose workspace is not S",
           "system": "audit sessions",
           "action": "refuse the request, with RegisterSessionRoutes passing the SQLite handle to both handlers, and leave the session unchanged",
-          "contract": "HTTP 403 not session owner"
+          "contract": "HTTP 403 not session owner",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "an active session in X created by the same user (credential id equal to the bound token's user)",
+              "RegisterSessionRoutes given the SQLite handle",
+              "token bound to S"
+            ],
+            "pseudocode": "r=post('/sessions/'+id+'/complete'); assert r.status==403 and r.msg=='not session owner'; assert session(id).status=='active'"
+          }
         },
         {
-          "id": "33-REQ-6.6",
+          "id": "REQ-6.6",
           "pattern": "event_driven",
           "condition": "a bound token sends GET /audit or GET /events",
           "system": "audit query",
           "action": "return only events of workspace S",
-          "contract": "HTTP 200 (or the SSE stream) whose events all carry workspace S"
+          "contract": "HTTP 200 (or the SSE stream) whose events all carry workspace S",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "audit events in S and X for u1",
+              "token bound to S"
+            ],
+            "pseudocode": "assert all(e.workspace=='S' for e in get('/audit').events); assert all(e.workspace=='S' for e in read_sse('/events'))"
+          }
         },
         {
-          "id": "33-REQ-6.7",
+          "id": "REQ-6.7",
           "pattern": "unwanted",
           "condition": "a bound token sends GET /audit?workspace=<slug other than S>",
           "system": "audit query",
           "action": "refuse the request",
-          "contract": "HTTP 404 workspace not found"
+          "contract": "HTTP 404 workspace not found",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "owned workspace X and token bound to S"
+            ],
+            "pseudocode": "r=get('/audit?workspace=X'); assert r.status==404 and r.msg=='workspace not found'"
+          }
         },
         {
-          "id": "33-REQ-6.8",
+          "id": "REQ-6.8",
           "pattern": "event_driven",
           "condition": "a bound token sends GET /sandbox-profiles",
           "system": "sandboxes",
           "action": "answer exactly as for an unbound PAT with the same user and scopes",
-          "contract": "status and body equal the unbound PAT's"
+          "contract": "status and body equal the unbound PAT's",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "sandboxes.RegisterRoutes mounted behind the guard",
+              "a bound and an unbound PAT with the same user and scopes"
+            ],
+            "pseudocode": "assert resp(bound)==resp(unbound)"
+          }
         }
       ]
     },
     {
-      "id": "33-REQ-7",
+      "id": "REQ-7",
       "title": "The git server",
       "rationale": "Git access must honour the same binding as the REST API.",
+      "system": "git server",
       "criteria": [
         {
-          "id": "33-REQ-7.1",
-          "pattern": "complex_event",
-          "condition": "a bound token requests a repository /git/<org>/<slug>.git through authorizeGitAccess",
-          "guard": "<slug> is not S",
-          "system": "git server",
+          "id": "REQ-7.1",
+          "pattern": "event_driven",
+          "condition": "a bound token requests a repository /git/<org>/<slug>.git through authorizeGitAccess and <slug> is not S",
           "action": "deny access after the admin and ownership checks",
-          "contract": "pkt-line 404 repository not found, identical to a non-owner's response"
+          "contract": "pkt-line 404 repository not found, identical to a non-owner's response",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "workspaces S and X owned by u1 with repositories",
+              "bound PAT for S with git:read, and a non-owner PAT"
+            ],
+            "pseudocode": "assert body(boundFetchX)==body(nonOwnerFetchX) and status==404"
+          }
         },
         {
-          "id": "33-REQ-7.2",
-          "pattern": "complex_event",
-          "condition": "a bound token requests the repository of workspace S",
-          "guard": "the caller owns S",
-          "system": "git server",
+          "id": "REQ-7.2",
+          "pattern": "event_driven",
+          "condition": "a bound token requests the repository of workspace S and the caller owns S",
           "action": "let the existing git:read and git:write scope checks decide",
-          "contract": "fetch and push outcomes equal those of an unbound PAT with the same scopes"
+          "contract": "fetch and push outcomes equal those of an unbound PAT with the same scopes",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "bound PAT and unbound PAT of the same user, both with only git:read, and both with git:read+git:write"
+            ],
+            "pseudocode": "for op in [fetch,push]: assert outcome(bound,op)==outcome(unbound,op)"
+          }
         },
         {
-          "id": "33-REQ-7.3",
+          "id": "REQ-7.3",
           "pattern": "unwanted",
           "condition": "the git server's binding lookup fails with a database error",
-          "system": "git server",
           "action": "fail closed",
-          "contract": "pkt-line 500 error; the repository is not served"
+          "contract": "pkt-line 500 error; the repository is not served",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "the binding table dropped",
+              "a PAT with TokenID that owns the repository"
+            ],
+            "pseudocode": "r=get(info/refs); assert r.status==500 and pktline_error(r.body)"
+          }
         },
         {
-          "id": "33-REQ-7.4",
+          "id": "REQ-7.4",
           "pattern": "event_driven",
           "condition": "an api_key or admin_token credential requests a git repository",
-          "system": "git server",
           "action": "apply the existing checks without a binding query",
-          "contract": "response identical to that before this spec"
+          "contract": "response identical to that before this spec",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "the binding table dropped (any query would give a 500)",
+              "an owned repository"
+            ],
+            "pseudocode": "assert fetch(apiKeyOwner).status==200 and fetch(admin).status==200 and fetch(nonOwner).status==404"
+          }
         }
       ]
     },
     {
-      "id": "33-REQ-8",
+      "id": "REQ-8",
       "title": "Audit ingestion",
       "rationale": "The KeyID branch of checkWorkspaceAccess assumed a binding nothing produced; the shared rule replaces it.",
+      "system": "audit ingestion",
       "criteria": [
         {
-          "id": "33-REQ-8.1",
+          "id": "REQ-8.1",
           "pattern": "ubiquitous",
-          "system": "audit ingestion",
-          "action": "decide workspace access in checkWorkspaceAccess without reading auth.KeyID and never emit error_type workspace_mismatch"
+          "action": "decide workspace access in checkWorkspaceAccess without reading auth.KeyID and never emit error_type workspace_mismatch",
+          "contract": "the event is accepted; no response carries error_type workspace_mismatch; the source of checkWorkspaceAccess contains no KeyID reference",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a PAT AuthInfo whose KeyID equals a different slug, which owns the workspace and has no binding row"
+            ],
+            "pseudocode": "r=post(events, pat{KeyID:'other'}); assert r.status==201 and 'workspace_mismatch' not in r.body"
+          }
         },
         {
-          "id": "33-REQ-8.2",
+          "id": "REQ-8.2",
           "pattern": "unwanted",
           "condition": "a bound token posts to a run under /workspaces/<slug>/runs/:run_id where <slug> is not S",
-          "system": "audit ingestion",
           "action": "refuse the request and write no event",
-          "contract": "HTTP 404 workspace not found"
+          "contract": "HTTP 404 workspace not found",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "token bound to S via a binding row (rewritten TS-17-51)",
+              "owned workspace X"
+            ],
+            "pseudocode": "r=post('/workspaces/X/runs/r1/events'); assert r.status==404 and count(events)==0"
+          }
         },
         {
-          "id": "33-REQ-8.3",
+          "id": "REQ-8.3",
           "pattern": "unwanted",
           "condition": "an unbound non-owner posts to a run of a workspace",
-          "system": "audit ingestion",
           "action": "refuse the request",
-          "contract": "HTTP 403 with error_type workspace_access_denied"
+          "contract": "HTTP 403 with error_type workspace_access_denied",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "workspace owned by u2",
+              "an unbound PAT of u1"
+            ],
+            "pseudocode": "r=post(run, u1); assert r.status==403 and r.error_type=='workspace_access_denied'"
+          }
         },
         {
-          "id": "33-REQ-8.4",
+          "id": "REQ-8.4",
           "pattern": "unwanted",
           "condition": "the caller posts to a run of an archived workspace it may reach",
-          "system": "audit ingestion",
           "action": "refuse the request",
-          "contract": "HTTP 409 with error_type workspace_archived"
+          "contract": "HTTP 409 with error_type workspace_archived",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "an archived workspace owned by u1",
+              "no workspace named ghost"
+            ],
+            "pseudocode": "assert post(archivedRun).status==409; assert post(ghostRun).status==404"
+          }
         },
         {
-          "id": "33-REQ-8.5",
+          "id": "REQ-8.5",
           "pattern": "unwanted",
           "condition": "the caller posts to a run of a workspace that does not exist",
-          "system": "audit ingestion",
           "action": "refuse the request",
-          "contract": "HTTP 404"
+          "contract": "HTTP 404",
+          "check": {
+            "same_as": "REQ-8.4"
+          }
         },
         {
-          "id": "33-REQ-8.6",
+          "id": "REQ-8.6",
           "pattern": "state_driven",
           "condition": "the audit routes are registered with a nil SQLite handle",
-          "system": "audit ingestion",
           "action": "skip the workspace access checks",
-          "contract": "the event is accepted as before this spec"
+          "contract": "the event is accepted as before this spec",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "audit routes registered with a nil SQLite handle"
+            ],
+            "pseudocode": "env=newAuditTestEnv(); r=post(events); assert r.status==201"
+          }
         }
       ]
     },
     {
-      "id": "33-REQ-9",
+      "id": "REQ-9",
       "title": "Unchanged behaviour and lifecycle",
       "rationale": "The binding may only narrow a bound token's reach; it must never move existing behaviour.",
+      "system": "hub",
       "criteria": [
         {
-          "id": "33-REQ-9.1",
+          "id": "REQ-9.1",
           "pattern": "ubiquitous",
-          "system": "hub",
-          "action": "for any request by an unbound PAT, an API key or an admin token, return a status and body byte-identical to those without this spec, so that the ownership suites of internal/workspace, gitserver, carrypatch, merge, sandboxes, forge, secrets and audit pass unchanged except the two audit tests encoding the KeyID check"
+          "action": "for any request by an unbound PAT, an API key or an admin token, return a status and body byte-identical to those without this spec, so that the ownership suites of internal/workspace, gitserver, carrypatch, merge, sandboxes, forge, secrets and audit pass unchanged except the two audit tests encoding the KeyID check",
+          "contract": "status code and body bytes are equal between the two hubs",
+          "check": {
+            "kind": "property",
+            "setup": [
+              "two identical hubs: one with the guards and one without",
+              "no binding rows"
+            ],
+            "pseudocode": "for cred,route,slug in gen(): assert call(guarded,cred,route,slug)==call(plain,cred,route,slug)"
+          }
         },
         {
-          "id": "33-REQ-9.2",
+          "id": "REQ-9.2",
           "pattern": "ubiquitous",
-          "system": "hub",
-          "action": "issue zero binding queries for requests authenticated with an api_key or admin_token credential"
+          "action": "issue zero binding queries for requests authenticated with an api_key or admin_token credential",
+          "contract": "none of the responses is a 500 caused by a binding lookup; responses equal those from before this spec",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a real hub with the binding table dropped after mount (any query yields 500)"
+            ],
+            "pseudocode": "drop table; for cred in [apiKey,admin]: for req in reqs: assert call(cred,req).status != 500"
+          }
         },
         {
-          "id": "33-REQ-9.3",
+          "id": "REQ-9.3",
           "pattern": "ubiquitous",
-          "system": "hub",
-          "action": "for any bound token, route and slug, allow a request only if an unbound PAT with the same user and scopes would be allowed it, so that a binding never widens a scope"
+          "action": "for any bound token, route and slug, allow a request only if an unbound PAT with the same user and scopes would be allowed it, so that a binding never widens a scope",
+          "contract": "if the bound token's request is not refused by the guard (status not 404/403 token_bound), the unbound PAT's response has the same status and body; no 2xx for the bound token has a non-2xx for the unbound PAT",
+          "check": {
+            "kind": "property",
+            "setup": [
+              "a bound token and an unbound PAT with identical user and scopes"
+            ],
+            "pseudocode": "for scopes,route,slug in gen(): b=call(bound); u=call(unbound); if 200<=b.status<300: assert u.status==b.status"
+          }
         },
         {
-          "id": "33-REQ-9.4",
+          "id": "REQ-9.4",
           "pattern": "state_driven",
           "condition": "a bound token's workspace S is archived",
-          "system": "hub",
           "action": "let the token reach S and return that workspace's usual archived responses",
-          "contract": "the same 400 or 409 an unbound owner PAT receives on S"
+          "contract": "the same 400 or 409 an unbound owner PAT receives on S",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "S archived",
+              "bound and unbound owner PATs with the same scopes"
+            ],
+            "pseudocode": "assert resp(bound,'PATCH','/workspaces/S')==resp(unbound,'PATCH','/workspaces/S')"
+          }
         },
         {
-          "id": "33-REQ-9.5",
+          "id": "REQ-9.5",
           "pattern": "state_driven",
           "condition": "a bound token's workspace S has been deleted and its binding row remains",
-          "system": "hub",
           "action": "fail closed for the token",
-          "contract": "HTTP 404 workspace not found on every workspace-scoped route, HTTP 403 token_bound on every other non-allowlisted route, and pkt-line 404 repository not found in git"
+          "contract": "HTTP 404 workspace not found on every workspace-scoped route, HTTP 403 token_bound on every other non-allowlisted route, and pkt-line 404 repository not found in git",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a binding row naming S and S deleted",
+              "a bound PAT"
+            ],
+            "pseudocode": "assert get('/workspaces/S').status==404; assert get('/user/secrets').error_type=='token_bound'; assert git_fetch('S').status==404"
+          }
         }
       ]
     }
   ],
   "execution_paths": [
     {
-      "id": "33-PATH-1",
+      "id": "PATH-1",
       "title": "A bound token reads its own workspace and is refused another",
       "steps": [
         {
@@ -543,10 +958,29 @@
           "actor": "binding guard",
           "action": "answers 404 workspace not found before the handler runs"
         }
-      ]
+      ],
+      "smoke": {
+        "real_components": [
+          "apikit server",
+          "apikit auth middleware",
+          "binding guard",
+          "workspace handlers",
+          "SQLite database"
+        ],
+        "setup": [
+          "a real apikit server with a real database and MountWorkspaceHandlers",
+          "users's PAT minted through apikit with workspaces:read",
+          "workspaces S and X owned by the user and a binding row for the PAT naming S"
+        ],
+        "end_state": [
+          "the first answer is 200 with workspace S",
+          "the second is 404 workspace not found",
+          "the unbound twin PAT gets 200 on both"
+        ]
+      }
     },
     {
-      "id": "33-PATH-2",
+      "id": "PATH-2",
       "title": "A bound token tries to mint an unbound PAT through apikit",
       "steps": [
         {
@@ -565,10 +999,26 @@
           "actor": "apikit pats table",
           "action": "remains without a new token"
         }
-      ]
+      ],
+      "smoke": {
+        "real_components": [
+          "apikit server",
+          "apikit route guard",
+          "apikit pats table",
+          "SQLite database"
+        ],
+        "setup": [
+          "a real apikit server with MountWorkspaceHandlers",
+          "a bound PAT holding tokens:manage"
+        ],
+        "end_state": [
+          "the answer is 403 token_bound with message this token is bound to a workspace",
+          "apikit's pats table has no new row"
+        ]
+      }
     },
     {
-      "id": "33-PATH-3",
+      "id": "PATH-3",
       "title": "A bound token hits a non-allowlisted hub route",
       "steps": [
         {
@@ -583,10 +1033,26 @@
           "actor": "binding guard",
           "action": "finds the route neither workspace-scoped nor allowlisted and answers 403 token_bound naming S"
         }
-      ]
+      ],
+      "smoke": {
+        "real_components": [
+          "apikit server",
+          "apikit auth middleware",
+          "binding guard",
+          "secrets handlers",
+          "SQLite database"
+        ],
+        "setup": [
+          "a real hub with secrets routes registered",
+          "a bound PAT"
+        ],
+        "end_state": [
+          "the answer is 403 with error_type token_bound and message this token is bound to workspace S"
+        ]
+      }
     },
     {
-      "id": "33-PATH-4",
+      "id": "PATH-4",
       "title": "A bound token discovers its workspace and reports a session",
       "steps": [
         {
@@ -613,10 +1079,31 @@
           "actor": "audit query handler",
           "action": "returns only events of S"
         }
-      ]
+      ],
+      "smoke": {
+        "real_components": [
+          "apikit server",
+          "apikit auth middleware",
+          "binding guard",
+          "workspace handlers",
+          "audit handlers",
+          "SQLite database",
+          "DuckDB audit store"
+        ],
+        "setup": [
+          "a real hub with workspace and audit routes registered",
+          "a bound PAT with workspaces:read, sessions:write and audit:read",
+          "S and X owned by the user with events in both"
+        ],
+        "end_state": [
+          "the list holds only S",
+          "the session is created with 201",
+          "the audit result holds only events of S"
+        ]
+      }
     },
     {
-      "id": "33-PATH-5",
+      "id": "PATH-5",
       "title": "A bound token uses the git server",
       "steps": [
         {
@@ -639,7 +1126,25 @@
           "actor": "git resolver",
           "action": "writes a pkt-line 404 repository not found"
         }
-      ]
+      ],
+      "smoke": {
+        "real_components": [
+          "Echo server",
+          "git auth middleware",
+          "git resolver",
+          "authorizeGitAccess",
+          "git binary",
+          "SQLite database"
+        ],
+        "setup": [
+          "a running hub with MountGitHandlers and real bare repositories for S and X",
+          "a bound PAT with git:read used as Basic auth password"
+        ],
+        "end_state": [
+          "the fetch of S serves the refs",
+          "the fetch of X returns a pkt-line 404 repository not found"
+        ]
+      }
     }
   ],
   "external_apis": [

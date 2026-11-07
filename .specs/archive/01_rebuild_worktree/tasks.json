@@ -1,8 +1,8 @@
 {
-  "$schema": "https://agent-fox.dev/schemas/tasks.v2.json",
+  "$schema": "https://agent-fox.dev/schemas/tasks.v3.json",
   "spec_id": "01",
   "spec_name": "rebuild_worktree",
-  "schema_version": 2,
+  "schema_version": 3,
   "test_commands": {
     "all_tests": "make test",
     "linter": "make lint",
@@ -53,13 +53,9 @@
   "tasks": [
     {
       "id": 1,
-      "kind": "implement",
       "title": "Add typed worktree methods and MergeNoFF message parameter to the git runners",
       "criteria": [
-        "01-REQ-1.7"
-      ],
-      "tests": [
-        "TS-01-8"
+        "REQ-1.7"
       ],
       "steps": [
         "Write TS-01-8 (real temp repo, two diverging branches, calls through GitRunnerAdapter) and confirm it fails",
@@ -75,27 +71,18 @@
         "internal/carrypatch/wire.go",
         "internal/carrypatch/testhelpers_test.go",
         "internal/carrypatch/rebuild_executor.go"
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 2,
-      "kind": "implement",
       "title": "Add the rebuild-active guard to wslock and enforce it in archive and reclone",
       "criteria": [
-        "01-REQ-5.1",
-        "01-REQ-5.3",
-        "01-REQ-5.5",
-        "01-REQ-5.6",
-        "01-REQ-5.7",
-        "01-REQ-5.8"
-      ],
-      "tests": [
-        "TS-01-32",
-        "TS-01-35",
-        "TS-01-36",
-        "TS-01-37",
-        "TS-01-38"
+        "REQ-5.1",
+        "REQ-5.3",
+        "REQ-5.5",
+        "REQ-5.6",
+        "REQ-5.7",
+        "REQ-5.8"
       ],
       "steps": [
         "Write TS-01-32, TS-01-35, TS-01-36, TS-01-37 and TS-01-38 and confirm they fail",
@@ -110,36 +97,22 @@
         "internal/wslock/wslock.go",
         "internal/workspace/handlers.go",
         "internal/workspace/reclone_handler.go"
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 3,
-      "kind": "implement",
       "title": "Run patch application in a per-run detached worktree with safe cleanup",
       "criteria": [
-        "01-REQ-1.1",
-        "01-REQ-1.2",
-        "01-REQ-1.3",
-        "01-REQ-1.4",
-        "01-REQ-1.5",
-        "01-REQ-1.6",
-        "01-REQ-1.8",
-        "01-REQ-2.1",
-        "01-REQ-3.1",
-        "01-REQ-8.1"
-      ],
-      "tests": [
-        "TS-01-1",
-        "TS-01-2",
-        "TS-01-3",
-        "TS-01-5",
-        "TS-01-6",
-        "TS-01-7",
-        "TS-01-9",
-        "TS-01-10",
-        "TS-01-19",
-        "TS-01-54"
+        "REQ-1.1",
+        "REQ-1.2",
+        "REQ-1.3",
+        "REQ-1.4",
+        "REQ-1.5",
+        "REQ-1.6",
+        "REQ-1.8",
+        "REQ-2.1",
+        "REQ-3.1",
+        "REQ-8.1"
       ],
       "steps": [
         "Write the listed tests with the mockGitRunner (record which runner got each command, ctx.Err/Deadline on cleanup calls, directory existence at NewGitRunner time) and confirm they fail",
@@ -158,36 +131,22 @@
       ],
       "depends_on": [
         1
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 4,
-      "kind": "implement",
       "title": "Split the rebuild into two lock phases guarded by BeginRebuild, with per-run stale cleanup",
       "criteria": [
-        "01-REQ-4.1",
-        "01-REQ-4.2",
-        "01-REQ-4.3",
-        "01-REQ-4.4",
-        "01-REQ-4.5",
-        "01-REQ-4.6",
-        "01-REQ-4.8",
-        "01-REQ-5.2",
-        "01-REQ-5.4",
-        "01-REQ-8.2"
-      ],
-      "tests": [
-        "TS-01-24",
-        "TS-01-25",
-        "TS-01-26",
-        "TS-01-27",
-        "TS-01-28",
-        "TS-01-29",
-        "TS-01-31",
-        "TS-01-33",
-        "TS-01-34",
-        "TS-01-55"
+        "REQ-4.1",
+        "REQ-4.2",
+        "REQ-4.3",
+        "REQ-4.4",
+        "REQ-4.5",
+        "REQ-4.6",
+        "REQ-4.8",
+        "REQ-5.2",
+        "REQ-5.4",
+        "REQ-8.2"
       ],
       "steps": [
         "Write the listed tests (order/lock-state spies around credentials, Lock, BeginRebuild, WorktreeAdd; a blocking fake cherry-pick for TS-01-27 with real sync, rollback and rerere-forget handlers) and confirm they fail",
@@ -208,34 +167,20 @@
       "depends_on": [
         2,
         3
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 5,
-      "kind": "implement",
       "title": "Update the integration ref with update-ref, handle Exceptions A and B, and keep the trunk untouched",
       "criteria": [
-        "01-REQ-2.2",
-        "01-REQ-2.3",
-        "01-REQ-2.4",
-        "01-REQ-2.5",
-        "01-REQ-2.6",
-        "01-REQ-2.7",
-        "01-REQ-2.8",
-        "01-REQ-4.7"
-      ],
-      "tests": [
-        "TS-01-4",
-        "TS-01-11",
-        "TS-01-12",
-        "TS-01-13",
-        "TS-01-14",
-        "TS-01-15",
-        "TS-01-16",
-        "TS-01-17",
-        "TS-01-18",
-        "TS-01-30"
+        "REQ-2.2",
+        "REQ-2.3",
+        "REQ-2.4",
+        "REQ-2.5",
+        "REQ-2.6",
+        "REQ-2.7",
+        "REQ-2.8",
+        "REQ-4.7"
       ],
       "steps": [
         "Write the listed tests: real-repository integration tests (success, fail-fast conflict, continue-mode conflict, transient failure, cancellation; snapshot of symbolic-ref HEAD, rev-parse HEAD, status --porcelain, sample file) and unit tests with the mock runner, and confirm they fail",
@@ -254,24 +199,13 @@
       ],
       "depends_on": [
         4
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 6,
-      "kind": "implement",
       "title": "Snapshot patch tips as SHAs and report source_sha",
       "criteria": [
-        "01-REQ-6"
-      ],
-      "tests": [
-        "TS-01-39",
-        "TS-01-40",
-        "TS-01-41",
-        "TS-01-42",
-        "TS-01-43",
-        "TS-01-44",
-        "TS-01-45"
+        "REQ-6"
       ],
       "steps": [
         "Write the listed tests (mock for argument checks, real repos for merge message, tag/remote-ref and moving-branch cases) and confirm they fail",
@@ -289,25 +223,13 @@
       ],
       "depends_on": [
         5
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 7,
-      "kind": "implement",
       "title": "Enqueue a follow-up rebuild when patch tips or upstream moved during the run",
       "criteria": [
-        "01-REQ-7"
-      ],
-      "tests": [
-        "TS-01-46",
-        "TS-01-47",
-        "TS-01-48",
-        "TS-01-49",
-        "TS-01-50",
-        "TS-01-51",
-        "TS-01-52",
-        "TS-01-53"
+        "REQ-7"
       ],
       "steps": [
         "Write the listed tests (including a jobqueue test for ExcludeJobID against a real database) and confirm they fail",
@@ -328,31 +250,19 @@
       ],
       "depends_on": [
         6
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 8,
-      "kind": "implement",
       "title": "Verify rerere across worktrees and add startup crash cleanup",
       "criteria": [
-        "01-REQ-3.2",
-        "01-REQ-3.3",
-        "01-REQ-3.4",
-        "01-REQ-8.3",
-        "01-REQ-8.4",
-        "01-REQ-8.5",
-        "01-REQ-8.6"
-      ],
-      "tests": [
-        "TS-01-20",
-        "TS-01-21",
-        "TS-01-22",
-        "TS-01-23",
-        "TS-01-56",
-        "TS-01-57",
-        "TS-01-58",
-        "TS-01-59"
+        "REQ-3.2",
+        "REQ-3.3",
+        "REQ-3.4",
+        "REQ-8.3",
+        "REQ-8.4",
+        "REQ-8.5",
+        "REQ-8.6"
       ],
       "steps": [
         "Write the listed tests: real-repo rerere record/replay across two rebuilds, rerere endpoint list/forget tests, orphaned-worktree test, startup cleanup tests (two workspaces, one without trunk, one unremovable), and confirm they fail",
@@ -371,23 +281,13 @@
       ],
       "depends_on": [
         5
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 9,
-      "kind": "implement",
       "title": "Prove coexistence of the worktree with go-git paths, pushes and gc",
       "criteria": [
-        "01-REQ-9"
-      ],
-      "tests": [
-        "TS-01-60",
-        "TS-01-61",
-        "TS-01-62",
-        "TS-01-63",
-        "TS-01-64",
-        "TS-01-65"
+        "REQ-9"
       ],
       "steps": [
         "Write the listed tests with real repositories and confirm any failure is real (if TS-01-61 fails the design must change before continuing)",
@@ -405,24 +305,13 @@
       ],
       "depends_on": [
         5
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 10,
-      "kind": "implement",
       "title": "Update documentation, API contract, audit shape checks and add ADR 02",
       "criteria": [
-        "01-REQ-10"
-      ],
-      "tests": [
-        "TS-01-66",
-        "TS-01-67",
-        "TS-01-68",
-        "TS-01-69",
-        "TS-01-70",
-        "TS-01-71",
-        "TS-01-72"
+        "REQ-10"
       ],
       "steps": [
         "Write TS-01-66 to TS-01-72 (log capture, audit golden shape, golden JSON of rebuild response, doc content checks, YAML parse of docs/openapi.yaml) and confirm they fail",
@@ -444,50 +333,7 @@
         7,
         8,
         9
-      ],
-      "state": "done"
-    },
-    {
-      "id": 11,
-      "kind": "integration",
-      "title": "Verify all rebuild execution paths end to end",
-      "tests": [
-        "TS-01-73",
-        "TS-01-74",
-        "TS-01-75",
-        "TS-01-76",
-        "TS-01-77",
-        "TS-01-78",
-        "TS-01-79"
-      ],
-      "steps": [
-        "Write TS-01-73 to TS-01-79 against the real wiring (job queue, SQLite, git CLI runner, wslock, audit emitter, HTTP handlers) and confirm they pass",
-        "Trace 01-PATH-1 to 01-PATH-7 through the real code: rebuild handler -> queue -> HandleRebuildJob phases -> worktree -> update-ref -> follow-up/cleanup; confirm each step calls the next and no stub remains (including the migration hook and checkStaleInputs hook from task 4)",
-        "Confirm the producers of contract results are consumed in production code: BeginRebuild's ok result by HandleRebuildJob, RebuildActive by archive and reclone handlers, CleanupStaleRebuildWorktrees by cmd/af-hub/main.go before mergeQueue.Start(), ExcludeJobID by the follow-up enqueue, SourceSHA by the API response",
-        "Confirm the entry points owned by other specs (POST /sync, archive, reclone, git push hook, rerere endpoints, rollback) are called from production code and not rejected by the guard",
-        "Grep every file listed in the touches of all tasks for panic(\"not implemented\"), TODO and bare `return nil` on non-trivial paths, and remove any that remain",
-        "Run make lint and make test and confirm both pass"
-      ],
-      "touches": [
-        "internal/carrypatch/smoke_test.go",
-        "cmd/af-hub/main.go"
-      ],
-      "depends_on": [
-        1,
-        2,
-        3,
-        4,
-        5,
-        6,
-        7,
-        8,
-        9,
-        10
-      ],
-      "done_when": [
-        "`make test` and `make lint` pass with real git repositories and a real SQLite database"
-      ],
-      "state": "done"
+      ]
     }
   ]
 }

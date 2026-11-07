@@ -4,9 +4,8 @@ spec_name: "sandbox_profiles"
 title: "Sandbox provider and profiles"
 status: "active"
 created_at: "2026-10-19T16:20:27.48165Z"
-updated_at: "2026-10-19T16:20:27.48165Z"
 intent_hash: "9f095130b0883559770d29a33eeb94e78533b0c4fc92b7491027f92652db372b"
-schema_version: 2
+schema_version: 3
 source: "docs/prd/01-create-and-lease-sandboxes.md"
 ---
 ## Intent
@@ -159,3 +158,14 @@ Otherwise it returns 200 with `{"profiles": [...]}`, sorted by name. Each elemen
 **github.com/BurntSushi/toml v1.6.0**:
 - `toml.Decode(data string, v any) (toml.MetaData, error)`: verified by its use in `internal/cli/credential_cmd.go`.
 - `toml.MetaData.Undecoded() []toml.Key` and `toml.Key.String()`: the library's standard v1 API, not used in the repository.
+
+## Glossary
+
+- **PAT**: Personal access token, the apikit credential type "pat". It is the only credential type whose permissions are scope-checked.
+- **capabilities**: The sandbox.Capabilities value that a provider reports, including its supported network modes. sandbox.CheckSpec checks each profile against it.
+- **feature off**: The state in which the config file is missing or has no [sandbox] table. Hub starts normally and the sandbox routes answer 404 sandboxes_disabled.
+- **internal/sandboxes**: The new hub package that owns the sandbox configuration, its validation, the provider probe, the permission scopes and the profile listing route.
+- **profile**: A named sandbox shape in [[sandbox.profiles]]. It has an image, resources (cpus, memory_mb, pids, disk_mb), network, ttl, secret names, optional secret names, fixed env and require_landlock.
+- **provider**: The AgentKit sandbox.Provider implementation that hub builds from [sandbox]. Only the Podman provider (engine podman or docker) is accepted in this scope.
+- **sandbox section**: The [sandbox] table and its [[sandbox.profiles]] tables in the same config.toml that apikit loads ($XDG_CONFIG_HOME/config.toml when XDG_CONFIG_HOME is set, otherwise ./config.toml).
+- **sandboxes_disabled**: The machine-readable error_type in apikit's error envelope that the sandbox routes return when the feature is off.

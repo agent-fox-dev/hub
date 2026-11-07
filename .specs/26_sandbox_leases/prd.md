@@ -4,9 +4,8 @@ spec_name: "sandbox_leases"
 title: "Sandbox leases: issue, inspect and end a caller's right to one sandbox"
 status: "active"
 created_at: "2026-10-19T16:29:25.983184Z"
-updated_at: "2026-10-19T16:29:25.983184Z"
 intent_hash: "ab4ef4bf4c5b90ad5133cc62a6e1b215859c358cbad8273bca60cfd86b90a477"
-schema_version: 2
+schema_version: 3
 source: "docs/prd/01-create-and-lease-sandboxes.md"
 ---
 ## Intent
@@ -239,3 +238,15 @@ apikit is a sibling checkout (`replace github.com/txsvc/apikit => ../apikit`) ou
 | `apikit.NewCLIError` | `func(code int, msg string) error` (code 2 for usage errors) | `internal/cli/cli_helpers.go` |
 
 This spec calls no agentkit symbol. The standard library covers `crypto/rand`, `crypto/sha256`, `encoding/base64` (`RawURLEncoding`), `encoding/hex` and `encoding/json` (`Decoder.DisallowUnknownFields`).
+
+## Glossary
+
+- **capacity count**: The number of leases in state leased or active whose expires_at is later than now, compared against [sandbox].max_sandboxes.
+- **lease**: A row in sandbox_leases recording a caller's right to one sandbox in one workspace, with a snapshot of the profile taken at issue. Its id is sbx_ followed by 32 lowercase hex characters.
+- **lease token**: The bearer credential for a lease: sbl_ followed by 44 base64 RawURL characters (33 random bytes), 48 characters in all. Returned only in the 201 body of the POST that issued it.
+- **live lease**: A lease in state leased or active. Only live leases can be found by token lookup.
+- **profile snapshot**: The profile's image, network, cpus, memory_mb, pids, disk_mb, require_landlock, required and optional secret names and fixed environment, copied onto the lease at issue so later configuration edits do not change it.
+- **resolution chain**: The ordered secret scopes searched for a workspace: workspace (owner ID = slug), org (owner ID = the workspace's org_id, only when set and the workspace owner is a member of that org), then user (owner ID = the workspace owner's user ID).
+- **sandboxes_disabled**: The error_type of the 404 that every sandbox route returns when the [sandbox] section is absent (feature off), as delivered by spec 25.
+- **terminal state**: One of destroyed, expired or failed. Only destroyed is reachable in this spec.
+- **token hash**: The lowercase-hex SHA-256 of a lease token, the only form of the token hub stores. Cleared when the lease is revoked.

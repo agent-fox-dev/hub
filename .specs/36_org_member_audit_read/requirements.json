@@ -1,443 +1,723 @@
 {
-  "$schema": "https://agent-fox.dev/schemas/requirements.v2.json",
+  "$schema": "https://agent-fox.dev/schemas/requirements.v3.json",
   "spec_id": "36",
   "spec_name": "org_member_audit_read",
-  "schema_version": 2,
-  "introduction": "The hub's audit package (internal/audit) serves agent sessions, token usage, cost, per-run audit records, transcripts, the unified audit query and the live SSE event stream. This spec lets members of a workspace's organization read all of these for that workspace, through hub's shared workspace access rule (wsaccess), while opening and completing sessions, reporting usage and ingesting audit data stay with the workspace's owner and admin tokens.",
-  "glossary": {
-    "SQLite handle": "The *sql.DB passed to the audit route registration functions (database.SqlDB in cmd/af-hub/main.go); nil in unit tests that register routes without SQLite.",
-    "bound PAT": "A personal access token bound to exactly one workspace slug (spec 33); wsaccess.BoundSlug returns that slug.",
-    "ingestion routes": "The eight audit POST routes of a workspace in internal/audit/handlers_audit.go that call checkWorkspaceAccess.",
-    "member": "A caller whose UserID has a row in org_members for the org_id of the workspace and who is not its owner; wsaccess.AccessMember.",
-    "per-run read routes": "GET /api/v1/workspaces/:slug/runs/:run_id/events, /sessions/outcomes, /tools/calls, /tools/errors, /traces, /postmortem and /transcript.",
-    "readable set": "The result of wsaccess.ReadableSlugs(db, auth): every workspace slug of any status the caller may read, or all=true for an admin token; at most the bound slug for a bound PAT.",
-    "reader": "A caller that wsaccess.AuthorizeWorkspace(..., NeedRead) admits for a workspace: an admin token, the owner or a member.",
-    "refusal report": "One call to the wsaccess bound-refusal observer made by wsaccess.DeniesWorkspace, carrying TokenID, UserID, BoundSlug, RequestedSlug, Method, Route template, Status and Surface (spec 34).",
-    "session read routes": "GET /api/v1/sessions/:id, GET /api/v1/sessions/:id/usage, GET /api/v1/workspaces/:slug/cost and GET /api/v1/sessions?workspace_slug=W.",
-    "stranger": "A caller that is not the workspace's owner, not a member of its org and not an admin token."
-  },
+  "schema_version": 3,
   "requirements": [
     {
-      "id": "36-REQ-1",
+      "id": "REQ-1",
       "title": "Per-run audit reads and the transcript",
       "rationale": "Members need to see what agents did on a workspace of their org, exactly as the owner does today.",
+      "system": "audit API",
       "criteria": [
         {
-          "id": "36-REQ-1.1",
+          "id": "REQ-1.1",
           "pattern": "event_driven",
           "condition": "a caller holding audit:read requests any per-run read route for workspace W and the caller is an admin token, W's owner or a member of W's org",
-          "system": "audit API",
           "action": "decide access by calling wsaccess.DeniesWorkspace(db, auth, W, wsaccess.SiteOf(c, 404)) and then wsaccess.AuthorizeWorkspace(db, auth, W, wsaccess.NeedRead), and serve the route as it serves the owner today",
-          "contract": "HTTP 200 with the same body shape the owner receives for the same run"
+          "contract": "HTTP 200 with the same body shape the owner receives for the same run",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "org O holds U1 (owner) and U2 (member); workspace W is owned by U1 in O and is active",
+              "run R has events, session outcomes, tool calls, tool errors, traces, a postmortem and a transcript node",
+              "U2 holds a PAT with audit:read",
+              "workspace W owned by U1; admin token available"
+            ],
+            "pseudocode": "seedOrg(O,[U1,U2]); seedWorkspace(W,U1,org=O); for route in routes: r=get(route, patAuth(U2,'audit:read')); assert r.status==200; assert r.json==get(route, patAuth(U1,'audit:read')).json\nfor route in routes: assert get(route, owner).status==200; assert get(route, admin).status==200"
+          }
         },
         {
-          "id": "36-REQ-1.2",
-          "pattern": "complex_event",
-          "condition": "a member requests a per-run read route for workspace W",
-          "guard": "W has status archived",
-          "system": "audit API",
+          "id": "REQ-1.2",
+          "pattern": "event_driven",
+          "condition": "a member requests a per-run read route for workspace W and W has status archived",
           "action": "serve the route without checking the workspace status",
-          "contract": "HTTP 200"
+          "contract": "HTTP 200",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "U2 is a member of org O; workspace W in O has status archived and holds run data"
+            ],
+            "pseudocode": "seedWorkspaceWithStatus(W,U1,'archived',org=O); for route in routes: assert get(route,U2).status==200"
+          }
         },
         {
-          "id": "36-REQ-1.3",
+          "id": "REQ-1.3",
           "pattern": "unwanted",
           "condition": "the caller lacks the audit:read scope",
-          "system": "audit API",
           "action": "refuse before any workspace lookup with today's scope refusal",
-          "contract": "HTTP 403 with the unchanged audit:read scope message"
+          "contract": "HTTP 403 with the unchanged audit:read scope message",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "U2 is a member of W's org with a PAT lacking audit:read",
+              "the request names a workspace slug that does not exist"
+            ],
+            "pseudocode": "r=get('/workspaces/nope/runs/R/events', patAuth(U2,'sessions:read')); assert r.status==403; assert errOf(r)==scopeMsg('audit:read')"
+          }
         },
         {
-          "id": "36-REQ-1.4",
+          "id": "REQ-1.4",
           "pattern": "unwanted",
           "condition": "workspace W does not exist or the caller is a stranger to W",
-          "system": "audit API",
           "action": "refuse without querying any audit rows",
-          "contract": "HTTP 404 with body {error: \"workspace not found\"}"
+          "contract": "HTTP 404 with body {error: \"workspace not found\"}",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "workspace W in org O with run data; U3 is neither owner nor member nor admin; slug 'missing' does not exist"
+            ],
+            "pseudocode": "for slug in [W,'missing']: for route in routes: r=get(route, patAuth(U3,'audit:read')); assert r.status==404; assert errOf(r)=='workspace not found'"
+          }
         },
         {
-          "id": "36-REQ-1.5",
+          "id": "REQ-1.5",
           "pattern": "event_driven",
           "condition": "a reader's per-run request passes the workspace check",
-          "system": "audit API",
           "action": "apply the existing validations unchanged: the run_id format check, node_id is required on the transcript, and postmortem_not_found when no postmortem exists",
-          "contract": "the same 400/404 status and error body the owner receives today for the same invalid input"
+          "contract": "the same 400/404 status and error body the owner receives today for the same invalid input",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "U2 is a member of W's org; W has no postmortem for run R2"
+            ],
+            "pseudocode": "assert get(badRunIdRoute,U2).status==400; assert get(transcriptNoNode,U2).status==400 and 'node_id is required' in err; assert errType(get(postmortemR2,U2))=='postmortem_not_found'"
+          }
         },
         {
-          "id": "36-REQ-1.6",
+          "id": "REQ-1.6",
           "pattern": "state_driven",
           "condition": "the per-run read routes are registered with a nil SQLite handle",
-          "system": "audit API",
-          "action": "skip the workspace check for every caller, as today"
+          "action": "skip the workspace check for every caller, as today",
+          "contract": "the workspace check does not refuse; the status is the handler's normal non-access status, not 404 workspace not found; no panic occurs",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "audit routes are registered with a nil SQLite handle"
+            ],
+            "pseudocode": "env=newAuditTestEnv(nilSQLite); r=get(eventsRoute, patAuth(U9,'audit:read')); assert r.status==200"
+          }
         }
       ]
     },
     {
-      "id": "36-REQ-2",
+      "id": "REQ-2",
       "title": "Single-workspace session and cost reads",
       "rationale": "Members get the session, usage and cost reads owners have, with the same active restriction and the same refusal shape.",
+      "system": "audit API",
       "criteria": [
         {
-          "id": "36-REQ-2.1",
+          "id": "REQ-2.1",
           "pattern": "event_driven",
           "condition": "a caller holding sessions:read requests a session read route for a session or workspace in W, W has status active, and the caller is an admin token, W's owner or a member of W's org",
-          "system": "audit API",
           "action": "decide access in hasWorkspaceAccess by calling wsaccess.DeniesWorkspace(db, auth, W, wsaccess.SiteOf(c, 403)), then wsaccess.AuthorizeWorkspace(db, auth, W, wsaccess.NeedRead), then requiring status active, and return W's data",
-          "contract": "HTTP 200 with the session, usage list, cost summary or session list of W"
+          "contract": "HTTP 200 with the session, usage list, cost summary or session list of W",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "W is active in org O owned by U1; session S belongs to W with usage rows; U2 is a member with sessions:read"
+            ],
+            "pseudocode": "for p in [sessions/S, sessions/S/usage, workspaces/W/cost, sessions?workspace_slug=W]: assert get(p,U2).status==200"
+          }
         },
         {
-          "id": "36-REQ-2.2",
+          "id": "REQ-2.2",
           "pattern": "unwanted",
           "condition": "W does not exist, W is not active, the caller is a stranger to W, or W is outside a bound PAT's binding",
-          "system": "audit API",
           "action": "refuse the session read route",
-          "contract": "HTTP 403 with body {error: \"workspace access denied\"}"
+          "contract": "HTTP 403 with body {error: \"workspace access denied\"}",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "session S1 in archived W_a (member U2), S2 in W_s of a stranger, a missing workspace slug, and a PAT of U2 bound to another workspace"
+            ],
+            "pseudocode": "for req in cases: r=get(req); assert r.status==403; assert errOf(r)=='workspace access denied'"
+          }
         },
         {
-          "id": "36-REQ-2.3",
+          "id": "REQ-2.3",
           "pattern": "unwanted",
           "condition": "GET /sessions/:id or GET /sessions/:id/usage names a session id that does not exist",
-          "system": "audit API",
           "action": "refuse before the workspace check",
-          "contract": "HTTP 404 with body {error: \"session not found\"}"
+          "contract": "HTTP 404 with body {error: \"session not found\"}",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "any caller with sessions:read, including a stranger"
+            ],
+            "pseudocode": "for p in ['sessions/nope','sessions/nope/usage']: r=get(p,stranger); assert r.status==404; assert errOf(r)=='session not found'"
+          }
         },
         {
-          "id": "36-REQ-2.4",
+          "id": "REQ-2.4",
           "pattern": "unwanted",
           "condition": "the caller lacks the sessions:read scope",
-          "system": "audit API",
           "action": "refuse before any session or workspace lookup with today's scope refusal",
-          "contract": "HTTP 403 with the unchanged sessions:read scope message"
+          "contract": "HTTP 403 with the unchanged sessions:read scope message",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "member U2 with a PAT lacking sessions:read"
+            ],
+            "pseudocode": "for p in sessionReadRoutes: r=get(p, patAuth(U2,'audit:read')); assert r.status==403; assert errOf(r)==scopeMsg('sessions:read')"
+          }
         },
         {
-          "id": "36-REQ-2.5",
+          "id": "REQ-2.5",
           "pattern": "state_driven",
           "condition": "the session routes are registered with a nil SQLite handle",
-          "system": "audit API",
           "action": "skip the workspace check on GET /sessions/:id and GET /sessions/:id/usage, and refuse GET /workspaces/:slug/cost for every non-admin caller, as today",
-          "contract": "cost for a non-admin: HTTP 403 with body {error: \"workspace access denied\"}"
+          "contract": "cost for a non-admin: HTTP 403 with body {error: \"workspace access denied\"}",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "session routes registered with a nil SQLite handle; one session stored"
+            ],
+            "pseudocode": "assert get(sess,pat).status==200; assert get(usage,pat).status==200; r=get(cost,pat); assert r.status==403 and errOf(r)=='workspace access denied'"
+          }
         }
       ]
     },
     {
-      "id": "36-REQ-3",
+      "id": "REQ-3",
       "title": "Session list without a workspace",
       "rationale": "A member's session list shows the team's sessions next to the member's own without ever widening to workspaces the member may not read.",
+      "system": "audit API",
       "criteria": [
         {
-          "id": "36-REQ-3.1",
+          "id": "REQ-3.1",
           "pattern": "event_driven",
           "condition": "a non-admin caller holding sessions:read requests GET /sessions without workspace_slug",
-          "system": "audit API",
           "action": "build the restriction list in getAccessibleWorkspaces from wsaccess.ReadableSlugs, keeping only active workspaces, and list the sessions of every workspace in it with filters, ordering and cursors unchanged",
-          "contract": "HTTP 200 listing the sessions of owned and member active workspaces"
+          "contract": "HTTP 200 listing the sessions of owned and member active workspaces",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "U2 owns W_own and is a member in W_team (both active); a stranger's workspace W_x has a session"
+            ],
+            "pseudocode": "r=get('/sessions',U2); assert slugs(r)=={'W_own','W_team'}"
+          }
         },
         {
-          "id": "36-REQ-3.2",
+          "id": "REQ-3.2",
           "pattern": "unwanted",
           "condition": "the non-admin caller has no active readable workspace",
-          "system": "audit API",
           "action": "pass a non-nil empty restriction list to Store.ListSessions",
-          "contract": "HTTP 200 with an empty session list"
+          "contract": "HTTP 200 with an empty session list",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "sessions exist in other users' workspaces; the caller has no workspace and no membership"
+            ],
+            "pseudocode": "r=get('/sessions',lonely); assert r.status==200 and len(r.sessions)==0; l,_=getAccessibleWorkspaces(db,lonely); assert l!=nil and len(l)==0"
+          }
         },
         {
-          "id": "36-REQ-3.3",
-          "pattern": "complex_event",
-          "condition": "a non-admin caller requests GET /sessions without workspace_slug",
-          "guard": "the caller is a bound PAT",
-          "system": "audit API",
+          "id": "REQ-3.3",
+          "pattern": "event_driven",
+          "condition": "a non-admin caller requests GET /sessions without workspace_slug and the caller is a bound PAT",
           "action": "list at most the sessions of the bound workspace, and only when the token's user may read it and it is active",
-          "contract": "HTTP 200; zero refusal reports"
+          "contract": "HTTP 200; zero refusal reports",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "U2 is a member of W's org (W active) and owns W2; U2's PAT is bound to W; sessions exist in both; an observer counts refusal reports"
+            ],
+            "pseudocode": "r=get('/sessions',boundPatAuth(U2,tok)); assert slugs(r)=={'W'}; assert reports==0"
+          }
         },
         {
-          "id": "36-REQ-3.4",
+          "id": "REQ-3.4",
           "pattern": "event_driven",
           "condition": "an admin token requests GET /sessions without workspace_slug",
-          "system": "audit API",
           "action": "list sessions of every workspace without restriction, as today",
-          "contract": "HTTP 200"
+          "contract": "HTTP 200",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "sessions in three workspaces of different owners"
+            ],
+            "pseudocode": "r=get('/sessions',adminAuth()); assert slugs(r)==all"
+          }
         },
         {
-          "id": "36-REQ-3.5",
+          "id": "REQ-3.5",
           "pattern": "ubiquitous",
-          "system": "audit API",
-          "action": "for any non-admin caller and any set of seeded workspaces, memberships and sessions, return from GET /sessions only sessions whose workspace is active and in the caller's readable set"
+          "action": "for any non-admin caller and any set of seeded workspaces, memberships and sessions, return from GET /sessions only sessions whose workspace is active and in the caller's readable set",
+          "contract": "every returned session's workspace is active; and is owned by the caller or in an org the caller belongs to; every such session is returned (when within page size)",
+          "check": {
+            "kind": "property",
+            "setup": [
+              "a fixture with random workspaces (active/archived, org_id null or set), random memberships, random sessions"
+            ],
+            "pseudocode": "for seed in gen(): r=get('/sessions',caller); for s in r.sessions: assert active(s.ws) and readable(caller,s.ws)"
+          }
         }
       ]
     },
     {
-      "id": "36-REQ-4",
+      "id": "REQ-4",
       "title": "Unified audit query",
       "rationale": "Members see the events of their org's workspaces in the unified audit query, while hub-wide events stay admin-only.",
+      "system": "audit API",
       "criteria": [
         {
-          "id": "36-REQ-4.1",
+          "id": "REQ-4.1",
           "pattern": "event_driven",
           "condition": "a non-admin caller holding audit:read requests GET /audit",
-          "system": "audit API",
           "action": "restrict the query to the events of every workspace in the caller's readable set from wsaccess.ReadableSlugs, of any status",
-          "contract": "HTTP 200 listing events of owned and member workspaces"
+          "contract": "HTTP 200 listing events of owned and member workspaces",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "U2 owns W_own, is a member of W_team and W_arch (archived); events exist in all three and in a stranger's W_x"
+            ],
+            "pseudocode": "r=get('/audit',U2); assert workspaces(r)=={'W_own','W_team','W_arch'}"
+          }
         },
         {
-          "id": "36-REQ-4.2",
+          "id": "REQ-4.2",
           "pattern": "ubiquitous",
-          "system": "audit API",
-          "action": "exclude hub events with an empty workspace from every GET /audit answer to a non-admin caller"
+          "action": "exclude hub events with an empty workspace from every GET /audit answer to a non-admin caller",
+          "contract": "neither response contains the empty-workspace event",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a hub event with workspace '' and events in U2's workspaces"
+            ],
+            "pseudocode": "for u in [U1,U2]: assert all(e.workspace!='' for e in get('/audit',u).events)"
+          }
         },
         {
-          "id": "36-REQ-4.3",
+          "id": "REQ-4.3",
           "pattern": "unwanted",
           "condition": "GET /audit carries a workspace filter naming a workspace outside the caller's readable set",
-          "system": "audit API",
           "action": "refuse, and when a bound PAT's binding causes the refusal, report it once through wsaccess.DeniesWorkspace with wsaccess.SiteOf(c, 404)",
-          "contract": "HTTP 404 with body {error: \"workspace not found\"}"
+          "contract": "HTTP 404 with body {error: \"workspace not found\"}",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "U2 is not a member of W_x; a PAT of U2 bound to W_team; an observer counts reports"
+            ],
+            "pseudocode": "r=get('/audit?workspace=W_x',U2); assert 404 and errOf=='workspace not found'; get('/audit?workspace=W_other',bound); assert reports==1"
+          }
         },
         {
-          "id": "36-REQ-4.4",
+          "id": "REQ-4.4",
           "pattern": "event_driven",
           "condition": "an admin token requests GET /audit",
-          "system": "audit API",
           "action": "query without a workspace restriction, as today",
-          "contract": "HTTP 200 including hub events with an empty workspace"
+          "contract": "HTTP 200 including hub events with an empty workspace",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "hub event with workspace '' and events in several workspaces"
+            ],
+            "pseudocode": "r=get('/audit',adminAuth()); assert '' in workspaces(r) and len(workspaces(r))>=3"
+          }
         },
         {
-          "id": "36-REQ-4.5",
+          "id": "REQ-4.5",
           "pattern": "ubiquitous",
-          "system": "audit API",
-          "action": "for any non-admin caller and any seeded events, return from GET /audit only events whose workspace is non-empty and in the caller's readable set"
+          "action": "for any non-admin caller and any seeded events, return from GET /audit only events whose workspace is non-empty and in the caller's readable set",
+          "contract": "every returned event has a non-empty workspace; and that workspace is owned by or org-shared with the caller",
+          "check": {
+            "kind": "property",
+            "setup": [
+              "a fixture with random workspaces, memberships and events including empty-workspace hub events"
+            ],
+            "pseudocode": "for seed in gen(): for e in get('/audit',caller).events: assert e.workspace!='' and readable(caller,e.workspace)"
+          }
         }
       ]
     },
     {
-      "id": "36-REQ-5",
+      "id": "REQ-5",
       "title": "SSE event stream",
       "rationale": "Members follow their org's workspaces live with the same set the unified query uses.",
+      "system": "audit SSE stream",
       "criteria": [
         {
-          "id": "36-REQ-5.1",
+          "id": "REQ-5.1",
           "pattern": "event_driven",
           "condition": "a non-admin caller holding audit:read opens GET /events",
-          "system": "audit SSE stream",
           "action": "compute the readable set once from wsaccess.ReadableSlugs before registering the connection, and deliver only events whose workspace is in that set",
-          "contract": "events of owned and member workspaces arrive on the stream"
+          "contract": "events of owned and member workspaces arrive on the stream",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "U2 owns W_own and is a member of W_team; stranger workspace W_x; a real SSE manager"
+            ],
+            "pseudocode": "stream=open('/events',U2); publish(W_own); publish(W_team); publish(W_x); assert received(stream)=={W_own,W_team}"
+          }
         },
         {
-          "id": "36-REQ-5.2",
-          "pattern": "complex_event",
-          "condition": "a non-admin SSE connection is open",
-          "guard": "the caller's org membership is added or removed after the connection opened",
-          "system": "audit SSE stream",
-          "action": "keep filtering by the readable set computed at connect until the connection closes"
+          "id": "REQ-5.2",
+          "pattern": "event_driven",
+          "condition": "a non-admin SSE connection is open and the caller's org membership is added or removed after the connection opened",
+          "action": "keep filtering by the readable set computed at connect until the connection closes",
+          "contract": "the W_team event is still delivered; the W_new event is not delivered",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "U2 opens a stream as a member of W_team; then U2 is removed from W_team and added to W_new"
+            ],
+            "pseudocode": "stream=open(U2); removeMember(W_team,U2); addMember(W_new,U2); publish both; assert received(stream)=={W_team}"
+          }
         },
         {
-          "id": "36-REQ-5.3",
+          "id": "REQ-5.3",
           "pattern": "unwanted",
           "condition": "GET /events carries a workspace filter naming a workspace outside the caller's readable set",
-          "system": "audit SSE stream",
           "action": "refuse before writing any stream header and without registering a connection",
-          "contract": "HTTP 404 with body {error: \"workspace not found\"}; no text/event-stream header"
+          "contract": "HTTP 404 with body {error: \"workspace not found\"}; no text/event-stream header",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "U2 is not a member of W_x; a recording SSE manager"
+            ],
+            "pseudocode": "r=get('/events?workspace=W_x',U2); assert r.status==404; assert r.header['Content-Type']!='text/event-stream'; assert mgr.registered==0"
+          }
         },
         {
-          "id": "36-REQ-5.4",
+          "id": "REQ-5.4",
           "pattern": "ubiquitous",
-          "system": "audit SSE stream",
-          "action": "deliver events with an empty workspace only to connections opened by an admin token"
+          "action": "deliver events with an empty workspace only to connections opened by an admin token",
+          "contract": "only the admin stream receives it",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "an owner stream, a member stream and an admin stream are open"
+            ],
+            "pseudocode": "publish(Event{Workspace:''}); assert received(admin)==1; assert received(owner)==0 and received(member)==0"
+          }
         }
       ]
     },
     {
-      "id": "36-REQ-6",
+      "id": "REQ-6",
       "title": "Opening a session",
       "rationale": "Opening a session is a write and stays with the owner and admin tokens; replaying an existing id is a read.",
+      "system": "audit API",
       "criteria": [
         {
-          "id": "36-REQ-6.1",
+          "id": "REQ-6.1",
           "pattern": "event_driven",
           "condition": "W's owner or an admin token holding sessions:write submits POST /sessions with workspace_slug W",
-          "system": "audit API",
           "action": "decide access through a write helper that calls wsaccess.DeniesWorkspace(db, auth, W, wsaccess.SiteOf(c, 404)) and then wsaccess.AuthorizeWorkspace(db, auth, W, wsaccess.NeedWrite), without checking W's status, and create the session as today",
-          "contract": "HTTP 201 with the created session for a new id"
+          "contract": "HTTP 201 with the created session for a new id",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "W owned by U1 (active) and W_arch owned by U1 (archived)"
+            ],
+            "pseudocode": "assert post('/sessions',{id:'a',workspace_slug:'W'},U1).status==201; assert post('/sessions',{id:'b',workspace_slug:'W_arch'},admin).status==201"
+          }
         },
         {
-          "id": "36-REQ-6.2",
+          "id": "REQ-6.2",
           "pattern": "unwanted",
           "condition": "a member of W's org submits POST /sessions with workspace_slug W",
-          "system": "audit API",
           "action": "refuse and write no session row",
-          "contract": "HTTP 403 with body {error: \"org members have read-only access to this workspace\", error_type: \"forbidden\"}; session row count unchanged"
+          "contract": "HTTP 403 with body {error: \"org members have read-only access to this workspace\", error_type: \"forbidden\"}; session row count unchanged",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "U2 is a member of W's org with sessions:write; session count recorded"
+            ],
+            "pseudocode": "n=count(sessions); r=post('/sessions',body,U2); assert r.status==403 and r.json.error_type=='forbidden'; assert count(sessions)==n"
+          }
         },
         {
-          "id": "36-REQ-6.3",
+          "id": "REQ-6.3",
           "pattern": "unwanted",
           "condition": "a stranger submits POST /sessions with workspace_slug W, or W names no workspace",
-          "system": "audit API",
           "action": "refuse and write no session row",
-          "contract": "HTTP 404 with body {error: \"workspace not found\"}; session row count unchanged"
+          "contract": "HTTP 404 with body {error: \"workspace not found\"}; session row count unchanged",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "stranger U3 with sessions:write; slug 'missing' does not exist"
+            ],
+            "pseudocode": "for slug in [W,'missing']: r=post('/sessions',{workspace_slug:slug},U3); assert r.status==404 and errOf(r)=='workspace not found'"
+          }
         },
         {
-          "id": "36-REQ-6.4",
-          "pattern": "complex_event",
-          "condition": "POST /sessions passes the write check and names an existing session id whose session belongs to another workspace W2",
-          "guard": "the caller is W2's owner or a member of W2's org",
-          "system": "audit API",
+          "id": "REQ-6.4",
+          "pattern": "event_driven",
+          "condition": "POST /sessions passes the write check and names an existing session id whose session belongs to another workspace W2 and the caller is W2's owner or a member of W2's org",
           "action": "return the existing session, deciding through wsaccess.AuthorizeWorkspace(db, auth, W2, wsaccess.NeedRead)",
-          "contract": "HTTP 200 with the existing session record"
+          "contract": "HTTP 200 with the existing session record",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "U1 owns W1 and W2; session S exists in W2; U1 posts for W1 with S's id",
+              "a second case: an admin token replays"
+            ],
+            "pseudocode": "r=post('/sessions',{id:'S',workspace_slug:'W1'},U1); assert r.status==200; assert r.json.workspace_slug=='W2'"
+          }
         },
         {
-          "id": "36-REQ-6.5",
+          "id": "REQ-6.5",
           "pattern": "unwanted",
           "condition": "POST /sessions names an existing session id whose session belongs to another workspace W2 that the caller may not read",
-          "system": "audit API",
           "action": "refuse without disclosing the session",
-          "contract": "HTTP 404 with body {error: \"workspace not found\"}"
+          "contract": "HTTP 404 with body {error: \"workspace not found\"}",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "session S exists in stranger's W2; caller U1 owns W1"
+            ],
+            "pseudocode": "r=post('/sessions',{id:'S',workspace_slug:'W1'},U1); assert r.status==404 and errOf(r)=='workspace not found'"
+          }
         }
       ]
     },
     {
-      "id": "36-REQ-7",
+      "id": "REQ-7",
       "title": "Writes that do not change",
       "rationale": "Completing sessions, reporting usage and ingesting audit data keep their published answers, which already refuse members.",
+      "system": "audit API",
       "criteria": [
         {
-          "id": "36-REQ-7.1",
+          "id": "REQ-7.1",
           "pattern": "unwanted",
           "condition": "a member of W's org submits POST /sessions/:id/complete or POST /sessions/:id/usage for a session another user opened in W",
-          "system": "audit API",
           "action": "refuse with the unchanged session-creator check and change no row",
-          "contract": "HTTP 403 with body {error: \"not session owner\"}; session and usage rows unchanged"
+          "contract": "HTTP 403 with body {error: \"not session owner\"}; session and usage rows unchanged",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "session S opened by U1 in W; U2 is a member with sessions:write; rows snapshotted"
+            ],
+            "pseudocode": "for p in ['complete','usage']: r=post('/sessions/S/'+p,body,U2); assert r.status==403 and errOf(r)=='not session owner'; assert snapshot()==before"
+          }
         },
         {
-          "id": "36-REQ-7.2",
+          "id": "REQ-7.2",
           "pattern": "unwanted",
           "condition": "a member of W's org submits any ingestion route for active workspace W",
-          "system": "audit API",
           "action": "refuse through the unchanged checkWorkspaceAccess and write no row",
-          "contract": "HTTP 403 with error_type workspace_access_denied; audit row count unchanged"
+          "contract": "HTTP 403 with error_type workspace_access_denied; audit row count unchanged",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "U2 is a member of active W with audit:write; row counts recorded"
+            ],
+            "pseudocode": "for route in ingestionRoutes: r=post(route,validBody,U2); assert r.status==403 and r.json.error_type=='workspace_access_denied'; assert counts()==before"
+          }
         },
         {
-          "id": "36-REQ-7.3",
+          "id": "REQ-7.3",
           "pattern": "ubiquitous",
-          "system": "audit API",
           "action": "keep checkWorkspaceAccess's order for every caller, members included: missing workspace 404, binding 404, archived 409 workspace_archived, then non-owner 403 workspace_access_denied",
-          "contract": "a member on an archived W receives HTTP 409 with error_type workspace_archived"
+          "contract": "a member on an archived W receives HTTP 409 with error_type workspace_archived",
+          "check": {
+            "kind": "property",
+            "setup": [
+              "workspaces that are missing, archived or active; callers who are owner, member, stranger, admin, bound elsewhere"
+            ],
+            "pseudocode": "for (state,caller) in product(): assert post(route,caller).status==expectedLadder(state,caller)"
+          }
         }
       ]
     },
     {
-      "id": "36-REQ-8",
+      "id": "REQ-8",
       "title": "Bound tokens and refusal reports",
       "rationale": "Spec 33 confinement and spec 34 reporting must answer exactly as today whether the token's user is an owner or a member.",
+      "system": "audit API",
       "criteria": [
         {
-          "id": "36-REQ-8.1",
-          "pattern": "complex_event",
-          "condition": "a bound PAT requests a per-run read route, a session read route or GET /audit for its bound workspace W",
-          "guard": "the token's user is a member of W's org",
-          "system": "audit API",
+          "id": "REQ-8.1",
+          "pattern": "event_driven",
+          "condition": "a bound PAT requests a per-run read route, a session read route or GET /audit for its bound workspace W and the token's user is a member of W's org",
           "action": "grant access as for an unbound member of W",
-          "contract": "HTTP 200"
+          "contract": "HTTP 200",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "U2 is a member of W's org; U2's PAT is bound to W; W has run data, a session and events"
+            ],
+            "pseudocode": "t=boundPatAuth(U2,tok,'audit:read','sessions:read'); assert get(eventsRoute,t).status==200; assert get(sessions/S,t).status==200; assert get('/audit?workspace=W',t).status==200"
+          }
         },
         {
-          "id": "36-REQ-8.2",
+          "id": "REQ-8.2",
           "pattern": "unwanted",
           "condition": "a bound PAT names a workspace other than its bound workspace on a route of this spec",
-          "system": "audit API",
           "action": "refuse with the route's usual refusal",
-          "contract": "HTTP 404 {error: \"workspace not found\"} on per-run reads, the transcript, POST /sessions and the GET /audit workspace filter; HTTP 403 {error: \"workspace access denied\"} on session read routes"
+          "contract": "HTTP 404 {error: \"workspace not found\"} on per-run reads, the transcript, POST /sessions and the GET /audit workspace filter; HTTP 403 {error: \"workspace access denied\"} on session read routes",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "PAT bound to W; U2 can read W2 as a member or owner"
+            ],
+            "pseudocode": "for r in [runs,transcript,postSessions,auditFilter]: assert 404; for r in sessionReads: assert 403"
+          }
         },
         {
-          "id": "36-REQ-8.3",
+          "id": "REQ-8.3",
           "pattern": "ubiquitous",
-          "system": "audit API",
           "action": "produce exactly one refusal report for each request refused because of a binding, carrying the request's method, its route template (for example /api/v1/sessions/:id) and the status answered, whether the requested slug exists, is readable or neither",
-          "contract": "the bound-refusal observer is called once per refused request with {TokenID, UserID, BoundSlug, RequestedSlug, Method, Route, Status, Surface: api}"
+          "contract": "the bound-refusal observer is called once per refused request with {TokenID, UserID, BoundSlug, RequestedSlug, Method, Route, Status, Surface: api}",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "PAT bound to W; an observer records reports; target slug may exist-and-readable, exist-unreadable or missing"
+            ],
+            "pseudocode": "for route,slugKind in product(): reset(); do(); assert len(reports)==1; assert reports[0]=={...,Route:template,Status:expected,Surface:'api'}"
+          }
         },
         {
-          "id": "36-REQ-8.4",
+          "id": "REQ-8.4",
           "pattern": "ubiquitous",
-          "system": "audit API",
           "action": "produce no refusal report when a bound PAT's GET /sessions, GET /audit or GET /events is filtered to its bound workspace without a workspace filter outside it",
-          "contract": "the bound-refusal observer is called 0 times"
+          "contract": "the bound-refusal observer is called 0 times",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "PAT bound to W; observer counting reports"
+            ],
+            "pseudocode": "get('/sessions',t); get('/audit',t); open('/events',t); assert reports==0"
+          }
         }
       ]
     },
     {
-      "id": "36-REQ-9",
+      "id": "REQ-9",
       "title": "Failures fail closed",
       "rationale": "A database error while deciding access must never grant access, and each route keeps its existing refusal shape.",
       "criteria": [
         {
-          "id": "36-REQ-9.1",
+          "id": "REQ-9.1",
           "pattern": "unwanted",
           "condition": "reading the workspace, the org membership or the token binding fails while deciding access on a per-run read route, the transcript or POST /sessions",
           "system": "audit API",
           "action": "refuse, return no audit data and write no session row",
-          "contract": "HTTP 500 with body {error: \"internal server error\"}"
+          "contract": "HTTP 500 with body {error: \"internal server error\"}",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "the org_members table is dropped (and in another case the binding table) so the membership/binding read fails; U2 not the owner; session count recorded"
+            ],
+            "pseudocode": "exec('DROP TABLE org_members'); for req in [run,transcript,postSessions]: r=do(req,U2); assert r.status==500 and errOf(r)=='internal server error'"
+          }
         },
         {
-          "id": "36-REQ-9.2",
+          "id": "REQ-9.2",
           "pattern": "unwanted",
           "condition": "reading the workspace, the org membership or the token binding fails while deciding access on a session read route or the session list",
           "system": "audit API",
           "action": "refuse and return no session data",
-          "contract": "HTTP 403 with body {error: \"workspace access denied\"} on session read routes; GET /sessions without workspace_slug returns no session"
+          "contract": "HTTP 403 with body {error: \"workspace access denied\"} on session read routes; GET /sessions without workspace_slug returns no session",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "membership read fails (org_members dropped); sessions exist"
+            ],
+            "pseudocode": "for p in sessionReads: assert get(p,U2).status==403; assert len(get('/sessions',U2).sessions)==0"
+          }
         },
         {
-          "id": "36-REQ-9.3",
+          "id": "REQ-9.3",
           "pattern": "unwanted",
           "condition": "wsaccess.ReadableSlugs or the binding lookup fails on GET /audit",
           "system": "audit API",
           "action": "refuse and return no events",
-          "contract": "HTTP 500 with body {error: \"internal server error\"}"
+          "contract": "HTTP 500 with body {error: \"internal server error\"}",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "the readable-set query fails (org_members dropped; and a bound PAT whose binding table is dropped)"
+            ],
+            "pseudocode": "exec('DROP TABLE org_members'); r=get('/audit',U2); assert r.status==500 and errOf(r)=='internal server error'"
+          }
         },
         {
-          "id": "36-REQ-9.4",
+          "id": "REQ-9.4",
           "pattern": "unwanted",
           "condition": "wsaccess.ReadableSlugs or the binding lookup fails on GET /events",
           "system": "audit SSE stream",
           "action": "refuse before writing any stream header and without registering a connection",
-          "contract": "HTTP 500 with body {error: \"internal server error\"}; no text/event-stream header"
+          "contract": "HTTP 500 with body {error: \"internal server error\"}; no text/event-stream header",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "the readable-set query fails; a recording SSE manager"
+            ],
+            "pseudocode": "r=get('/events',U2); assert r.status==500; assert r.header['Content-Type']!='text/event-stream'; assert mgr.registered==0"
+          }
         }
       ]
     },
     {
-      "id": "36-REQ-10",
+      "id": "REQ-10",
       "title": "Compatibility and the single rule",
       "rationale": "Existing owners, strangers and tests see no change, and every audit read decision lives in wsaccess.",
       "criteria": [
         {
-          "id": "36-REQ-10.1",
+          "id": "REQ-10.1",
           "pattern": "ubiquitous",
           "system": "audit API",
           "action": "for any stranger to workspace W and any route of this spec, answer with the same status and error body as before this spec",
-          "contract": "per-run reads, the transcript, POST /sessions and the GET /audit workspace filter answer HTTP 404 {error: \"workspace not found\"}; session read routes answer HTTP 403 {error: \"workspace access denied\"}; ingestion answers HTTP 403 workspace_access_denied"
+          "contract": "per-run reads, the transcript, POST /sessions and the GET /audit workspace filter answer HTTP 404 {error: \"workspace not found\"}; session read routes answer HTTP 403 {error: \"workspace access denied\"}; ingestion answers HTTP 403 workspace_access_denied",
+          "check": {
+            "kind": "property",
+            "setup": [
+              "random workspaces in orgs where the caller has no relation"
+            ],
+            "pseudocode": "for (route,seed) in gen(): r=call(route,stranger); assert (r.status,errOf(r))==today[route]"
+          }
         },
         {
-          "id": "36-REQ-10.2",
+          "id": "REQ-10.2",
           "pattern": "ubiquitous",
           "system": "audit API",
-          "action": "for any workspace in a personal org whose only member is its owner, or with a NULL org_id, answer every request on the routes of this spec with the same status and body as before this spec"
+          "action": "for any workspace in a personal org whose only member is its owner, or with a NULL org_id, answer every request on the routes of this spec with the same status and body as before this spec",
+          "contract": "status and body equal the pre-spec answer for that caller (owner allowed, stranger refused as before)",
+          "check": {
+            "kind": "property",
+            "setup": [
+              "workspaces whose org's only member is the owner, or with NULL org_id; owners, strangers and admin"
+            ],
+            "pseudocode": "for ws in gen(personalOrNullOrg): for req in routes: assert call(req)==legacyExpected(req)"
+          }
         },
         {
-          "id": "36-REQ-10.3",
+          "id": "REQ-10.3",
           "pattern": "ubiquitous",
           "system": "audit package",
           "action": "make no read decision in internal/audit by comparing owner_id with the caller: requireWorkspaceRead and hasWorkspaceAccess decide through wsaccess.AuthorizeWorkspace with wsaccess.NeedRead, readableWorkspaces and getAccessibleWorkspaces derive their sets from wsaccess.ReadableSlugs, and ownedWorkspaces no longer exists",
-          "contract": "a source scan of internal/audit's non-test files finds no ownedWorkspaces declaration and no owner_id query outside checkWorkspaceAccess"
+          "contract": "a source scan of internal/audit's non-test files finds no ownedWorkspaces declaration and no owner_id query outside checkWorkspaceAccess",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "the non-test Go sources of internal/audit"
+            ],
+            "pseudocode": "files=parse('internal/audit/*.go' minus _test); assert no FuncDecl 'ownedWorkspaces'; for q in ownerIdQueries(files): assert enclosingFunc(q)=='checkWorkspaceAccess'"
+          }
         },
         {
-          "id": "36-REQ-10.4",
+          "id": "REQ-10.4",
           "pattern": "ubiquitous",
           "system": "audit test fixture",
           "action": "give openTestSQLiteDB in internal/audit/testhelpers_test.go a workspaces table with org_id and clone_status columns and an org_members(org_id, user_id) table, so every existing internal/audit test passes with no assertion changed",
-          "contract": "go test ./internal/audit/... passes"
+          "contract": "go test ./internal/audit/... passes",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "openTestSQLiteDB is called"
+            ],
+            "pseudocode": "db=openTestSQLiteDB(t); assert hasColumn(db,'workspaces','org_id') and hasColumn(db,'workspaces','clone_status'); exec('INSERT INTO org_members(org_id,user_id) VALUES(?,?)')"
+          }
         }
       ]
     }
   ],
   "execution_paths": [
     {
-      "id": "36-PATH-1",
+      "id": "PATH-1",
       "title": "An org member reads a teammate's workspace sessions, cost and run audit",
       "steps": [
         {
@@ -460,10 +740,27 @@
           "actor": "audit API",
           "action": "admits U2 through hasWorkspaceAccess because W is active and readable, and returns 200 with W's sessions and cost"
         }
-      ]
+      ],
+      "smoke": {
+        "real_components": [
+          "audit HTTP handlers and routes",
+          "wsaccess.AuthorizeWorkspace and DeniesWorkspace",
+          "SQLite database with org_members",
+          "audit Store"
+        ],
+        "setup": [
+          "a real hub audit server on a real SQLite database with wsaccess",
+          "U1 owns active W in org O, U2 is a member; W has run R data, a session and usage"
+        ],
+        "end_state": [
+          "run events answer 200 with R's events",
+          "session list answers 200 with W's sessions",
+          "cost answers 200 with W's cost summary"
+        ]
+      }
     },
     {
-      "id": "36-PATH-2",
+      "id": "PATH-2",
       "title": "An org member sees the workspace in the unified audit query and the live stream",
       "steps": [
         {
@@ -486,10 +783,26 @@
           "actor": "audit SSE stream",
           "action": "delivers the event to U2's open connection"
         }
-      ]
+      ],
+      "smoke": {
+        "real_components": [
+          "audit HTTP handlers",
+          "SSE manager",
+          "event emitter",
+          "wsaccess.ReadableSlugs",
+          "SQLite database"
+        ],
+        "setup": [
+          "a real audit server with a real SSE manager and SQLite; U2 member of W's org; a hub event with empty workspace stored"
+        ],
+        "end_state": [
+          "GET /audit lists W's and U2's own events and no empty-workspace event",
+          "the stream delivers the W event to U2's connection"
+        ]
+      }
     },
     {
-      "id": "36-PATH-3",
+      "id": "PATH-3",
       "title": "An org member tries to change the workspace and is refused",
       "steps": [
         {
@@ -512,7 +825,23 @@
           "actor": "audit API",
           "action": "returns 403 not session owner and leaves session S unchanged"
         }
-      ]
+      ],
+      "smoke": {
+        "real_components": [
+          "audit HTTP handlers",
+          "wsaccess.AuthorizeWorkspace",
+          "SQLite database",
+          "audit Store"
+        ],
+        "setup": [
+          "a real audit server on real SQLite; U1 owns W and session S; U2 is a member"
+        ],
+        "end_state": [
+          "POST /sessions answers 403 with error_type forbidden",
+          "complete answers 403 'not session owner'",
+          "session rows are unchanged and S is not completed"
+        ]
+      }
     }
   ],
   "external_apis": [

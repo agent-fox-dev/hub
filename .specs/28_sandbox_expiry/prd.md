@@ -4,9 +4,8 @@ spec_name: "sandbox_expiry"
 title: "Sandbox expiry: lease timeout, reaper, shutdown, retention and metrics"
 status: "active"
 created_at: "2026-10-19T16:49:05.09859Z"
-updated_at: "2026-10-19T16:49:05.09859Z"
 intent_hash: "6db00c57eb90d25cc64394315099946d7e87b9e8105f6731c7424c2a6ea8e1a8"
-schema_version: 2
+schema_version: 3
 source: "docs/prd/01-create-and-lease-sandboxes.md"
 ---
 ## Intent
@@ -231,3 +230,15 @@ Following the steering, the change updates these documents:
 - `apikit.FormatUTC(t time.Time) string` (call site: `internal/carrypatch/wire.go:250`).
 
 **github.com/prometheus/client_golang v1.25.0** (in `go.mod`). These were verified from their use in `internal/audit/metrics.go`: `prometheus.NewGaugeVec`, `prometheus.NewCounterVec`, `prometheus.NewHistogramVec` with `HistogramOpts{Name, Help, Buckets}`, `(*GaugeVec).Reset()`, `WithLabelValues(...).Set/Inc/Add`, and `(*Registry).MustRegister`. `prometheus.NewHistogram(HistogramOpts) Histogram` and `Histogram.Observe(float64)` are the library's standard v1 API but are not used in the repository.
+
+## Glossary
+
+- **expiry path**: The ending used for time-based endings (late Create and sweep steps 2 and 3). It sets end_reason expired, revokes the token and emits exactly one hub.sandbox.expire event.
+- **feature enabled**: The [sandbox] section is present and sandboxes.Init returned a non-nil service.
+- **lease deadline**: The lease_expires_at value of a lease: the earlier of created_at + lease_timeout and expires_at. A leased lease that gets no Create by this time lapses. For rows older than the column (NULL), expires_at is used instead.
+- **lease principal**: The lease ID that gatewayd attaches to a request's context after the lease authenticator accepts its token; read with gatewayd.PrincipalFromContext.
+- **orphaned box**: A box listed by the provider whose ID equals the sandbox_id of a terminal lease in this hub's table, or whose hub.lease label names such a lease.
+- **restart recovery**: The start-up step that destroys the box of every lease left active by an earlier hub process and ends the lease as destroyed with end_reason restart.
+- **shutdown mode**: The state hub enters when server.Start() returns; from then on Creates are refused with Unavailable and every lease ending carries end_reason shutdown.
+- **sweep**: The single serialised function that runs provider reap, lapses unused leases, destroys overdue boxes, removes orphaned boxes, prunes old leases and recalibrates the active gauge, in that order.
+- **terminal lease**: A lease in state destroyed, expired or failed.

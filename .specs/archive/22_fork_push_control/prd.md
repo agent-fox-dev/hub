@@ -4,9 +4,8 @@ spec_name: "fork_push_control"
 title: "Fork Push Control: Reject, Forward and Mirror Hub Pushes to Patch Branches"
 status: "active"
 created_at: "2026-10-01T14:36:10.824726Z"
-updated_at: "2026-10-01T14:36:10.824726Z"
 intent_hash: "de99dd08858059f8e028f358554ee75090e3c6111c541d217af5b402c3d0963b"
-schema_version: 2
+schema_version: 3
 source: "https://github.com/agent-fox-dev/hub/issues/35"
 ---
 ## Intent
@@ -248,3 +247,17 @@ Tests: gitserver tests use the existing `newGitTestEnv` helpers. Tests that need
 | Push from a hash source (`<sha>:refs/heads/x`) in go-git | not used in this repo | **unverified.** If unsupported, the temporary-ref route of Requirement 4 is used. |
 
 Repository symbols used, read in this repo: `gitserver.RegisterPostPushHook`, `gitserver.SetAuditEmitter`, `WorkspaceLoader.Load`, `thinPackSafeStorer`, `extractPushedBranches`, `emitGitPushAudit`, `carrypatch.NewPostPushRebuildHook`, `carrypatch.GetVariableFunc`, `workspace.ResolveCloneAuth(store *secrets.Store, slug string) (transport.AuthMethod, error)`, `audit.HubEvent`, `audit.Emitter.Emit`, `apikit.GetAuthInfo`.
+
+## Glossary
+
+- **PUSH_PATCHES_TO_ORIGIN**: Workspace variable. Only the exact string true enables forwarding (origin mode) or mirroring (hub mode).
+- **accepted ref update**: A ref update whose report-status entry is ok, or, when no report status is available, one the pre-receive hook did not reject.
+- **fork**: The upstream repository the trunk was cloned from; the trunk's origin remote and workspaces.git_url point at it.
+- **forward**: A non-force push of a ref update to the fork, made before the hub writes its own ref (origin mode).
+- **hub mode**: PATCH_BRANCH_SOURCE=hub (the default): the hub is authoritative for patch branches.
+- **mirror**: A best-effort force push of a registered patch branch to the fork after the hub accepted the push (hub mode).
+- **origin mode**: PATCH_BRANCH_SOURCE=origin: the fork is authoritative for patch branches.
+- **pre-receive hook**: A function registered with gitserver.RegisterPreReceiveHook, called once per ref update after unpacking and before the hub writes the ref. A non-nil error rejects that update.
+- **registered patch branch**: A branch whose name equals the branch_name of a patches row of a carry_patch workspace, whose status is not deleted, and which is not the workspace integration_branch.
+- **trunk**: The workspace's bare-style clone at <workspaceRoot>/<slug>/trunk that go-git receive-pack writes into.
+- **userinfo**: The user:password@ part of a URL, which must be removed from messages, logs and events.

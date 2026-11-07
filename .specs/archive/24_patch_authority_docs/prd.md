@@ -4,9 +4,8 @@ spec_name: "patch_authority_docs"
 title: "Document Patch Branch Authority in the Carry-Patch Guide, Agent Example and ADR 01"
 status: "active"
 created_at: "2026-10-01T14:51:21.710242Z"
-updated_at: "2026-10-01T14:51:21.710242Z"
 intent_hash: "a39d73b15fb11e54c6537e66c8b161efc50e0a4b8cdeff0c812d1556d983e6cc"
-schema_version: 2
+schema_version: 3
 source: "https://github.com/agent-fox-dev/hub/issues/35"
 ---
 ## Intent
@@ -198,3 +197,15 @@ Verification: the new test passes and fails when any listed content is removed.
 | `22_fork_push_control` | depends | Defines `PUSH_PATCHES_TO_ORIGIN`, the rejection, forwarding and mirror behaviours and their messages. Its edits to the guide's Configuration section and sync note are reconciled here. |
 | `23_patch_divergence_recovery` | depends | Defines `reset-to-origin`, `replaced_sha`, backup-ref cleanup, the protected namespace and the purge behaviour that the recovery section documents. Its two rows in the endpoint table are kept. |
 | `01_rebuild_worktree` | depends | The guide's rebuild-algorithm text, lock note and the docs tests (`TS_01_69` to `TS_01_72`) written for it must keep passing, and ADR 02 stays untouched. |
+
+## Glossary
+
+- **authority model**: The choice of which git copy of a patch branch is the writer of record: the hub's own git server (hub mode) or the fork named origin (origin mode), selected by the workspace variable PATCH_BRANCH_SOURCE.
+- **docs test**: A Go test in internal/carrypatch/docs_test.go that asserts content of documentation files, using the readDoc, requireContains and section helpers.
+- **erratum**: A file under docs/errata/ named NN_snake_case_topic.md with the sections Spec Expectation, Implementation Reality and Resolution, recording where delivered behaviour differs from what was specified.
+- **fork**: The user's GitHub copy of the upstream repository, configured as the git remote origin of the workspace trunk.
+- **hub**: The agent-fox hub service, which hosts a git server per workspace and rebuilds the integration branch from patch branches.
+- **origin_sync_state**: Per-patch sync state recorded in origin mode: in_sync, diverged or missing_on_origin.
+- **patch branch**: A branch holding one carry patch, registered in the workspace with afc patch add.
+- **replaced backup ref**: refs/hub/replaced/<branch>, the hub-side ref that keeps the previous tip of a patch branch when sync replaces it with the fork's tip.
+- **trunk**: The hub's bare clone of the workspace repository; a rebuild reads patch branches only from refs/heads/<branch> in it.

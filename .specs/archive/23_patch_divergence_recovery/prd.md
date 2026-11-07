@@ -4,9 +4,8 @@ spec_name: "patch_divergence_recovery"
 title: "Patch Divergence Recovery: Reset to Origin, Backup-Ref Visibility, Protection and Cleanup"
 status: "active"
 created_at: "2026-10-01T14:43:42.131229Z"
-updated_at: "2026-10-01T14:43:42.131229Z"
 intent_hash: "6acf1dec6f0d798d3664e29d1914798165276f6e5e230b3dd113bd316fd38fc8"
-schema_version: 2
+schema_version: 3
 source: "https://github.com/agent-fox-dev/hub/issues/35"
 ---
 ## Intent
@@ -279,3 +278,17 @@ The following come from specs 20, 21 and 22. They are not yet in the code, and t
 - the receive-pack interception point.
 
 Treat all of them as **unverified**. If a helper is not reachable from `carrypatch` (for example, it sits in a test-only file or is unexported in another package), the implementation extracts it instead of duplicating it.
+
+## Glossary
+
+- **PATCH_BRANCH_SOURCE**: Workspace variable defined by spec 20 with the modes hub and origin.
+- **backup ref**: The hub-side ref refs/hub/replaced/<branch> that holds the last hub branch tip discarded when a patch branch was moved to the fork's tip.
+- **compare-and-swap move**: A git update-ref <ref> <new> <expected-old> call that fails if the ref no longer holds the expected old value; supplied by spec 20.
+- **fork**: The origin repository of a carry_patch workspace, from which the trunk was cloned.
+- **protected namespace**: Ref names beginning with refs/hub/replaced/, which the git server never lets a client create, update or delete.
+- **recovery hook**: The hook type defined in the workspace package, with a nil default, through which carrypatch supplies backup-ref reading, backup-ref removal and reset. It exists because workspace and carrypatch do not import each other.
+- **replaced_sha**: The full 40-character SHA that a backup ref resolves to, returned by GET /workspaces/:slug/patches/:id when the ref exists.
+- **reset action**: One of none, created, fast_forwarded or replaced: the outcome a reset-to-origin reports.
+- **reset-to-origin**: The operator-initiated move of a patch branch to the fork's current tip, regardless of PATCH_DIVERGENCE_POLICY.
+- **trunk**: The hub's on-disk git repository for a workspace at <workspace_root>/<slug>/trunk.
+- **workspace lock**: The per-slug lock taken with wslock.TryLock(slug) that serialises operations on a trunk.

@@ -4,9 +4,8 @@ spec_name: "org_member_workspace_access"
 title: "Let org members read org workspaces: the access rule and the REST API"
 status: "active"
 created_at: "2026-10-21T13:13:21.329552Z"
-updated_at: "2026-10-21T13:13:21.329552Z"
 intent_hash: "f7ab39efcc07b4c42ab3a114b15440e990e3952fbc73840d46f350d77099a3d0"
-schema_version: 2
+schema_version: 3
 source: "docs/prd/04-let-org-members-read-org-workspaces.md"
 ---
 ## Intent
@@ -213,3 +212,14 @@ apikit is a `replace` to `../apikit`, outside the repository, so its source coul
 | `apikit.NowUTC` | `func() string` | `internal/wsaccess/binding_test.go` |
 
 The `org_members` table belongs to apikit. Its columns as used by hub and recreated in test fixtures are `org_id TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE, user_id TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY (org_id, user_id)` (`internal/carrypatch/push_control_reject_test.go`).
+
+## Glossary
+
+- **Access**: wsaccess.Access, the caller's level on one workspace: AccessNone (""), AccessMember ("member"), AccessOwner ("owner") or AccessAdmin ("admin").
+- **Need**: wsaccess.Need, what an endpoint requires. NeedRead: member, owner or admin. NeedWrite: owner or admin, and a member gets 403. NeedPrivate: owner or admin, and a member gets 404.
+- **RefusalSite**: wsaccess.RefusalSite, the status, surface and (optionally) method and route that a bound-refusal report carries. SiteOf(c, 404) builds one from the request.
+- **bound PAT**: A personal access token bound to a single workspace (spec 33). It is refused with 404 on every other workspace, and the refusal is reported (spec 34).
+- **forbidden refusal**: An HTTP 403 in the apikit error envelope with error_type "forbidden" and message "org members have read-only access to this workspace".
+- **member**: A caller with a non-empty UserID who is not the workspace owner, where the workspace's org_id is non-empty and apikit's org_members table has the row (org_id, user_id).
+- **readable set**: The result of wsaccess.ReadableSlugs: every workspace slug the caller may read, mapped to the caller's Access, or all=true for an admin token.
+- **stranger**: A caller with AccessNone on a workspace: not an admin token, not the owner and not a member.

@@ -1,8 +1,8 @@
 {
-  "$schema": "https://agent-fox.dev/schemas/tasks.v2.json",
+  "$schema": "https://agent-fox.dev/schemas/tasks.v3.json",
   "spec_id": "21",
   "spec_name": "fork_patch_registration",
-  "schema_version": 2,
+  "schema_version": 3,
   "test_commands": {
     "all_tests": "make test",
     "linter": "make lint",
@@ -33,13 +33,9 @@
   "tasks": [
     {
       "id": 1,
-      "kind": "implement",
       "title": "Remove the carrypatch to workspace import so the two packages are independent",
       "criteria": [
-        "21-REQ-9.4"
-      ],
-      "tests": [
-        "TS-21-36"
+        "REQ-9.4"
       ],
       "steps": [
         "Write TS-21-36 (run `go list -deps` for ./internal/workspace and ./internal/carrypatch via os/exec in a Go test; name it TestTS21_36_...) and confirm it fails: internal/carrypatch/api.go currently imports internal/workspace for workspace.AuthorizeWorkspace",
@@ -54,41 +50,29 @@
         "internal/workspace/authz.go",
         "internal/carrypatch/api.go",
         "internal/carrypatch/import_graph_test.go"
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 2,
-      "kind": "implement",
       "title": "Replace the boolean branch-check hook with a resolver hook and map its errors in the registration handlers",
       "criteria": [
-        "21-REQ-1.7",
-        "21-REQ-2.3",
-        "21-REQ-4",
-        "21-REQ-5",
-        "21-REQ-6.1",
-        "21-REQ-6.2",
-        "21-REQ-6.4",
-        "21-REQ-6.5",
-        "21-REQ-7.3",
-        "21-REQ-8.1",
-        "21-REQ-8.2",
-        "21-REQ-8.3",
-        "21-REQ-8.4",
-        "21-REQ-8.5",
-        "21-REQ-9.1",
-        "21-REQ-9.2",
-        "21-REQ-9.5"
-      ],
-      "tests": [
-        "TS-21-7",
-        "TS-21-18",
-        "TS-21-22",
-        "TS-21-31",
-        "TS-21-32",
-        "TS-21-33",
-        "TS-21-34",
-        "TS-21-37"
+        "REQ-1.7",
+        "REQ-2.3",
+        "REQ-4",
+        "REQ-5",
+        "REQ-6.1",
+        "REQ-6.2",
+        "REQ-6.4",
+        "REQ-6.5",
+        "REQ-7.3",
+        "REQ-8.1",
+        "REQ-8.2",
+        "REQ-8.3",
+        "REQ-8.4",
+        "REQ-8.5",
+        "REQ-9.1",
+        "REQ-9.2",
+        "REQ-9.5"
       ],
       "steps": [
         "Write TS-21-7, 18, 22, 31, 32, 33, 34 and 37 in internal/workspace (name functions TestTS21_<n>_...) using stub hooks and confirm they fail; the recording stub for TS-21-22 logs call order and a stub insert timestamp",
@@ -108,34 +92,24 @@
       ],
       "depends_on": [
         1
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 3,
-      "kind": "implement",
       "title": "Implement the carrypatch branch resolver for local and tracking refs with a locked compare-and-swap create",
       "criteria": [
-        "21-REQ-1.1",
-        "21-REQ-1.2",
-        "21-REQ-1.4",
-        "21-REQ-1.5",
-        "21-REQ-1.6",
-        "21-REQ-2.1",
-        "21-REQ-2.2",
-        "21-REQ-2.4",
-        "21-REQ-7.1",
-        "21-REQ-7.2",
-        "21-REQ-7.4",
-        "21-REQ-9.3"
-      ],
-      "tests": [
-        "TS-21-1",
-        "TS-21-2",
-        "TS-21-4",
-        "TS-21-8",
-        "TS-21-9",
-        "TS-21-26"
+        "REQ-1.1",
+        "REQ-1.2",
+        "REQ-1.4",
+        "REQ-1.5",
+        "REQ-1.6",
+        "REQ-2.1",
+        "REQ-2.2",
+        "REQ-2.4",
+        "REQ-7.1",
+        "REQ-7.2",
+        "REQ-7.4",
+        "REQ-9.3"
       ],
       "steps": [
         "Write TS-21-1, 2, 4, 8, 9 and 26 in internal/carrypatch (name TestTS21_<n>_...) with real git repositories (bare fork, clone as trunk) via the existing testhelpers_test.go helpers, a recording GitRunner wrapper around carrypatch.NewGitRunnerFactory(), counting fetch and credential stubs and a lock hook; confirm they fail. TS-21-9 is a property test over generated valid branch names and commit chains",
@@ -154,22 +128,14 @@
       ],
       "depends_on": [
         2
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 4,
-      "kind": "implement",
       "title": "Add the single-branch fork fetch step with typed not-found classification",
       "criteria": [
-        "21-REQ-1.3",
-        "21-REQ-3"
-      ],
-      "tests": [
-        "TS-21-3",
-        "TS-21-12",
-        "TS-21-13",
-        "TS-21-25"
+        "REQ-1.3",
+        "REQ-3"
       ],
       "steps": [
         "Write TS-21-3 (real bare fork, branch pushed after the clone, real fetch function), TS-21-12 (recording fetch stub), TS-21-13 (stub returning git.NoErrAlreadyUpToDate, with and without the tracking ref present) and TS-21-25 (lock spy; fetch and update-ref observe the lock held) and confirm they fail",
@@ -187,30 +153,18 @@
       ],
       "depends_on": [
         3
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 5,
-      "kind": "implement",
       "title": "Wire the resolver into main and verify the error responses end to end over HTTP",
       "criteria": [
-        "21-REQ-9.3",
-        "21-REQ-4.3",
-        "21-REQ-2.3",
-        "21-REQ-3.3",
-        "21-REQ-3.4",
-        "21-REQ-3.5"
-      ],
-      "tests": [
-        "TS-21-6",
-        "TS-21-11",
-        "TS-21-14",
-        "TS-21-15",
-        "TS-21-16",
-        "TS-21-17",
-        "TS-21-19",
-        "TS-21-35"
+        "REQ-9.3",
+        "REQ-4.3",
+        "REQ-2.3",
+        "REQ-3.3",
+        "REQ-3.4",
+        "REQ-3.5"
       ],
       "steps": [
         "Write TS-21-6, 11, 14, 15, 16, 17, 19 and 35 as HTTP-level tests in an external test package (workspace_test in internal/workspace, which may import carrypatch as coexistence_test.go does): build the real patch handler, register carrypatch.NewBranchResolverHook with a real bare fork and clone, a captured slog handler, and the per-case stubs; confirm they fail",
@@ -231,32 +185,18 @@
       ],
       "depends_on": [
         4
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 6,
-      "kind": "implement",
       "title": "Verify skip, batch, concurrency, race and audit behaviour with the real resolver over HTTP",
       "criteria": [
-        "21-REQ-5",
-        "21-REQ-6.3",
-        "21-REQ-7.5",
-        "21-REQ-8.1",
-        "21-REQ-8.2",
-        "21-REQ-1.5"
-      ],
-      "tests": [
-        "TS-21-5",
-        "TS-21-10",
-        "TS-21-20",
-        "TS-21-21",
-        "TS-21-23",
-        "TS-21-24",
-        "TS-21-27",
-        "TS-21-28",
-        "TS-21-29",
-        "TS-21-30"
+        "REQ-5",
+        "REQ-6.3",
+        "REQ-7.5",
+        "REQ-8.1",
+        "REQ-8.2",
+        "REQ-1.5"
       ],
       "steps": [
         "Write TS-21-5, 10, 20, 21, 23, 24, 27, 28, 29 and 30 in the workspace_test external package using the real patch handler, the real carrypatch resolver, real fork and clone repositories, an audit sink that records events, counting getter/fetch/credential stubs, and a lock probe that calls wslock.TryLock(slug) afterwards; confirm which fail",
@@ -275,22 +215,13 @@
       ],
       "depends_on": [
         5
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 7,
-      "kind": "implement",
       "title": "Update api.md, openapi.yaml, cli.md and the afc patch add help text",
       "criteria": [
-        "21-REQ-10"
-      ],
-      "tests": [
-        "TS-21-38",
-        "TS-21-39",
-        "TS-21-40",
-        "TS-21-41",
-        "TS-21-42"
+        "REQ-10"
       ],
       "steps": [
         "Write TS-21-38 (reads docs/api.md registration section), TS-21-39 (parses docs/openapi.yaml with the YAML library already in go.mod), TS-21-40 (docs/cli.md section plus the patch add cobra command Long and --skip-branch-check usage), TS-21-41 (existing CLI test unchanged plus flag-name set equality) and TS-21-42 (`git diff --quiet -- docs/carry_patch_workflow.md`); follow the style of the existing docs_*_test.go files and confirm they fail",
@@ -309,38 +240,7 @@
       ],
       "depends_on": [
         6
-      ],
-      "state": "done"
-    },
-    {
-      "id": 8,
-      "kind": "integration",
-      "title": "Verify the five registration paths end to end with real components",
-      "tests": [
-        "TS-21-43",
-        "TS-21-44",
-        "TS-21-45",
-        "TS-21-46",
-        "TS-21-47"
-      ],
-      "steps": [
-        "Write smoke tests TS-21-43 to TS-21-47 (workspace_test package, file smoke_spec21_test.go) driving the real registration handler through an Echo server with real carrypatch resolver built exactly as cmd/af-hub/main.go builds it, real git runner, real wslock, SQLite database, audit sink, real bare fork and clone, and workspace.ResolveCloneAuth with a store; no stubs for fetch or locks except the simulated sync that holds wslock.TryLock in TS-21-47",
-        "Trace 21-PATH-1 to 21-PATH-5 through the code: handler -> workspace.branchCheckHook -> carrypatch hook -> GitRunner/wslock/DefaultSingleBranchFetch -> patch insert -> emitHubAudit; confirm each step calls the next and that cmd/af-hub/main.go registers the carrypatch hook in production code",
-        "For every criterion with a contract (21-REQ-1.4, 1.6, 2.2, 2.3, 6.2, 6.3, 7.3, 7.5, 3.3-3.5, 4.1-4.2, 9.5) confirm the classified error produced by the resolver is consumed by the handler's error-mapping helper in patch_handlers.go, not only by tests",
-        "Confirm the PATCH_BRANCH_SOURCE parser and the origin credential resolver from 20_fork_patch_sync are called from the production resolver and from cmd/af-hub/main.go",
-        "Search internal/workspace/branch_check_hook.go, internal/workspace/patch_handlers.go, internal/carrypatch/branch_resolver.go, internal/carrypatch/wire.go, internal/wsaccess, cmd/af-hub/main.go, internal/cli/patch_cmd.go for `TODO`, `panic(\"not implemented\")` and placeholder not-found branches left from task 3 and remove any that remain",
-        "Confirm `go list -deps` shows no import between internal/workspace and internal/carrypatch, and that no reference to the removed BranchCheckFunc remains; run `make check`"
-      ],
-      "touches": [
-        "internal/workspace/smoke_spec21_test.go"
-      ],
-      "depends_on": [
-        7
-      ],
-      "done_when": [
-        "`make test` and `make lint` pass with all five smoke tests green against real git repositories"
-      ],
-      "state": "done"
+      ]
     }
   ]
 }

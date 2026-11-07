@@ -1,8 +1,8 @@
 {
-  "$schema": "https://agent-fox.dev/schemas/tasks.v2.json",
+  "$schema": "https://agent-fox.dev/schemas/tasks.v3.json",
   "spec_id": "28",
   "spec_name": "sandbox_expiry",
-  "schema_version": 2,
+  "schema_version": 3,
   "test_commands": {
     "all_tests": "make test",
     "linter": "make lint",
@@ -33,15 +33,10 @@
   "tasks": [
     {
       "id": 1,
-      "kind": "implement",
       "title": "Add EventSandboxExpire and the three sandbox metrics to internal/audit",
       "criteria": [
-        "28-REQ-8.1",
-        "28-REQ-9.1"
-      ],
-      "tests": [
-        "TS-28-39",
-        "TS-28-45"
+        "REQ-8.1",
+        "REQ-9.1"
       ],
       "steps": [
         "Write TS-28-39 and TS-28-45 (serve Metrics.MetricsHandler and parse the body) and confirm they fail",
@@ -55,22 +50,13 @@
         "internal/audit/metrics.go",
         "internal/audit/metrics_endpoint_test.go",
         "internal/audit/sandbox_metrics_test.go"
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 2,
-      "kind": "implement",
       "title": "Add lease_timeout and reap_interval to the [sandbox] config and validation",
       "criteria": [
-        "28-REQ-1"
-      ],
-      "tests": [
-        "TS-28-1",
-        "TS-28-2",
-        "TS-28-3",
-        "TS-28-4",
-        "TS-28-5"
+        "REQ-1"
       ],
       "steps": [
         "Write TS-28-1..TS-28-5 beside spec 25's config tests and confirm they fail",
@@ -84,24 +70,16 @@
         "internal/sandboxes/config.go",
         "internal/sandboxes/validate.go",
         "internal/sandboxes/config_expiry_test.go"
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 3,
-      "kind": "implement",
       "title": "Add the lease_expires_at column, field, deadline and capacity rule",
       "criteria": [
-        "28-REQ-2.1",
-        "28-REQ-2.2",
-        "28-REQ-2.3",
-        "28-REQ-2.5"
-      ],
-      "tests": [
-        "TS-28-6",
-        "TS-28-7",
-        "TS-28-8",
-        "TS-28-10"
+        "REQ-2.1",
+        "REQ-2.2",
+        "REQ-2.3",
+        "REQ-2.5"
       ],
       "steps": [
         "Write TS-28-6, 7, 8 and 10 (echo harness with apikit.SetAuthInfo, in-memory SQLite with SetMaxOpenConns(1), injected clock) and confirm they fail",
@@ -122,26 +100,17 @@
       ],
       "depends_on": [
         2
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 4,
-      "kind": "implement",
       "title": "Add the expiry-path ending with event emission and the metrics recorder",
       "criteria": [
-        "28-REQ-8.2",
-        "28-REQ-8.4",
-        "28-REQ-8.5",
-        "28-REQ-9.2",
-        "28-REQ-9.7"
-      ],
-      "tests": [
-        "TS-28-40",
-        "TS-28-42",
-        "TS-28-43",
-        "TS-28-46",
-        "TS-28-51"
+        "REQ-8.2",
+        "REQ-8.4",
+        "REQ-8.5",
+        "REQ-9.2",
+        "REQ-9.7"
       ],
       "steps": [
         "Write TS-28-40, 42, 43, 46 and 51 (recording emitter, recording provider double, injected clock) and confirm they fail",
@@ -162,26 +131,16 @@
       "depends_on": [
         1,
         3
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 5,
-      "kind": "implement",
       "title": "Build the sweeper: lapse, overdue destroy, retention pruning and gauge recalibration",
       "criteria": [
-        "28-REQ-4.3",
-        "28-REQ-4.4",
-        "28-REQ-4.5",
-        "28-REQ-6"
-      ],
-      "tests": [
-        "TS-28-18",
-        "TS-28-19",
-        "TS-28-20",
-        "TS-28-30",
-        "TS-28-31",
-        "TS-28-32"
+        "REQ-4.3",
+        "REQ-4.4",
+        "REQ-4.5",
+        "REQ-6"
       ],
       "steps": [
         "Write TS-28-18, 19, 20, 30, 31 and 32 (TS-28-32 as a property test over generated states/ages; capture slog with a custom handler) and confirm they fail",
@@ -199,26 +158,17 @@
       ],
       "depends_on": [
         4
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 6,
-      "kind": "implement",
       "title": "Add the orphan step, sweep serialisation and per-call timeouts",
       "criteria": [
-        "28-REQ-4.1",
-        "28-REQ-4.2",
-        "28-REQ-4.6",
-        "28-REQ-4.7",
-        "28-REQ-4.8"
-      ],
-      "tests": [
-        "TS-28-16",
-        "TS-28-17",
-        "TS-28-21",
-        "TS-28-22",
-        "TS-28-23"
+        "REQ-4.1",
+        "REQ-4.2",
+        "REQ-4.6",
+        "REQ-4.7",
+        "REQ-4.8"
       ],
       "steps": [
         "Write TS-28-16, 17, 21, 22 and 23 (recording provider double logging call order and in-flight Reap count; a hang option that blocks until ctx is cancelled) and confirm they fail",
@@ -235,26 +185,15 @@
       ],
       "depends_on": [
         5
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 7,
-      "kind": "implement",
       "title": "Enforce deadlines at hub's gateway and handle a lease that ends during Create",
       "criteria": [
-        "28-REQ-3",
-        "28-REQ-5.5",
-        "28-REQ-9.4"
-      ],
-      "tests": [
-        "TS-28-11",
-        "TS-28-12",
-        "TS-28-13",
-        "TS-28-14",
-        "TS-28-15",
-        "TS-28-28",
-        "TS-28-48"
+        "REQ-3",
+        "REQ-5.5",
+        "REQ-9.4"
       ],
       "steps": [
         "Write TS-28-11..15, 28 and 48 over an in-process gatewayd.Server with the real gateway.Dial client, a recording provider double (Create can block until released) and an injected clock; TS-28-15 as a property test with concurrent late Create and sweeps; confirm they fail",
@@ -272,28 +211,18 @@
       ],
       "depends_on": [
         6
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 8,
-      "kind": "implement",
       "title": "Add restart recovery, the reaper loop and main wiring",
       "criteria": [
-        "28-REQ-5.1",
-        "28-REQ-5.2",
-        "28-REQ-5.3",
-        "28-REQ-5.4",
-        "28-REQ-5.6",
-        "28-REQ-9.3"
-      ],
-      "tests": [
-        "TS-28-24",
-        "TS-28-25",
-        "TS-28-26",
-        "TS-28-27",
-        "TS-28-29",
-        "TS-28-47"
+        "REQ-5.1",
+        "REQ-5.2",
+        "REQ-5.3",
+        "REQ-5.4",
+        "REQ-5.6",
+        "REQ-9.3"
       ],
       "steps": [
         "Write TS-28-24, 25, 26, 27, 29 and 47 (provider double, recording emitter, injected ticker factory in the style of audit.WithTickerFactory, a listener double that records when it begins accepting) and confirm they fail",
@@ -314,25 +243,14 @@
       "depends_on": [
         6,
         2
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 9,
-      "kind": "implement",
       "title": "Implement shutdown mode and the sandbox shutdown step",
       "criteria": [
-        "28-REQ-7",
-        "28-REQ-9.5"
-      ],
-      "tests": [
-        "TS-28-33",
-        "TS-28-34",
-        "TS-28-35",
-        "TS-28-36",
-        "TS-28-37",
-        "TS-28-38",
-        "TS-28-49"
+        "REQ-7",
+        "REQ-9.5"
       ],
       "steps": [
         "Write TS-28-33..38 and TS-28-49 (TS-28-36 as a property test over random leased rows; TS-28-33 with a fake server whose Start returns at once and database handles that record Close order) and confirm they fail",
@@ -352,26 +270,17 @@
       ],
       "depends_on": [
         8
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 10,
-      "kind": "implement",
       "title": "Prove cross-cutting properties: stable deadline, one event per ending, no leaks, metric consistency",
       "criteria": [
-        "28-REQ-2.4",
-        "28-REQ-8.3",
-        "28-REQ-8.6",
-        "28-REQ-9.6",
-        "28-REQ-9.8"
-      ],
-      "tests": [
-        "TS-28-9",
-        "TS-28-41",
-        "TS-28-44",
-        "TS-28-50",
-        "TS-28-52"
+        "REQ-2.4",
+        "REQ-8.3",
+        "REQ-8.6",
+        "REQ-9.6",
+        "REQ-9.8"
       ],
       "steps": [
         "Write TS-28-9, 41, 44, 50 and 52 (property tests over generated operation sequences with an injected clock, recording emitter, captured slog and a provider double) and confirm which fail",
@@ -388,46 +297,7 @@
       ],
       "depends_on": [
         9
-      ],
-      "state": "done"
-    },
-    {
-      "id": 11,
-      "kind": "integration",
-      "title": "Verify the expiry, shutdown, restart and retention paths end to end",
-      "tests": [
-        "TS-28-53",
-        "TS-28-54",
-        "TS-28-55",
-        "TS-28-56",
-        "TS-28-57",
-        "TS-28-58"
-      ],
-      "steps": [
-        "Write TS-28-53..58 against the real lease REST handlers, store, sweeper, gatewayd server with hub's backend, audit emitter and audit.Metrics, with an injected clock and a provider double (or AgentKit local); confirm they pass",
-        "Trace 28-PATH-1 to 28-PATH-6 through the real code: handler -> store -> Sweeper.Sweep -> endExpired/destroy-with-reason -> emitter and metrics; confirm each step calls the next and no stub remains",
-        "Confirm in cmd/af-hub/main.go that RunStartup, StartReaper and Service.Shutdown are called from production code, in the order: metrics and emitter exist, recovery and first sweep, gateway serves, Start, Shutdown, database closes",
-        "Confirm every producer with a contract (Sweep results, ending helper changed flag, Shutdown, Backend.Reap, the recorder) has a production caller, not only tests",
-        "Confirm the gateway Create path, authenticator, DELETE path and Reap in internal/sandboxes use the deadline, shutdown-mode and end_reason behaviour from this spec",
-        "Search internal/sandboxes, internal/audit and cmd/af-hub for panic(\"not implemented\"), TODO, NotImplementedError and bare `return nil` on non-trivial paths in files this plan touched, and remove any",
-        "Run make doc, update docs/configuration.md, docs/api.md, docs/openapi.yaml, docs/architecture.md and docs/cli.md as required by the steering and the PRD requirement 10 (no tests about docs), then run make check"
-      ],
-      "touches": [
-        "internal/sandboxes/smoke_expiry_test.go",
-        "docs/configuration.md",
-        "docs/api.md",
-        "docs/openapi.yaml",
-        "docs/architecture.md",
-        "docs/cli.md",
-        "docs/generated"
-      ],
-      "depends_on": [
-        10
-      ],
-      "done_when": [
-        "`make test` and `make lint` pass offline with no container engine"
-      ],
-      "state": "done"
+      ]
     }
   ]
 }

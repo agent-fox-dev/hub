@@ -1,8 +1,8 @@
 {
-  "$schema": "https://agent-fox.dev/schemas/tasks.v2.json",
+  "$schema": "https://agent-fox.dev/schemas/tasks.v3.json",
   "spec_id": "35",
   "spec_name": "org_member_workspace_access",
-  "schema_version": 2,
+  "schema_version": 3,
   "test_commands": {
     "all_tests": "make test",
     "linter": "make lint",
@@ -37,24 +37,12 @@
   "tasks": [
     {
       "id": 1,
-      "kind": "implement",
       "title": "Add Access, Need and the new AuthorizeWorkspace/AuthorizeWorkspaceAt in wsaccess",
       "criteria": [
-        "35-REQ-1",
-        "35-REQ-2.1",
-        "35-REQ-2.2",
-        "35-REQ-2.3"
-      ],
-      "tests": [
-        "TS-35-1",
-        "TS-35-2",
-        "TS-35-3",
-        "TS-35-4",
-        "TS-35-5",
-        "TS-35-6",
-        "TS-35-7",
-        "TS-35-8",
-        "TS-35-9"
+        "REQ-1",
+        "REQ-2.1",
+        "REQ-2.2",
+        "REQ-2.3"
       ],
       "steps": [
         "Write TS-35-1..9 in internal/wsaccess (external package wsaccess_test, style of wsaccess_test.go) and confirm they fail",
@@ -84,26 +72,17 @@
       ],
       "done_when": [
         "`make test` passes with every existing ownership test unchanged"
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 2,
-      "kind": "implement",
       "title": "Complete refusal semantics: binding report, need check, fail-closed 500, WriteRefusal",
       "criteria": [
-        "35-REQ-2.4",
-        "35-REQ-2.5",
-        "35-REQ-2.6",
-        "35-REQ-2.7",
-        "35-REQ-2.8"
-      ],
-      "tests": [
-        "TS-35-10",
-        "TS-35-11",
-        "TS-35-12",
-        "TS-35-13",
-        "TS-35-14"
+        "REQ-2.4",
+        "REQ-2.5",
+        "REQ-2.6",
+        "REQ-2.7",
+        "REQ-2.8"
       ],
       "steps": [
         "Write TS-35-10..14 and confirm they fail or expose gaps (use the bound-refusal observer helpers already in wsaccess tests)",
@@ -119,23 +98,13 @@
       ],
       "depends_on": [
         1
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 3,
-      "kind": "implement",
       "title": "Add wsaccess.ReadableSlugs",
       "criteria": [
-        "35-REQ-3"
-      ],
-      "tests": [
-        "TS-35-15",
-        "TS-35-16",
-        "TS-35-17",
-        "TS-35-18",
-        "TS-35-19",
-        "TS-35-20"
+        "REQ-3"
       ],
       "steps": [
         "Write TS-35-15..20 (TS-35-20 is a property test comparing ReadableSlugs with AuthorizeWorkspace(NeedRead) over generated callers/workspaces) and confirm they fail",
@@ -151,26 +120,14 @@
       ],
       "depends_on": [
         2
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 4,
-      "kind": "implement",
       "title": "Workspace routes: lookupWorkspaceForAuth with Need, and access/org_slug on every workspace object",
       "criteria": [
-        "35-REQ-5",
-        "35-REQ-6"
-      ],
-      "tests": [
-        "TS-35-28",
-        "TS-35-29",
-        "TS-35-30",
-        "TS-35-31",
-        "TS-35-32",
-        "TS-35-33",
-        "TS-35-34",
-        "TS-35-35"
+        "REQ-5",
+        "REQ-6"
       ],
       "steps": [
         "Write TS-35-28..35 in internal/workspace using newTestEnv, seedOrg and seedOrgMember, and confirm they fail",
@@ -192,24 +149,13 @@
       ],
       "depends_on": [
         2
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 5,
-      "kind": "implement",
       "title": "Workspace listing from ReadableSlugs with a by-slug store query",
       "criteria": [
-        "35-REQ-4"
-      ],
-      "tests": [
-        "TS-35-21",
-        "TS-35-22",
-        "TS-35-23",
-        "TS-35-24",
-        "TS-35-25",
-        "TS-35-26",
-        "TS-35-27"
+        "REQ-4"
       ],
       "steps": [
         "Write TS-35-21..27 in internal/workspace and confirm they fail",
@@ -225,21 +171,13 @@
       "depends_on": [
         3,
         4
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 6,
-      "kind": "implement",
       "title": "Carry-patch and merge routes use Need and WriteRefusal",
       "criteria": [
-        "35-REQ-7"
-      ],
-      "tests": [
-        "TS-35-36",
-        "TS-35-37",
-        "TS-35-38",
-        "TS-35-39"
+        "REQ-7"
       ],
       "steps": [
         "Write TS-35-36..39 in internal/carrypatch and internal/merge and confirm they fail",
@@ -258,22 +196,13 @@
       ],
       "depends_on": [
         2
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 7,
-      "kind": "implement",
       "title": "Sandbox lease and forge routes use Need",
       "criteria": [
-        "35-REQ-8"
-      ],
-      "tests": [
-        "TS-35-40",
-        "TS-35-41",
-        "TS-35-42",
-        "TS-35-43",
-        "TS-35-44"
+        "REQ-8"
       ],
       "steps": [
         "Write TS-35-40..44 in internal/sandboxes and internal/forge and confirm they fail",
@@ -291,24 +220,13 @@
       ],
       "depends_on": [
         2
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 8,
-      "kind": "implement",
       "title": "Secrets, variables and bound tokens use wsaccess",
       "criteria": [
-        "35-REQ-9"
-      ],
-      "tests": [
-        "TS-35-45",
-        "TS-35-46",
-        "TS-35-47",
-        "TS-35-48",
-        "TS-35-49",
-        "TS-35-50",
-        "TS-35-51"
+        "REQ-9"
       ],
       "steps": [
         "Write TS-35-45..51 in internal/secrets and internal/boundtoken and confirm they fail",
@@ -326,22 +244,13 @@
       ],
       "depends_on": [
         2
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 9,
-      "kind": "implement",
       "title": "Verify unchanged answers (order, scopes, strangers, owners, bound PATs, owner-only routes) and update docs",
       "criteria": [
-        "35-REQ-10"
-      ],
-      "tests": [
-        "TS-35-52",
-        "TS-35-53",
-        "TS-35-54",
-        "TS-35-55",
-        "TS-35-56"
+        "REQ-10"
       ],
       "steps": [
         "Write TS-35-52..56 (cross-package route tables may live in internal/workspace plus per-package tests) and confirm they pass or expose gaps",
@@ -366,39 +275,7 @@
         6,
         7,
         8
-      ],
-      "state": "done"
-    },
-    {
-      "id": 10,
-      "kind": "integration",
-      "title": "Verify the member read, refused write, private and removed-member paths end to end",
-      "tests": [
-        "TS-35-57",
-        "TS-35-58",
-        "TS-35-59",
-        "TS-35-60"
-      ],
-      "steps": [
-        "Write smoke tests TS-35-57..60 against real handlers and a real (in-memory SQLite) database with the apikit schema, and confirm they pass",
-        "Trace 35-PATH-1 through the code: handleListWorkspaces -> wsaccess.ReadableSlugs -> by-slug store query -> response with access/org_slug, then the patch list route -> lookupWorkspaceForAuth -> AuthorizeWorkspaceAt; confirm each step calls the next and no stub remains",
-        "Trace 35-PATH-2 (carrypatch rebuild submit -> AuthorizeWorkspace NeedWrite -> WriteRefusal, no job enqueued), 35-PATH-3 (secrets and boundtoken NeedPrivate 404) and 35-PATH-4 (membership read on every request)",
-        "Confirm the contracts are consumed in production code: ReadableSlugs by handleListWorkspaces, WriteRefusal by carrypatch/merge/sandboxes/forge/secrets/workspace handlers, WorkspaceAccess.Access by workspaceResponse, AuthorizeWorkspace(Need) by boundtoken",
-        "Grep every file in all tasks' touches for panic(\"not implemented\"), TODO and bare `return nil` on non-trivial paths and remove any; confirm no REST handler in the listed packages compares owner_id with the caller itself",
-        "Run make test and make lint"
-      ],
-      "touches": [
-        "internal/workspace/smoke_spec35_test.go",
-        "internal/carrypatch/smoke_spec35_test.go",
-        "internal/secrets/smoke_spec35_test.go"
-      ],
-      "depends_on": [
-        9
-      ],
-      "done_when": [
-        "`make test` and `make lint` pass"
-      ],
-      "state": "done"
+      ]
     }
   ]
 }

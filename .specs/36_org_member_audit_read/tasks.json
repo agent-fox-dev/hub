@@ -1,8 +1,8 @@
 {
-  "$schema": "https://agent-fox.dev/schemas/tasks.v2.json",
+  "$schema": "https://agent-fox.dev/schemas/tasks.v3.json",
   "spec_id": "36",
   "spec_name": "org_member_audit_read",
-  "schema_version": 2,
+  "schema_version": 3,
   "test_commands": {
     "all_tests": "make test",
     "linter": "make lint",
@@ -25,13 +25,9 @@
   "tasks": [
     {
       "id": 1,
-      "kind": "implement",
       "title": "Extend the shared audit SQLite fixture with org_id, clone_status and org_members",
       "criteria": [
-        "36-REQ-10.4"
-      ],
-      "tests": [
-        "TS-36-46"
+        "REQ-10.4"
       ],
       "steps": [
         "Write TS-36-46 in internal/audit (package audit) asserting workspaces has org_id and clone_status columns and org_members(org_id, user_id) exists and accepts a row; confirm it fails",
@@ -44,22 +40,13 @@
       ],
       "done_when": [
         "go test ./internal/audit/... -count=1 passes with no existing assertion changed"
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 2,
-      "kind": "implement",
       "title": "Open a session through a write helper; replay discloses only to readers",
       "criteria": [
-        "36-REQ-6"
-      ],
-      "tests": [
-        "TS-36-27",
-        "TS-36-28",
-        "TS-36-29",
-        "TS-36-30",
-        "TS-36-31"
+        "REQ-6"
       ],
       "steps": [
         "Write TS-36-27 to TS-36-31 and confirm they fail (member POST currently 404, etc.)",
@@ -79,26 +66,14 @@
       ],
       "done_when": [
         "TS-33-35 and TS-34-58 still pass unchanged"
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 3,
-      "kind": "implement",
       "title": "Per-run audit reads and transcript through AuthorizeWorkspace with the read need",
       "criteria": [
-        "36-REQ-1",
-        "36-REQ-9.1"
-      ],
-      "tests": [
-        "TS-36-1",
-        "TS-36-2",
-        "TS-36-3",
-        "TS-36-4",
-        "TS-36-5",
-        "TS-36-6",
-        "TS-36-7",
-        "TS-36-39"
+        "REQ-1",
+        "REQ-9.1"
       ],
       "steps": [
         "Write TS-36-1 to TS-36-7 and TS-36-39 and confirm they fail",
@@ -119,22 +94,13 @@
       ],
       "done_when": [
         "Existing transcript_handler_test and TS-34-58 pass unchanged"
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 4,
-      "kind": "implement",
       "title": "Single-workspace session and cost reads via hasWorkspaceAccess over the rule",
       "criteria": [
-        "36-REQ-2"
-      ],
-      "tests": [
-        "TS-36-8",
-        "TS-36-9",
-        "TS-36-10",
-        "TS-36-11",
-        "TS-36-12"
+        "REQ-2"
       ],
       "steps": [
         "Write TS-36-8 to TS-36-12 and confirm they fail",
@@ -152,24 +118,14 @@
       ],
       "done_when": [
         "TS-33-36 and TS-34-58 pass unchanged"
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 5,
-      "kind": "implement",
       "title": "Session list restriction built from ReadableSlugs",
       "criteria": [
-        "36-REQ-3",
-        "36-REQ-9.2"
-      ],
-      "tests": [
-        "TS-36-13",
-        "TS-36-14",
-        "TS-36-15",
-        "TS-36-16",
-        "TS-36-17",
-        "TS-36-40"
+        "REQ-3",
+        "REQ-9.2"
       ],
       "steps": [
         "Write TS-36-13 to TS-36-17 and TS-36-40 (TS-36-17 is a property test over random workspaces/memberships/sessions) and confirm they fail",
@@ -187,24 +143,14 @@
       ],
       "done_when": [
         "TestSessions_NoAccessibleWorkspaceListsNothing and TS-33-37 pass unchanged"
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 6,
-      "kind": "implement",
       "title": "Unified audit query restricted to the readable set",
       "criteria": [
-        "36-REQ-4",
-        "36-REQ-9.3"
-      ],
-      "tests": [
-        "TS-36-18",
-        "TS-36-19",
-        "TS-36-20",
-        "TS-36-21",
-        "TS-36-22",
-        "TS-36-41"
+        "REQ-4",
+        "REQ-9.3"
       ],
       "steps": [
         "Write TS-36-18 to TS-36-22 and TS-36-41 (TS-36-22 property test) and confirm they fail",
@@ -223,23 +169,14 @@
       ],
       "done_when": [
         "binding_query_test.go and TS-34-58 pass unchanged"
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 7,
-      "kind": "implement",
       "title": "SSE stream uses the readable set computed at connect",
       "criteria": [
-        "36-REQ-5",
-        "36-REQ-9.4"
-      ],
-      "tests": [
-        "TS-36-23",
-        "TS-36-24",
-        "TS-36-25",
-        "TS-36-26",
-        "TS-36-42"
+        "REQ-5",
+        "REQ-9.4"
       ],
       "steps": [
         "Write TS-36-23 to TS-36-26 and TS-36-42 (real SSE manager for 23, 24, 26; a recording manager for 25 and 42) and confirm they fail",
@@ -258,20 +195,13 @@
       ],
       "done_when": [
         "sse_handler_test.go and sse_broadcaster_test.go pass unchanged"
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 8,
-      "kind": "implement",
       "title": "Prove complete, usage-report and ingestion writes still refuse members unchanged",
       "criteria": [
-        "36-REQ-7"
-      ],
-      "tests": [
-        "TS-36-32",
-        "TS-36-33",
-        "TS-36-34"
+        "REQ-7"
       ],
       "steps": [
         "Write TS-36-32, TS-36-33 and TS-36-34 (property over workspace state x caller kind with member callers added) and confirm which fail",
@@ -288,21 +218,13 @@
       ],
       "done_when": [
         "workspace_auth_test.go and TS-33-46 to 50 pass unchanged"
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 9,
-      "kind": "implement",
       "title": "Bound PAT confinement and refusal reports with member access",
       "criteria": [
-        "36-REQ-8"
-      ],
-      "tests": [
-        "TS-36-35",
-        "TS-36-36",
-        "TS-36-37",
-        "TS-36-38"
+        "REQ-8"
       ],
       "steps": [
         "Write TS-36-35 to TS-36-38 using boundPatAuth, a seeded org membership and a refusal observer counting wsaccess reports; confirm failures",
@@ -325,22 +247,15 @@
       ],
       "done_when": [
         "TS-34-58 and TS-33-35 to 39, 46 to 53 pass unchanged"
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 10,
-      "kind": "implement",
       "title": "Compatibility properties, owner_id scan, and documentation",
       "criteria": [
-        "36-REQ-10.1",
-        "36-REQ-10.2",
-        "36-REQ-10.3"
-      ],
-      "tests": [
-        "TS-36-43",
-        "TS-36-44",
-        "TS-36-45"
+        "REQ-10.1",
+        "REQ-10.2",
+        "REQ-10.3"
       ],
       "steps": [
         "Write TS-36-43 and TS-36-44 (property tests over strangers, personal-org and NULL org_id workspaces compared with the pre-spec answers) and TS-36-45 (go/parser scan of non-test files in internal/audit: no ownedWorkspaces FuncDecl; owner_id queries only inside checkWorkspaceAccess; the four helpers reference wsaccess.AuthorizeWorkspace or wsaccess.ReadableSlugs)",
@@ -363,36 +278,7 @@
       ],
       "done_when": [
         "make check passes"
-      ],
-      "state": "done"
-    },
-    {
-      "id": 11,
-      "kind": "integration",
-      "title": "Verify member read, stream and refused-write paths end to end",
-      "tests": [
-        "TS-36-47",
-        "TS-36-48",
-        "TS-36-49"
-      ],
-      "steps": [
-        "Write TS-36-47, TS-36-48 and TS-36-49 against a real audit server, real SQLite with org_members, wsaccess and (for 48) a real SSE manager and emitter; confirm they pass",
-        "Trace 36-PATH-1, 36-PATH-2 and 36-PATH-3 through the real code (routes.go / query_routes.go -> handlers -> wsaccess.DeniesWorkspace/AuthorizeWorkspace/ReadableSlugs -> Store); confirm each step calls the next and no stub remains",
-        "Confirm cmd/af-hub/main.go wires the audit routes with database.SqlDB so the rule runs in production, and that the contract results (403 forbidden on member POST /sessions, readable-set restriction on /audit and /events) are consumed by production callers, not only tests",
-        "Search the files in every task's touches for panic(\"not implemented\"), TODO and bare return nil on non-trivial paths and remove any that remain",
-        "Run make test and make lint"
-      ],
-      "touches": [
-        "internal/audit/smoke_member_test.go",
-        "cmd/af-hub/main.go"
-      ],
-      "depends_on": [
-        10
-      ],
-      "done_when": [
-        "make test and make lint pass"
-      ],
-      "state": "done"
+      ]
     }
   ]
 }

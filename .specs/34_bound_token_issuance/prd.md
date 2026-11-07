@@ -4,9 +4,8 @@ spec_name: "bound_token_issuance"
 title: "Issue, list and retire workspace-bound personal access tokens"
 status: "active"
 created_at: "2026-10-21T09:17:51.449682Z"
-updated_at: "2026-10-21T09:17:51.449682Z"
 intent_hash: "6857d7b10a0e7d0505c65475ba0eceb22cb9124f9278dd59b873903a6c95030f"
-schema_version: 2
+schema_version: 3
 source: "docs/prd/03-bind-a-personal-access-token-to-a-workspace.md"
 ---
 ## Intent
@@ -270,3 +269,14 @@ apikit (`github.com/txsvc/apikit`, replaced by `../apikit`, outside the reposito
 | `pats` table | `token_id` PK, `user_id`, `name`, `secret_hash`, `permissions` (JSON), `expires_days`, `expires_at`, `revoked_at`, `created_at` | production query in `internal/gitserver/auth.go`; mirror in `internal/gitserver/testhelpers_test.go` |
 | apikit function that creates a PAT for a given user | **NOT FOUND**; minting is delegated over the in-process route instead (Decision 1) | — |
 | `(*echo.Echo).ServeHTTP`, `echo.Context.Path()` | standard echo v4 (`github.com/labstack/echo/v4 v4.16.0`); `Path()` returns the full template including the group prefix | `go.mod`; spec 33's notes |
+
+## Glossary
+
+- **binding**: A row (token_id, slug, created_at) in spec 33's token_workspace_bindings table tying one apikit PAT to one workspace slug.
+- **binding sweep**: The background loop StartBindingSweep that removes bindings whose token or workspace no longer exists.
+- **bound token**: A PAT (CredentialType "pat") whose token id has a binding row; S denotes its bound slug.
+- **delegation**: Serving an in-memory POST <mount>/user/tokens request through the configured apikit http.Handler (server.Echo() in production) and capturing the response in memory.
+- **live token**: A pats row with revoked_at NULL; revoking sets revoked_at = apikit.NowUTC() on rows where revoked_at IS NULL.
+- **mount**: The API group prefix (production /api/v1), derived per request as the matched route template c.Path() with the suffix /workspaces/:slug/tokens removed.
+- **refusal observer**: The process-wide function registered in internal/wsaccess that receives one report per request refused because of a binding.
+- **suppressed**: The metadata count on a hub.token.bound_refused event of reports for the same token held back by the rate limit since the previous emitted event.

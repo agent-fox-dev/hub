@@ -4,9 +4,8 @@ spec_name: "sandbox_gateway_provider"
 title: "Remote agentkit-gateway as hub's sandbox provider"
 status: "active"
 created_at: "2026-10-19T16:56:38.986406Z"
-updated_at: "2026-10-19T16:56:38.986406Z"
 intent_hash: "de21c54323aae9f41b6021ed93ca2460a87af09037d97fac0430b1a56ca86c3a"
-schema_version: 2
+schema_version: 3
 source: "docs/prd/01-create-and-lease-sandboxes.md"
 ---
 ## Intent
@@ -162,3 +161,15 @@ agentkit-go is not vendored and lies outside the repository. `25_sandbox_profile
 The gRPC status API is `google.golang.org/grpc/status.Code(err error) codes.Code`, with `codes.NotFound`, `codes.Unauthenticated`, `codes.PermissionDenied` and `codes.Unavailable`. This is grpc-go's stable public API. It is not in `go.mod` yet and arrives with `27_sandbox_gateway`'s gatewayd dependency.
 
 From the standard library: `net/url.Parse`, `(*url.URL).Hostname`/`Port`/`Host`/`User`, `net.ParseIP(...).IsLoopback()`, `io.Closer`, `log/slog.LogValuer`, `fmt.Formatter`/`fmt.GoStringer`, `encoding/json.Marshaler`.
+
+## Glossary
+
+- **capability snapshot**: The single `Capabilities()` value hub reads from the remote client after a successful probe and keeps for the life of the process.
+- **gateway factory**: The gateway variant of spec 25's provider factory seam; production uses `gateway.Dial`, tests inject a client pointing at an in-process remote.
+- **hub gateway**: Hub's own embedded `gatewayd.Server` on `[sandbox].listen` (spec 27), which authenticates lease tokens; its URL is the lease's `gateway_url`.
+- **loopback host**: `localhost` or a loopback IP literal, decided without a DNS lookup (spec 27's rule).
+- **redacting value**: The type hub stores the validated token in, whose fmt, slog and JSON renderings are all `[redacted]`.
+- **remote client**: The `sandbox.Provider` returned by `gateway.Dial(gateway_url, gateway.Options{Token: gateway_token})` (or a test-injected equivalent) that hub uses as its provider.
+- **remote gateway**: The deployment's agentkit-gateway that hub reaches at the configured `sandbox.gateway_url` and that runs the boxes on its own backend.
+- **remote refusal**: A remote call that fails with gRPC status `Unauthenticated` or `PermissionDenied` because the remote gateway rejected hub's token.
+- **scrub set**: The values spec 27's scrubber replaces with `[redacted]` in provider error text (27-REQ-9.1); for the gateway provider it also holds the token, the `gateway_url` string and the URL's `url.Host`.

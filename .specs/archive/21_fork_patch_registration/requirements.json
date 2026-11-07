@@ -1,420 +1,780 @@
 {
-  "$schema": "https://agent-fox.dev/schemas/requirements.v2.json",
+  "$schema": "https://agent-fox.dev/schemas/requirements.v3.json",
   "spec_id": "21",
   "spec_name": "fork_patch_registration",
-  "schema_version": 2,
-  "introduction": "Patch registration (POST /workspaces/:slug/patches, single and batch, and afc patch add on top of it) resolves a patch branch to a local refs/heads/<name> ref in the workspace trunk. It looks at the local ref first, then the clone's origin tracking ref, then, only when PATCH_BRANCH_SOURCE is origin, the fork itself. It records how the branch was resolved in the hub.patch.create audit event.",
-  "glossary": {
-    "PATCH_BRANCH_SOURCE": "Workspace variable defined by 20_fork_patch_sync. The exact, case-sensitive value origin means the fork is the authority for patch branches. Any other value, an unset variable or a lookup error means hub.",
-    "compare-and-swap create": "git update-ref refs/heads/<name> <sha> <all-zero-sha>, which fails if the ref already exists.",
-    "resolution method": "How a branch was found: local, origin_tracking or origin_fetch. The audit trail also uses skipped when skip_branch_check was true.",
-    "resolver hook": "The hook defined in internal/workspace/branch_check_hook.go that replaces the old boolean BranchCheckFunc. It takes a context, slug and branch name and returns a resolution method and a classified error.",
-    "tracking ref": "refs/remotes/origin/<name> in the trunk, the clone's copy of a fork branch.",
-    "trunk": "The clone of the fork at <workspace_root>/<slug>/trunk. Patch rebuilds read only refs/heads/<branch> in it.",
-    "workspace lock": "The per-slug lock taken with wslock.TryLock(slug) to serialise operations on the trunk."
-  },
+  "schema_version": 3,
   "requirements": [
     {
-      "id": "21-REQ-1",
+      "id": "REQ-1",
       "title": "Resolution order",
       "rationale": "A fork-only branch must get a local ref before the patch row is inserted, because rebuilds read only refs/heads/<branch>.",
       "criteria": [
         {
-          "id": "21-REQ-1.1",
+          "id": "REQ-1.1",
           "pattern": "event_driven",
           "condition": "a non-skipped registration names a branch whose refs/heads/<name>^{commit} resolves to a commit",
           "system": "branch resolver",
-          "action": "report the resolution method local, write no ref, take no workspace lock and perform no fetch"
+          "action": "report the resolution method local, write no ref, take no workspace lock and perform no fetch",
+          "contract": "the method is local and the error is nil; the fetch stub and credential stub record 0 calls; refs/heads/feat is unchanged; the busy workspace lock does not matter, because TryLock is never called",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a bare fork and a clone as the trunk with refs/heads/feat present",
+              "a counting fetch stub, a counting credential stub and a wslock held by another operation",
+              "PATCH_BRANCH_SOURCE is origin"
+            ],
+            "pseudocode": "before=revparse('refs/heads/feat'); m,err=hook(ctx,slug,'feat'); assert m=='local' && err==nil; assert fetchCalls==0 && credCalls==0; assert revparse('refs/heads/feat')==before"
+          }
         },
         {
-          "id": "21-REQ-1.2",
+          "id": "REQ-1.2",
           "pattern": "event_driven",
           "condition": "refs/heads/<name> does not resolve and refs/remotes/origin/<name>^{commit} resolves to a commit, in either PATCH_BRANCH_SOURCE mode",
           "system": "branch resolver",
-          "action": "create refs/heads/<name> at that commit and report the resolution method origin_tracking"
+          "action": "create refs/heads/<name> at that commit and report the resolution method origin_tracking",
+          "contract": "the method is origin_tracking in both modes; refs/heads/feat equals refs/remotes/origin/feat; HEAD, the checked-out branch and git status are unchanged; no fetch occurred; the ref was written via update-ref with the all-zero old value, not checkout, branch or reset",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a bare fork with branch feat, cloned so refs/remotes/origin/feat exists and refs/heads/feat does not",
+              "the trunk's HEAD and working tree status are recorded"
+            ],
+            "pseudocode": "for mode in [hub,origin]: setup(); m,_=hook(...); assert m=='origin_tracking'; assert rev('refs/heads/feat')==rev('refs/remotes/origin/feat'); assert head()==headBefore; assert status()==statusBefore; assert fetchCalls==0; assert runner.recorded no checkout/branch/reset"
+          }
         },
         {
-          "id": "21-REQ-1.3",
-          "pattern": "complex_event",
-          "condition": "neither refs/heads/<name> nor refs/remotes/origin/<name> resolves",
-          "guard": "PATCH_BRANCH_SOURCE is origin",
+          "id": "REQ-1.3",
+          "pattern": "event_driven",
+          "condition": "neither refs/heads/<name> nor refs/remotes/origin/<name> resolves and PATCH_BRANCH_SOURCE is origin",
           "system": "branch resolver",
-          "action": "fetch that single branch from the fork and, if refs/remotes/origin/<name> then resolves to a commit, create refs/heads/<name> at that commit and report the resolution method origin_fetch"
+          "action": "fetch that single branch from the fork and, if refs/remotes/origin/<name> then resolves to a commit, create refs/heads/<name> at that commit and report the resolution method origin_fetch",
+          "contract": "the method is origin_fetch; refs/remotes/origin/late exists and equals the fork tip; refs/heads/late equals the fork tip; no other fork branch gained a tracking ref and no tag was fetched",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a bare fork and a clone",
+              "branch late is pushed to the fork after the clone, so the trunk has neither refs/heads/late nor refs/remotes/origin/late",
+              "PATCH_BRANCH_SOURCE is origin",
+              "the real single-branch fetch function and a PAT-less credential resolver"
+            ],
+            "pseudocode": "m,err=hook(ctx,slug,'late'); assert m=='origin_fetch'; assert rev('refs/heads/late')==forkRev('late'); assert tags()==tagsBefore; assert trackingRefs()==before+{late}"
+          }
         },
         {
-          "id": "21-REQ-1.4",
+          "id": "REQ-1.4",
           "pattern": "state_driven",
           "condition": "PATCH_BRANCH_SOURCE is unset, its lookup returns an error, or its value is anything other than the exact string origin",
           "system": "branch resolver",
           "action": "treat the workspace as hub mode: perform zero fetches and zero origin credential lookups, including when the branch exists nowhere",
-          "contract": "A counting fetch stub and a counting credential-resolver stub both record 0 calls"
+          "contract": "A counting fetch stub and a counting credential-resolver stub both record 0 calls",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a counting fetch stub and a counting credential resolver stub",
+              "a branch that exists nowhere in the trunk"
+            ],
+            "pseudocode": "for getter in [unset,err,'hub','Origin','ORIGIN']: _,err=hook(...); assert isNotFound(err); assert fetchCalls==0 && credCalls==0"
+          }
         },
         {
-          "id": "21-REQ-1.5",
+          "id": "REQ-1.5",
           "pattern": "event_driven",
           "condition": "a registration request starts",
           "system": "registration handler",
-          "action": "read PATCH_BRANCH_SOURCE once for that request using the parsing helper of 20_fork_patch_sync, so that a change of the variable takes effect on the next request"
+          "action": "read PATCH_BRANCH_SOURCE once for that request using the parsing helper of 20_fork_patch_sync, so that a change of the variable takes effect on the next request",
+          "contract": "the first request answers 400 with no fetch; the second request answers 201 and the audit method is origin_fetch; each request reads the variable exactly once",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "an HTTP registration handler with the real resolver and a counting variable getter",
+              "a branch that exists only on the fork",
+              "PATCH_BRANCH_SOURCE is hub"
+            ],
+            "pseudocode": "r1=post(); assert r1.status==400 && fetchCalls==0; setVar('origin'); r2=post(); assert r2.status==201 && fetchCalls==1; assert getterCalls==2"
+          }
         },
         {
-          "id": "21-REQ-1.6",
+          "id": "REQ-1.6",
           "pattern": "unwanted",
           "condition": "the submitted name resolves only as a tag, a SHA or a remote-qualified name such as origin/x and not as refs/heads/<name> or refs/remotes/origin/<name>",
           "system": "branch resolver",
           "action": "reject the branch as not found, using fully qualified refs for every existence check",
-          "contract": "HTTP 400 with the not-found message of 21-REQ-4; no row inserted and no local branch created"
+          "contract": "HTTP 400 with the not-found message of 21-REQ-4; no row inserted and no local branch created",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a trunk with tag v1, a commit SHA, and refs/remotes/origin/x",
+              "no refs/heads for these names and no refs/remotes/origin/v1",
+              "PATCH_BRANCH_SOURCE is hub"
+            ],
+            "pseudocode": "for n in ['v1',sha,'origin/x']: r=post({branch_name:n}); assert r.status==400; assert count(patches)==0; assert not refExists('refs/heads/'+n)"
+          }
         },
         {
-          "id": "21-REQ-1.7",
+          "id": "REQ-1.7",
           "pattern": "state_driven",
           "condition": "no branch-check hook is registered",
           "system": "registration handler",
-          "action": "accept the branch without any resolution, as before this spec"
+          "action": "accept the branch without any resolution, as before this spec",
+          "contract": "the status is 201; a patch row is inserted",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "no resolver hook is registered",
+              "the branch exists nowhere"
+            ],
+            "pseudocode": "ResetHook(); r=post(); assert r.status==201; assert count(patches)==1"
+          }
         }
       ]
     },
     {
-      "id": "21-REQ-2",
+      "id": "REQ-2",
       "title": "Creating the local branch",
       "rationale": "The local ref must be written without disturbing the trunk's working tree and must be safe against a concurrent hub push.",
       "criteria": [
         {
-          "id": "21-REQ-2.1",
+          "id": "REQ-2.1",
           "pattern": "ubiquitous",
           "system": "branch resolver",
-          "action": "create the local branch only with update-ref refs/heads/<name> <sha> <all-zero-sha>, never with checkout, branch or reset, leaving the trunk's working tree and HEAD unchanged"
+          "action": "create the local branch only with update-ref refs/heads/<name> <sha> <all-zero-sha>, never with checkout, branch or reset, leaving the trunk's working tree and HEAD unchanged",
+          "contract": "exactly one update-ref call with args refs/heads/feat <sha> 0000000000000000000000000000000000000000; no checkout, branch, reset or switch command was run",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a recording git runner wrapping the real runner",
+              "a tracking-only branch feat"
+            ],
+            "pseudocode": "hook(...); calls=runner.calls(); assert ['update-ref','refs/heads/feat',sha,ZERO] in calls; assert none(c[0] in ['checkout','branch','reset','switch'] for c in calls)"
+          }
         },
         {
-          "id": "21-REQ-2.2",
+          "id": "REQ-2.2",
           "pattern": "unwanted",
           "condition": "the compare-and-swap create fails because refs/heads/<name> now exists",
           "system": "branch resolver",
           "action": "re-run the resolution from step 1 and report the resolution method local",
-          "contract": "HTTP 201 for the registration; the existing ref is not modified"
+          "contract": "HTTP 201 for the registration; the existing ref is not modified",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a tracking-only branch feat",
+              "a runner wrapper that creates refs/heads/feat at a different commit just before the hub's update-ref executes"
+            ],
+            "pseudocode": "runner.beforeUpdateRef=lambda: git('update-ref','refs/heads/feat',other); r=post(); assert r.status==201; assert audit.meta.branch_resolution=='local'; assert rev('refs/heads/feat')==other"
+          }
         },
         {
-          "id": "21-REQ-2.3",
+          "id": "REQ-2.3",
           "pattern": "unwanted",
           "condition": "writing refs/heads/<name> fails for any reason other than the ref already existing",
           "system": "registration handler",
           "action": "log the error with the slug and branch, insert no patch row and answer with an internal error",
-          "contract": "HTTP 500 with message internal server error"
+          "contract": "HTTP 500 with message internal server error",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a tracking-only branch",
+              "a runner whose update-ref fails with a non-exists error such as a read-only refs directory",
+              "a captured log"
+            ],
+            "pseudocode": "r=post(); assert r.status==500 && r.msg=='internal server error'; assert count(patches)==0; assert slug in log and branch in log"
+          }
         },
         {
-          "id": "21-REQ-2.4",
+          "id": "REQ-2.4",
           "pattern": "ubiquitous",
           "system": "branch resolver",
-          "action": "for any created local branch, point it at the tracking tip at the moment of creation and write no upstream tracking configuration"
+          "action": "for any created local branch, point it at the tracking tip at the moment of creation and write no upstream tracking configuration",
+          "contract": "refs/heads/<name> equals the tracking tip at creation; the trunk's .git/config has no branch.<name>.remote or branch.<name>.merge entry",
+          "check": {
+            "kind": "property",
+            "setup": [
+              "a real fork and clone with randomly generated valid branch names and commit chains"
+            ],
+            "pseudocode": "for name,tip in gen(): hook(name); assert rev('refs/heads/'+name)==tip; assert configGet('branch.'+name+'.remote') is None and configGet('branch.'+name+'.merge') is None"
+          }
         }
       ]
     },
     {
-      "id": "21-REQ-3",
+      "id": "REQ-3",
       "title": "Single-branch fork fetch",
       "rationale": "Only the one requested branch is of interest at registration time; pruning and tags are sync's concern.",
       "criteria": [
         {
-          "id": "21-REQ-3.1",
+          "id": "REQ-3.1",
           "pattern": "event_driven",
           "condition": "resolution step 3 runs",
           "system": "branch resolver",
-          "action": "run a go-git fetch of the trunk's origin remote with the single refspec +refs/heads/<name>:refs/remotes/origin/<name>, no tags, no pruning, and credentials from workspace.ResolveCloneAuth (GIT_PAT, then GIT_USERNAME/GIT_PASSWORD, then none)"
+          "action": "run a go-git fetch of the trunk's origin remote with the single refspec +refs/heads/<name>:refs/remotes/origin/<name>, no tags, no pruning, and credentials from workspace.ResolveCloneAuth (GIT_PAT, then GIT_USERNAME/GIT_PASSWORD, then none)",
+          "contract": "the stub receives the trunk path, refspec +refs/heads/feat:refs/remotes/origin/feat as the only refspec; the stub receives the auth value returned by the credential resolver; the fetch request has no tags and no prune; the credential resolver is called once with the slug",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "origin mode",
+              "a recording fetch stub and a credential resolver returning a known auth method"
+            ],
+            "pseudocode": "assert stub.refspecs==['+refs/heads/feat:refs/remotes/origin/feat']; assert stub.auth==expectedAuth; assert stub.tags==NoTags && !stub.prune; assert credCalls==1"
+          }
         },
         {
-          "id": "21-REQ-3.2",
+          "id": "REQ-3.2",
           "pattern": "event_driven",
           "condition": "the fetch returns git.NoErrAlreadyUpToDate",
           "system": "branch resolver",
-          "action": "treat the fetch as successful and continue with the tracking-ref check"
+          "action": "treat the fetch as successful and continue with the tracking-ref check",
+          "contract": "with the tracking ref present the method is origin_fetch and the local ref is created; with the tracking ref absent the result is branch not found, not a fetch failure",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "origin mode",
+              "a fetch stub returning git.NoErrAlreadyUpToDate after a tracking ref was made to appear (or not)"
+            ],
+            "pseudocode": "stub.returns(NoErrAlreadyUpToDate); m,err=hook(); assert m=='origin_fetch' and err==nil (case A); assert isNotFound(err) (case B)"
+          }
         },
         {
-          "id": "21-REQ-3.3",
+          "id": "REQ-3.3",
           "pattern": "unwanted",
           "condition": "the fork does not have the requested branch and the fetch reports that no remote ref matches",
           "system": "branch resolver",
           "action": "classify the failure as branch not found on origin, create no local branch and insert no row",
-          "contract": "HTTP 400 with the message of 21-REQ-4"
+          "contract": "HTTP 400 with the message of 21-REQ-4",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a real bare fork without branch ghost",
+              "origin mode and the real fetch function",
+              "a second case where the fetch error text is rewritten to a misleading string but the error type is unchanged"
+            ],
+            "pseudocode": "r=post('ghost'); assert r.status==400; assert not refExists('refs/heads/ghost'); assert classify(wrap(NoMatchingRefSpecError, 'xyz'))==NotFound; assert classify(errors.New('couldn\\'t find remote ref'))!=NotFound"
+          }
         },
         {
-          "id": "21-REQ-3.4",
+          "id": "REQ-3.4",
           "pattern": "unwanted",
           "condition": "the fetch fails for any reason other than the branch being absent on the fork (unreachable fork, authentication failure, transport error)",
           "system": "registration handler",
           "action": "log the error text, create no local branch, insert no row and not echo the error text in the response",
-          "contract": "HTTP 502 with message origin fetch failed and error type origin_fetch_failed"
+          "contract": "HTTP 502 with message origin fetch failed and error type origin_fetch_failed",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "origin mode",
+              "the trunk's origin URL points at a nonexistent path or closed port",
+              "a captured log"
+            ],
+            "pseudocode": "r=post(); assert r.status==502 && r.type=='origin_fetch_failed' && r.msg=='origin fetch failed'; assert underlyingText not in r.body; assert underlyingText in log; assert count(patches)==0"
+          }
         },
         {
-          "id": "21-REQ-3.5",
+          "id": "REQ-3.5",
           "pattern": "unwanted",
           "condition": "origin credential resolution fails",
           "system": "registration handler",
           "action": "skip the fetch, create no local branch and insert no row",
-          "contract": "HTTP 502 with message failed to resolve origin credentials"
+          "contract": "HTTP 502 with message failed to resolve origin credentials",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "origin mode",
+              "a credential resolver stub that returns an error",
+              "a counting fetch stub"
+            ],
+            "pseudocode": "creds.err=errors.New('x'); r=post(); assert r.status==502 && r.msg=='failed to resolve origin credentials'; assert fetchCalls==0 && count(patches)==0"
+          }
         },
         {
-          "id": "21-REQ-3.6",
+          "id": "REQ-3.6",
           "pattern": "ubiquitous",
           "system": "branch resolver",
-          "action": "decide that a branch is not found on origin from a typed go-git error or by listing the remote's refs, and never from matching on error text alone"
+          "action": "decide that a branch is not found on origin from a typed go-git error or by listing the remote's refs, and never from matching on error text alone",
+          "check": {
+            "same_as": "REQ-3.3"
+          }
         }
       ]
     },
     {
-      "id": "21-REQ-4",
+      "id": "REQ-4",
       "title": "Error for a branch found nowhere",
       "rationale": "Clients need one stable message regardless of mode.",
+      "system": "registration handler",
       "criteria": [
         {
-          "id": "21-REQ-4.1",
+          "id": "REQ-4.1",
           "pattern": "unwanted",
           "condition": "a single-patch registration names a branch that no resolution step finds (steps 1 and 2 in hub mode, steps 1 to 3 in origin mode)",
-          "system": "registration handler",
           "action": "reject the request, insert no row and create no local branch",
-          "contract": "HTTP 400 with message branch does not exist in repository or on origin"
+          "contract": "HTTP 400 with message branch does not exist in repository or on origin",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a trunk where the branch exists neither locally, as tracking ref, nor on the fork"
+            ],
+            "pseudocode": "for mode in [hub,origin]: r=post(); assert r.status==400 && r.msg=='branch does not exist in repository or on origin'; assert count(patches)==0; assert not refExists(...)"
+          }
         },
         {
-          "id": "21-REQ-4.2",
+          "id": "REQ-4.2",
           "pattern": "unwanted",
           "condition": "a batch registration contains an element whose branch no resolution step finds",
-          "system": "registration handler",
           "action": "reject the request naming the first failing element and insert no row",
-          "contract": "HTTP 400 with message patch[i]: branch does not exist in repository or on origin, where i is the zero-based index of the first failing element"
+          "contract": "HTTP 400 with message patch[i]: branch does not exist in repository or on origin, where i is the zero-based index of the first failing element",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a batch of three patches where element 0 exists locally and elements 1 and 2 exist nowhere"
+            ],
+            "pseudocode": "r=postBatch([local,missing1,missing2]); assert r.status==400 && r.msg=='patch[1]: branch does not exist in repository or on origin'; assert count(patches)==0"
+          }
         },
         {
-          "id": "21-REQ-4.3",
+          "id": "REQ-4.3",
           "pattern": "ubiquitous",
-          "system": "registration handler",
-          "action": "for any registration of a branch found nowhere, return the identical 400 message in hub mode and in origin mode"
+          "action": "for any registration of a branch found nowhere, return the identical 400 message in hub mode and in origin mode",
+          "contract": "both responses have status 400; both messages are equal to branch does not exist in repository or on origin",
+          "check": {
+            "kind": "property",
+            "setup": [
+              "a real fork and clone",
+              "a generator of valid branch names absent from the trunk and fork"
+            ],
+            "pseudocode": "for name in gen_missing(): a=post(name,'hub'); b=post(name,'origin'); assert a.status==b.status==400; assert a.msg==b.msg=='branch does not exist in repository or on origin'"
+          }
         }
       ]
     },
     {
-      "id": "21-REQ-5",
+      "id": "REQ-5",
       "title": "Skipping the branch check",
       "rationale": "skip_branch_check must keep its meaning as an opt-out of every lookup and side effect.",
+      "system": "registration handler",
       "criteria": [
         {
-          "id": "21-REQ-5.1",
+          "id": "REQ-5.1",
           "pattern": "event_driven",
           "condition": "a registration element has skip_branch_check true, in either mode",
-          "system": "registration handler",
-          "action": "perform no ref lookup, no fetch, no credential resolution, no local branch creation and take no workspace lock for that element"
+          "action": "perform no ref lookup, no fetch, no credential resolution, no local branch creation and take no workspace lock for that element",
+          "contract": "the status is 201; fetch, credential and lock counters are 0; the runner recorded no ref lookup and no update-ref; no refs/heads/<name> exists",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a branch that exists nowhere",
+              "counting stubs for fetch, credentials and lock, and a recording git runner",
+              "run once with hub and once with origin"
+            ],
+            "pseudocode": "r=post(skip=True); assert r.status==201; assert fetch==0 and creds==0 and lockCalls==0 and runner.calls==[]; assert not refExists(...)"
+          }
         },
         {
-          "id": "21-REQ-5.2",
+          "id": "REQ-5.2",
           "pattern": "event_driven",
           "condition": "a batch mixes skipped and non-skipped elements",
-          "system": "registration handler",
-          "action": "decide each element independently, so that a skipped element does not change how its neighbours resolve"
+          "action": "decide each element independently, so that a skipped element does not change how its neighbours resolve",
+          "contract": "the status is 201 and four rows are inserted; only elements 1 and 3 get local branches; element 0 and 2 get no local ref; the fetch stub is called once, for element 3 only",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "origin mode",
+              "a batch: element 0 skipped and absent, element 1 tracking-only, element 2 skipped, element 3 fork-only"
+            ],
+            "pseudocode": "r=postBatch(mixed); assert r.status==201 && count(patches)==4; assert refExists(el1) and refExists(el3) and not refExists(el0) and not refExists(el2); assert fetchCalls==1"
+          }
         }
       ]
     },
     {
-      "id": "21-REQ-6",
+      "id": "REQ-6",
       "title": "Batch registration",
       "rationale": "A batch must stay all-or-nothing for rows while resolution may leave harmless refs behind.",
       "criteria": [
         {
-          "id": "21-REQ-6.1",
+          "id": "REQ-6.1",
           "pattern": "ubiquitous",
           "system": "batch registration handler",
-          "action": "validate and resolve every element, in array order, before inserting any row"
+          "action": "validate and resolve every element, in array order, before inserting any row",
+          "contract": "the resolver is called for elements 0,1,2 in array order and the insert happens only after all succeed; the statuses are 400, 502, 409 and 500 respectively; in each failing case the patch table row count is unchanged; the first failing element stops the loop (later elements are not resolved)",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a batch of three patches where the third element triggers, per case, not-found, fetch failure, busy lock and internal ref write error",
+              "a recording resolver stub that logs call order"
+            ],
+            "pseudocode": "for case,status in [(nf,400),(fetch,502),(busy,409),(internal,500)]: r=postBatch(3); assert r.status==status; assert count(patches)==before; assert order==[0,1,2]; assert insertTime>lastResolveTime on success"
+          }
         },
         {
-          "id": "21-REQ-6.2",
+          "id": "REQ-6.2",
           "pattern": "unwanted",
           "condition": "any element's resolution fails with a missing branch, a fetch failure, a busy workspace or an internal error",
           "system": "batch registration handler",
           "action": "stop at the first failing element and insert no row for any element",
-          "contract": "HTTP 400, 502, 409 or 500 respectively; the patch table row count is unchanged"
+          "contract": "HTTP 400, 502, 409 or 500 respectively; the patch table row count is unchanged",
+          "check": {
+            "same_as": "REQ-6.1"
+          }
         },
         {
-          "id": "21-REQ-6.3",
+          "id": "REQ-6.3",
           "pattern": "event_driven",
           "condition": "a later element fails after an earlier element created a local branch or completed a fork fetch",
           "system": "batch registration handler",
           "action": "keep the earlier local branches and fetched tracking refs in place",
-          "contract": "A later registration of the earlier branch reports the resolution method local"
+          "contract": "A later registration of the earlier branch reports the resolution method local",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "origin mode",
+              "element 0 is tracking-only, element 1 is fork-only and fetched, element 2 exists nowhere"
+            ],
+            "pseudocode": "r=postBatch([a,b,missing]); assert r.status==400; assert refExists('refs/heads/a') and refExists('refs/heads/b'); r2=post('a'); assert r2.status==201; assert audit.branch_resolution=='local'"
+          }
         },
         {
-          "id": "21-REQ-6.4",
+          "id": "REQ-6.4",
           "pattern": "ubiquitous",
           "system": "batch registration handler",
-          "action": "run the duplicate-in-batch and already-registered checks after the resolution loop, so that error precedence is unchanged and a batch that answers 409 may already have created local branches"
+          "action": "run the duplicate-in-batch and already-registered checks after the resolution loop, so that error precedence is unchanged and a batch that answers 409 may already have created local branches",
+          "contract": "the duplicate batch answers 409 and the local branch for the tracking-only element exists; the already-registered batch with a missing branch answers 400, not 409; the single request answers 400 before the if_not_exists lookup; no rows are inserted by the failing requests",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a batch with a tracking-only element repeated twice, and a second batch with an already-registered branch plus a missing branch",
+              "a single request with a missing branch and if_not_exists for an existing record"
+            ],
+            "pseudocode": "r1=postBatch([t,t]); assert r1.status==409 && refExists(t); r2=postBatch([registered,missing]); assert r2.status==400; r3=post(missing,if_not_exists=True); assert r3.status==400"
+          }
         },
         {
-          "id": "21-REQ-6.5",
+          "id": "REQ-6.5",
           "pattern": "ubiquitous",
           "system": "registration handler",
-          "action": "run resolution before the existence checks and the if_not_exists lookup, so a missing branch answers 400 before a 409 for the same request"
+          "action": "run resolution before the existence checks and the if_not_exists lookup, so a missing branch answers 400 before a 409 for the same request",
+          "check": {
+            "same_as": "REQ-6.4"
+          }
         }
       ]
     },
     {
-      "id": "21-REQ-7",
+      "id": "REQ-7",
       "title": "Concurrency",
       "rationale": "Sync fetches origin under the workspace lock and hub pushes take no lock, so writes need the lock and a compare-and-swap.",
       "criteria": [
         {
-          "id": "21-REQ-7.1",
-          "pattern": "complex_event",
-          "condition": "resolution needs to write a ref (an origin_tracking create or an origin_fetch)",
-          "guard": "the local check of step 1 failed",
+          "id": "REQ-7.1",
+          "pattern": "event_driven",
+          "condition": "resolution needs to write a ref (an origin_tracking create or an origin_fetch) and the local check of step 1 failed",
           "system": "branch resolver",
-          "action": "take wslock.TryLock(slug) before writing anything and hold it until that element's resolution finishes"
+          "action": "take wslock.TryLock(slug) before writing anything and hold it until that element's resolution finishes",
+          "contract": "TryLock is called once per branch with the slug; the fetch and update-ref happen while the lock is held; the lock is not held after the hook returns",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a lock spy wrapping wslock.TryLock",
+              "a tracking-only branch and a fork-only branch in origin mode",
+              "a fetch stub and runner that record whether the lock is held at call time",
+              "a tracking-only branch",
+              "a lock hook that creates refs/heads/feat at a new commit while the lock is being acquired"
+            ],
+            "pseudocode": "hook('t'); hook('f'); assert lockCalls==2; assert allWritesObservedLocked; assert !locked()\nlock.onAcquire=lambda: git('update-ref','refs/heads/feat',other); m,_=hook(); assert m=='local'; assert runner.updateRefCalls==0 && fetchCalls==0; assert rev('refs/heads/feat')==other"
+          }
         },
         {
-          "id": "21-REQ-7.2",
+          "id": "REQ-7.2",
           "pattern": "event_driven",
           "condition": "the workspace lock has been acquired for an element",
           "system": "branch resolver",
-          "action": "re-check step 1 before writing, and report local without writing if refs/heads/<name> now resolves"
+          "action": "re-check step 1 before writing, and report local without writing if refs/heads/<name> now resolves",
+          "check": {
+            "same_as": "REQ-7.1"
+          }
         },
         {
-          "id": "21-REQ-7.3",
+          "id": "REQ-7.3",
           "pattern": "unwanted",
           "condition": "wslock.TryLock(slug) reports the lock busy",
           "system": "registration handler",
           "action": "insert no row and not wait for the lock",
-          "contract": "HTTP 409 with error type workspace_busy and message another operation is running on this workspace; retry later"
+          "contract": "HTTP 409 with error type workspace_busy and message another operation is running on this workspace; retry later",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "the workspace lock is held by another operation",
+              "one tracking-only branch (hub mode) and one fork-only branch (origin mode)"
+            ],
+            "pseudocode": "unlock=TryLock(slug); for case in cases: t0=now(); r=post(); assert r.status==409 && r.type=='workspace_busy' && r.msg==MSG; assert now()-t0<1s; assert count(patches)==0"
+          }
         },
         {
-          "id": "21-REQ-7.4",
+          "id": "REQ-7.4",
           "pattern": "ubiquitous",
           "system": "registration handler",
-          "action": "release the workspace lock before the database insert and on every resolution outcome, success or failure"
+          "action": "release the workspace lock before the database insert and on every resolution outcome, success or failure",
+          "contract": "after each response TryLock(slug) succeeds again; at the time of the database insert the lock is not held",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a lock spy",
+              "scenarios: create success, fetch success, not found, fetch failure, write failure"
+            ],
+            "pseudocode": "for s in scenarios: post(s); u,ok=TryLock(slug); assert ok; u(); assert lockHeldAtInsert==False"
+          }
         },
         {
-          "id": "21-REQ-7.5",
+          "id": "REQ-7.5",
           "pattern": "state_driven",
           "condition": "the workspace lock is held by another operation",
           "system": "registration handler",
           "action": "complete registrations on the local path and for skip_branch_check elements without taking the lock",
-          "contract": "HTTP 201 for those registrations"
+          "contract": "HTTP 201 for those registrations",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "the workspace lock is held by another operation",
+              "one branch that exists locally and one that does not exist at all"
+            ],
+            "pseudocode": "hold=TryLock(slug); r1=post(local); r2=post(missing,skip=True); assert r1.status==201 && r2.status==201; assert registrationLockCalls==0"
+          }
         }
       ]
     },
     {
-      "id": "21-REQ-8",
+      "id": "REQ-8",
       "title": "Audit of the resolution method",
       "rationale": "Operators need to see how a branch was found and to tell not-checked from no-hook.",
       "criteria": [
         {
-          "id": "21-REQ-8.1",
+          "id": "REQ-8.1",
           "pattern": "event_driven",
           "condition": "a single-patch registration with a registered hook creates a patch",
           "system": "registration handler",
-          "action": "emit hub.patch.create with metadata key branch_resolution set to local, origin_tracking or origin_fetch, next to the existing branch_name and position keys"
+          "action": "emit hub.patch.create with metadata key branch_resolution set to local, origin_tracking or origin_fetch, next to the existing branch_name and position keys",
+          "contract": "the metadata branch_resolution is local, origin_tracking, origin_fetch and skipped respectively; branch_name and position remain in the metadata; the other event fields are unchanged",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a hook registered",
+              "branches that resolve as local, origin_tracking, origin_fetch, and one skipped with skip_branch_check true"
+            ],
+            "pseudocode": "for (case,expected) in cases: post(case); ev=lastAudit('hub.patch.create'); assert ev.meta.branch_resolution==expected; assert 'branch_name' in ev.meta and 'position' in ev.meta"
+          }
         },
         {
-          "id": "21-REQ-8.2",
+          "id": "REQ-8.2",
           "pattern": "event_driven",
           "condition": "a single-patch registration with skip_branch_check true creates a patch",
           "system": "registration handler",
-          "action": "emit hub.patch.create with branch_resolution set to skipped"
+          "action": "emit hub.patch.create with branch_resolution set to skipped",
+          "check": {
+            "same_as": "REQ-8.1"
+          }
         },
         {
-          "id": "21-REQ-8.3",
+          "id": "REQ-8.3",
           "pattern": "state_driven",
           "condition": "no branch-check hook is registered",
           "system": "registration handler",
-          "action": "omit the branch_resolution key from hub.patch.create"
+          "action": "omit the branch_resolution key from hub.patch.create",
+          "contract": "hub.patch.create is emitted; its metadata has no branch_resolution key but has branch_name and position",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "no hook registered"
+            ],
+            "pseudocode": "post(); ev=lastAudit(); assert 'branch_resolution' not in ev.meta"
+          }
         },
         {
-          "id": "21-REQ-8.4",
+          "id": "REQ-8.4",
           "pattern": "event_driven",
           "condition": "an if_not_exists request returns the existing record",
           "system": "registration handler",
-          "action": "emit no hub.patch.create event"
+          "action": "emit no hub.patch.create event",
+          "contract": "the existing record is returned; no hub.patch.create event is emitted",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a patch already registered for branch feat",
+              "the audit sink is emptied"
+            ],
+            "pseudocode": "clearAudit(); r=post(feat,if_not_exists=True); assert r.status==200; assert auditCount('hub.patch.create')==0"
+          }
         },
         {
-          "id": "21-REQ-8.5",
+          "id": "REQ-8.5",
           "pattern": "ubiquitous",
           "system": "batch registration handler",
-          "action": "emit no hub.patch.create events, as before this spec"
+          "action": "emit no hub.patch.create events, as before this spec",
+          "contract": "status is 201 with two rows; no hub.patch.create event is emitted",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a hook registered and an empty audit sink"
+            ],
+            "pseudocode": "r=postBatch([a,b]); assert r.status==201; assert auditCount('hub.patch.create')==0"
+          }
         }
       ]
     },
     {
-      "id": "21-REQ-9",
+      "id": "REQ-9",
       "title": "Resolver hook contract and wiring",
       "rationale": "One resolving hook avoids two sources of truth and follows the existing hook pattern that avoids an import cycle.",
       "criteria": [
         {
-          "id": "21-REQ-9.1",
+          "id": "REQ-9.1",
           "pattern": "ubiquitous",
           "system": "workspace package",
-          "action": "define in internal/workspace/branch_check_hook.go a resolver hook type that takes a context, a slug and a branch name and returns a resolution method and a classified error, replacing BranchCheckFunc"
+          "action": "define in internal/workspace/branch_check_hook.go a resolver hook type that takes a context, a slug and a branch name and returns a resolution method and a classified error, replacing BranchCheckFunc",
+          "contract": "the statuses are 400, 502, 502, 409 and 500; BranchCheckFunc no longer exists; the stub compiles against the new type (context, slug, branch)",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a stub resolver returning each classified error: not found, origin fetch failed, credential failure, workspace busy, other",
+              "the resolver hook type in internal/workspace/branch_check_hook.go taking a context, slug and branch name and returning a method and error"
+            ],
+            "pseudocode": "for (err,status) in table: RegisterBranchCheckHook(func(ctx,slug,b)(Method,error){return '',err}); assert post().status==status"
+          }
         },
         {
-          "id": "21-REQ-9.2",
+          "id": "REQ-9.2",
           "pattern": "ubiquitous",
           "system": "workspace package",
-          "action": "classify hook errors as at least branch not found, origin fetch failed (including credential resolution failure), workspace busy and other, and map them in the handlers to 400, 502, 409 and 500"
+          "action": "classify hook errors as at least branch not found, origin fetch failed (including credential resolution failure), workspace busy and other, and map them in the handlers to 400, 502, 409 and 500",
+          "check": {
+            "same_as": "REQ-9.1"
+          }
         },
         {
-          "id": "21-REQ-9.3",
+          "id": "REQ-9.3",
           "pattern": "ubiquitous",
           "system": "carrypatch package",
-          "action": "implement the resolver hook in internal/carrypatch, constructed from the git runner factory, the workspace root, the variable getter store.GetVariableValue, the origin credential resolver of 20_fork_patch_sync and an injectable single-branch fetch function, and register it from cmd/af-hub/main.go in place of the inline rev-parse --verify closure"
+          "action": "implement the resolver hook in internal/carrypatch, constructed from the git runner factory, the workspace root, the variable getter store.GetVariableValue, the origin credential resolver of 20_fork_patch_sync and an injectable single-branch fetch function, and register it from cmd/af-hub/main.go in place of the inline rev-parse --verify closure",
+          "contract": "the constructed hook uses the injected fetch stub and getter; main.go registers the carrypatch resolver; main.go no longer contains an inline rev-parse --verify branch-check closure",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "carrypatch resolver constructor accepting git runner factory, workspace root, variable getter, credential resolver and fetch function",
+              "the source of cmd/af-hub/main.go"
+            ],
+            "pseudocode": "h=carrypatch.NewBranchResolverHook(factory,root,getter,creds,fetch); assert usesStubs(h); src=read('cmd/af-hub/main.go'); assert 'RegisterBranchCheckHook(carrypatch.' in src; assert 'rev-parse --verify' not in branchCheckClosure"
+          }
         },
         {
-          "id": "21-REQ-9.4",
+          "id": "REQ-9.4",
           "pattern": "ubiquitous",
           "system": "build",
-          "action": "keep the workspace package free of imports of carrypatch and the carrypatch package free of imports of workspace"
+          "action": "keep the workspace package free of imports of carrypatch and the carrypatch package free of imports of workspace",
+          "contract": "internal/workspace does not depend on internal/carrypatch; internal/carrypatch does not depend on internal/workspace",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "the module's package graph from go list -deps"
+            ],
+            "pseudocode": "assert 'internal/carrypatch' not in goListDeps('internal/workspace'); assert 'internal/workspace' not in goListDeps('internal/carrypatch')"
+          }
         },
         {
-          "id": "21-REQ-9.5",
+          "id": "REQ-9.5",
           "pattern": "unwanted",
           "condition": "the resolver hook returns an error that carries no recognised classification",
           "system": "registration handler",
           "action": "treat it as an internal failure and insert no row",
-          "contract": "HTTP 500 with message internal server error"
+          "contract": "HTTP 500 with message internal server error",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a stub hook returning a plain errors.New(\"boom\")"
+            ],
+            "pseudocode": "hook=func(...){return '',errors.New('boom')}; r=post(); assert r.status==500 && r.msg=='internal server error'; assert 'boom' not in r.body; assert count(patches)==0"
+          }
         }
       ]
     },
     {
-      "id": "21-REQ-10",
+      "id": "REQ-10",
       "title": "Documentation and CLI surface",
       "rationale": "Project steering treats outdated docs as regressions.",
       "criteria": [
         {
-          "id": "21-REQ-10.1",
+          "id": "REQ-10.1",
           "pattern": "ubiquitous",
           "system": "docs/api.md",
-          "action": "describe in the registration section the resolution order, the 400 message branch does not exist in repository or on origin, the 409 workspace_busy and 502 origin_fetch_failed responses, the skip_branch_check behaviour and the branch_resolution audit metadata"
+          "action": "describe in the registration section the resolution order, the 400 message branch does not exist in repository or on origin, the 409 workspace_busy and 502 origin_fetch_failed responses, the skip_branch_check behaviour and the branch_resolution audit metadata",
+          "contract": "it mentions local, origin_tracking and origin_fetch in order; it contains branch does not exist in repository or on origin; it documents 409 workspace_busy and 502 origin_fetch_failed; it describes skip_branch_check and the branch_resolution metadata with the skipped value",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "docs/api.md after the change"
+            ],
+            "pseudocode": "s=section('api.md','Patches'); for needle in [...]: assert needle in s"
+          }
         },
         {
-          "id": "21-REQ-10.2",
+          "id": "REQ-10.2",
           "pattern": "ubiquitous",
           "system": "docs/openapi.yaml",
-          "action": "update the POST /workspaces/{slug}/patches description, its 400 description and the skip_branch_check property description, and add 409 and 502 responses"
+          "action": "update the POST /workspaces/{slug}/patches description, its 400 description and the skip_branch_check property description, and add 409 and 502 responses",
+          "contract": "the description mentions the resolution order; the 400 description mentions branch does not exist in repository or on origin; responses 409 and 502 exist; the skip_branch_check property description states that no lookup, fetch or local branch is made",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "docs/openapi.yaml parsed as YAML"
+            ],
+            "pseudocode": "op=yaml['paths']['/workspaces/{slug}/patches']['post']; assert '409' in op.responses and '502' in op.responses; assert 'or on origin' in op.responses['400'].description"
+          }
         },
         {
-          "id": "21-REQ-10.3",
+          "id": "REQ-10.3",
           "pattern": "ubiquitous",
           "system": "docs/cli.md",
-          "action": "update the afc patch add entry and the --skip-branch-check flag text, and update the command's help text, to describe the new resolution behaviour"
+          "action": "update the afc patch add entry and the --skip-branch-check flag text, and update the command's help text, to describe the new resolution behaviour",
+          "contract": "both mention local, tracking and fork resolution and that the server decides by PATCH_BRANCH_SOURCE; the --skip-branch-check text says the lookup, fetch and local branch creation are skipped",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "docs/cli.md and the patch add cobra command"
+            ],
+            "pseudocode": "assert 'origin' in cmd.Long and 'skip' in flag.Usage; assert needles in section('cli.md','patch add')"
+          }
         },
         {
-          "id": "21-REQ-10.4",
+          "id": "REQ-10.4",
           "pattern": "ubiquitous",
           "system": "afc patch add",
-          "action": "add no new flag and send the same request body as before this spec, so that the existing CLI test passes unchanged"
+          "action": "add no new flag and send the same request body as before this spec, so that the existing CLI test passes unchanged",
+          "contract": "the request body equals the pre-change body; the flag set equals the pre-change flag set; the existing CLI test passes unmodified",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "the existing CLI test for afc patch add and a recording test server"
+            ],
+            "pseudocode": "run('patch','add',...); assert body==expected; assert flagNames(cmd)==oldFlagNames"
+          }
         },
         {
-          "id": "21-REQ-10.5",
+          "id": "REQ-10.5",
           "pattern": "ubiquitous",
           "system": "change set",
-          "action": "leave docs/carry_patch_workflow.md unmodified"
+          "action": "leave docs/carry_patch_workflow.md unmodified",
+          "contract": "the diff is empty",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "the base revision and the working tree"
+            ],
+            "pseudocode": "assert git_diff('docs/carry_patch_workflow.md')==''"
+          }
         }
       ]
     }
   ],
   "execution_paths": [
     {
-      "id": "21-PATH-1",
+      "id": "PATH-1",
       "title": "Operator registers a fork-only branch known to the clone in hub mode",
       "steps": [
         {
@@ -433,10 +793,32 @@
           "actor": "registration handler",
           "action": "inserts the patch row, emits hub.patch.create with branch_resolution origin_tracking and returns 201"
         }
-      ]
+      ],
+      "smoke": {
+        "real_components": [
+          "registration HTTP handler",
+          "carrypatch resolver",
+          "git runner",
+          "workspace lock",
+          "database",
+          "audit sink"
+        ],
+        "setup": [
+          "the hub HTTP server with real handler, resolver, git runner, workspace lock, database and audit sink",
+          "a real bare fork and a clone as trunk with the branch only as refs/remotes/origin/<name>",
+          "PATCH_BRANCH_SOURCE unset"
+        ],
+        "end_state": [
+          "the response is 201",
+          "refs/heads/<name> exists at the tracking tip",
+          "the row exists",
+          "hub.patch.create has branch_resolution origin_tracking",
+          "the workspace lock is free afterwards"
+        ]
+      }
     },
     {
-      "id": "21-PATH-2",
+      "id": "PATH-2",
       "title": "Operator registers a branch pushed to the fork after the clone in origin mode",
       "steps": [
         {
@@ -455,10 +837,32 @@
           "actor": "registration handler",
           "action": "inserts the patch row, emits hub.patch.create with branch_resolution origin_fetch and returns 201"
         }
-      ]
+      ],
+      "smoke": {
+        "real_components": [
+          "registration HTTP handler",
+          "carrypatch resolver",
+          "go-git fetch",
+          "workspace.ResolveCloneAuth",
+          "workspace lock",
+          "database",
+          "audit sink"
+        ],
+        "setup": [
+          "the hub HTTP server with real handler, resolver, ResolveCloneAuth, go-git fetch and database",
+          "a real bare fork, a clone, and a branch pushed to the fork afterwards",
+          "PATCH_BRANCH_SOURCE is origin"
+        ],
+        "end_state": [
+          "the response is 201",
+          "refs/remotes/origin/<name> and refs/heads/<name> exist at the fork tip",
+          "only that branch was fetched",
+          "hub.patch.create has branch_resolution origin_fetch"
+        ]
+      }
     },
     {
-      "id": "21-PATH-3",
+      "id": "PATH-3",
       "title": "Batch with a missing second branch is rejected without rows",
       "steps": [
         {
@@ -477,10 +881,29 @@
           "actor": "operator",
           "action": "re-submits the first branch and the registration resolves it as local without writing a ref"
         }
-      ]
+      ],
+      "smoke": {
+        "real_components": [
+          "registration HTTP handler",
+          "carrypatch resolver",
+          "git runner",
+          "database",
+          "audit sink"
+        ],
+        "setup": [
+          "the hub HTTP server with real components and a real fork and clone",
+          "element 0 tracking-only and element 1 nowhere"
+        ],
+        "end_state": [
+          "the batch answers 400 patch[1]: branch does not exist in repository or on origin",
+          "no rows are inserted",
+          "refs/heads/<element 0> exists",
+          "the re-submission answers 201 with branch_resolution local and writes no ref"
+        ]
+      }
     },
     {
-      "id": "21-PATH-4",
+      "id": "PATH-4",
       "title": "Fork unreachable during origin-mode registration",
       "steps": [
         {
@@ -495,10 +918,30 @@
           "actor": "registration handler",
           "action": "logs the error text, inserts no row and returns 502 origin fetch failed with error type origin_fetch_failed"
         }
-      ]
+      ],
+      "smoke": {
+        "real_components": [
+          "registration HTTP handler",
+          "carrypatch resolver",
+          "go-git fetch",
+          "workspace lock",
+          "database"
+        ],
+        "setup": [
+          "the hub HTTP server with real components",
+          "origin mode and a trunk whose origin URL is unreachable",
+          "a branch absent locally and from tracking refs"
+        ],
+        "end_state": [
+          "the response is 502 with message origin fetch failed and type origin_fetch_failed",
+          "no row and no local branch exist",
+          "the underlying error text appears in logs but not in the response",
+          "the workspace lock is released"
+        ]
+      }
     },
     {
-      "id": "21-PATH-5",
+      "id": "PATH-5",
       "title": "Registration while a sync holds the workspace lock",
       "steps": [
         {
@@ -517,7 +960,27 @@
           "actor": "operator",
           "action": "submits a registration with skip_branch_check true, which is accepted without touching the lock or any ref"
         }
-      ]
+      ],
+      "smoke": {
+        "real_components": [
+          "registration HTTP handler",
+          "carrypatch resolver",
+          "workspace lock",
+          "git runner",
+          "database",
+          "audit sink"
+        ],
+        "setup": [
+          "the hub HTTP server with real components",
+          "wslock.TryLock(slug) is held by a simulated sync",
+          "a tracking-only branch"
+        ],
+        "end_state": [
+          "the first answers 409 workspace_busy with message another operation is running on this workspace; retry later and inserts no row",
+          "the second answers 201 without touching the lock or any ref",
+          "hub.patch.create for the second has branch_resolution skipped"
+        ]
+      }
     }
   ],
   "external_apis": [

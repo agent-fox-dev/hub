@@ -1,452 +1,778 @@
 {
-  "$schema": "https://agent-fox.dev/schemas/requirements.v2.json",
+  "$schema": "https://agent-fox.dev/schemas/requirements.v3.json",
   "spec_id": "29",
   "spec_name": "sandbox_gateway_provider",
-  "schema_version": 2,
-  "introduction": "This spec adds a second way to build the sandbox provider that specs 25–28 already use: with `[sandbox].provider = \"gateway\"`, hub dials a remote agentkit-gateway under one hub-held token, probes it at start, snapshots its capabilities and runs its own lease-enforcing gateway in front of it. Callers keep the same API, leases and guarantees and never see the remote gateway's address or token.",
-  "glossary": {
-    "capability snapshot": "The single `Capabilities()` value hub reads from the remote client after a successful probe and keeps for the life of the process.",
-    "gateway factory": "The gateway variant of spec 25's provider factory seam; production uses `gateway.Dial`, tests inject a client pointing at an in-process remote.",
-    "hub gateway": "Hub's own embedded `gatewayd.Server` on `[sandbox].listen` (spec 27), which authenticates lease tokens; its URL is the lease's `gateway_url`.",
-    "loopback host": "`localhost` or a loopback IP literal, decided without a DNS lookup (spec 27's rule).",
-    "redacting value": "The type hub stores the validated token in, whose fmt, slog and JSON renderings are all `[redacted]`.",
-    "remote client": "The `sandbox.Provider` returned by `gateway.Dial(gateway_url, gateway.Options{Token: gateway_token})` (or a test-injected equivalent) that hub uses as its provider.",
-    "remote gateway": "The deployment's agentkit-gateway that hub reaches at the configured `sandbox.gateway_url` and that runs the boxes on its own backend.",
-    "remote refusal": "A remote call that fails with gRPC status `Unauthenticated` or `PermissionDenied` because the remote gateway rejected hub's token.",
-    "scrub set": "The values spec 27's scrubber replaces with `[redacted]` in provider error text (27-REQ-9.1); for the gateway provider it also holds the token, the `gateway_url` string and the URL's `url.Host`."
-  },
+  "schema_version": 3,
   "requirements": [
     {
-      "id": "29-REQ-1",
+      "id": "REQ-1",
       "title": "Selecting the remote provider",
       "rationale": "The source PRD asks for one API over either a host engine or a remote agentkit-gateway, chosen per deployment.",
       "criteria": [
         {
-          "id": "29-REQ-1.1",
+          "id": "REQ-1.1",
           "pattern": "event_driven",
           "condition": "hub starts with `provider = \"gateway\"`, a valid `gateway_url` and `gateway_token`, and a reachable remote gateway that accepts the token",
           "system": "sandboxes start-up (Init/Start)",
           "action": "return a running sandbox service whose `Provider()` is the remote client",
-          "contract": "`Init` returns a non-nil `*Service` and a nil error; hub proceeds to bind its listeners"
+          "contract": "`Init` returns a non-nil `*Service` and a nil error; hub proceeds to bind its listeners",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "an in-process gatewayd.Server with static token T over local on 127.0.0.1:0",
+              "a config file with provider = \"gateway\", gateway_url = http://127.0.0.1:<port>, gateway_token = T and one valid profile",
+              "the gateway factory is the real gateway.Dial"
+            ],
+            "pseudocode": "svc, err = Init(log, path, dialFactory); assert err == nil; assert svc != nil; assert svc.Provider() != nil"
+          }
         },
         {
-          "id": "29-REQ-1.2",
+          "id": "REQ-1.2",
           "pattern": "unwanted",
           "condition": "`[sandbox].provider` is set to a value other than `\"podman\"` or `\"gateway\"`",
           "system": "sandboxes validation",
           "action": "refuse start with a static failure that names `sandbox.provider` and lists both `podman` and `gateway` as accepted values",
-          "contract": "`Validate` returns a joined error containing `sandbox.provider`, `podman` and `gateway`; no provider factory is called"
+          "contract": "`Validate` returns a joined error containing `sandbox.provider`, `podman` and `gateway`; no provider factory is called",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a Config with provider = \"kubernetes\" and no other faults",
+              "a gateway factory and a podman factory that count calls"
+            ],
+            "pseudocode": "err = Start(cfg{provider:'kubernetes'}, counters); assert contains(err,'sandbox.provider','podman','gateway'); assert gwCalls==0 && podmanCalls==0"
+          }
         },
         {
-          "id": "29-REQ-1.3",
+          "id": "REQ-1.3",
           "pattern": "state_driven",
           "condition": "`provider = \"gateway\"` is configured",
           "system": "sandboxes start-up",
           "action": "build no Podman provider and execute no engine binary at any point in the process",
-          "contract": "the Podman provider factory is called zero times and no child process is started"
+          "contract": "the Podman provider factory is called zero times and no child process is started",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a valid gateway config",
+              "a podman factory that fails the test if called",
+              "PATH points at a directory containing only a sentinel `podman` script that writes a marker file"
+            ],
+            "pseudocode": "Init(...); assert podmanCalls == 0; assert !exists(marker)"
+          }
         },
         {
-          "id": "29-REQ-1.4",
+          "id": "REQ-1.4",
           "pattern": "ubiquitous",
           "system": "sandboxes validation",
           "action": "apply spec 25's profile rules, `max_ttl`, `network_modes`, scope, profile-listing and disabled-state behaviour identically for `provider = \"gateway\"` and `provider = \"podman\"`",
-          "contract": "a profile set accepted or rejected under podman is accepted or rejected with the same message under gateway, given the same provider capabilities"
+          "contract": "a profile set accepted or rejected under podman is accepted or rejected with the same message under gateway, given the same provider capabilities",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a table of profile sets: valid, bad max_ttl, bad network_modes entry, CheckSpec-rejected profile",
+              "a stub provider reporting identical capabilities for both provider settings"
+            ],
+            "pseudocode": "for set in sets: e1 = Start(podmanCfg(set)); e2 = Start(gatewayCfg(set)); assert (e1==nil)==(e2==nil); assert profileMsg(e1)==profileMsg(e2)"
+          }
         }
       ]
     },
     {
-      "id": "29-REQ-2",
+      "id": "REQ-2",
       "title": "Validating gateway_url",
       "rationale": "The token grants access to every box hub runs, so the address must be unambiguous and must not carry credentials or travel in plaintext over a network.",
       "criteria": [
         {
-          "id": "29-REQ-2.1",
+          "id": "REQ-2.1",
           "pattern": "ubiquitous",
           "system": "sandboxes configuration",
           "action": "recognise `sandbox.gateway_url` and `sandbox.gateway_token` as known keys, expand `${NAME}` in both like every other string, and validate both together with the other static checks before any provider is built",
-          "contract": "neither key is reported as unknown; all static failures, including these keys', arrive in one `errors.Join` error"
+          "contract": "neither key is reported as unknown; all static failures, including these keys', arrive in one `errors.Join` error",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a TOML file with [sandbox] provider = \"gateway\", gateway_url = \"${GW_URL}\", gateway_token = \"${GW_TOKEN}\" and env GW_URL, GW_TOKEN set",
+              "a second file with both keys invalid plus an invalid max_ttl"
+            ],
+            "pseudocode": "cfg = LoadConfig(p1); assert cfg.GatewayURL == env(GW_URL); _, err = Validate(LoadConfig(p2)); assert contains(err, three keys)"
+          }
         },
         {
-          "id": "29-REQ-2.2",
+          "id": "REQ-2.2",
           "pattern": "unwanted",
           "condition": "`provider = \"gateway\"` and `gateway_url` is absent or empty after expansion",
           "system": "sandboxes validation",
           "action": "refuse start with a static failure naming `sandbox.gateway_url` and stating that it is required",
-          "contract": "joined error contains `sandbox.gateway_url` and `required`"
+          "contract": "joined error contains `sandbox.gateway_url` and `required`",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "provider = \"gateway\" with a valid token",
+              "cases: key absent, empty string, ${UNSET} expanding to empty"
+            ],
+            "pseudocode": "for c in cases: err = Validate(c); assert contains(err,'sandbox.gateway_url','required')"
+          }
         },
         {
-          "id": "29-REQ-2.3",
+          "id": "REQ-2.3",
           "pattern": "unwanted",
           "condition": "`gateway_url` does not parse as an absolute URL, or its scheme is neither `https` nor `http` with a loopback host",
           "system": "sandboxes validation",
           "action": "refuse start with a static failure naming `sandbox.gateway_url` and the scheme or parse rule it broke",
-          "contract": "joined error contains `sandbox.gateway_url`; `http://127.0.0.1:9000` and `http://localhost:9000` and `https://gw.example:443` pass, `http://gw.example:9000` and `ftp://127.0.0.1` fail"
+          "contract": "joined error contains `sandbox.gateway_url`; `http://127.0.0.1:9000` and `http://localhost:9000` and `https://gw.example:443` pass, `http://gw.example:9000` and `ftp://127.0.0.1` fail",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "provider = \"gateway\" with a valid token"
+            ],
+            "pseudocode": "for (u, ok) in table: err = Validate(cfg(u)); assert (err==nil)==ok; if !ok assert contains(err,'sandbox.gateway_url')"
+          }
         },
         {
-          "id": "29-REQ-2.4",
+          "id": "REQ-2.4",
           "pattern": "unwanted",
           "condition": "`gateway_url` has an empty host, or a port that is non-numeric or outside 1 to 65535",
           "system": "sandboxes validation",
           "action": "refuse start with a static failure naming `sandbox.gateway_url` and the host or port rule it broke",
-          "contract": "joined error contains `sandbox.gateway_url`; ports 1 and 65535 pass, ports 0 and 65536 fail"
+          "contract": "joined error contains `sandbox.gateway_url`; ports 1 and 65535 pass, ports 0 and 65536 fail",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "provider = \"gateway\" with a valid token"
+            ],
+            "pseudocode": "assert Validate(url(':1'))==nil; assert Validate(url(':65535'))==nil; for u in bad: assert contains(Validate(u),'sandbox.gateway_url')"
+          }
         },
         {
-          "id": "29-REQ-2.5",
+          "id": "REQ-2.5",
           "pattern": "unwanted",
           "condition": "`gateway_url` carries userinfo, a query, a fragment, or a path other than empty or `/`",
           "system": "sandboxes validation",
           "action": "refuse start with a static failure naming `sandbox.gateway_url` and the rule it broke",
-          "contract": "joined error contains `sandbox.gateway_url`; `https://gw.example/` passes, `https://gw.example/api`, `https://gw.example?x=1` and `https://gw.example#f` fail"
+          "contract": "joined error contains `sandbox.gateway_url`; `https://gw.example/` passes, `https://gw.example/api`, `https://gw.example?x=1` and `https://gw.example#f` fail",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "provider = \"gateway\" with a valid token"
+            ],
+            "pseudocode": "assert Validate('https://gw.example/')==nil; for u in rest: assert contains(Validate(u),'sandbox.gateway_url')"
+          }
         },
         {
-          "id": "29-REQ-2.6",
+          "id": "REQ-2.6",
           "pattern": "ubiquitous",
           "system": "sandboxes validation",
           "action": "remove any userinfo from `gateway_url` before quoting it in any failure message",
-          "contract": "for `https://user:pw@gw.example`, the error contains neither `user:pw` nor `pw@`"
+          "contract": "for `https://user:pw@gw.example`, the error contains neither `user:pw` nor `pw@`",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "provider = \"gateway\" with gateway_url = https://user:pw@gw.example and a valid token"
+            ],
+            "pseudocode": "err = Validate(cfg('https://user:pw@gw.example')); assert !contains(err,'user:pw') && !contains(err,'pw@')"
+          }
         }
       ]
     },
     {
-      "id": "29-REQ-3",
+      "id": "REQ-3",
       "title": "Validating gateway_token",
       "rationale": "gRPC metadata accepts only printable ASCII, trailing newlines from secret files are common, and a short token is weak and would make scrubbing mangle ordinary text.",
+      "system": "sandboxes validation",
       "criteria": [
         {
-          "id": "29-REQ-3.1",
+          "id": "REQ-3.1",
           "pattern": "unwanted",
           "condition": "`provider = \"gateway\"` and `gateway_token` is absent or empty after `${NAME}` expansion",
-          "system": "sandboxes validation",
           "action": "refuse start with a static failure naming `sandbox.gateway_token` and stating that it is required",
-          "contract": "joined error contains `sandbox.gateway_token` and `required`"
+          "contract": "joined error contains `sandbox.gateway_token` and `required`",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "provider = \"gateway\" with a valid gateway_url",
+              "cases: absent, empty, ${UNSET} expanding to empty"
+            ],
+            "pseudocode": "for c in cases: assert contains(Validate(c),'sandbox.gateway_token','required')"
+          }
         },
         {
-          "id": "29-REQ-3.2",
+          "id": "REQ-3.2",
           "pattern": "unwanted",
           "condition": "`gateway_token` is shorter than 16 characters",
-          "system": "sandboxes validation",
           "action": "refuse start with a static failure naming `sandbox.gateway_token` and the minimum length of 16",
-          "contract": "a 15-character token fails, a 16-character token passes"
+          "contract": "a 15-character token fails, a 16-character token passes",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "provider = \"gateway\" with a valid gateway_url"
+            ],
+            "pseudocode": "assert contains(Validate(tok(15)),'sandbox.gateway_token','16'); assert Validate(tok(16))==nil"
+          }
         },
         {
-          "id": "29-REQ-3.3",
+          "id": "REQ-3.3",
           "pattern": "unwanted",
           "condition": "`gateway_token` contains any byte outside 0x21–0x7E, including a space or a trailing newline",
-          "system": "sandboxes validation",
           "action": "refuse start with a static failure naming `sandbox.gateway_token` and the printable-ASCII-without-spaces rule",
-          "contract": "joined error contains `sandbox.gateway_token`; a token of 16 valid characters plus `\\n` fails"
+          "contract": "joined error contains `sandbox.gateway_token`; a token of 16 valid characters plus `\\n` fails",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "provider = \"gateway\" with a valid gateway_url"
+            ],
+            "pseudocode": "for t in bad: assert contains(Validate(t),'sandbox.gateway_token'); assert Validate(allPrintable16)==nil"
+          }
         },
         {
-          "id": "29-REQ-3.4",
+          "id": "REQ-3.4",
           "pattern": "ubiquitous",
-          "system": "sandboxes validation",
           "action": "for any `gateway_token` value, valid or invalid, produce validation error text that contains neither the token nor any contiguous substring of it of 8 or more characters",
-          "contract": "property test over generated tokens: `strings.Contains(err.Error(), sub)` is false for every such substring"
+          "contract": "property test over generated tokens: `strings.Contains(err.Error(), sub)` is false for every such substring",
+          "check": {
+            "kind": "property",
+            "setup": [
+              "a valid or invalid configuration otherwise, with gateway_url possibly also faulty"
+            ],
+            "pseudocode": "for tok in gen_tokens(): err = Validate(cfg(tok)); for sub in substrings(tok, minLen=8): assert !strings.Contains(errText(err), sub)"
+          }
         }
       ]
     },
     {
-      "id": "29-REQ-4",
+      "id": "REQ-4",
       "title": "Refusing the other provider's keys",
       "rationale": "A silently ignored `runtime` or `userns` under a remote provider would make an operator believe in isolation that does not exist.",
+      "system": "sandboxes validation",
       "criteria": [
         {
-          "id": "29-REQ-4.1",
+          "id": "REQ-4.1",
           "pattern": "unwanted",
           "condition": "`provider = \"gateway\"` and any of `engine_binary`, `runtime` or `userns` is non-empty",
-          "system": "sandboxes validation",
           "action": "refuse start with one static failure per such key, naming the key and stating it applies only to provider `\"podman\"`",
-          "contract": "joined error contains e.g. `sandbox.runtime` and `podman`"
+          "contract": "joined error contains e.g. `sandbox.runtime` and `podman`",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a valid gateway config plus engine_binary, runtime = \"krun\" and userns set"
+            ],
+            "pseudocode": "err = Validate(cfg); for k in [engine_binary,runtime,userns]: assert contains(err,'sandbox.'+k,'podman')"
+          }
         },
         {
-          "id": "29-REQ-4.2",
+          "id": "REQ-4.2",
           "pattern": "unwanted",
           "condition": "`provider = \"podman\"` and `gateway_url` or `gateway_token` is non-empty",
-          "system": "sandboxes validation",
           "action": "refuse start with one static failure per such key, naming the key and stating it applies only to provider `\"gateway\"`, without echoing the token value",
-          "contract": "joined error contains `sandbox.gateway_token` and `gateway` and does not contain the configured token"
+          "contract": "joined error contains `sandbox.gateway_token` and `gateway` and does not contain the configured token",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "provider = \"podman\" with gateway_url set and gateway_token = a known 20-character token"
+            ],
+            "pseudocode": "err = Validate(cfg); assert contains(err,'sandbox.gateway_url','sandbox.gateway_token','gateway'); assert !contains(err, token)"
+          }
         },
         {
-          "id": "29-REQ-4.3",
+          "id": "REQ-4.3",
           "pattern": "ubiquitous",
-          "system": "sandboxes validation",
           "action": "collect other-provider key failures in the same joined error as every other static failure",
-          "contract": "a config with an other-provider key and an invalid `max_ttl` yields one error that names both keys"
+          "contract": "a config with an other-provider key and an invalid `max_ttl` yields one error that names both keys",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "provider = \"gateway\" with runtime set and max_ttl = \"bogus\""
+            ],
+            "pseudocode": "err = Validate(cfg); assert contains(err,'sandbox.runtime','sandbox.max_ttl')"
+          }
         }
       ]
     },
     {
-      "id": "29-REQ-5",
+      "id": "REQ-5",
       "title": "Building and probing the remote client",
       "rationale": "The probe proves at start that the remote is reachable and accepts hub's token without creating anything.",
+      "system": "sandboxes start-up",
       "criteria": [
         {
-          "id": "29-REQ-5.1",
+          "id": "REQ-5.1",
           "pattern": "event_driven",
           "condition": "static validation passes with `provider = \"gateway\"`",
-          "system": "sandboxes start-up",
           "action": "build the remote client by calling the gateway factory once with the validated `gateway_url` and `gateway_token`; the production factory calls `gateway.Dial(gateway_url, gateway.Options{Token: gateway_token})`",
-          "contract": "the gateway factory receives exactly the configured URL and token"
+          "contract": "the gateway factory receives exactly the configured URL and token",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a valid gateway config with a known URL and token",
+              "a recording gateway factory returning a stub provider that answers List"
+            ],
+            "pseudocode": "Start(cfg, recFactory); assert rec.calls==1; assert rec.url==cfgURL && rec.token==cfgToken"
+          }
         },
         {
-          "id": "29-REQ-5.2",
+          "id": "REQ-5.2",
           "pattern": "event_driven",
           "condition": "the remote client has been built",
-          "system": "sandboxes start-up",
           "action": "probe it with exactly one `List` call under a 10-second timeout and make no `Create` or `Destroy` call on the remote during start",
-          "contract": "a recording remote backend observes 1 List, 0 Create and 0 Destroy calls under hub's token after start"
+          "contract": "a recording remote backend observes 1 List, 0 Create and 0 Destroy calls under hub's token after start",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "an in-process remote gatewayd with static token T over a recording wrapper around local",
+              "hub configured with the real gateway.Dial and token T"
+            ],
+            "pseudocode": "Init(...); assert rec.lists==1 && rec.creates==0 && rec.destroys==0"
+          }
         },
         {
-          "id": "29-REQ-5.3",
+          "id": "REQ-5.3",
           "pattern": "unwanted",
           "condition": "static validation fails",
-          "system": "sandboxes start-up",
           "action": "return the static failures without calling the gateway factory or issuing any `List`",
-          "contract": "the injected gateway factory is called 0 times; `Start` returns the joined static error"
+          "contract": "the injected gateway factory is called 0 times; `Start` returns the joined static error",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a config with an invalid gateway_url and a recording factory"
+            ],
+            "pseudocode": "err = Start(badCfg, rec); assert rec.calls==0 && rec.lists==0; assert contains(err,'sandbox.gateway_url')"
+          }
         },
         {
-          "id": "29-REQ-5.4",
+          "id": "REQ-5.4",
           "pattern": "unwanted",
           "condition": "the gateway factory returns an error, or the probe fails because the remote is unreachable, a TLS failure occurs, the remote refuses the token, or the 10-second timeout expires",
-          "system": "sandboxes start-up",
           "action": "refuse start with an error that starts with `sandbox:`, names `sandbox.provider`, `sandbox.gateway_url` and `sandbox.gateway_token`, and includes the client's error text with the token replaced by `[redacted]` and URL userinfo removed",
-          "contract": "`Init` returns a non-nil error and a nil service; the error text contains the three key names and not the token"
+          "contract": "`Init` returns a non-nil error and a nil service; the error text contains the three key names and not the token",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "case A: factory returns an error containing the token and https://user:pw@host",
+              "case B: real Dial to a closed 127.0.0.1 port",
+              "case C: in-process remote with token A, hub configured with token B"
+            ],
+            "pseudocode": "for c in cases: svc, err = Init(c); assert svc==nil; assert hasPrefix(err,'sandbox:'); assert contains(err,3 keys); assert !contains(err, token)"
+          }
         },
         {
-          "id": "29-REQ-5.5",
+          "id": "REQ-5.5",
           "pattern": "unwanted",
           "condition": "the remote accepts the connection but does not answer the probe `List`",
-          "system": "sandboxes start-up",
           "action": "abandon the probe when the 10-second timeout expires and refuse start as in 29-REQ-5.4",
-          "contract": "`Init` returns an error no later than 10 seconds plus 1 second after the probe began"
+          "contract": "`Init` returns an error no later than 10 seconds plus 1 second after the probe began",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a gateway factory returning a stub provider whose List blocks until its context is cancelled"
+            ],
+            "pseudocode": "t0=now(); _, err = Start(cfg, blockingFactory); assert err != nil; assert 10s <= now()-t0 <= 11s"
+          }
         }
       ]
     },
     {
-      "id": "29-REQ-6",
+      "id": "REQ-6",
       "title": "Remote capability snapshot",
       "rationale": "The assumed `Capabilities()` takes no context and returns no error, so reading the remote on every call could block hub's gateway or report empty modes during an outage.",
       "criteria": [
         {
-          "id": "29-REQ-6.1",
+          "id": "REQ-6.1",
           "pattern": "event_driven",
           "condition": "the probe succeeds",
           "system": "sandboxes start-up",
           "action": "read the remote client's `Capabilities()` exactly once and keep that snapshot for the life of the process",
-          "contract": "the remote client's `Capabilities()` is called once across start-up and any number of later backend `Capabilities()` calls"
+          "contract": "the remote client's `Capabilities()` is called once across start-up and any number of later backend `Capabilities()` calls",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a counting stub provider answering List and Capabilities"
+            ],
+            "pseudocode": "svc = Start(cfg, f(stub)); for i in 1..20: backend.Capabilities(); assert stub.capCalls == 1"
+          }
         },
         {
-          "id": "29-REQ-6.2",
+          "id": "REQ-6.2",
           "pattern": "unwanted",
           "condition": "a `network_modes` entry is not in the snapshot's `NetworkModes`",
           "system": "sandboxes start-up",
           "action": "refuse start with the message of 25-REQ-5.4 unchanged",
-          "contract": "`Init` returns that error and no service"
+          "contract": "`Init` returns that error and no service",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a remote snapshot offering only [\"none\"] and a config whose network_modes include \"host\""
+            ],
+            "pseudocode": "_, e1 = Start(gwCfg, stub); _, e2 = Start(podmanCfg, stub); assert e1 != nil; assert same(e1, e2)"
+          }
         },
         {
-          "id": "29-REQ-6.3",
+          "id": "REQ-6.3",
           "pattern": "unwanted",
           "condition": "`sandbox.CheckSpec` rejects a profile's spec against the snapshot",
           "system": "sandboxes start-up",
           "action": "refuse start with the per-profile message of 25-REQ-5.5 to 25-REQ-5.7 unchanged",
-          "contract": "`Init` returns that error and no service"
+          "contract": "`Init` returns that error and no service",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a remote snapshot whose capabilities make sandbox.CheckSpec reject one profile"
+            ],
+            "pseudocode": "_, err = Start(cfg, stubRejecting); assert err != nil; assert contains(err, profileName); assert equals(msgPart(err), CheckSpec(spec, caps).Error())"
+          }
         },
         {
-          "id": "29-REQ-6.4",
+          "id": "REQ-6.4",
           "pattern": "ubiquitous",
           "system": "hub gateway backend",
           "action": "answer `Capabilities()` (27-REQ-7.1) by narrowing the snapshot without any call to the remote, so a change to the remote's capabilities takes effect only after hub restarts",
-          "contract": "backend `Capabilities()` returns the narrowed snapshot while the remote is stopped"
+          "contract": "backend `Capabilities()` returns the narrowed snapshot while the remote is stopped",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a service started against an in-process remote offering several network modes",
+              "the remote then shut down"
+            ],
+            "pseudocode": "remote.Shutdown(); caps = backend.Capabilities(); assert caps.NetworkModes == narrow(snapshot); assert rec.calls unchanged"
+          }
         }
       ]
     },
     {
-      "id": "29-REQ-7",
+      "id": "REQ-7",
       "title": "Lease behaviour over the remote provider",
       "rationale": "Hub's gateway, the lease API and expiry use the remote client through the same `sandbox.Provider` seam, with only three remote-specific behaviours.",
       "criteria": [
         {
-          "id": "29-REQ-7.1",
+          "id": "REQ-7.1",
           "pattern": "event_driven",
           "condition": "a caller obtains a lease from `POST /api/v1/workspaces/widgets/sandboxes`, calls `gateway.Dial(lease.gateway_url, lease token)` and then `Create(sandbox.Spec{})`",
           "system": "hub gateway",
           "action": "create exactly one box on the remote gateway's backend under hub's token, with the lease's image and TTL and an `Env` equal to the profile's `env` merged with the resolved secrets",
-          "contract": "the recording remote backend captures one Spec with the lease's Image, TTL and Env; the caller receives a sandbox handle"
+          "contract": "the recording remote backend captures one Spec with the lease's Image, TTL and Env; the caller receives a sandbox handle",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "an in-process remote gatewayd (static token T) over a recording wrapper around local.Unisolated",
+              "hub service and hub gateway on a second 127.0.0.1:0 with profile `widgets` having env and a resolved secret"
+            ],
+            "pseudocode": "lease = post(); c = Dial(lease.gateway_url, tok); sb = c.Create(ctx, Spec{}); assert rec.creates==1; assert rec.spec.Env == merge(profile.env, secrets)"
+          }
         },
         {
-          "id": "29-REQ-7.2",
+          "id": "REQ-7.2",
           "pattern": "ubiquitous",
           "system": "hub gateway backend",
           "action": "send only hub's configured `gateway_token` to the remote and never send a lease token to it, and return a lease `gateway_url` equal to hub's own gateway URL (27-REQ-2.6), never the configured remote `gateway_url`",
-          "contract": "the remote authenticator sees only hub's token; the lease representation's `gateway_url` differs from `sandbox.gateway_url`"
+          "contract": "the remote authenticator sees only hub's token; the lease representation's `gateway_url` differs from `sandbox.gateway_url`",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a remote gatewayd whose authenticator records every token it sees",
+              "a lease obtained and a box created through hub's gateway"
+            ],
+            "pseudocode": "assert set(remote.seenTokens) == {hubToken}; assert lease.gateway_url == hubGatewayURL; assert lease.gateway_url != cfg.GatewayURL"
+          }
         },
         {
-          "id": "29-REQ-7.3",
+          "id": "REQ-7.3",
           "pattern": "unwanted",
           "condition": "a caller issues a second `Create` under the same lease token, or dials hub's gateway with a token hub never minted",
           "system": "hub gateway",
           "action": "refuse the call without contacting the remote",
-          "contract": "second Create returns gRPC `FailedPrecondition`; an unminted token returns `Unauthenticated`; the remote records no additional Create"
+          "contract": "second Create returns gRPC `FailedPrecondition`; an unminted token returns `Unauthenticated`; the remote records no additional Create",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a lease whose caller already made one Create",
+              "the remote's recorded Create count is 1"
+            ],
+            "pseudocode": "_, e = c.Create(ctx, Spec{}); assert status.Code(e)==FailedPrecondition; _, e2 = bad.Create(...); assert status.Code(e2)==Unauthenticated; assert rec.creates==1"
+          }
         },
         {
-          "id": "29-REQ-7.4",
+          "id": "REQ-7.4",
           "pattern": "event_driven",
           "condition": "a client calls `DELETE` on an active lease, or the caller calls `Close` on its sandbox handle",
           "system": "hub gateway and lease API",
           "action": "destroy the box on the remote and revoke the lease token",
-          "contract": "the remote's `List` no longer contains the box; a later dial with the lease token is `Unauthenticated`"
+          "contract": "the remote's `List` no longer contains the box; a later dial with the lease token is `Unauthenticated`",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "two leases each with a box created on the remote"
+            ],
+            "pseudocode": "del(lease1); sb2.Close(); assert remote.List() empty; assert status.Code(dialCreate(tok1))==Unauthenticated; same for tok2"
+          }
         },
         {
-          "id": "29-REQ-7.5",
+          "id": "REQ-7.5",
           "pattern": "event_driven",
           "condition": "a destroy through the remote client fails with an error matching `errors.Is(err, sandbox.ErrNotFound)` or with gRPC status `NotFound`",
           "system": "hub gateway backend, DELETE path and expiry sweep",
           "action": "treat the box as destroyed, exactly as spec 27 and spec 28 treat a provider not-found",
-          "contract": "the lease ends as it would after a successful destroy; `DELETE` answers its success status, not 502"
+          "contract": "the lease ends as it would after a successful destroy; `DELETE` answers its success status, not 502",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a stub remote client whose Destroy returns sandbox.ErrNotFound (wrapped) in one run and status.Error(codes.NotFound) in another",
+              "an active lease with a box"
+            ],
+            "pseudocode": "for form in [sentinel, grpcNotFound]: stub.destroyErr = form; r = delete(lease); assert r.status == okStatus; assert lease.state == ended"
+          }
         },
         {
-          "id": "29-REQ-7.6",
+          "id": "REQ-7.6",
           "pattern": "unwanted",
           "condition": "a remote call made after start fails with gRPC status `Unauthenticated` or `PermissionDenied`",
           "system": "hub gateway backend",
           "action": "return the error to the hub gateway caller with code `Unavailable` and the scrubbed message, apply spec 27's lease outcome unchanged, and log exactly one error record that names `sandbox.gateway_token` without its value",
-          "contract": "caller sees `codes.Unavailable`; a Create leaves the lease `failed`, a Destroy leaves it `active`, a `DELETE` answers 502; one slog error record per occurrence"
+          "contract": "caller sees `codes.Unavailable`; a Create leaves the lease `failed`, a Destroy leaves it `active`, a `DELETE` answers 502; one slog error record per occurrence",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a stub remote client returning status Unauthenticated (run 1) and PermissionDenied (run 2) from Create and from Destroy",
+              "slog.Default captured by a buffer handler"
+            ],
+            "pseudocode": "e = c.Create(); assert status.Code(e)==Unavailable; assert lease.state=='failed'; r=del(l2); assert r.status==502 && l2.state=='active'; assert count(errorRecords containing 'sandbox.gateway_token') == 2 per run"
+          }
         },
         {
-          "id": "29-REQ-7.7",
+          "id": "REQ-7.7",
           "pattern": "unwanted",
           "condition": "a remote `Create` fails or its response is lost",
           "system": "hub gateway backend",
           "action": "not retry the remote `Create`",
-          "contract": "the remote backend records exactly one Create per caller Create, including failed ones"
+          "contract": "the remote backend records exactly one Create per caller Create, including failed ones",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a recording remote backend with an injectable failing Create"
+            ],
+            "pseudocode": "rec.failNext(); c1.Create(); c2.Create(); assert rec.creates == 2"
+          }
         }
       ]
     },
     {
-      "id": "29-REQ-8",
+      "id": "REQ-8",
       "title": "The remote token and address never leave hub",
       "rationale": "Callers must never see the provider, and the token grants access to every box hub runs.",
       "criteria": [
         {
-          "id": "29-REQ-8.1",
+          "id": "REQ-8.1",
           "pattern": "state_driven",
           "condition": "`provider = \"gateway\"` is configured",
           "system": "sandboxes scrubber",
           "action": "include in the scrub set of 27-REQ-9.1, besides the secret and `env` values, the token, the configured `gateway_url` string and the URL's `url.Host`",
-          "contract": "scrubbing a text containing any of the three yields `[redacted]` in its place"
+          "contract": "scrubbing a text containing any of the three yields `[redacted]` in its place",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a service built with provider gateway, token T, gateway_url http://127.0.0.1:41234"
+            ],
+            "pseudocode": "out = scrub(text, svc.scrubValues()); assert !contains(out,T,url,host); assert contains(out,'[redacted]')"
+          }
         },
         {
-          "id": "29-REQ-8.2",
+          "id": "REQ-8.2",
           "pattern": "event_driven",
           "condition": "the remote backend returns an error whose text contains hub's remote token and the remote host",
           "system": "hub",
           "action": "keep both values out of every lease representation, HTTP response body, audit event, log line, gateway error message and lease `error` field",
-          "contract": "none of the captured outputs contains the token or the remote host string"
+          "contract": "none of the captured outputs contains the token or the remote host string",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a remote recording backend whose Create returns an error containing hub's remote token and the remote host:port",
+              "slog.Default and the audit emitter captured"
+            ],
+            "pseudocode": "rec.createErr = errorf('boom %s at %s', tok, host); e = c.Create(); for out in [e.Error(), leaseJSON, httpBodies, auditEvents, logs]: assert !contains(out,tok) && !contains(out,host)"
+          }
         },
         {
-          "id": "29-REQ-8.3",
+          "id": "REQ-8.3",
           "pattern": "ubiquitous",
           "system": "hub",
           "action": "exclude the token from every HTTP response including the profile listing and error bodies, every metric label, and the start-up info record, whose attributes remain exactly `provider` and `profiles` (25-REQ-8.2)",
-          "contract": "the start-up info record has attributes {provider, profiles} only; `/metrics` and the profile listing do not contain the token"
+          "contract": "the start-up info record has attributes {provider, profiles} only; `/metrics` and the profile listing do not contain the token",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a started service and HTTP server with provider gateway",
+              "slog captured"
+            ],
+            "pseudocode": "for u in urls: assert !contains(get(u).body, tok); rec = infoRecord(); assert keys(rec.attrs) == {provider, profiles}"
+          }
         },
         {
-          "id": "29-REQ-8.4",
+          "id": "REQ-8.4",
           "pattern": "ubiquitous",
           "system": "redacting value",
           "action": "render the validated token as `[redacted]` under `%v`, `%+v`, `%#v`, `%s`, `slog` and `json.Marshal`, including when it is a field of a printed struct",
-          "contract": "each rendering of a struct holding the token contains `[redacted]` and not the token"
+          "contract": "each rendering of a struct holding the token contains `[redacted]` and not the token",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "the validated token value and a struct holding it as a field"
+            ],
+            "pseudocode": "for f in [%v,%+v,%#v,%s]: out = Sprintf(f, holder); assert contains(out,'[redacted]') && !contains(out,tok); assert !contains(json.Marshal(holder), tok)"
+          }
         },
         {
-          "id": "29-REQ-8.5",
+          "id": "REQ-8.5",
           "pattern": "ubiquitous",
           "system": "sandboxes start-up",
           "action": "for any start-up error produced under 29-REQ-2 to 29-REQ-6, contain no occurrence of the token and quote `gateway_url` only with its userinfo removed",
-          "contract": "property test over generated configs and probe failures: the error text never contains the token or userinfo"
+          "contract": "property test over generated configs and probe failures: the error text never contains the token or userinfo",
+          "check": {
+            "kind": "property",
+            "setup": [
+              "a generator of configs (valid and faulty URL, token, other-provider keys, profiles) and of probe failures (factory errors and List errors whose text embeds the token, userinfo and URL)"
+            ],
+            "pseudocode": "for cfg, fail in gen(): err = Start(cfg, factoryFailing(fail)); assert !contains(errText(err), cfg.token) && !contains(errText(err), userinfo)"
+          }
         }
       ]
     },
     {
-      "id": "29-REQ-9",
+      "id": "REQ-9",
       "title": "Remote outages and shutdown",
       "rationale": "Hub relies on the gateway client's own reconnection and must report outages as recorded, visible outcomes.",
       "criteria": [
         {
-          "id": "29-REQ-9.1",
+          "id": "REQ-9.1",
           "pattern": "state_driven",
           "condition": "the remote gateway cannot be reached",
           "system": "lease API",
           "action": "keep issuing leases and listing profiles, since neither calls the provider",
-          "contract": "`POST /api/v1/workspaces/{ws}/sandboxes` returns its success status and the profile listing returns 200"
+          "contract": "`POST /api/v1/workspaces/{ws}/sandboxes` returns its success status and the profile listing returns 200",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a started service whose in-process remote has been shut down"
+            ],
+            "pseudocode": "remote.Shutdown(); assert post(lease).status == 201; assert get(profiles).status == 200"
+          }
         },
         {
-          "id": "29-REQ-9.2",
+          "id": "REQ-9.2",
           "pattern": "unwanted",
           "condition": "a caller's `Create` reaches hub's gateway while the remote is unreachable",
           "system": "hub gateway backend",
           "action": "mark the lease `failed` with the scrubbed provider error (27-REQ-6.3)",
-          "contract": "the caller receives an error; the lease's state is `failed` and its `error` field is scrubbed"
+          "contract": "the caller receives an error; the lease's state is `failed` and its `error` field is scrubbed",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a lease obtained while the remote is shut down"
+            ],
+            "pseudocode": "_, e = c.Create(); assert e != nil; l = getLease(); assert l.state=='failed'; assert !contains(l.error, tok, host)"
+          }
         },
         {
-          "id": "29-REQ-9.3",
+          "id": "REQ-9.3",
           "pattern": "unwanted",
           "condition": "a client sends `DELETE` for an `active` lease while the remote is unreachable",
           "system": "lease API",
           "action": "change nothing about the lease",
-          "contract": "HTTP 502 with error code `sandbox_provider_error`; the lease stays `active` and its token stays valid"
+          "contract": "HTTP 502 with error code `sandbox_provider_error`; the lease stays `active` and its token stays valid",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "an active lease with a box, then the remote shut down"
+            ],
+            "pseudocode": "remote.Shutdown(); r = del(lease); assert r.status==502 && r.json.code=='sandbox_provider_error'; assert lease.state=='active'; assert tokenValid(tok)"
+          }
         },
         {
-          "id": "29-REQ-9.4",
+          "id": "REQ-9.4",
           "pattern": "unwanted",
           "condition": "a caller calls `Close` on its sandbox handle while the remote is unreachable",
           "system": "hub gateway",
           "action": "leave the lease `active`",
-          "contract": "`Close` returns a non-nil error; the lease state is `active`"
+          "contract": "`Close` returns a non-nil error; the lease state is `active`",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "an active lease with a caller handle, then the remote shut down"
+            ],
+            "pseudocode": "remote.Shutdown(); err = sb.Close(); assert err != nil; assert lease.state=='active'"
+          }
         },
         {
-          "id": "29-REQ-9.5",
+          "id": "REQ-9.5",
           "pattern": "unwanted",
           "condition": "the expiry sweep tries to destroy a box while the remote is unreachable",
           "system": "expiry sweep",
           "action": "log the failure and try the same lease again on its next run",
-          "contract": "one warning or error log per failed destroy; the lease is destroyed on the first run after the remote returns"
+          "contract": "one warning or error log per failed destroy; the lease is destroyed on the first run after the remote returns",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "an expired active lease with a box on the remote",
+              "the remote shut down",
+              "slog captured"
+            ],
+            "pseudocode": "remote.Shutdown(); sweep(); assert logs(warnOrError)==1 && state=='active'; remote.Restart(); sweep(); assert state=='expired'"
+          }
         },
         {
-          "id": "29-REQ-9.6",
+          "id": "REQ-9.6",
           "pattern": "event_driven",
           "condition": "the remote gateway restarts on the same address after being down",
           "system": "hub gateway backend",
           "action": "succeed on the next provider call without hub restarting and without hub redialling or building a new client",
-          "contract": "the next lease's `Create` returns a sandbox; the gateway factory call count stays 1"
+          "contract": "the next lease's `Create` returns a sandbox; the gateway factory call count stays 1",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a started service with a counting gateway factory wrapping the real gateway.Dial",
+              "the remote shut down and a new gatewayd served on the same 127.0.0.1:<port>"
+            ],
+            "pseudocode": "remote.Shutdown(); remote2 = serve(sameAddr); sb = c.Create(); assert sb != nil; assert factory.calls == 1"
+          }
         },
         {
-          "id": "29-REQ-9.7",
+          "id": "REQ-9.7",
           "pattern": "event_driven",
           "condition": "hub shuts down with `provider = \"gateway\"`",
           "system": "sandboxes shutdown",
           "action": "close the remote client, if it implements `io.Closer`, only after spec 28's shutdown step has finished destroying active boxes",
-          "contract": "`Close` on the client is called once, after the last shutdown Destroy; a client without `Close` causes no error"
+          "contract": "`Close` on the client is called once, after the last shutdown Destroy; a client without `Close` causes no error",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a stub remote client that records the order of Destroy and Close calls, with two active boxes",
+              "a second stub that does not implement io.Closer"
+            ],
+            "pseudocode": "shutdown(); assert log == [destroy,destroy,close]; assert shutdown(nonCloser) == nil"
+          }
         }
       ]
     },
     {
-      "id": "29-REQ-10",
+      "id": "REQ-10",
       "title": "Build isolation",
       "rationale": "The `afc` CLI must stay free of the sandbox and gRPC dependency tree that this spec's dial code pulls in.",
+      "system": "afc build",
       "criteria": [
         {
-          "id": "29-REQ-10.1",
+          "id": "REQ-10.1",
           "pattern": "ubiquitous",
-          "system": "afc build",
           "action": "depend on no agentkit-go, `google.golang.org/grpc` or `internal/sandboxes` package after this spec's `gateway.Dial` dependency is added",
-          "contract": "`go list -deps ./cmd/afc` output contains none of those import paths (TS-25-54 stays green)"
+          "contract": "`go list -deps ./cmd/afc` output contains none of those import paths (TS-25-54 stays green)",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "go.mod with the agentkit-go replace and the gateway.Dial dependency"
+            ],
+            "pseudocode": "out = exec('go','list','-deps','./cmd/afc'); for p in [agentkit, google.golang.org/grpc, internal/sandboxes]: assert !contains(out,p)"
+          }
         }
       ]
     }
   ],
   "execution_paths": [
     {
-      "id": "29-PATH-1",
+      "id": "PATH-1",
       "title": "Operator starts hub against a remote agentkit-gateway",
       "steps": [
         {
@@ -473,10 +799,30 @@
           "actor": "af-hub",
           "action": "binds hub's gateway and the HTTP server"
         }
-      ]
+      ],
+      "smoke": {
+        "real_components": [
+          "config loader and validator",
+          "gateway.Dial remote client",
+          "in-process gatewayd remote",
+          "sandboxes service",
+          "slog logger"
+        ],
+        "setup": [
+          "an in-process remote gatewayd with static token T over a recording wrapper around local on 127.0.0.1:0",
+          "a config.toml with provider = \"gateway\", gateway_url = http://127.0.0.1:<port>, gateway_token = \"${AGENTKIT_GATEWAY_TOKEN}\" with the env var set, and valid profiles",
+          "slog captured"
+        ],
+        "end_state": [
+          "Init succeeds",
+          "the remote observed 1 List and no Create or Destroy",
+          "one info record with attributes provider and profiles only",
+          "hub's gateway and HTTP server are listening"
+        ]
+      }
     },
     {
-      "id": "29-PATH-2",
+      "id": "PATH-2",
       "title": "Agent leases a box that runs on the remote gateway and deletes it",
       "steps": [
         {
@@ -503,10 +849,29 @@
           "actor": "hub gateway backend",
           "action": "destroys the box through the remote client and revokes the lease token; the remote's `List` no longer contains the box"
         }
-      ]
+      ],
+      "smoke": {
+        "real_components": [
+          "lease API (echo)",
+          "lease store (SQLite)",
+          "hub gatewayd server",
+          "wrapping backend",
+          "gateway.Dial clients",
+          "in-process remote gatewayd",
+          "local.Unisolated provider"
+        ],
+        "setup": [
+          "hub started against the in-process remote with a recording backend",
+          "a real SQLite lease store, lease API and hub gateway"
+        ],
+        "end_state": [
+          "the box exists on the remote with the lease's image, TTL and merged env",
+          "after DELETE the remote's List is empty and the lease token no longer authenticates"
+        ]
+      }
     },
     {
-      "id": "29-PATH-3",
+      "id": "PATH-3",
       "title": "Remote backend error carrying hub's token is scrubbed",
       "steps": [
         {
@@ -529,10 +894,29 @@
           "actor": "agent",
           "action": "receives a gateway error and reads the lease over HTTP, neither of which contains the token or host"
         }
-      ]
+      ],
+      "smoke": {
+        "real_components": [
+          "lease API",
+          "lease store (SQLite)",
+          "hub gatewayd server",
+          "wrapping backend and scrubber",
+          "audit emitter",
+          "in-process remote gatewayd",
+          "gateway.Dial clients"
+        ],
+        "setup": [
+          "hub started against the in-process remote whose Create returns an error containing the token and 127.0.0.1:<port>",
+          "logs and audit events captured"
+        ],
+        "end_state": [
+          "the lease is `failed` with a scrubbed `error` field and an audit event is emitted",
+          "the gateway error, HTTP bodies, audit events and log lines contain neither the token nor the host"
+        ]
+      }
     },
     {
-      "id": "29-PATH-4",
+      "id": "PATH-4",
       "title": "Remote outage and recovery on the same address",
       "steps": [
         {
@@ -555,10 +939,28 @@
           "actor": "agent",
           "action": "obtains a new lease and calls `Create`, which creates a box on the remote without hub restarting"
         }
-      ]
+      ],
+      "smoke": {
+        "real_components": [
+          "lease API",
+          "lease store (SQLite)",
+          "hub gatewayd server",
+          "wrapping backend",
+          "gateway.Dial client",
+          "in-process remote gatewayd (two instances on one address)"
+        ],
+        "setup": [
+          "hub started against the in-process remote on a recorded 127.0.0.1:<port>"
+        ],
+        "end_state": [
+          "the first lease is `failed` with a scrubbed error",
+          "the second Create returns a sandbox and a box exists on the restarted remote",
+          "the gateway factory was called once"
+        ]
+      }
     },
     {
-      "id": "29-PATH-5",
+      "id": "PATH-5",
       "title": "Hub shuts down and closes the remote client",
       "steps": [
         {
@@ -573,7 +975,24 @@
           "actor": "sandboxes shutdown",
           "action": "closes the remote client because it implements `io.Closer`"
         }
-      ]
+      ],
+      "smoke": {
+        "real_components": [
+          "sandboxes service",
+          "28 shutdown step",
+          "gateway.Dial remote client",
+          "in-process remote gatewayd",
+          "lease store (SQLite)"
+        ],
+        "setup": [
+          "hub started against the in-process remote with one active lease and box",
+          "the remote client wrapped to record Destroy and Close order"
+        ],
+        "end_state": [
+          "the box is destroyed on the remote",
+          "the remote client's Close is called once, after the shutdown Destroy"
+        ]
+      }
     }
   ],
   "external_apis": [

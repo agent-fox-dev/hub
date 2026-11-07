@@ -4,9 +4,8 @@ spec_name: "forge_client_reads"
 title: "Forge API for a workspace: the client, the scopes and the reads"
 status: "active"
 created_at: "2026-10-20T14:00:59.997637Z"
-updated_at: "2026-10-20T14:00:59.997637Z"
 intent_hash: "54b31938d84df8115730e38545b376df387539462529376530844bdae1be0809"
-schema_version: 2
+schema_version: 3
 source: "docs/prd/02-serve-the-forge-for-a-workspace.md"
 ---
 ## Intent
@@ -222,3 +221,13 @@ The CLI sends flag values as given, and hub validates them. Repeated `--label` f
 | `apikit.Version` | package-level `string` var set by `-X` ldflags | verified from `Makefile` and `containers/hub/Containerfile` |
 | `apikit.CLIClientFromCmd`, `(client).DoRequest(ctx, method, path string, body any)`, `apikit.CLIHandleError`, `apikit.CLIPrintResult`, `apikit.NewCLIError(code int, msg string)` | as used in `internal/cli/sandbox_cmd.go` and `secrets_cmd.go` | verified from call sites |
 | go-git `githttp.BasicAuth` | `struct{ Username, Password string }`, returned as `transport.AuthMethod` by the resolvers | verified (`internal/workspace/clone_auth.go`) |
+
+## Glossary
+
+- **FORGE_API_URL**: Optional workspace variable overriding the forge API base URL for origin; UPSTREAM_FORGE_API_URL is its upstream sibling, with no fallback between the two.
+- **carry_patch workspace**: A workspace whose workspace_mode is carry_patch; it is a fork with an upstream_url that hub syncs from.
+- **credential kind**: How hub authenticates to the forge, derived from the resolver result: pat (basic auth with username x-token-auth), basic (any other username; the password is sent as the token) or none (unauthenticated).
+- **forge**: The hosted git service (GitHub or GitLab) whose REST API serves a workspace's repository, issues and pull requests.
+- **forge stub**: An httptest TLS server standing in for GitHub or GitLab in tests, recording each request it receives.
+- **issuex**: The aflib package github.com/agent-fox-dev/aflib/issuex that classifies a forge, parses remote URLs and implements the forge client hub calls; hub never changes or reimplements it.
+- **target**: The ?target= query parameter selecting which remote a forge route reads: origin (the workspace's git_url, the default) or upstream (the upstream_url of a carry_patch workspace).

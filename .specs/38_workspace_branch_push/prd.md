@@ -4,9 +4,8 @@ spec_name: "workspace_branch_push"
 title: "Push a workspace branch to the forge"
 status: "active"
 created_at: "2026-10-21T17:58:09.636624Z"
-updated_at: "2026-10-21T17:58:09.636624Z"
 intent_hash: "b43bccb908b1558dedd7e5387697c973c142e10ac813f63d3609e3f13b61b4e5"
-schema_version: 2
+schema_version: 3
 source: "docs/prd/05-push-a-workspace-branch-to-the-forge.md"
 ---
 ## Intent
@@ -285,3 +284,16 @@ apikit lives at `../apikit` through a `replace` directive, outside the repositor
 - `apikit.NewCLIError(code int, msg string)`, from `internal/cli/workspace_cmd.go`.
 
 echo is `github.com/labstack/echo/v4 v4.16.0`. That it routes on the raw path and leaves `%2F` encoded in path parameters is shown in practice by `internal/forge/write_labels.go` (`lastSegment`).
+
+## Glossary
+
+- **bound PAT**: A personal access token bound to one workspace slug (spec 33); the binding guard answers 404 for any other slug.
+- **error-type message prefix**: The rule that messages for this route's own error types (branch_not_found, integration_branch, patch_branch, protected_branch, non_fast_forward, forge_*) begin with `<error_type>: `.
+- **integration branch**: On a carry_patch workspace, the workspace's integration_branch column, or `deploy` when that column is empty; hub builds it during rebuilds.
+- **origin**: The trunk's git remote pointing at the workspace's git_url on the forge.
+- **push attempt**: Any outcome after hub has handed the push to the go-git transport: success, up_to_date, non_fast_forward and every forge_* failure (including forge_unreachable and forge_timeout). Not attempts: refusals before the push, the secrets-store 500, and the 500 for a trunk that cannot be opened or has no origin.
+- **registered patch branch**: On a carry_patch workspace, a branch name that has a patches row whose status is not `deleted`.
+- **scrub**: The local text sanitizer of this route: replaces the credential's password or token with [redacted], removes URL userinfo, repeats until stable, and truncates to 1024 bytes on a UTF-8 boundary.
+- **trunk**: The workspace's main git clone on hub, at <workspace root>/<slug>/trunk, from which branches are pushed.
+- **workspace lock**: The per-slug lock from internal/wslock taken with TryLock; operations that cannot take it answer 409 workspace_busy.
+- **workspace's own branch**: The workspace's `branch` column, or, when that column is null, the branch the trunk's HEAD points to as read while the workspace lock is held.

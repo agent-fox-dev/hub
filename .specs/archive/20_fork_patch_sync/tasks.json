@@ -1,8 +1,8 @@
 {
-  "$schema": "https://agent-fox.dev/schemas/tasks.v2.json",
+  "$schema": "https://agent-fox.dev/schemas/tasks.v3.json",
   "spec_id": "20",
   "spec_name": "fork_patch_sync",
-  "schema_version": 2,
+  "schema_version": 3,
   "test_commands": {
     "all_tests": "make test",
     "linter": "make lint",
@@ -41,17 +41,11 @@
   "tasks": [
     {
       "id": 1,
-      "kind": "implement",
       "title": "Persist origin sync state on patches and expose it in REST patch responses",
       "criteria": [
-        "20-REQ-7.1",
-        "20-REQ-7.4",
-        "20-REQ-7.5"
-      ],
-      "tests": [
-        "TS-20-41",
-        "TS-20-44",
-        "TS-20-45"
+        "REQ-7.1",
+        "REQ-7.4",
+        "REQ-7.5"
       ],
       "steps": [
         "Write TS-20-41, TS-20-44 and TS-20-45 and confirm they fail",
@@ -65,19 +59,13 @@
         "internal/workspace/patch_store.go",
         "internal/carrypatch/carrypatch.go",
         "internal/carrypatch/testhelpers_test.go"
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 2,
-      "kind": "implement",
       "title": "Add the pruning origin fetch and origin credential resolver, wired into SyncAPIConfig",
       "criteria": [
-        "20-REQ-2.1"
-      ],
-      "tests": [
-        "TS-20-7",
-        "TS-20-8"
+        "REQ-2.1"
       ],
       "steps": [
         "Write TS-20-7 (real bare fork and cloned trunk) and TS-20-8 and confirm they fail",
@@ -94,33 +82,24 @@
       ],
       "depends_on": [
         1
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 3,
-      "kind": "implement",
       "title": "Implement the patch-branch refresh engine with compare-and-swap ref writes",
       "criteria": [
-        "20-REQ-3.1",
-        "20-REQ-3.2",
-        "20-REQ-3.3",
-        "20-REQ-3.4",
-        "20-REQ-3.5",
-        "20-REQ-3.6",
-        "20-REQ-3.7",
-        "20-REQ-3.8",
-        "20-REQ-4.1",
-        "20-REQ-4.2",
-        "20-REQ-4.4",
-        "20-REQ-4.5"
-      ],
-      "tests": [
-        "TS-20-15",
-        "TS-20-23",
-        "TS-20-24",
-        "TS-20-25",
-        "TS-20-28"
+        "REQ-3.1",
+        "REQ-3.2",
+        "REQ-3.3",
+        "REQ-3.4",
+        "REQ-3.5",
+        "REQ-3.6",
+        "REQ-3.7",
+        "REQ-3.8",
+        "REQ-4.1",
+        "REQ-4.2",
+        "REQ-4.4",
+        "REQ-4.5"
       ],
       "steps": [
         "Write TS-20-15, TS-20-23, TS-20-24, TS-20-25 and TS-20-28 against the new engine using real git repositories and a recording GitRunner, and confirm they fail",
@@ -139,31 +118,18 @@
       ],
       "depends_on": [
         1
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 4,
-      "kind": "implement",
       "title": "Restructure carry-patch sync: variables, credentials, origin fetch and failure responses",
       "criteria": [
-        "20-REQ-1",
-        "20-REQ-2.2",
-        "20-REQ-2.3",
-        "20-REQ-2.4",
-        "20-REQ-2.5",
-        "20-REQ-2.6"
-      ],
-      "tests": [
-        "TS-20-1",
-        "TS-20-2",
-        "TS-20-3",
-        "TS-20-6",
-        "TS-20-9",
-        "TS-20-10",
-        "TS-20-11",
-        "TS-20-12",
-        "TS-20-13"
+        "REQ-1",
+        "REQ-2.2",
+        "REQ-2.3",
+        "REQ-2.4",
+        "REQ-2.5",
+        "REQ-2.6"
       ],
       "steps": [
         "Write TS-20-1, 2, 3, 6, 9, 10, 11, 12 and 13 with recording stubs for lock, GetVariable, credential resolver and both fetches, and confirm they fail",
@@ -182,26 +148,14 @@
       "depends_on": [
         2,
         3
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 5,
-      "kind": "implement",
       "title": "Move the early return, trigger rebuilds on patch change and write last_sync_at on every sync",
       "criteria": [
-        "20-REQ-5",
-        "20-REQ-7.3"
-      ],
-      "tests": [
-        "TS-20-27",
-        "TS-20-29",
-        "TS-20-30",
-        "TS-20-31",
-        "TS-20-32",
-        "TS-20-33",
-        "TS-20-34",
-        "TS-20-43"
+        "REQ-5",
+        "REQ-7.3"
       ],
       "steps": [
         "Write TS-20-27, 29, 30, 31, 32, 33, 34 and 43 (real SQLite job queue where the test says integration) and confirm they fail",
@@ -218,27 +172,14 @@
       ],
       "depends_on": [
         4
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 6,
-      "kind": "implement",
       "title": "Persist per-branch outcomes and verify fork-tip outcomes through the sync",
       "criteria": [
-        "20-REQ-2.7",
-        "20-REQ-7.2"
-      ],
-      "tests": [
-        "TS-20-14",
-        "TS-20-16",
-        "TS-20-17",
-        "TS-20-18",
-        "TS-20-19",
-        "TS-20-20",
-        "TS-20-21",
-        "TS-20-22",
-        "TS-20-42"
+        "REQ-2.7",
+        "REQ-7.2"
       ],
       "steps": [
         "Write TS-20-14, 16, 17, 18, 19, 20, 21, 22 and 42 as sync-level integration tests with a real bare fork, real upstream and real trunk, asserting local ref, backup ref, response outcome and persisted state, and confirm they fail",
@@ -255,30 +196,19 @@
       ],
       "depends_on": [
         5
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 7,
-      "kind": "implement",
       "title": "Report outcomes in the sync response and dashboard; handle ref-write failure",
       "criteria": [
-        "20-REQ-6.1",
-        "20-REQ-6.2",
-        "20-REQ-6.3",
-        "20-REQ-4.3",
-        "20-REQ-7.6",
-        "20-REQ-1.4",
-        "20-REQ-1.5"
-      ],
-      "tests": [
-        "TS-20-4",
-        "TS-20-5",
-        "TS-20-26",
-        "TS-20-35",
-        "TS-20-36",
-        "TS-20-37",
-        "TS-20-46"
+        "REQ-6.1",
+        "REQ-6.2",
+        "REQ-6.3",
+        "REQ-4.3",
+        "REQ-7.6",
+        "REQ-1.4",
+        "REQ-1.5"
       ],
       "steps": [
         "Write TS-20-4, 5, 26, 35, 36, 37 and 46 and confirm they fail",
@@ -294,23 +224,13 @@
       ],
       "depends_on": [
         6
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 8,
-      "kind": "implement",
       "title": "Emit hub.patch.sync and hub.patch.replace audit events",
       "criteria": [
-        "20-REQ-8"
-      ],
-      "tests": [
-        "TS-20-47",
-        "TS-20-48",
-        "TS-20-49",
-        "TS-20-50",
-        "TS-20-51",
-        "TS-20-52"
+        "REQ-8"
       ],
       "steps": [
         "Write TS-20-47 to TS-20-52 with a recording emitter and a captured logger and confirm they fail",
@@ -328,22 +248,15 @@
       ],
       "depends_on": [
         7
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 9,
-      "kind": "implement",
       "title": "Add --fail-on-diverged and exit code 3 to afc workspace sync",
       "criteria": [
-        "20-REQ-6.4",
-        "20-REQ-6.5",
-        "20-REQ-6.6"
-      ],
-      "tests": [
-        "TS-20-38",
-        "TS-20-39",
-        "TS-20-40"
+        "REQ-6.4",
+        "REQ-6.5",
+        "REQ-6.6"
       ],
       "steps": [
         "Write TS-20-38, 39 and 40 against a stub hub and confirm they fail",
@@ -358,20 +271,13 @@
       ],
       "depends_on": [
         1
-      ],
-      "state": "done"
+      ]
     },
     {
       "id": 10,
-      "kind": "implement",
       "title": "Update api, openapi, cli and carry-patch workflow documentation",
       "criteria": [
-        "20-REQ-9"
-      ],
-      "tests": [
-        "TS-20-53",
-        "TS-20-54",
-        "TS-20-55"
+        "REQ-9"
       ],
       "steps": [
         "Write the docs tests TS-20-53, 54 and 55 (string checks on docs/api.md, docs/cli.md, docs/carry_patch_workflow.md, docs/configuration.md and a YAML parse of docs/openapi.yaml, following the existing carrypatch docs_test.go style) and confirm they fail",
@@ -391,39 +297,7 @@
       "depends_on": [
         8,
         9
-      ],
-      "state": "done"
-    },
-    {
-      "id": 11,
-      "kind": "integration",
-      "title": "Verify fork-patch sync paths end to end",
-      "tests": [
-        "TS-20-56",
-        "TS-20-57",
-        "TS-20-58",
-        "TS-20-59",
-        "TS-20-60",
-        "TS-20-61"
-      ],
-      "steps": [
-        "Write smoke tests TS-20-56 to TS-20-61 against real handlers, real git repositories, real SQLite and job queue, the production go-git origin fetch and (for TS-20-58) the real afc CLI, and confirm they pass",
-        "Trace 20-PATH-1 to 20-PATH-6 from POST /workspaces/:slug/sync through NewCarryPatchSyncHook, runCarryPatchSync, the origin fetch, refreshPatchBranches, the PatchStore writes, the rebuild enqueue and the audit emitter; confirm each step calls the next and no stub remains",
-        "Confirm in cmd/af-hub/main.go that FetchOrigin, ResolveOriginAuth and Audit are wired into SyncAPIConfig in production code",
-        "For every criterion with a contract (e.g. 20-REQ-2.3, 2.4, 2.6, 3.6, 4.3, 8.7) confirm the producer's result is consumed by a production caller: error_type reaches the response, outcomes reach the response extras, persisted state and dashboard, and the --fail-on-diverged check reads patches_diverged from the printed response",
-        "Grep every file in the tasks' touches for panic(\"not implemented\"), TODO and bare `return nil` on non-trivial paths and remove any that remain",
-        "Run make check"
-      ],
-      "touches": [
-        "internal/carrypatch/smoke_fork_patch_sync_test.go"
-      ],
-      "depends_on": [
-        10
-      ],
-      "done_when": [
-        "`make test` and `make lint` pass"
-      ],
-      "state": "done"
+      ]
     }
   ]
 }

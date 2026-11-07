@@ -4,9 +4,8 @@ spec_name: "fork_patch_sync"
 title: "Fork-Authoritative Patch Branch Sync"
 status: "active"
 created_at: "2026-10-01T14:21:48.852422Z"
-updated_at: "2026-10-01T14:21:48.852422Z"
 intent_hash: "3c7be7e44f83f39ecaa575303a2df20574b32bae706859b0e340627ae52ca0d5"
-schema_version: 2
+schema_version: 3
 source: "https://github.com/agent-fox-dev/hub/issues/35"
 ---
 ## Intent
@@ -292,3 +291,18 @@ Other packages, with signatures taken from call sites only (their source is outs
 | `apikit.NewCLIError`, `apikit.CLIHandleError` | `NewCLIError(code int, msg string)`, `CLIHandleError(cmd *cobra.Command, err error) error` (`internal/cli`) | unverified, from call sites |
 
 Repository symbols this spec calls, all read in this repo: `carrypatch.GitRunner.{Run, IsAncestor, HardReset, UpdateRef}`, `workspace.ResolveCloneAuth(store *secrets.Store, slug string) (transport.AuthMethod, error)`, `audit.Emitter.Emit(ctx, audit.HubEvent) error`, `wslock.TryLock(slug) (unlock func(), ok bool)`.
+
+## Glossary
+
+- **action**: What sync did to a local patch branch: none, created, fast_forwarded or replaced.
+- **backup ref**: refs/hub/replaced/<branch>, which holds the hub-side tip discarded by a replacement.
+- **candidate patch**: A patch of the workspace whose status is active, conflict or disabled, excluding any patch whose name equals the integration branch.
+- **carry-patch workspace**: A workspace whose integration branch is rebuilt from upstream HEAD plus an ordered list of registered patch branches.
+- **compare-and-swap ref write**: git update-ref <ref> <new> <expected-old>, which fails when the ref no longer holds the expected old SHA; the all-zero SHA is the expected old value for a create.
+- **divergence**: Neither tip is an ancestor of the other, or the fork tip is a strict ancestor of the local tip.
+- **fork / origin**: The remote named origin of the trunk; in origin mode it is the authority for patch branches.
+- **hub**: The af-hub service and its git server; in hub mode its local refs/heads/* are the authority for patch branches.
+- **patch advanced**: A candidate patch branch with status active or conflict that sync moved by created, fast_forwarded or replaced.
+- **patch branch**: A branch registered in the patches table; the rebuild reads it only from refs/heads/<branch> in the trunk.
+- **state**: The relationship between the local patch branch and the fork after the sync: in_sync, diverged or missing_on_origin.
+- **trunk**: The workspace repository at <workspace_root>/<slug>/trunk.

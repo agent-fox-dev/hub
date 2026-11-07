@@ -1,546 +1,889 @@
 {
-  "$schema": "https://agent-fox.dev/schemas/requirements.v2.json",
+  "$schema": "https://agent-fox.dev/schemas/requirements.v3.json",
   "spec_id": "35",
   "spec_name": "org_member_workspace_access",
-  "schema_version": 2,
-  "introduction": "Hub decides in one place, internal/wsaccess, what access a caller has to a workspace (admin, owner, org member or none) and what each REST endpoint needs (read, write or private). Members of a workspace's organization can read the workspace across hub's REST API. Every change stays with the owner and with admin tokens. The workspace listing returns every workspace the caller may read, and each workspace object carries the caller's access and the org slug.",
-  "glossary": {
-    "Access": "wsaccess.Access, the caller's level on one workspace: AccessNone (\"\"), AccessMember (\"member\"), AccessOwner (\"owner\") or AccessAdmin (\"admin\").",
-    "Need": "wsaccess.Need, what an endpoint requires. NeedRead: member, owner or admin. NeedWrite: owner or admin, and a member gets 403. NeedPrivate: owner or admin, and a member gets 404.",
-    "RefusalSite": "wsaccess.RefusalSite, the status, surface and (optionally) method and route that a bound-refusal report carries. SiteOf(c, 404) builds one from the request.",
-    "bound PAT": "A personal access token bound to a single workspace (spec 33). It is refused with 404 on every other workspace, and the refusal is reported (spec 34).",
-    "forbidden refusal": "An HTTP 403 in the apikit error envelope with error_type \"forbidden\" and message \"org members have read-only access to this workspace\".",
-    "member": "A caller with a non-empty UserID who is not the workspace owner, where the workspace's org_id is non-empty and apikit's org_members table has the row (org_id, user_id).",
-    "readable set": "The result of wsaccess.ReadableSlugs: every workspace slug the caller may read, mapped to the caller's Access, or all=true for an admin token.",
-    "stranger": "A caller with AccessNone on a workspace: not an admin token, not the owner and not a member."
-  },
+  "schema_version": 3,
   "requirements": [
     {
-      "id": "35-REQ-1",
+      "id": "REQ-1",
       "title": "Access levels",
       "rationale": "One ordered rule for every caller replaces the ownership comparisons scattered across handlers.",
+      "system": "wsaccess",
       "criteria": [
         {
-          "id": "35-REQ-1.1",
+          "id": "REQ-1.1",
           "pattern": "ubiquitous",
-          "system": "wsaccess",
-          "action": "define type Access string with the constants AccessNone = \"\", AccessMember = \"member\", AccessOwner = \"owner\" and AccessAdmin = \"admin\""
+          "action": "define type Access string with the constants AccessNone = \"\", AccessMember = \"member\", AccessOwner = \"owner\" and AccessAdmin = \"admin\"",
+          "contract": "AccessNone == \"\", AccessMember == \"member\", AccessOwner == \"owner\", AccessAdmin == \"admin\"; NeedRead, NeedWrite and NeedPrivate are three distinct Need values; workspace.AuthorizeWorkspace returns the same (access, status, message) as wsaccess.AuthorizeWorkspace for the same inputs",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "the wsaccess package"
+            ],
+            "pseudocode": "assert Access(\"member\") == AccessMember; assert len({NeedRead,NeedWrite,NeedPrivate}) == 3; assert workspace.AuthorizeWorkspace(db,a,s,NeedRead) == wsaccess.AuthorizeWorkspace(db,a,s,NeedRead)"
+          }
         },
         {
-          "id": "35-REQ-1.2",
+          "id": "REQ-1.2",
           "pattern": "event_driven",
           "condition": "the caller's CredentialType is \"admin_token\"",
-          "system": "wsaccess",
           "action": "decide AccessAdmin for every existing workspace without reading org_members",
-          "contract": "WorkspaceAccess.Access == \"admin\"; no query against org_members is issued"
+          "contract": "WorkspaceAccess.Access == \"admin\"; no query against org_members is issued",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "an in-memory database with a workspaces table holding W with org_id O and NO org_members table"
+            ],
+            "pseudocode": "ws,st,msg = AuthorizeWorkspace(db, admin, 'w', NeedWrite); assert st==0; assert ws.Access==AccessAdmin"
+          }
         },
         {
-          "id": "35-REQ-1.3",
+          "id": "REQ-1.3",
           "pattern": "event_driven",
           "condition": "a non-admin caller's UserID is non-empty and equals the workspace's owner_id",
-          "system": "wsaccess",
           "action": "decide AccessOwner without reading org_members",
-          "contract": "WorkspaceAccess.Access == \"owner\"; the decision succeeds against a database that has no org_members table"
+          "contract": "WorkspaceAccess.Access == \"owner\"; the decision succeeds against a database that has no org_members table",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a workspaces table with W owned by U1 with org_id O",
+              "no org_members table"
+            ],
+            "pseudocode": "ws,st,_ = AuthorizeWorkspace(db, apikey(U1), 'w', NeedWrite); assert st==0 && ws.Access==AccessOwner"
+          }
         },
         {
-          "id": "35-REQ-1.4",
-          "pattern": "complex_event",
-          "condition": "a non-admin caller with a non-empty UserID is not the workspace's owner",
-          "guard": "the workspace's org_id is non-empty and org_members has a row (org_id, UserID), whatever the org's status or kind",
-          "system": "wsaccess",
+          "id": "REQ-1.4",
+          "pattern": "event_driven",
+          "condition": "a non-admin caller with a non-empty UserID is not the workspace's owner and the workspace's org_id is non-empty and org_members has a row (org_id, UserID), whatever the org's status or kind",
           "action": "decide AccessMember",
-          "contract": "WorkspaceAccess.Access == \"member\""
+          "contract": "WorkspaceAccess.Access == \"member\"",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "W owned by U1 in org O",
+              "org_members rows (O,U2) and (P,U3) where P is a personal org with status 'suspended'"
+            ],
+            "pseudocode": "assert AuthorizeWorkspace(db, apikey(U2), 'w', NeedRead).Access == AccessMember"
+          }
         },
         {
-          "id": "35-REQ-1.5",
+          "id": "REQ-1.5",
           "pattern": "unwanted",
           "condition": "the workspace's org_id is NULL or empty, or the caller is not an admin token and has an empty UserID (an admin-role API key with an empty UserID included)",
-          "system": "wsaccess",
           "action": "decide AccessNone for every caller other than an admin token and the owner, without reading org_members",
-          "contract": "AuthorizeWorkspace answers 404 \"workspace not found\""
+          "contract": "AuthorizeWorkspace answers 404 \"workspace not found\"",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "workspace W1 with NULL org_id and W2 with org_id ''",
+              "workspace W3 with org O",
+              "no org_members table",
+              "an admin-role api_key with empty UserID and a PAT with empty UserID"
+            ],
+            "pseudocode": "for (a,s) in cases: ws,st,msg = AuthorizeWorkspace(db,a,s,NeedRead); assert (ws,st,msg)==(nil,404,'workspace not found')"
+          }
         },
         {
-          "id": "35-REQ-1.6",
+          "id": "REQ-1.6",
           "pattern": "event_driven",
           "condition": "the org_members row that made a caller a member is deleted",
-          "system": "wsaccess",
           "action": "read membership on every request, with no cache, so the caller's next request is decided without the deleted row",
-          "contract": "the next AuthorizeWorkspace call for that caller returns 404 \"workspace not found\""
+          "contract": "the next AuthorizeWorkspace call for that caller returns 404 \"workspace not found\"",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "U2 is a member of O via an org_members row and AuthorizeWorkspace(NeedRead) succeeds for U2 on W"
+            ],
+            "pseudocode": "assert AuthorizeWorkspace(...).Access==member; db.Exec('DELETE FROM org_members ...'); assert status==404"
+          }
         },
         {
-          "id": "35-REQ-1.7",
+          "id": "REQ-1.7",
           "pattern": "ubiquitous",
-          "system": "wsaccess",
-          "action": "for any combination of credential type, UserID, owner_id, org_id and org_members rows, decide the Access given by the first rule that matches, in this order: admin token, owner, member, none"
+          "action": "for any combination of credential type, UserID, owner_id, org_id and org_members rows, decide the Access given by the first rule that matches, in this order: admin token, owner, member, none",
+          "contract": "the decided Access equals the model: admin if admin_token; else owner if UserID non-empty and == owner_id; else member if UserID non-empty, org_id non-empty and a row exists; else none; AccessNone yields 404",
+          "check": {
+            "kind": "property",
+            "setup": [
+              "a database with workspaces and org_members tables"
+            ],
+            "pseudocode": "for c in gen_cases(): got = AuthorizeWorkspace(db, c.auth, c.slug, NeedRead); assert accessOf(got) == model(c)"
+          }
         }
       ]
     },
     {
-      "id": "35-REQ-2",
+      "id": "REQ-2",
       "title": "Needs and the answers of AuthorizeWorkspace",
       "rationale": "Every endpoint states the need it has, and the shared function turns access and need into one answer.",
+      "system": "wsaccess",
       "criteria": [
         {
-          "id": "35-REQ-2.1",
+          "id": "REQ-2.1",
           "pattern": "ubiquitous",
-          "system": "wsaccess",
-          "action": "define type Need string with NeedRead, NeedWrite and NeedPrivate, and expose AuthorizeWorkspace(db *sql.DB, auth *apikit.AuthInfo, slug string, need Need) (*WorkspaceAccess, int, string) and AuthorizeWorkspaceAt(db, auth, slug, need, site RefusalSite) with the same return values. workspace.AuthorizeWorkspace delegates to wsaccess.AuthorizeWorkspace and takes the same need parameter"
+          "action": "define type Need string with NeedRead, NeedWrite and NeedPrivate, and expose AuthorizeWorkspace(db *sql.DB, auth *apikit.AuthInfo, slug string, need Need) (*WorkspaceAccess, int, string) and AuthorizeWorkspaceAt(db, auth, slug, need, site RefusalSite) with the same return values. workspace.AuthorizeWorkspace delegates to wsaccess.AuthorizeWorkspace and takes the same need parameter",
+          "check": {
+            "same_as": "REQ-1.1"
+          }
         },
         {
-          "id": "35-REQ-2.2",
+          "id": "REQ-2.2",
           "pattern": "unwanted",
           "condition": "auth is nil",
-          "system": "wsaccess",
           "action": "refuse without querying the database",
-          "contract": "returns (nil, 401, \"authentication required\")"
+          "contract": "returns (nil, 401, \"authentication required\")",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a database handle that has been closed so any query would error"
+            ],
+            "pseudocode": "ws,st,msg = AuthorizeWorkspace(closedDB,nil,'w',NeedRead); assert st==401 && msg=='authentication required'"
+          }
         },
         {
-          "id": "35-REQ-2.3",
+          "id": "REQ-2.3",
           "pattern": "unwanted",
           "condition": "the slug names no workspace, or the caller's access is AccessNone",
-          "system": "wsaccess",
           "action": "refuse without a binding lookup and without a bound-refusal report",
-          "contract": "returns (nil, 404, \"workspace not found\"); the bound-refusal observer is called 0 times"
+          "contract": "returns (nil, 404, \"workspace not found\"); the bound-refusal observer is called 0 times",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a bound-refusal observer counting calls",
+              "a PAT bound to W that is a stranger on W2, and an unknown slug"
+            ],
+            "pseudocode": "assert observer.count==0"
+          }
         },
         {
-          "id": "35-REQ-2.4",
+          "id": "REQ-2.4",
           "pattern": "unwanted",
           "condition": "the caller has a non-None access and is a PAT bound to a different workspace (DeniesWorkspace reports a denial)",
-          "system": "wsaccess",
           "action": "refuse whatever the caller's access and need, and report the refusal once with the given site. AuthorizeWorkspace uses RefusalSite{Status: 404, Surface: SurfaceAPI}, which has no method or route",
-          "contract": "returns (nil, 404, \"workspace not found\"); exactly one bound-refusal report carrying the site"
+          "contract": "returns (nil, 404, \"workspace not found\"); exactly one bound-refusal report carrying the site",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "U1 owns A and B; U2 is a member of the org of B; PATs bound to A for U1 and U2",
+              "an observer recording sites"
+            ]
+          }
         },
         {
-          "id": "35-REQ-2.5",
+          "id": "REQ-2.5",
           "pattern": "unwanted",
           "condition": "the caller's access is AccessMember and the need is NeedWrite or NeedPrivate",
-          "system": "wsaccess",
           "action": "refuse after the binding check",
-          "contract": "NeedWrite returns (nil, 403, \"org members have read-only access to this workspace\"); NeedPrivate returns (nil, 404, \"workspace not found\")"
+          "contract": "NeedWrite returns (nil, 403, \"org members have read-only access to this workspace\"); NeedPrivate returns (nil, 404, \"workspace not found\")",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "U2 is a member of W's org"
+            ]
+          }
         },
         {
-          "id": "35-REQ-2.6",
+          "id": "REQ-2.6",
           "pattern": "event_driven",
           "condition": "the caller's access satisfies the need and no binding denies the slug",
-          "system": "wsaccess",
           "action": "return the workspace's slug, owner_id, org_id, status, clone_status and the caller's access",
-          "contract": "returns (&WorkspaceAccess{Slug, OwnerID, OrgID, Status, CloneStatus, Access}, 0, \"\"); OrgID is \"\" when the column is NULL"
+          "contract": "returns (&WorkspaceAccess{Slug, OwnerID, OrgID, Status, CloneStatus, Access}, 0, \"\"); OrgID is \"\" when the column is NULL",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "W1 with org_id O owned by U1, W2 with NULL org_id owned by U1"
+            ]
+          }
         },
         {
-          "id": "35-REQ-2.7",
+          "id": "REQ-2.7",
           "pattern": "unwanted",
           "condition": "reading the workspace row, the org_members row or the token binding fails with a database error",
-          "system": "wsaccess",
           "action": "fail closed and never grant access",
-          "contract": "returns (nil, 500, \"internal server error\")"
+          "contract": "returns (nil, 500, \"internal server error\")",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a database where (a) the workspaces table is missing, (b) org_members is missing and the caller is a non-owner, (c) the token-binding table is broken and the caller is a PAT"
+            ]
+          }
         },
         {
-          "id": "35-REQ-2.8",
+          "id": "REQ-2.8",
           "pattern": "event_driven",
           "condition": "a handler calls wsaccess.WriteRefusal(c echo.Context, status int, msg string) with a refusal from AuthorizeWorkspace",
-          "system": "wsaccess",
           "action": "write the refusal in the apikit error envelope, setting error_type to the exported constant ErrorTypeForbidden (\"forbidden\") only when status is 403",
-          "contract": "403: body {error: msg, error_type: \"forbidden\"}; any other status: body {error: msg} with no error_type field"
+          "contract": "403: body {error: msg, error_type: \"forbidden\"}; any other status: body {error: msg} with no error_type field",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "an echo context with a recorder"
+            ]
+          }
         }
       ]
     },
     {
-      "id": "35-REQ-3",
+      "id": "REQ-3",
       "title": "The readable set",
       "rationale": "The listing and the later audit spec need every readable workspace in one query, with the membership rule kept in wsaccess.",
+      "system": "wsaccess",
       "criteria": [
         {
-          "id": "35-REQ-3.1",
+          "id": "REQ-3.1",
           "pattern": "event_driven",
           "condition": "ReadableSlugs(db, auth) is called with an admin token",
-          "system": "wsaccess",
           "action": "return unrestricted access without querying the database",
-          "contract": "returns (nil, true, nil)"
+          "contract": "returns (nil, true, nil)",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a closed database handle"
+            ]
+          }
         },
         {
-          "id": "35-REQ-3.2",
+          "id": "REQ-3.2",
           "pattern": "unwanted",
           "condition": "auth is nil, or the caller is not an admin token and has an empty UserID",
-          "system": "wsaccess",
           "action": "return an empty readable set without querying the database",
-          "contract": "returns (non-nil empty map, false, nil)"
+          "contract": "returns (non-nil empty map, false, nil)",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a closed database handle"
+            ]
+          }
         },
         {
-          "id": "35-REQ-3.3",
+          "id": "REQ-3.3",
           "pattern": "event_driven",
           "condition": "ReadableSlugs is called by a non-admin caller with a non-empty UserID",
-          "system": "wsaccess",
           "action": "return, in one query, every workspace of any status that the caller owns, mapped to AccessOwner, plus every workspace whose org_id is an org the caller belongs to, mapped to AccessMember. A workspace that is both owned and in a member org maps to AccessOwner",
-          "contract": "returns (map[slug]Access, false, nil)"
+          "contract": "returns (map[slug]Access, false, nil)",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "U2 owns W1 (active) and W2 (archived), is a member of org O with W3 (archived) and W4 owned by U1, and also owns W5 in O",
+              "W6 in an org U2 does not belong to"
+            ]
+          }
         },
         {
-          "id": "35-REQ-3.4",
-          "pattern": "complex_event",
-          "condition": "ReadableSlugs is called by a non-admin caller",
-          "guard": "the caller is a bound PAT",
-          "system": "wsaccess",
+          "id": "REQ-3.4",
+          "pattern": "event_driven",
+          "condition": "ReadableSlugs is called by a non-admin caller and the caller is a bound PAT",
           "action": "resolve the binding before opening any result rows, and keep at most the bound slug, and only if it is in the caller's readable set",
-          "contract": "returns a map with at most one entry, the bound slug; the call succeeds on a database limited to one open connection"
+          "contract": "returns a map with at most one entry, the bound slug; the call succeeds on a database limited to one open connection",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a database with SetMaxOpenConns(1)",
+              "user U2 with readable set {A, B}",
+              "PAT bound to A, PAT bound to C (not readable), and PAT bound to nothing"
+            ]
+          }
         },
         {
-          "id": "35-REQ-3.5",
+          "id": "REQ-3.5",
           "pattern": "unwanted",
           "condition": "the binding lookup or the readable-set query fails",
-          "system": "wsaccess",
           "action": "return the error to the caller and grant nothing",
-          "contract": "returns (nil, false, non-nil error)"
+          "contract": "returns (nil, false, non-nil error)",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a database whose workspaces table is dropped, and one whose binding table is broken"
+            ]
+          }
         },
         {
-          "id": "35-REQ-3.6",
+          "id": "REQ-3.6",
           "pattern": "ubiquitous",
-          "system": "wsaccess",
-          "action": "for any non-admin caller and any workspace W, include W in ReadableSlugs with access A exactly when AuthorizeWorkspace(db, auth, W, NeedRead) succeeds with WorkspaceAccess.Access == A"
+          "action": "for any non-admin caller and any workspace W, include W in ReadableSlugs with access A exactly when AuthorizeWorkspace(db, auth, W, NeedRead) succeeds with WorkspaceAccess.Access == A",
+          "contract": "W is in ReadableSlugs with access A exactly when AuthorizeWorkspace(W, NeedRead) succeeds with Access == A",
+          "check": {
+            "kind": "property",
+            "setup": [
+              "a database with workspaces of all statuses, orgs and org_members rows"
+            ],
+            "pseudocode": "for caller in gen(): set,_,_ = ReadableSlugs(db,caller); for w in all: r = AuthorizeWorkspace(db,caller,w,NeedRead); assert (w in set) == (r.status==0); if r.status==0: assert set[w]==r.Access"
+          }
         }
       ]
     },
     {
-      "id": "35-REQ-4",
+      "id": "REQ-4",
       "title": "The workspace listing",
       "rationale": "A team member needs to find the org's workspaces before reading them.",
       "criteria": [
         {
-          "id": "35-REQ-4.1",
+          "id": "REQ-4.1",
           "pattern": "event_driven",
           "condition": "an admin token calls GET /api/v1/workspaces",
           "system": "workspace handlers",
           "action": "return every workspace as today, filtered by include_archived, ordered by created_at descending",
-          "contract": "HTTP 200 with a JSON array in which every object has access == \"admin\""
+          "contract": "HTTP 200 with a JSON array in which every object has access == \"admin\"",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "workspaces of several owners, one archived"
+            ]
+          }
         },
         {
-          "id": "35-REQ-4.2",
+          "id": "REQ-4.2",
           "pattern": "event_driven",
           "condition": "a non-admin caller calls GET /api/v1/workspaces",
           "system": "workspace handlers",
           "action": "return the workspaces in the caller's ReadableSlugs, excluding archived ones unless include_archived=true, ordered by created_at descending, with no copy of the membership rule in the workspace package",
-          "contract": "HTTP 200 with a JSON array whose object for each slug has the access recorded in ReadableSlugs (\"owner\" or \"member\")"
+          "contract": "HTTP 200 with a JSON array whose object for each slug has the access recorded in ReadableSlugs (\"owner\" or \"member\")",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "U2 owns W1, belongs to org O whose workspace W2 is owned by U1, and W3 (archived) in O",
+              "W4 in an unrelated org"
+            ]
+          }
         },
         {
-          "id": "35-REQ-4.3",
+          "id": "REQ-4.3",
           "pattern": "ubiquitous",
           "system": "workspace store",
           "action": "load listed workspaces with a by-slug query (WHERE slug IN (...)) in chunks of at most 500 slugs, and sort the merged result by created_at descending",
-          "contract": "a caller with 501 readable workspaces receives all 501, in created_at descending order"
+          "contract": "a caller with 501 readable workspaces receives all 501, in created_at descending order",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "501 workspaces readable by U2 with distinct created_at values"
+            ]
+          }
         },
         {
-          "id": "35-REQ-4.4",
+          "id": "REQ-4.4",
           "pattern": "unwanted",
           "condition": "the caller has an empty readable set",
           "system": "workspace handlers",
           "action": "return an empty listing",
-          "contract": "HTTP 200 with body []"
+          "contract": "HTTP 200 with body []",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a user who owns nothing and belongs to no org with workspaces"
+            ]
+          }
         },
         {
-          "id": "35-REQ-4.5",
+          "id": "REQ-4.5",
           "pattern": "unwanted",
           "condition": "a PAT without a read-implying workspace scope calls GET /api/v1/workspaces",
           "system": "workspace handlers",
           "action": "refuse before ReadableSlugs is called, as today",
-          "contract": "HTTP 404 \"workspace not found\""
+          "contract": "HTTP 404 \"workspace not found\"",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a PAT with only tokens:read scope for a user whose org_members table is missing, so any readable-set query would fail with 500"
+            ]
+          }
         },
         {
-          "id": "35-REQ-4.6",
-          "pattern": "complex_event",
-          "condition": "a PAT calls GET /api/v1/workspaces",
-          "guard": "the PAT is bound to a workspace",
+          "id": "REQ-4.6",
+          "pattern": "event_driven",
+          "condition": "a PAT calls GET /api/v1/workspaces and the PAT is bound to a workspace",
           "system": "workspace handlers",
           "action": "list at most the bound workspace, and only if the PAT's user may read it",
-          "contract": "HTTP 200 with an array of zero or one object"
+          "contract": "HTTP 200 with an array of zero or one object",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "U2 is a member of O containing A and B; PAT bound to A; PAT bound to C that U2 cannot read"
+            ]
+          }
         },
         {
-          "id": "35-REQ-4.7",
+          "id": "REQ-4.7",
           "pattern": "unwanted",
           "condition": "ReadableSlugs or the by-slug query returns an error",
           "system": "workspace handlers",
           "action": "return no workspaces",
-          "contract": "HTTP 500 \"internal server error\""
+          "contract": "HTTP 500 \"internal server error\"",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a database in which the by-slug workspace load fails (or org_members is missing for a non-owner caller with org workspaces)"
+            ]
+          }
         }
       ]
     },
     {
-      "id": "35-REQ-5",
+      "id": "REQ-5",
       "title": "Workspace objects carry access and org_slug",
       "rationale": "A client needs to know what it may do with each workspace it can see.",
+      "system": "workspace handlers",
       "criteria": [
         {
-          "id": "35-REQ-5.1",
+          "id": "REQ-5.1",
           "pattern": "ubiquitous",
-          "system": "workspace handlers",
           "action": "add the fields access and org_slug to every workspace object rendered by the create, get, list, update, archive, reactivate, sync (carry-patch extras included) and reclone responses",
-          "contract": "each of these response bodies has the keys \"access\" and \"org_slug\""
+          "contract": "each of these response bodies has the keys \"access\" and \"org_slug\"",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a workspace the caller owns, with a git-backed carry-patch configuration for sync"
+            ],
+            "pseudocode": "for r in responses: assert 'access' in obj(r) and 'org_slug' in obj(r)"
+          }
         },
         {
-          "id": "35-REQ-5.2",
+          "id": "REQ-5.2",
           "pattern": "ubiquitous",
-          "system": "workspace handlers",
           "action": "set access to the caller's level as decided by wsaccess (\"admin\", \"owner\" or \"member\"), whatever the PAT's scopes, and set it to \"owner\" in the create response",
-          "contract": "a PAT holding only workspaces:read, used by the owner, sees access == \"owner\""
+          "contract": "a PAT holding only workspaces:read, used by the owner, sees access == \"owner\"",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "owner U1 with a PAT holding only workspaces:read, an admin token, and a member U2"
+            ]
+          }
         },
         {
-          "id": "35-REQ-5.3",
+          "id": "REQ-5.3",
           "pattern": "event_driven",
           "condition": "a workspace object is rendered",
-          "system": "workspace handlers",
           "action": "set org_slug to the slug of the org row named by the workspace's org_id, reusing the org lookup that builds hub_url",
-          "contract": "org_slug is the org's slug string, or JSON null when org_id is NULL or no org row has that id"
+          "contract": "org_slug is the org's slug string, or JSON null when org_id is NULL or no org row has that id",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "W1 in org O (slug 'acme'), W2 with NULL org_id, W3 with an org_id naming no org row"
+            ]
+          }
         },
         {
-          "id": "35-REQ-5.4",
+          "id": "REQ-5.4",
           "pattern": "ubiquitous",
-          "system": "workspace handlers",
-          "action": "for any workspace, render the same set of keys and values for a member as for the owner, hub_url included, apart from the value of access, and render no field that holds a credential value"
+          "action": "for any workspace, render the same set of keys and values for a member as for the owner, hub_url included, apart from the value of access, and render no field that holds a credential value",
+          "contract": "the key sets are equal and hub_url is present for both; all values are equal except access; no field contains the stored credential value",
+          "check": {
+            "kind": "property",
+            "setup": [
+              "workspaces with varied org, upstream and credential settings"
+            ],
+            "pseudocode": "o=get(W,owner); m=get(W,member); assert keys(o)==keys(m); assert {k:v for k,v in o if k!='access'}=={...m}; assert secret not in json(m)"
+          }
         }
       ]
     },
     {
-      "id": "35-REQ-6",
+      "id": "REQ-6",
       "title": "Workspace, sync and patch routes",
       "rationale": "The workspace package's inline ownership check becomes a call to the shared rule.",
       "criteria": [
         {
-          "id": "35-REQ-6.1",
+          "id": "REQ-6.1",
           "pattern": "ubiquitous",
           "system": "lookupWorkspaceForAuth",
           "action": "take a Need, get its decision from wsaccess.AuthorizeWorkspaceAt with SiteOf(c, 404), and then load the full workspace row, without comparing owner_id itself",
-          "contract": "the decision and its status and message are the ones AuthorizeWorkspaceAt returns"
+          "contract": "the decision and its status and message are the ones AuthorizeWorkspaceAt returns",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a member, a stranger and the owner of W",
+              "a hook that deletes W's row after the access decision and before the full-row load"
+            ]
+          }
         },
         {
-          "id": "35-REQ-6.2",
+          "id": "REQ-6.2",
           "pattern": "event_driven",
           "condition": "a member, through a PAT holding the scope each route needs today or through a non-PAT credential, calls GET /workspaces/:slug, GET /workspaces/:slug/patches or GET /workspaces/:slug/patches/:id",
           "system": "workspace handlers",
           "action": "serve the read as for the owner",
-          "contract": "HTTP 200; the workspace object has access == \"member\""
+          "contract": "HTTP 200; the workspace object has access == \"member\"",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "U2 is a member of W's org; W has a patch; U2 uses an api_key and a PAT with workspaces:read"
+            ]
+          }
         },
         {
-          "id": "35-REQ-6.3",
+          "id": "REQ-6.3",
           "pattern": "unwanted",
           "condition": "a member calls PATCH /workspaces/:slug, POST /workspaces/:slug/archive, POST /workspaces/:slug/reactivate, DELETE /workspaces/:slug, POST /workspaces/:slug/sync, POST /workspaces/:slug/reclone, POST /workspaces/:slug/patches, PATCH /workspaces/:slug/patches/:id, DELETE /workspaces/:slug/patches/:id, POST /workspaces/:slug/patches/reorder, POST /workspaces/:slug/patches/:id/restore or POST /workspaces/:slug/patches/:id/reset-to-origin",
           "system": "workspace handlers",
           "action": "refuse with NeedWrite and change no row, no git ref and no job queue entry",
-          "contract": "HTTP 403 forbidden refusal (error_type \"forbidden\")"
+          "contract": "HTTP 403 forbidden refusal (error_type \"forbidden\")",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "U2 is a member of W's org; PAT scopes sufficient for each route",
+              "a snapshot of workspace rows, patch rows and the clone job queue"
+            ]
+          }
         },
         {
-          "id": "35-REQ-6.4",
+          "id": "REQ-6.4",
           "pattern": "unwanted",
           "condition": "the workspace row is deleted between the access decision and the full-row load",
           "system": "lookupWorkspaceForAuth",
           "action": "refuse",
-          "contract": "HTTP 404 \"workspace not found\""
+          "contract": "HTTP 404 \"workspace not found\"",
+          "check": {
+            "same_as": "REQ-6.1"
+          }
         },
         {
-          "id": "35-REQ-6.5",
+          "id": "REQ-6.5",
           "pattern": "unwanted",
           "condition": "a PAT bound to another workspace reaches lookupWorkspaceForAuth",
           "system": "lookupWorkspaceForAuth",
           "action": "refuse and report the refusal once with the request's method and route, as spec 34 requires (TS-34-58)",
-          "contract": "HTTP 404 \"workspace not found\"; one bound-refusal report whose site carries the request method and route"
+          "contract": "HTTP 404 \"workspace not found\"; one bound-refusal report whose site carries the request method and route",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "U2 is a member of B's org; a PAT of U2 bound to A; an observer"
+            ]
+          }
         }
       ]
     },
     {
-      "id": "35-REQ-7",
+      "id": "REQ-7",
       "title": "Carry-patch and merge routes",
       "rationale": "Members of a team need to see each other's rebuilds, rerere state and merges.",
       "criteria": [
         {
-          "id": "35-REQ-7.1",
+          "id": "REQ-7.1",
           "pattern": "ubiquitous",
           "system": "carrypatch and merge",
-          "action": "pass a Need from authorizeWorkspace, authorizeMergeWorkspace and validateWorkspaceForMerge to AuthorizeWorkspace, and write their refusals with wsaccess.WriteRefusal"
+          "action": "pass a Need from authorizeWorkspace, authorizeMergeWorkspace and validateWorkspaceForMerge to AuthorizeWorkspace, and write their refusals with wsaccess.WriteRefusal",
+          "contract": "member + read passes; member + write writes a 403 with error_type forbidden; stranger gets 404 {error: \"workspace not found\"} without error_type",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a member, a stranger and an owner on W"
+            ]
+          }
         },
         {
-          "id": "35-REQ-7.2",
+          "id": "REQ-7.2",
           "pattern": "event_driven",
           "condition": "a member with the scope each route needs today calls GET .../rebuilds, GET .../rebuilds/:id, GET .../rebuild-preview, GET .../patch-status, GET .../rerere, GET .../merges or GET .../merges/:id",
           "system": "carrypatch and merge",
           "action": "serve the read with NeedRead, as for the owner",
-          "contract": "HTTP 200 with the body the owner gets"
+          "contract": "HTTP 200 with the body the owner gets",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "U2 is a member; W has a rebuild, a merge and rerere entries; U2 holds the scopes each route needs"
+            ]
+          }
         },
         {
-          "id": "35-REQ-7.3",
+          "id": "REQ-7.3",
           "pattern": "unwanted",
           "condition": "a member calls POST .../rebuild, DELETE .../rebuilds/:id, POST .../rebuilds/:id/requeue, POST .../rebuilds/:id/rollback, DELETE .../rerere/*, POST .../merges, DELETE .../merges/:id, POST .../merges/:id/requeue or POST .../rebase",
           "system": "carrypatch and merge",
           "action": "refuse with NeedWrite and enqueue, cancel or delete nothing",
-          "contract": "HTTP 403 forbidden refusal (error_type \"forbidden\"); the job queue and the rerere cache are unchanged"
+          "contract": "HTTP 403 forbidden refusal (error_type \"forbidden\"); the job queue and the rerere cache are unchanged",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "U2 is a member with the needed scopes; a queued rebuild and merge job; rerere cache entries"
+            ]
+          }
         },
         {
-          "id": "35-REQ-7.4",
+          "id": "REQ-7.4",
           "pattern": "event_driven",
           "condition": "runCarryPatchSync authorizes the workspace",
           "system": "carrypatch",
           "action": "use NeedWrite",
-          "contract": "a member gets HTTP 403 forbidden refusal; an owner gets today's answer"
+          "contract": "a member gets HTTP 403 forbidden refusal; an owner gets today's answer",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a member and an owner of W with a carry-patch workspace"
+            ]
+          }
         }
       ]
     },
     {
-      "id": "35-REQ-8",
+      "id": "REQ-8",
       "title": "Sandbox lease and forge routes",
       "rationale": "Members need to see the workspace's sandboxes and its forge state. Issuing, deleting and forge writes stay with the owner.",
       "criteria": [
         {
-          "id": "35-REQ-8.1",
+          "id": "REQ-8.1",
           "pattern": "ubiquitous",
           "system": "sandboxes and forge",
-          "action": "map the lease authorize write flag to NeedWrite when true and NeedRead when false, and map the forge access values readAccess to NeedRead and writeAccess and writeAnyStatusAccess to NeedWrite"
+          "action": "map the lease authorize write flag to NeedWrite when true and NeedRead when false, and map the forge access values readAccess to NeedRead and writeAccess and writeAnyStatusAccess to NeedWrite",
+          "contract": "write=false and readAccess pass for the member; write=true, writeAccess and writeAnyStatusAccess give the member 403",
+          "check": {
+            "kind": "unit",
+            "setup": [
+              "a member on W"
+            ]
+          }
         },
         {
-          "id": "35-REQ-8.2",
+          "id": "REQ-8.2",
           "pattern": "event_driven",
           "condition": "a member with the read scope calls GET .../sandboxes or GET .../sandboxes/:id",
           "system": "sandboxes",
           "action": "return the lease bodies the owner gets, including their secrets and optional_secrets names, unredacted",
-          "contract": "HTTP 200 with the same body as the owner's request"
+          "contract": "HTTP 200 with the same body as the owner's request",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a lease on W whose secrets and optional_secrets name entries; U2 is a member with the read scope"
+            ]
+          }
         },
         {
-          "id": "35-REQ-8.3",
+          "id": "REQ-8.3",
           "pattern": "unwanted",
           "condition": "a member calls POST .../sandboxes or DELETE .../sandboxes/:id",
           "system": "sandboxes",
           "action": "refuse, issuing or destroying no lease and calling no sandbox backend",
-          "contract": "HTTP 403 forbidden refusal (error_type \"forbidden\")"
+          "contract": "HTTP 403 forbidden refusal (error_type \"forbidden\")",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "U2 is a member; a recording sandbox backend stub"
+            ]
+          }
         },
         {
-          "id": "35-REQ-8.4",
+          "id": "REQ-8.4",
           "pattern": "event_driven",
           "condition": "a member with forge:read calls GET .../forge, .../forge/repository, .../forge/deliveries, .../issues, .../issues/:n, .../issues/:n/comments, .../pulls/:n, .../pulls/:n/state, .../pulls/:n/files, .../pulls/:n/checks or .../pulls/:n/reviews",
           "system": "forge",
           "action": "serve the read with the workspace's configured forge credential, as for the owner",
-          "contract": "HTTP 200; the credential field is only its kind and no response body contains the credential's value"
+          "contract": "HTTP 200; the credential field is only its kind and no response body contains the credential's value",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "U2 is a member with forge:read; W has a configured forge credential; a stub forge server"
+            ]
+          }
         },
         {
-          "id": "35-REQ-8.5",
+          "id": "REQ-8.5",
           "pattern": "unwanted",
           "condition": "a member calls POST .../issues, PATCH .../issues/:n, POST .../issues/:n/close, POST .../issues/:n/comments, POST .../issues/:n/labels, DELETE .../issues/:n/labels/:name, POST .../labels, POST .../pulls, POST .../pulls/:n/comments, PUT .../forge/webhook or DELETE .../forge/webhook",
           "system": "forge",
           "action": "refuse without calling the forge and without changing the webhook configuration",
-          "contract": "HTTP 403 forbidden refusal (error_type \"forbidden\"); 0 outbound forge requests"
+          "contract": "HTTP 403 forbidden refusal (error_type \"forbidden\"); 0 outbound forge requests",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "U2 is a member with forge write and webhook scopes; a stub forge server counting requests; a webhook configuration"
+            ]
+          }
         }
       ]
     },
     {
-      "id": "35-REQ-9",
+      "id": "REQ-9",
       "title": "Secrets, variables and bound tokens",
       "rationale": "A member reads the workspace's variables but never sees its secrets or its tokens.",
       "criteria": [
         {
-          "id": "35-REQ-9.1",
+          "id": "REQ-9.1",
           "pattern": "ubiquitous",
           "system": "secrets handlers",
           "action": "replace lookupWorkspaceOwner and lookupWorkspaceForResolution with wsaccess.AuthorizeWorkspace, and write every workspace refusal with wsaccess.WriteRefusal",
-          "contract": "a stranger on any workspace secret or variable route gets HTTP 404 {error: \"workspace not found\"} in the apikit envelope"
+          "contract": "a stranger on any workspace secret or variable route gets HTTP 404 {error: \"workspace not found\"} in the apikit envelope",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a stranger on W; secrets and variables exist on W"
+            ]
+          }
         },
         {
-          "id": "35-REQ-9.2",
+          "id": "REQ-9.2",
           "pattern": "unwanted",
           "condition": "a member calls POST or GET .../secrets, or PATCH or DELETE .../secrets/:key",
           "system": "secrets handlers",
           "action": "refuse with NeedPrivate, change nothing, and reveal no secret name",
-          "contract": "HTTP 404 \"workspace not found\", the same body a stranger gets"
+          "contract": "HTTP 404 \"workspace not found\", the same body a stranger gets",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "W has a secret named 'db_password'; U2 is a member with secrets scopes"
+            ]
+          }
         },
         {
-          "id": "35-REQ-9.3",
+          "id": "REQ-9.3",
           "pattern": "event_driven",
           "condition": "a member calls GET .../vars",
           "system": "secrets handlers",
           "action": "list the workspace's variables with NeedRead, as for the owner",
-          "contract": "HTTP 200 with the body the owner gets"
+          "contract": "HTTP 200 with the body the owner gets",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "W has variables; U2 is a member"
+            ]
+          }
         },
         {
-          "id": "35-REQ-9.4",
+          "id": "REQ-9.4",
           "pattern": "event_driven",
           "condition": "a member calls GET .../vars/resolved",
           "system": "secrets handlers",
           "action": "resolve with the owner's user tier, the org tier only when the owner is still a member of the workspace's org, and the workspace tier",
-          "contract": "HTTP 200 with the same document the owner gets"
+          "contract": "HTTP 200 with the same document the owner gets",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "user, org and workspace tier variables; owner U1 is a member of O; U2 is a member of O"
+            ]
+          }
         },
         {
-          "id": "35-REQ-9.5",
+          "id": "REQ-9.5",
           "pattern": "unwanted",
           "condition": "a member calls POST .../vars, PATCH .../vars/:key or DELETE .../vars/:key",
           "system": "secrets handlers",
           "action": "refuse with NeedWrite and change no variable",
-          "contract": "HTTP 403 forbidden refusal (error_type \"forbidden\")"
+          "contract": "HTTP 403 forbidden refusal (error_type \"forbidden\")",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "U2 is a member with variable write scopes; W has variable 'K'"
+            ]
+          }
         },
         {
-          "id": "35-REQ-9.6",
+          "id": "REQ-9.6",
           "pattern": "unwanted",
           "condition": "a member calls POST .../tokens or GET .../tokens",
           "system": "boundtoken",
           "action": "refuse through AuthorizeWorkspace with NeedPrivate in place of its own owner comparison, minting no token and listing none",
-          "contract": "HTTP 404 \"workspace not found\" (TS-34-6 unchanged)"
+          "contract": "HTTP 404 \"workspace not found\" (TS-34-6 unchanged)",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "U2 is a member with tokens scopes; W has existing bound tokens"
+            ]
+          }
         },
         {
-          "id": "35-REQ-9.7",
+          "id": "REQ-9.7",
           "pattern": "unwanted",
           "condition": "a bound PAT or an admin token calls POST .../tokens",
           "system": "boundtoken",
           "action": "refuse before the workspace lookup, with the answers and reports spec 34 defines",
-          "contract": "the same status, body and refusal report as before this spec"
+          "contract": "the same status, body and refusal report as before this spec",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "a bound PAT, an admin token and an observer"
+            ]
+          }
         }
       ]
     },
     {
-      "id": "35-REQ-10",
+      "id": "REQ-10",
       "title": "What does not change",
       "rationale": "Widening read access must not move any existing answer for owners, admins, strangers or bound tokens.",
       "criteria": [
         {
-          "id": "35-REQ-10.1",
+          "id": "REQ-10.1",
           "pattern": "ubiquitous",
           "system": "hub REST handlers",
           "action": "run the access step exactly where the ownership step runs today: after the PAT scope check and after any body validation that precedes it today (as in PATCH /workspaces/:slug), and before workspace status and precondition checks",
-          "contract": "a member PATCH, merge, rebuild or forge write on an archived or inactive workspace gets HTTP 403, not 400"
+          "contract": "a member PATCH, merge, rebuild or forge write on an archived or inactive workspace gets HTTP 403, not 400",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "archived workspace W and a workspace with a non-active clone_status; U2 is a member; the owner for comparison"
+            ]
+          }
         },
         {
-          "id": "35-REQ-10.2",
+          "id": "REQ-10.2",
           "pattern": "unwanted",
           "condition": "a PAT without the scope a route needs calls any route in this spec",
           "system": "hub REST handlers",
           "action": "refuse with the scope answer of today before the workspace is looked up, whatever the caller's membership",
-          "contract": "workspace CRUD routes: HTTP 404; the other routes: the 403 without an error_type that they return today"
+          "contract": "workspace CRUD routes: HTTP 404; the other routes: the 403 without an error_type that they return today",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "U2 is a member; PATs of U2 lacking the scope each route needs; an unknown slug for comparison"
+            ]
+          }
         },
         {
-          "id": "35-REQ-10.3",
+          "id": "REQ-10.3",
           "pattern": "ubiquitous",
           "system": "hub REST handlers",
           "action": "for any route in this spec and any stranger, return the same status and body as before this spec",
-          "contract": "HTTP 404 \"workspace not found\" (secrets and variables: now in the wsaccess wording)"
+          "contract": "HTTP 404 \"workspace not found\" (secrets and variables: now in the wsaccess wording)",
+          "check": {
+            "kind": "property",
+            "setup": [
+              "a stranger and a workspace W with secrets, tokens, patches, rebuilds, merges, sandboxes and forge state"
+            ],
+            "pseudocode": "for r in routes: resp = call(r, stranger, W); assert resp.status==404; assert resp.body == call(r, stranger, 'nope').body"
+          }
         },
         {
-          "id": "35-REQ-10.4",
+          "id": "REQ-10.4",
           "pattern": "ubiquitous",
           "system": "hub REST handlers",
-          "action": "give an owner or an admin token the same status and body as before this spec on every route, apart from the added access and org_slug fields, so that every existing ownership test for a workspace in a personal org passes with fixture changes only"
+          "action": "give an owner or an admin token the same status and body as before this spec on every route, apart from the added access and org_slug fields, so that every existing ownership test for a workspace in a personal org passes with fixture changes only",
+          "contract": "statuses and bodies equal today's, ignoring the new access and org_slug keys; existing ownership test assertions pass unchanged",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "the existing ownership suites with fixtures updated to include org_id and org_members"
+            ]
+          }
         },
         {
-          "id": "35-REQ-10.5",
+          "id": "REQ-10.5",
           "pattern": "unwanted",
           "condition": "a PAT bound to workspace A, whose user is a member of the org of workspace B, calls any route of B",
           "system": "hub REST handlers",
           "action": "refuse through the unchanged BindingGuard, apikit route guard or binding check, and report the refusal as spec 34 does",
-          "contract": "HTTP 404 \"workspace not found\"; the same bound-refusal reports as before this spec"
+          "contract": "HTTP 404 \"workspace not found\"; the same bound-refusal reports as before this spec",
+          "check": {
+            "same_as": "REQ-6.5"
+          }
         },
         {
-          "id": "35-REQ-10.6",
+          "id": "REQ-10.6",
           "pattern": "unwanted",
           "condition": "a member calls a session, cost, audit, SSE or transcript route of the workspace, or the git server",
           "system": "audit and gitserver",
           "action": "keep the owner-only checks of today",
-          "contract": "the member gets the same status and body as a stranger did before this spec"
+          "contract": "the member gets the same status and body as a stranger did before this spec",
+          "check": {
+            "kind": "integration",
+            "setup": [
+              "U2 is a member of W's org with the needed scopes"
+            ]
+          }
         }
       ]
     }
   ],
   "execution_paths": [
     {
-      "id": "35-PATH-1",
+      "id": "PATH-1",
       "title": "An org member finds and reads a teammate's workspace",
       "steps": [
         {
@@ -567,10 +910,26 @@
           "actor": "workspace handlers",
           "action": "return 200 with W's patch stack"
         }
-      ]
+      ],
+      "smoke": {
+        "real_components": [
+          "workspace HTTP handlers",
+          "wsaccess.ReadableSlugs",
+          "wsaccess.AuthorizeWorkspaceAt",
+          "workspace store",
+          "apikit schema database (workspaces, orgs, org_members)"
+        ],
+        "setup": [
+          "the hub running with real handlers and database; U1 owns W in org O; U2 is a member of O with an API key"
+        ],
+        "end_state": [
+          "the listing is 200 and contains W with access \"member\" and org_slug of O",
+          "the patch call is 200 with W's patch stack"
+        ]
+      }
     },
     {
-      "id": "35-PATH-2",
+      "id": "PATH-2",
       "title": "An org member's write is refused and nothing changes",
       "steps": [
         {
@@ -589,10 +948,26 @@
           "actor": "carrypatch",
           "action": "writes the refusal through WriteRefusal with error_type forbidden and enqueues no rebuild job"
         }
-      ]
+      ],
+      "smoke": {
+        "real_components": [
+          "carrypatch handlers",
+          "wsaccess.AuthorizeWorkspace",
+          "wsaccess.WriteRefusal",
+          "job queue",
+          "database"
+        ],
+        "setup": [
+          "the hub running with carrypatch routes, the job queue and a real database; U2 is a member of W's org with the rebuild scope"
+        ],
+        "end_state": [
+          "403 with error_type \"forbidden\" and message \"org members have read-only access to this workspace\"",
+          "no rebuild row and no job queue entry exist"
+        ]
+      }
     },
     {
-      "id": "35-PATH-3",
+      "id": "PATH-3",
       "title": "An org member is shown no secret and no token of the workspace",
       "steps": [
         {
@@ -611,10 +986,25 @@
           "actor": "member U2",
           "action": "receives the same 404 body a stranger receives, with no secret name and no token"
         }
-      ]
+      ],
+      "smoke": {
+        "real_components": [
+          "secrets handlers",
+          "boundtoken handlers",
+          "wsaccess.AuthorizeWorkspace",
+          "database"
+        ],
+        "setup": [
+          "the hub with secrets and boundtoken routes on a real database; W has a secret and a bound token; U2 is a member; a stranger S"
+        ],
+        "end_state": [
+          "both calls answer 404 \"workspace not found\" for U2",
+          "U2's bodies equal S's bodies and reveal no secret name or token"
+        ]
+      }
     },
     {
-      "id": "35-PATH-4",
+      "id": "PATH-4",
       "title": "A removed member loses read access on the next request",
       "steps": [
         {
@@ -633,7 +1023,22 @@
           "actor": "wsaccess",
           "action": "reads org_members, finds no row, decides AccessNone and returns 404 \"workspace not found\""
         }
-      ]
+      ],
+      "smoke": {
+        "real_components": [
+          "workspace HTTP handlers",
+          "wsaccess.AuthorizeWorkspaceAt",
+          "org_members table",
+          "database"
+        ],
+        "setup": [
+          "the hub running with real handlers and database; U2 is a member of O and reads W"
+        ],
+        "end_state": [
+          "first response is 200 with access \"member\"",
+          "second response is 404 \"workspace not found\""
+        ]
+      }
     }
   ],
   "external_apis": [

@@ -1,8 +1,8 @@
 {
-  "$schema": "https://agent-fox.dev/schemas/tasks.v2.json",
+  "$schema": "https://agent-fox.dev/schemas/tasks.v3.json",
   "spec_id": "30",
   "spec_name": "forge_client_reads",
-  "schema_version": 2,
+  "schema_version": 3,
   "test_commands": {
     "all_tests": "make test",
     "linter": "make lint",
@@ -12,15 +12,9 @@
   "tasks": [
     {
       "id": 1,
-      "kind": "implement",
       "title": "Add the aflib dependency and enforce the issuex import boundaries",
       "criteria": [
-        "30-REQ-1"
-      ],
-      "tests": [
-        "TS-30-1",
-        "TS-30-2",
-        "TS-30-3"
+        "REQ-1"
       ],
       "steps": [
         "Write TS-30-1..3 in internal/forge/deps_test.go (read go.mod, Makefile, containers/hub/Containerfile and .github/workflows files; run `go list` and `go build` via os/exec) and confirm they fail",
@@ -43,31 +37,19 @@
       ],
       "done_when": [
         "`go build ./...` succeeds with ../aflib checked out as a sibling"
-      ],
-      "state": "done",
-      "optional": false
+      ]
     },
     {
       "id": 2,
-      "kind": "implement",
       "title": "Forge scopes, authorization order, target selection and route skeleton",
       "criteria": [
-        "30-REQ-2.1",
-        "30-REQ-2.2",
-        "30-REQ-2.3",
-        "30-REQ-2.5",
-        "30-REQ-2.6",
-        "30-REQ-3.3",
-        "30-REQ-3.4"
-      ],
-      "tests": [
-        "TS-30-4",
-        "TS-30-5",
-        "TS-30-6",
-        "TS-30-8",
-        "TS-30-9",
-        "TS-30-13",
-        "TS-30-14"
+        "REQ-2.1",
+        "REQ-2.2",
+        "REQ-2.3",
+        "REQ-2.5",
+        "REQ-2.6",
+        "REQ-3.3",
+        "REQ-3.4"
       ],
       "steps": [
         "Write TS-30-4,5,6,8,9,13,14 in internal/forge (testhelpers_test.go with an X-Test-Auth middleware calling apikit.SetAuthInfo, a minimal workspaces table created like internal/carrypatch/testhelpers_test.go createWorkspacesTable, a counting forge stub and counting resolver/variable closures) and confirm they fail",
@@ -96,33 +78,20 @@
       ],
       "done_when": [
         "`go build ./cmd/af-hub` succeeds with forge routes mounted"
-      ],
-      "state": "done",
-      "optional": false
+      ]
     },
     {
       "id": 3,
-      "kind": "implement",
       "title": "Build a fresh issuex client per request and serve GET /forge/repository",
       "criteria": [
-        "30-REQ-3.1",
-        "30-REQ-3.2",
-        "30-REQ-4.1",
-        "30-REQ-4.2",
-        "30-REQ-4.3",
-        "30-REQ-4.4",
-        "30-REQ-4.5",
-        "30-REQ-4.6"
-      ],
-      "tests": [
-        "TS-30-11",
-        "TS-30-12",
-        "TS-30-15",
-        "TS-30-16",
-        "TS-30-17",
-        "TS-30-18",
-        "TS-30-19",
-        "TS-30-20"
+        "REQ-3.1",
+        "REQ-3.2",
+        "REQ-4.1",
+        "REQ-4.2",
+        "REQ-4.3",
+        "REQ-4.4",
+        "REQ-4.5",
+        "REQ-4.6"
       ],
       "steps": [
         "Write TS-30-11,12,15,16,17,18,19,20 (TLS httptest stubs with Config.Transport = ts.Client().Transport, a fake NewClient factory capturing issuex.Options for TS-30-19, a real secrets store for TS-30-15) and confirm they fail",
@@ -147,28 +116,15 @@
       ],
       "done_when": [
         "`go test ./internal/forge/... -count=1` passes"
-      ],
-      "state": "done",
-      "optional": false
+      ]
     },
     {
       "id": 4,
-      "kind": "implement",
       "title": "Implement the remaining read routes with parameter validation",
       "criteria": [
-        "30-REQ-2.4",
-        "30-REQ-2.7",
-        "30-REQ-7"
-      ],
-      "tests": [
-        "TS-30-7",
-        "TS-30-10",
-        "TS-30-32",
-        "TS-30-33",
-        "TS-30-34",
-        "TS-30-35",
-        "TS-30-36",
-        "TS-30-37"
+        "REQ-2.4",
+        "REQ-2.7",
+        "REQ-7"
       ],
       "steps": [
         "Write TS-30-7,10,32,33,34,35,36,37 (TS-30-32 uses a TLS stub serving minimal GitHub JSON and compares with a direct real issuex client; TS-30-33/36 use a fake issuex.Client through Config.NewClient) and confirm they fail",
@@ -190,24 +146,13 @@
       ],
       "done_when": [
         "all nine read routes return 200 against the stub"
-      ],
-      "state": "done",
-      "optional": false
+      ]
     },
     {
       "id": 5,
-      "kind": "implement",
       "title": "Implement GET /workspaces/:slug/forge diagnostic",
       "criteria": [
-        "30-REQ-6"
-      ],
-      "tests": [
-        "TS-30-26",
-        "TS-30-27",
-        "TS-30-28",
-        "TS-30-29",
-        "TS-30-30",
-        "TS-30-31"
+        "REQ-6"
       ],
       "steps": [
         "Write TS-30-26..31 (TS-30-26/28 use a counting transport asserting zero requests; TS-30-31 is a property test with generated tokens/usernames/passwords via testing/quick or a table of generated strings) and confirm they fail",
@@ -228,29 +173,14 @@
       ],
       "done_when": [
         "GET /forge never makes an outbound request in any test"
-      ],
-      "state": "done",
-      "optional": false
+      ]
     },
     {
       "id": 6,
-      "kind": "implement",
       "title": "Map issuex and transport failures to hub errors with scrubbing and logging",
       "criteria": [
-        "30-REQ-8",
-        "30-REQ-9"
-      ],
-      "tests": [
-        "TS-30-38",
-        "TS-30-39",
-        "TS-30-40",
-        "TS-30-41",
-        "TS-30-42",
-        "TS-30-43",
-        "TS-30-44",
-        "TS-30-45",
-        "TS-30-46",
-        "TS-30-47"
+        "REQ-8",
+        "REQ-9"
       ],
       "steps": [
         "Write TS-30-38..47 (TLS stubs for each status class; TS-30-45 property test of the scrub function; TS-30-46/47 capture the log output via log.SetOutput or the package logger) and confirm they fail",
@@ -272,24 +202,14 @@
       ],
       "done_when": [
         "`go test ./internal/forge/... -count=1` passes"
-      ],
-      "state": "done",
-      "optional": false
+      ]
     },
     {
       "id": 7,
-      "kind": "implement",
       "title": "Harden the shared forge HTTP client: user agent, redirect policy and deadline",
       "criteria": [
-        "30-REQ-4.7",
-        "30-REQ-5"
-      ],
-      "tests": [
-        "TS-30-21",
-        "TS-30-22",
-        "TS-30-23",
-        "TS-30-24",
-        "TS-30-25"
+        "REQ-4.7",
+        "REQ-5"
       ],
       "steps": [
         "Write TS-30-21 (property: generated bearer strings, headers and bodies), 22, 23 (set apikit.Version to 1.2.3 and restore), 24 (two TLS stubs on different hosts/ports) and 25 and confirm they fail",
@@ -309,23 +229,13 @@
       ],
       "done_when": [
         "`go test ./internal/forge/... -count=1` passes"
-      ],
-      "state": "done",
-      "optional": false
+      ]
     },
     {
       "id": 8,
-      "kind": "implement",
       "title": "Add afc forge, issue and pr read commands",
       "criteria": [
-        "30-REQ-10"
-      ],
-      "tests": [
-        "TS-30-48",
-        "TS-30-49",
-        "TS-30-50",
-        "TS-30-51",
-        "TS-30-52"
+        "REQ-10"
       ],
       "steps": [
         "Write TS-30-48..52 in internal/cli/forge_cmd_test.go using setupTestEnv, a stub httptest hub recording method/path/raw query, runRootCmd(--endpoint-url, --api-key) and decodeOneDocument, and confirm they fail",
@@ -345,57 +255,7 @@
       ],
       "done_when": [
         "`CGO_ENABLED=0 go build ./cmd/afc` succeeds"
-      ],
-      "state": "done",
-      "optional": false
-    },
-    {
-      "id": 9,
-      "kind": "integration",
-      "title": "Verify the forge read paths end to end and update documentation",
-      "tests": [
-        "TS-30-53",
-        "TS-30-54",
-        "TS-30-55",
-        "TS-30-56"
-      ],
-      "steps": [
-        "Write smoke tests TS-30-53..56 (internal/forge/smoke_test.go for the handler-only paths; a smoke test wiring the real afc BuildRootCommand to a real forge router for TS-30-54/55/56 in a test location that does not make internal/cli import internal/forge in non-test builds) using the real secrets store, real ResolveCloneAuth/ResolveUpstreamAuthMethod, real issuex and TLS stubs, and confirm they pass",
-        "Trace 30-PATH-1..4 through the real code: handler -> authorize -> target -> buildClient -> shared http.Client -> issuex -> mapForgeError -> afc exit code; confirm each step calls the next and no 501 placeholder remains",
-        "For every criterion with a contract, confirm the producer result is consumed in production code (e.g. forge.Permissions appended in cmd/af-hub/main.go, forge.RegisterRoutes called in main.go with the real resolver closures)",
-        "Search every file in the tasks' touches for `TODO`, `panic(\"not implemented\")`, the temporary 501 placeholder and bare `return nil` on non-trivial paths, and remove them",
-        "Write ADR docs/adr/04-hub-is-the-workspaces-forge-client.md",
-        "Update docs/api.md (scopes table, implied permissions, error_type table, new Forge endpoints section, FORGE_API_URL and UPSTREAM_FORGE_API_URL rows in the workspace variables table), docs/openapi.yaml, docs/permissions.md, docs/cli.md (Forge, Issue, PR commands), docs/architecture.md (Forge client section and aflib dependency note) and docs/configuration.md (pointer to the forge variables)",
-        "Update README.md prerequisites (../aflib sibling) and AGENTS.md (layout adds internal/forge; sibling note); run `make doc`",
-        "Run `make test` and `make lint` and confirm both pass"
-      ],
-      "touches": [
-        "internal/forge/smoke_test.go",
-        "internal/cli/forge_smoke_test.go",
-        "docs/adr/04-hub-is-the-workspaces-forge-client.md",
-        "docs/api.md",
-        "docs/openapi.yaml",
-        "docs/permissions.md",
-        "docs/cli.md",
-        "docs/architecture.md",
-        "docs/configuration.md",
-        "README.md",
-        "AGENTS.md"
-      ],
-      "depends_on": [
-        2,
-        3,
-        4,
-        5,
-        6,
-        7,
-        8
-      ],
-      "done_when": [
-        "`make test` and `make lint` pass with ../aflib present"
-      ],
-      "state": "done",
-      "optional": false
+      ]
     }
   ]
 }
